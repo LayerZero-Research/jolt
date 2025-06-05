@@ -5,10 +5,12 @@ extern crate jolt_sdk_macros;
 pub use jolt_sdk_macros::provable;
 pub use postcard;
 
-#[cfg(feature = "host")]
+// #[cfg(feature = "host")]
 pub mod host_utils;
 #[cfg(feature = "host")]
 pub use host_utils::*;
+
+pub use host_utils::tracer;
 
 pub mod alloc;
 pub use alloc::*;

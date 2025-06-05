@@ -18,7 +18,7 @@ use crate::{
 use crate::field::JoltField;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use itertools::interleave;
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 
 #[derive(CanonicalSerialize, CanonicalDeserialize)]
 pub struct MultisetHashes<F: JoltField> {

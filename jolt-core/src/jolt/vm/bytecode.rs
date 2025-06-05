@@ -20,7 +20,7 @@ use crate::subprotocols::grand_product::BatchedDenseGrandProduct;
 use common::constants::{BYTES_PER_INSTRUCTION, RAM_START_ADDRESS};
 use common::rv_trace::ELFInstruction;
 
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 
 use super::{JoltPolynomials, JoltTraceStep};
 use crate::utils::transcript::Transcript;

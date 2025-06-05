@@ -28,7 +28,7 @@ use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::{One, Zero};
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 
 #[derive(Clone)]
 pub struct HyperBmmtv<P: Pairing, ProofTranscript: Transcript> {

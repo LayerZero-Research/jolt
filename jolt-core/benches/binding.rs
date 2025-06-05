@@ -8,7 +8,7 @@ use jolt_core::poly::dense_mlpoly::DensePolynomial;
 use jolt_core::poly::multilinear_polynomial::{BindingOrder, PolynomialBinding};
 use jolt_core::poly::sparse_interleaved_poly::{SparseCoefficient, SparseInterleavedPolynomial};
 use jolt_core::subprotocols::sumcheck::Bindable;
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 
 fn random_dense_coeffs<F: JoltField>(rng: &mut impl Rng, num_vars: usize) -> Vec<F> {
     std::iter::repeat_with(|| F::random(rng))

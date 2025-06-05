@@ -16,7 +16,7 @@ use crate::utils::small_value::svo_helpers::process_svo_sumcheck_rounds;
 use crate::utils::thread::drop_in_background_thread;
 use crate::utils::transcript::{AppendToTranscript, Transcript};
 use ark_serialize::*;
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 use std::marker::PhantomData;
 
 pub trait Bindable<F: JoltField>: Sync {
@@ -347,7 +347,7 @@ impl<F: JoltField, ProofTranscript: Transcript> SumcheckInstanceProof<F, ProofTr
                 let W_iter = (0..len).into_par_iter().map(witness_value);
                 let Z_iter = W_iter
                     .chain(one.into_par_iter())
-                    .chain(rayon::iter::repeatn(zero, len));
+                    .chain(portable_rayon::iter::repeatn(zero, len));
                 let left_iter = Z_iter.clone().take(len);
                 let right_iter = Z_iter.skip(len).take(len);
                 let B = left_iter

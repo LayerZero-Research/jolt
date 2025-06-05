@@ -6,7 +6,7 @@ use crate::utils::thread::unsafe_allocate_zero_vec;
 use crate::{field::JoltField, utils};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use num_integer::Integer;
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 use std::cmp::Ordering;
 
 /// A trait for small scalars ({u/i}{8/16/32/64})

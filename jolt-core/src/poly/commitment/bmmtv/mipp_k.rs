@@ -10,7 +10,7 @@ use ark_ec::{
 use ark_ff::{Field, One};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use itertools::Itertools;
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 
 use super::{
     afgho::AfghoCommitment, gipa::CommitmentSteps, inner_products::MultiexponentiationInnerProduct,

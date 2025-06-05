@@ -1,5 +1,5 @@
 use crate::field::JoltField;
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 
 use crate::utils::{math::Math, thread::unsafe_allocate_zero_vec};
 

@@ -8,7 +8,7 @@ use crate::poly::multilinear_polynomial::{MultilinearPolynomial, PolynomialEvalu
 use crate::poly::opening_proof::{ProverOpeningAccumulator, VerifierOpeningAccumulator};
 use crate::subprotocols::grand_product::BatchedDenseGrandProduct;
 use crate::utils::thread::unsafe_allocate_zero_vec;
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 #[cfg(test)]
 use std::collections::HashSet;
 use std::marker::PhantomData;

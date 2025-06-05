@@ -15,7 +15,7 @@ use crate::{
         transcript::{AppendToTranscript, Transcript},
     },
 };
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 
 /// The Twist+Shout paper gives two different prover algorithms for the read-checking
 /// and write-checking algorithms in Twist, called the "local algorithm" and

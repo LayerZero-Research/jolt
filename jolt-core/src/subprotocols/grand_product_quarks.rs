@@ -15,7 +15,7 @@ use crate::utils::transcript::{AppendToTranscript, Transcript};
 use ark_serialize::*;
 use ark_std::{One, Zero};
 use itertools::Itertools;
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 use std::marker::PhantomData;
 use thiserror::Error;
 

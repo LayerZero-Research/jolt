@@ -9,7 +9,8 @@ use crate::{
     subprotocols::grand_product::BatchedDenseGrandProduct,
 };
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
+use portable_rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
+use portable_rayon::prelude::*;
 use std::marker::{PhantomData, Sync};
 
 use super::memory_checking::{
@@ -134,7 +135,7 @@ where
 
         let read_write_leaves: Vec<_> = (0..Self::num_memories())
             .into_par_iter()
-            .flat_map_iter(|memory_index| {
+            .par_flat_map(|memory_index| {
                 let dim_index = Self::memory_to_dimension_index(memory_index);
                 let read_cts: &CompactPolynomial<u32, F> =
                     (&polynomials.read_cts[dim_index]).try_into().unwrap();
@@ -162,7 +163,7 @@ where
 
         let init_final_leaves: Vec<_> = (0..Self::num_memories())
             .into_par_iter()
-            .flat_map_iter(|memory_index| {
+            .par_flat_map(|memory_index| {
                 let dim_index = Self::memory_to_dimension_index(memory_index);
                 let subtable_index = Self::memory_to_subtable_index(memory_index);
                 // TODO(moodlezoup): Only need one init polynomial per subtable

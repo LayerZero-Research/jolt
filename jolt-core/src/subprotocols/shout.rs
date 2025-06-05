@@ -16,7 +16,7 @@ use crate::{
         transcript::{AppendToTranscript, Transcript},
     },
 };
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 
 pub struct ShoutProof<F: JoltField, ProofTranscript: Transcript> {
     core_piop_sumcheck: SumcheckInstanceProof<F, ProofTranscript>,

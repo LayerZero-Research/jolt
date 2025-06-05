@@ -8,8 +8,8 @@ use crate::subprotocols::sparse_grand_product::ToggledBatchedGrandProduct;
 use crate::utils::thread::unsafe_allocate_zero_vec;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use itertools::{interleave, Itertools};
-use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
-use rayon::prelude::*;
+use portable_rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
+use portable_rayon::prelude::*;
 use std::marker::PhantomData;
 use tracing::trace_span;
 
@@ -201,7 +201,7 @@ where
 
         let read_write_leaves: Vec<_> = (0..preprocessing.num_memories)
             .into_par_iter()
-            .flat_map_iter(|memory_index| {
+            .par_flat_map(|memory_index| {
                 let dim_index = preprocessing.memory_to_dimension_index[memory_index];
 
                 let dim: &CompactPolynomial<u16, F> =
@@ -231,7 +231,7 @@ where
             .materialized_subtables
             .par_iter()
             .enumerate()
-            .flat_map_iter(|(subtable_index, subtable)| {
+            .par_flat_map(|(subtable_index, subtable)| {
                 let mut leaves: Vec<F> = unsafe_allocate_zero_vec(
                     M * (preprocessing.subtable_to_memory_indices[subtable_index].len() + 1),
                 );
@@ -1117,7 +1117,7 @@ where
                     .collect();
                 evaluations
             })
-            .reduce(
+            .reduce_with_identity(
                 || vec![F::zero(); degree],
                 |running, new| {
                     debug_assert_eq!(running.len(), new.len());

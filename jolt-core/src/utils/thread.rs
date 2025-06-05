@@ -1,4 +1,4 @@
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 use std::thread::{self, JoinHandle};
 
 use crate::field::JoltField;

@@ -14,7 +14,7 @@ use crate::{
 };
 use ark_ec::pairing::{Pairing, PairingOutput};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 use tracing::Level;
 
 pub type CommitmentSteps<P> = Vec<(

@@ -16,7 +16,7 @@ use crate::subprotocols::QuarkHybridLayerDepth;
 use crate::utils::math::Math;
 use crate::utils::thread::drop_in_background_thread;
 use crate::utils::transcript::Transcript;
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 
 /// A special bottom layer of a grand product, where boolean flags are used to
 /// toggle the other inputs (fingerprints) going into the rest of the tree.

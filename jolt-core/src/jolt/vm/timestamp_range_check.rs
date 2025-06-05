@@ -29,7 +29,7 @@ use super::read_write_memory::ReadWriteMemoryPolynomials;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use common::constants::MEMORY_OPS_PER_INSTRUCTION;
 use itertools::interleave;
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 #[cfg(test)]
 use std::collections::HashSet;
 
@@ -414,7 +414,7 @@ where
         leaves.par_extend(
             (0..MEMORY_OPS_PER_INSTRUCTION)
                 .into_par_iter()
-                .flat_map(|i| {
+                .par_flat_map(|i| {
                     let final_fingerprints_0 = (0..M)
                         .into_par_iter()
                         .map(|j| F::from_u32(final_cts_read_timestamp[i][j]) + init_leaves[j])
@@ -426,7 +426,7 @@ where
                         .collect();
 
                     [final_fingerprints_0, final_fingerprints_1]
-                }),
+                }).collect::<Vec<_>>(),
         );
         leaves.push(init_leaves);
 

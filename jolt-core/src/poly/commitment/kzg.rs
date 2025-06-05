@@ -9,7 +9,7 @@ use ark_ff::PrimeField;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::{One, UniformRand, Zero};
 use rand_core::{CryptoRng, RngCore};
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 use std::borrow::Borrow;
 use std::marker::PhantomData;
 use std::sync::Arc;

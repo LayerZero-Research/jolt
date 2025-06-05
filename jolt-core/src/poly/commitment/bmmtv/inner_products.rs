@@ -7,7 +7,7 @@ use ark_ec::{
 };
 
 use crate::msm::{use_icicle, Icicle, VariableBaseMSM};
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 
 #[derive(Debug, thiserror::Error)]
 pub enum InnerProductError {

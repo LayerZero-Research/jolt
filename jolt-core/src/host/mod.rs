@@ -8,7 +8,7 @@ use std::{
     process::Command,
 };
 
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 
 use common::{
     constants::{

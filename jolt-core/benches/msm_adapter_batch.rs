@@ -14,7 +14,7 @@ use jolt_core::poly::multilinear_polynomial::MultilinearPolynomial;
 use jolt_core::utils::transcript::{KeccakTranscript, Transcript};
 use rand_chacha::ChaCha20Rng;
 use rand_core::{RngCore, SeedableRng};
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 
 // This bench uses icicle directly and bypasses the JOLT msm wrapper
 // useful to test the icicle rust api almost directly, still goes through our adapter

@@ -31,7 +31,7 @@ use crate::{
 use super::builder::CombinedUniformBuilder;
 use super::inputs::ConstraintInput;
 
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 
 #[derive(Clone, Debug, Eq, PartialEq, Error)]
 pub enum SpartanError {

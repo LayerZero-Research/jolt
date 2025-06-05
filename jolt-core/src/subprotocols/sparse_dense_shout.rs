@@ -22,7 +22,7 @@ use crate::{
         uninterleave_bits,
     },
 };
-use rayon::{prelude::*, slice::Iter};
+use portable_rayon::{prelude::*, slice::Iter};
 use std::{fmt::Display, ops::Index};
 use strum::{EnumCount, IntoEnumIterator};
 
@@ -243,7 +243,7 @@ fn compute_sumcheck_prover_message<const WORD_SIZE: usize, F: JoltField>(
 
     let (eval_0, eval_2_left, eval_2_right): (F, F, F) = (0..len / 2)
         .into_par_iter()
-        .flat_map_iter(|b| {
+        .par_flat_map(|b| {
             let b = LookupBits::new(b as u64, log_len - 1);
             // Evaluate all prefix MLEs with the current variable fixed to c=0
             let prefixes_c0: Vec<_> = Prefixes::iter()

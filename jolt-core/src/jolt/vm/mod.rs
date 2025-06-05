@@ -502,7 +502,7 @@ where
             &trace,
         );
 
-        let (bytecode_polynomials, range_check_polys) = rayon::join(
+        let (bytecode_polynomials, range_check_polys) = portable_rayon::join(
             || {
                 BytecodeProof::<F, PCS, ProofTranscript>::generate_witness(
                     &preprocessing.shared.bytecode,

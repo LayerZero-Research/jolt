@@ -2,7 +2,7 @@ use crate::utils::{compute_dotproduct, math::Math};
 use ark_serialize::{
     CanonicalDeserialize, CanonicalSerialize, Compress, SerializationError, Valid, Validate,
 };
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 use strum_macros::EnumIter;
 
 use super::{

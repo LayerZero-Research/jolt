@@ -7,7 +7,7 @@ use num_derive::FromPrimitive;
 use positive_remainder_equals_divisor::PositiveRemainderEqualsDivisorPrefix;
 use positive_remainder_less_than_divisor::PositiveRemainderLessThanDivisorPrefix;
 use pow2::Pow2Prefix;
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 use right_shift_padding::RightShiftPaddingPrefix;
 use std::{fmt::Display, ops::Index};
 use strum::EnumCount;

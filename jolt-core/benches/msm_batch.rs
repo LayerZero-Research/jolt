@@ -13,7 +13,7 @@ use jolt_core::utils::transcript::{KeccakTranscript, Transcript};
 use rand_chacha::ChaCha20Rng;
 use rand_core::{RngCore, SeedableRng};
 #[cfg(feature = "icicle")]
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 
 const SRS_SIZE: usize = 1 << 14;
 

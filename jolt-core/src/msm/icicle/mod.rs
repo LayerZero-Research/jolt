@@ -86,8 +86,13 @@ pub fn total_memory_bits() -> usize {
         return total_bytes.saturating_mul(BITS_PER_BYTE);
     }
 
+    #[cfg(any(target_arch = "riscv64", target_arch = "riscv32"))]
+    {
+        return DEFAULT_MEM_GB.saturating_mul(BYTES_PER_GB.saturating_mul(BITS_PER_BYTE));
+    }
+
     // Fallback to system memory if icicle is unavailable or not enabled.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", target_arch = "riscv64", target_arch = "riscv32")))]
     if let Ok(mem_info) = sys_info::mem_info() {
         return (mem_info.total as usize * BYTES_PER_KB).saturating_mul(BITS_PER_BYTE);
     }

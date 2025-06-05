@@ -14,7 +14,7 @@ use crate::{
     },
 };
 use ark_ff::Zero;
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 
 pub const TOTAL_NUM_ACCUMS: usize = svo_helpers::total_num_accums(NUM_SVO_ROUNDS);
 pub const NUM_NONTRIVIAL_TERNARY_POINTS: usize =
@@ -828,7 +828,7 @@ impl<const NUM_SVO_ROUNDS: usize, F: JoltField> SpartanInterleavedPolynomial<NUM
         let quadratic_evals = if eq_poly.E_in_current_len() == 1 {
             let evals: (F, F) = chunks
                 .par_iter()
-                .flat_map_iter(|chunk| {
+                .par_flat_map(|chunk| {
                     chunk
                         .chunk_by(|x, y| x.index / 6 == y.index / 6)
                         .map(|sparse_block| {

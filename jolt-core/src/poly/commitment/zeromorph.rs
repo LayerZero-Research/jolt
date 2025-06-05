@@ -24,7 +24,7 @@ use super::{
     kzg::{KZGProverKey, KZGVerifierKey, UnivariateKZG, SRS},
 };
 use crate::field::JoltField;
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 
 pub struct ZeromorphSRS<P: Pairing>(Arc<SRS<P>>)
 where

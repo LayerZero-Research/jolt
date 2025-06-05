@@ -10,7 +10,7 @@ use crate::{
     },
     utils::{math::Math, transcript::Transcript},
 };
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 
 #[derive(Default, Debug, Clone, Copy, PartialEq)]
 pub struct SparseCoefficient<T> {

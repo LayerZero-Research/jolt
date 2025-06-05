@@ -5,7 +5,7 @@ use ark_std::vec::Vec;
 #[cfg(feature = "icicle")]
 use icicle_core::curve::Affine;
 use num_integer::Integer;
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 use std::borrow::Borrow;
 
 pub(crate) mod icicle;
@@ -550,7 +550,7 @@ fn msm_bigint_wnaf<F: JoltField + PrimeField, V: VariableBaseMSM<ScalarField = F
     let digits_count = num_bits.div_ceil(c);
     let scalar_digits = scalars
         .into_par_iter()
-        .flat_map_iter(|s| make_digits_bigint(s, c, num_bits))
+        .par_flat_map(|s| make_digits_bigint(s, c, num_bits))
         .collect::<Vec<_>>();
     let zero = V::zero();
     let window_sums: Vec<_> = (0..digits_count)

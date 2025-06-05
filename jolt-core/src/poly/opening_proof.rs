@@ -5,7 +5,7 @@
 //! necessarily of the same size, each opened at a different point) into a single opening.
 
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 use std::marker::PhantomData;
 
 use super::{

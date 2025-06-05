@@ -6,7 +6,7 @@ use crate::{
     },
     utils::{thread::unsafe_allocate_zero_vec, transcript::Transcript},
 };
-use rayon::{prelude::*, slice::Chunks};
+use portable_rayon::{prelude::*, slice::Chunks};
 
 #[cfg(test)]
 use super::dense_mlpoly::DensePolynomial;

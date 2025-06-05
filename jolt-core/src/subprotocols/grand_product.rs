@@ -11,7 +11,7 @@ use crate::utils::thread::drop_in_background_thread;
 use crate::utils::transcript::Transcript;
 use ark_serialize::*;
 use itertools::Itertools;
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 
 #[derive(CanonicalSerialize, CanonicalDeserialize)]
 pub struct BatchedGrandProductLayerProof<F: JoltField, ProofTranscript: Transcript> {

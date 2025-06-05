@@ -29,7 +29,15 @@ default = [
     "host",
     "rayon",
 ]
-host = ["dep:reqwest", "dep:tokio"]
+
+guest-std = [
+    "ark-ec",
+    "ark-ff",
+    "ark-std",
+    "ark-ff/asm",
+]
+
+host = ["dep:reqwest", "dep:tokio", "dep:indicatif", "dep:target-lexicon", "dep:sys-info", "dep:dirs"]
 icicle = [
     "default",
     "dep:icicle-runtime",
@@ -39,14 +47,14 @@ icicle = [
 
 [dependencies]
 ark-bn254 = "0.5.0"
-ark-ec = { version = "0.5.0", default-features = false }
-ark-ff = { version = "0.5.0", default-features = false }
+ark-ec = { version = "0.5.0", default-features = false, optional = true }
+ark-ff = { version = "0.5.0", default-features = false, optional = true }
 ark-serialize = { version = "0.5.0", default-features = false, features = [
     "derive",
 ] }
 ark-serialize-derive = { version = "0.5.0", default-features = false }
 
-ark-std = { version = "0.5.0" }
+ark-std = { version = "0.5.0", optional = true }
 clap = { version = "4.3.10", features = ["derive"] }
 enum_dispatch = "0.3.12"
 fixedbitset = "0.5.0"
@@ -58,10 +66,11 @@ num-traits = "0.2.19"
 postcard = { version = "1.0.8", default-features = false, features = [
     "use-std",
 ] }
-rand = "0.7.3"
+rand = { version = "0.7.3", default-features = false }
 rand_chacha = { version = "0.3.0", default-features = false }
 rand_core = { version = "0.6.4", default-features = false }
 rayon = { version = "^1.8.0", optional = true }
+portable_rayon = { workspace = true }
 serde = { version = "1.0.*", default-features = false }
 sha3 = "0.10.8"
 strum = "0.26.3"
@@ -70,14 +79,14 @@ thiserror = "1.0.58"
 tracing = "0.1.37"
 tracing-chrome = "0.7.1"
 tracing-subscriber = "0.3.18"
-target-lexicon = "0.12.14"
+target-lexicon = { version = "0.12.14", default-features = false, optional = true }
 reqwest = { version = "0.12.3", features = [
     "json",
     "blocking",
 ], optional = true }
-dirs = "5.0.1"
+dirs = { version = "5.0.1", default-features = false, optional = true }
 eyre = "0.6.12"
-indicatif = "0.17.8"
+indicatif = { version = "0.17.8", default-features = false, optional = true }
 common = { path = "../common" }
 tracer = { path = "../tracer" }
 bincode = "1.3.3"
@@ -86,7 +95,7 @@ tokio = { version = "1.38.0", optional = true }
 alloy-primitives = "0.7.6"
 alloy-sol-types = "0.7.6"
 once_cell = "1.19.0"
-rand_distr = "0.4.3"
+rand_distr = { version = "0.4.3", default-features = false }
 anyhow = "1.0.97"
 paste = "1.0.15"
 lazy_static = "1.5.0"
@@ -136,7 +145,7 @@ path = "src/lib.rs"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 memory-stats = "1.0.0"
-sys-info = "0.9.1"
+sys-info = { version = "0.9.1",default-features = false, optional = true }
 tokio = { version = "1.38.0", optional = true, features = ["rt-multi-thread"] }
 
 [target.'cfg(all(not(target_arch = "wasm32"), target_os = "macos"))'.dependencies]

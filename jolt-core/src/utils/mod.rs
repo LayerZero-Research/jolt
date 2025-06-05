@@ -2,7 +2,7 @@
 use crate::field::JoltField;
 
 use ark_std::test_rng;
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 
 pub mod errors;
 pub mod gaussian_elimination;
@@ -70,7 +70,7 @@ macro_rules! join_conditional {
         }
         #[cfg(not(feature = "icicle"))]
         {
-            rayon::join($f1, $f2)
+            portable_rayon::join($f1, $f2)
         }
     }};
 }

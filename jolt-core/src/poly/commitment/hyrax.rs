@@ -18,7 +18,7 @@ use crate::utils::{compute_dotproduct, mul_0_1_optimized};
 use ark_ec::CurveGroup;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use num_integer::Roots;
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 use tracing::trace_span;
 
 use crate::msm::{Icicle, VariableBaseMSM};
@@ -246,7 +246,7 @@ impl<const RATIO: usize, F: JoltField, G: CurveGroup<ScalarField = F> + Icicle>
         let rlc_poly = if chunk_size > 0 {
             (0..num_chunks)
                 .into_par_iter()
-                .flat_map_iter(|chunk_index| {
+                .par_flat_map(|chunk_index| {
                     let mut chunk = vec![G::ScalarField::zero(); chunk_size];
                     for (coeff, poly) in rlc_coefficients.iter().zip(polynomials.iter()) {
                         for (rlc, poly_eval) in chunk

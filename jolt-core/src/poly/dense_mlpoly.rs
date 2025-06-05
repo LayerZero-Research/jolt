@@ -8,7 +8,7 @@ use crate::utils::math::Math;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use core::ops::Index;
 use rand_core::{CryptoRng, RngCore};
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 
 use super::multilinear_polynomial::BindingOrder;
 

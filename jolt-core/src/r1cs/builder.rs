@@ -10,7 +10,7 @@ use crate::{
     r1cs::key::{SparseConstraints, UniformR1CS},
 };
 use ark_ff::One;
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 use std::{
     collections::BTreeMap,
     marker::PhantomData,

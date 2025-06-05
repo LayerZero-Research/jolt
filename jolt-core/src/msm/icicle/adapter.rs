@@ -16,7 +16,7 @@ use icicle_runtime::{
     memory::{DeviceVec, HostSlice},
     stream::IcicleStream,
 };
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 use std::os::raw::c_void;
 
 impl<T: SWCurveConfig> Icicle for ark_ec::short_weierstrass::Projective<T> {

@@ -24,7 +24,7 @@ use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::{One, Zero};
 use rand_chacha::ChaCha20Rng;
 use rand_core::{CryptoRng, RngCore, SeedableRng};
-use rayon::iter::{
+use portable_rayon::iter::{
     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator,
     IntoParallelRefMutIterator, ParallelIterator,
 };

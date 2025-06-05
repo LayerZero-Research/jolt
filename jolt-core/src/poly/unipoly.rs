@@ -7,7 +7,7 @@ use crate::utils::gaussian_elimination::gaussian_elimination;
 use crate::utils::transcript::{AppendToTranscript, Transcript};
 use ark_serialize::*;
 use rand_core::{CryptoRng, RngCore};
-use rayon::prelude::*;
+use portable_rayon::prelude::*;
 
 use super::compact_polynomial::SmallScalar;
 use super::multilinear_polynomial::MultilinearPolynomial;
