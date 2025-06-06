@@ -151,7 +151,7 @@ impl LookupBits {
     }
 
     pub fn leading_ones(&self) -> u32 {
-        self.bits.unbounded_shl(64 - self.len as u32).leading_ones()
+        self.bits.checked_shl(64 - self.len as u32).unwrap_or(0).leading_ones()
     }
 }
 

@@ -13,15 +13,29 @@ repository = "https://github.com/a16z/jolt"
 edition = "2021"
 
 [features]
+no-std = [
+    "tracer/no-std",
+    "common/no-std",
+    "jolt-core/no-std",
+    "dep:ark-ec",
+    "dep:ark-bn254",
+]
+
 host = [
-    "dep:tracer",
-    "dep:common",
-    "dep:jolt-core",
+    "tracer/std",
+    "common/std",
+    "jolt-core/host",
     "dep:ark-ec",
     "dep:ark-bn254",
     "postcard/use-std",
 ]
+
 guest-std = [
+    "tracer/std",    
+    "common/std",
+    "jolt-core/guest-std",
+    "dep:ark-ec",
+    "dep:ark-bn254",    
     "postcard/use-std",
     "jolt-sdk-macros/guest-std",
 ]
@@ -33,6 +47,6 @@ ark-ec = { version = "0.5.0", default-features = false, optional = true }
 ark-bn254 = { version = "0.5.0", default-features = false, optional = true }
 
 jolt-sdk-macros = { path = "./macros" }
-jolt-core = { path = "../jolt-core", optional = true }
-tracer = { path = "../tracer", optional = true }
-common = { path = "../common", optional = true }
+jolt-core = { path = "../jolt-core", default-features = false, optional = true }
+tracer = { path = "../tracer", default-features = false, optional = true }
+common = { path = "../common", default-features = false, optional = true }

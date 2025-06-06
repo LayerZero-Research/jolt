@@ -1,4 +1,4 @@
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_arch = "riscv32")))]
 use memory_stats::memory_stats;
 use std::{
     collections::HashMap,
@@ -10,7 +10,7 @@ static MEMORY_USAGE_MAP: LazyLock<Mutex<HashMap<&'static str, f64>>> =
 static MEMORY_DELTA_MAP: LazyLock<Mutex<HashMap<&'static str, f64>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_arch = "riscv32")))]
 pub fn start_memory_tracing_span(label: &'static str) {
     let memory_usage = memory_stats().unwrap().physical_mem;
     let mut map = MEMORY_USAGE_MAP.lock().unwrap();
@@ -20,7 +20,7 @@ pub fn start_memory_tracing_span(label: &'static str) {
     );
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_arch = "riscv32")))]
 pub fn end_memory_tracing_span(label: &'static str) {
     let memory_usage_end = memory_stats().unwrap().physical_mem as f64 / 1_000_000_000.0;
     let mut memory_usage_map = MEMORY_USAGE_MAP.lock().unwrap();
@@ -51,7 +51,7 @@ pub fn report_memory_usage() {
     println!("=====================================================");
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_arch = "riscv32")))]
 pub fn print_current_memory_usage(label: &str) {
     if let Some(usage) = memory_stats() {
         let memory_usage_gb = usage.physical_mem as f64 / 1_000_000_000.0;

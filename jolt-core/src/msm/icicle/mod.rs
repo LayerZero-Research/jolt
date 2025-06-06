@@ -87,7 +87,7 @@ pub fn total_memory_bits() -> usize {
     }
 
     // Fallback to system memory if icicle is unavailable or not enabled.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", target_arch = "riscv32")))]
     if let Ok(mem_info) = sys_info::mem_info() {
         return (mem_info.total as usize * BYTES_PER_KB).saturating_mul(BITS_PER_BYTE);
     }
