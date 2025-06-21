@@ -15,6 +15,7 @@ pub mod benches;
 pub mod host;
 
 pub mod field;
+pub mod guest;
 pub mod jolt;
 pub mod msm;
 pub mod poly;
