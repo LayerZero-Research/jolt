@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tracer::instruction::RV32IMInstruction;
 
 /// Generate preprocessing data for verification
-pub fn preprocess_verify(
+pub fn preprocess(
     instructions: &[RV32IMInstruction],
     memory_init: &[(u64, u8)],
     memory_config: &MemoryConfig,

@@ -79,6 +79,17 @@ impl Program {
         self.max_output_size = size;
     }
 
+    pub fn get_elf_contents(&self) -> Option<Vec<u8>> {
+        if let Some(elf) = &self.elf {
+            let mut elf_file = File::open(elf).unwrap_or_else(|_| panic!("could not open elf file: {elf:?}"));
+            let mut elf_contents = Vec::new();
+            elf_file.read_to_end(&mut elf_contents).unwrap();
+            Some(elf_contents)
+        } else {
+            None
+        }
+    }
+
     #[tracing::instrument(skip_all, name = "Program::build")]
     pub fn build(&mut self, target_dir: &str) {
         if self.elf.is_none() {
@@ -154,11 +165,7 @@ impl Program {
 
     pub fn decode(&mut self) -> (Vec<RV32IMInstruction>, Vec<(u64, u8)>) {
         self.build(DEFAULT_TARGET_DIR);
-        let elf = self.elf.as_ref().unwrap();
-        let mut elf_file =
-            File::open(elf).unwrap_or_else(|_| panic!("could not open elf file: {elf:?}"));
-        let mut elf_contents = Vec::new();
-        elf_file.read_to_end(&mut elf_contents).unwrap();
+        let elf_contents = self.get_elf_contents().unwrap();
         let (mut instructions, raw_bytes) = tracer::decode(&elf_contents);
         // Expand virtual sequences
         instructions = instructions

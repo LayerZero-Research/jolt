@@ -13,7 +13,7 @@ use tracer::instruction::RV32IMInstruction;
 use super::{Program, RuntimeConfig};
 
 /// Generate preprocessing data for proving
-pub fn preprocess_prove(
+pub fn preprocess(
     instructions: &[RV32IMInstruction],
     memory_init: &[(u64, u8)],
     memory_config: &MemoryConfig,
