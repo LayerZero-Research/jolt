@@ -209,6 +209,7 @@ pub mod virtual_assert_lte;
 pub mod virtual_assert_valid_div0;
 pub mod virtual_assert_valid_signed_remainder;
 pub mod virtual_assert_valid_unsigned_remainder;
+pub mod virtual_change_divisor;
 pub mod virtual_move;
 pub mod virtual_movsign;
 pub mod virtual_muli;
@@ -232,6 +233,8 @@ pub mod remw;
 
 #[cfg(test)]
 pub mod test;
+
+use virtual_change_divisor::VirtualChangeDivisor;
 
 #[derive(Default, Debug, Copy, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RAMRead {
@@ -501,6 +504,7 @@ define_rv32im_enums! {
         // Virtual
         VirtualAdvice, VirtualAssertEQ, VirtualAssertHalfwordAlignment, VirtualAssertLTE,
         VirtualAssertValidDiv0, VirtualAssertValidSignedRemainder, VirtualAssertValidUnsignedRemainder,
+        VirtualChangeDivisor,
         VirtualMove, VirtualMovsign, VirtualMULI, VirtualPow2, VirtualPow2I, VirtualROTRI,
         VirtualShiftRightBitmask, VirtualShiftRightBitmaskI,
         VirtualSRA, VirtualSRAI, VirtualSRL, VirtualSRLI,

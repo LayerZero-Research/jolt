@@ -6,46 +6,46 @@ use crate::{
 };
 
 use super::{
-    format::{format_b::FormatB, InstructionFormat},
+    format::{format_r::FormatR, InstructionFormat},
     RISCVInstruction, RISCVTrace,
 };
 
 declare_riscv_instr!(
-    name = VirtualAssertValidSignedRemainder,
+    name = VirtualChangeDivisor,
     mask = 0,
     match = 0,
-    format = FormatB,
+    format = FormatR,
     ram = (),
     is_virtual = true
 );
 
-impl VirtualAssertValidSignedRemainder {
+impl VirtualChangeDivisor {
     fn exec(
         &self,
         cpu: &mut Cpu,
-        _: &mut <VirtualAssertValidSignedRemainder as RISCVInstruction>::RAMAccess,
+        _: &mut <VirtualChangeDivisor as RISCVInstruction>::RAMAccess,
     ) {
         match cpu.xlen {
             Xlen::Bit32 => {
                 let remainder = cpu.x[self.operands.rs1] as i32;
                 let divisor = cpu.x[self.operands.rs2] as i32;
-                if remainder != 0 && divisor != 0 {
-                    assert!(
-                        remainder.unsigned_abs() < divisor.unsigned_abs()
-                    );
+                if remainder == i32::MIN && divisor == -1 {
+                    cpu.x[self.operands.rd] = 1;
+                } else {
+                    cpu.x[self.operands.rd] = divisor as i64;
                 }
             }
             Xlen::Bit64 => {
                 let remainder = cpu.x[self.operands.rs1];
                 let divisor = cpu.x[self.operands.rs2];
-                if remainder != 0 && divisor != 0 {
-                    assert!(
-                        remainder.unsigned_abs() < divisor.unsigned_abs()
-                    );
+                if remainder == i64::MIN && divisor == -1 {
+                    cpu.x[self.operands.rd] = 1;
+                } else {
+                    cpu.x[self.operands.rd] = divisor;
                 }
             }
         }
     }
 }
 
-impl RISCVTrace for VirtualAssertValidSignedRemainder {}
+impl RISCVTrace for VirtualChangeDivisor {}
