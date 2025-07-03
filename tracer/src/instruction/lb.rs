@@ -7,7 +7,7 @@ use super::addi::ADDI;
 use super::andi::ANDI;
 use super::format::format_i::FormatI;
 use super::format::format_r::FormatR;
-use super::lw::LW;
+use super::virtual_lw::VirtualLW;
 use super::ld::LD;
 use super::sll::SLL;
 use super::slli::SLLI;
@@ -97,9 +97,9 @@ impl LB {
         };
         sequence.push(andi.into());
 
-        let lw = LW {
+        let lw = VirtualLW {
             address: self.address,
-            operands: FormatLoad {
+            operands: FormatI {
                 rd: v_word,
                 rs1: v_word_address,
                 imm: 0,
