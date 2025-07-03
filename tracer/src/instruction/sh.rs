@@ -50,7 +50,7 @@ impl SH {
 
 impl RISCVTrace for SH {
     fn trace(&self, cpu: &mut Cpu, trace: Option<&mut Vec<RV32IMCycle>>) {
-        let virtual_sequence = self.virtual_sequence();
+        let virtual_sequence = self.virtual_sequence(cpu);
         let mut trace = trace;
         for instr in virtual_sequence {
             // In each iteration, create a new Option containing a re-borrowed reference
@@ -60,7 +60,7 @@ impl RISCVTrace for SH {
 }
 
 impl VirtualInstructionSequence for SH {
-    fn virtual_sequence(&self) -> Vec<RV32IMInstruction> {
+    fn virtual_sequence(&self, cpu: &Cpu) -> Vec<RV32IMInstruction> {
         // Virtual registers used in sequence
         let v_address = virtual_register_index(0) as usize;
         let v_word_address = virtual_register_index(1) as usize;
@@ -123,7 +123,7 @@ impl VirtualInstructionSequence for SH {
             },
             virtual_sequence_remaining: Some(9),
         };
-        sequence.extend(slli.virtual_sequence());
+        sequence.extend(slli.virtual_sequence(cpu));
 
         let lui = LUI {
             address: self.address,
@@ -144,7 +144,7 @@ impl VirtualInstructionSequence for SH {
             },
             virtual_sequence_remaining: Some(7),
         };
-        sequence.extend(sll_mask.virtual_sequence());
+        sequence.extend(sll_mask.virtual_sequence(cpu));
 
         let sll_value = SLL {
             address: self.address,
@@ -155,7 +155,7 @@ impl VirtualInstructionSequence for SH {
             },
             virtual_sequence_remaining: Some(5),
         };
-        sequence.extend(sll_value.virtual_sequence());
+        sequence.extend(sll_value.virtual_sequence(cpu));
 
         let xor = XOR {
             address: self.address,

@@ -330,19 +330,19 @@ where
             register_state: Default::default(),
             ram_access: Default::default(),
         };
-        self.operands()
-            .capture_pre_execution_state(&mut cycle.register_state, cpu);
+        //self.operands()
+        //    .capture_pre_execution_state(&mut cycle.register_state, cpu);
         self.execute(cpu, &mut cycle.ram_access);
-        self.operands()
-            .capture_post_execution_state(&mut cycle.register_state, cpu);
-        if let Some(trace_vec) = trace {
-            trace_vec.push(cycle.into());
-        }
+        //self.operands()
+        //    .capture_post_execution_state(&mut cycle.register_state, cpu);
+        //if let Some(trace_vec) = trace {
+        //    trace_vec.push(cycle.into());
+        //}
     }
 }
 
 pub trait VirtualInstructionSequence: RISCVInstruction {
-    fn virtual_sequence(&self) -> Vec<RV32IMInstruction>;
+    fn virtual_sequence(&self, cpu: &Cpu) -> Vec<RV32IMInstruction>;
 }
 
 macro_rules! define_rv32im_enums {
