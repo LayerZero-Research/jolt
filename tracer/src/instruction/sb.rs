@@ -13,7 +13,7 @@ use super::ld::LD;
 use super::virtual_lw::VirtualLW;
 use super::sll::SLL;
 use super::slli::SLLI;
-use super::sw::SW;
+use super::virtual_sw::VirtualSW;
 use super::sd::SD;
 use super::xor::XOR;
 use super::{RAMWrite, RV32IMInstruction, VirtualInstructionSequence};
@@ -185,7 +185,7 @@ impl SB {
         };
         sequence.push(xor.into());
 
-        let sw = SW {
+        let sw = VirtualSW {
             address: self.address,
             operands: FormatS {
                 rs1: v_word_address,

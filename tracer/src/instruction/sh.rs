@@ -15,7 +15,7 @@ use super::ld::LD;
 use super::virtual_lw::VirtualLW;
 use super::sll::SLL;
 use super::slli::SLLI;
-use super::sw::SW;
+use super::virtual_sw::VirtualSW;
 use super::sd::SD;
 use super::virtual_assert_halfword_alignment::VirtualAssertHalfwordAlignment;
 use super::xor::XOR;
@@ -201,7 +201,7 @@ impl SH {
         };
         sequence.push(xor_final.into());
 
-        let sw = SW {
+        let sw = VirtualSW {
             address: self.address,
             operands: FormatS {
                 rs1: v_word_address,
