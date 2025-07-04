@@ -115,6 +115,7 @@ use virtual_rotri::VirtualROTRI;
 use virtual_shift_right_bitmask::VirtualShiftRightBitmask;
 use virtual_shift_right_bitmaski::VirtualShiftRightBitmaskI;
 use virtual_sign_extend::VirtualSignExtend;
+use virtual_extend::VirtualExtend;
 use virtual_sra::VirtualSRA;
 use virtual_srai::VirtualSRAI;
 use virtual_srl::VirtualSRL;
@@ -229,6 +230,7 @@ pub mod virtual_rotri;
 pub mod virtual_shift_right_bitmask;
 pub mod virtual_shift_right_bitmaski;
 pub mod virtual_sign_extend;
+pub mod virtual_extend;
 pub mod virtual_sra;
 pub mod virtual_srai;
 pub mod virtual_srl;
@@ -514,7 +516,7 @@ define_rv32im_enums! {
         // Virtual
         VirtualAdvice, VirtualAssertEQ, VirtualAssertHalfwordAlignment, VirtualAssertWordAlignment, VirtualAssertLTE,
         VirtualAssertValidDiv0, VirtualAssertValidSignedRemainder, VirtualAssertValidUnsignedRemainder,
-        VirtualChangeDivisor, VirtualLW,
+        VirtualChangeDivisor, VirtualLW,VirtualExtend,
         VirtualSignExtend,VirtualPow2W, VirtualPow2IW,
         VirtualMove, VirtualMovsign, VirtualMULI, VirtualPow2, VirtualPow2I, VirtualROTRI,
         VirtualShiftRightBitmask, VirtualShiftRightBitmaskI,
