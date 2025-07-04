@@ -3,6 +3,24 @@ use add::ADD;
 use addi::ADDI;
 use addiw::ADDIW;
 use addw::ADDW;
+use amoaddd::AMOADDD;
+use amoaddw::AMOADDW;
+use amoandd::AMOANDD;
+use amoandw::AMOANDW;
+use amomaxd::AMOMAXD;
+use amomaxw::AMOMAXW;
+use amomaxud::AMOMAXUD;
+use amomaxuw::AMOMAXUW;
+use amomind::AMOMIND;
+use amominw::AMOMINW;
+use amominud::AMOMINUD;
+use amominuw::AMOMINUW;
+use amoord::AMOORD;
+use amoorw::AMOORW;
+use amoswapd::AMOSWAPD;
+use amoswapw::AMOSWAPW;
+use amoxord::AMOXORD;
+use amoxorw::AMOXORW;
 use and::AND;
 use andi::ANDI;
 use ark_serialize::{
@@ -28,6 +46,8 @@ use lbu::LBU;
 use ld::LD;
 use lh::LH;
 use lhu::LHU;
+use lrd::LRD;
+use lrw::LRW;
 use lui::LUI;
 use lw::LW;
 use lwu::LWU;
@@ -44,6 +64,8 @@ use remu::REMU;
 use remuw::REMUW;
 use remw::REMW;
 use sb::SB;
+use scd::SCD;
+use scw::SCW;
 use sd::SD;
 use serde::{Deserialize, Serialize};
 use sh::SH;
@@ -104,6 +126,24 @@ pub mod add;
 pub mod addi;
 pub mod addiw;
 pub mod addw;
+pub mod amoaddd;
+pub mod amoaddw;
+pub mod amoandd;
+pub mod amoandw;
+pub mod amomaxd;
+pub mod amomaxw;
+pub mod amomaxud;
+pub mod amomaxuw;
+pub mod amomind;
+pub mod amominw;
+pub mod amominud;
+pub mod amominuw;
+pub mod amoord;
+pub mod amoorw;
+pub mod amoswapd;
+pub mod amoswapw;
+pub mod amoxord;
+pub mod amoxorw;
 pub mod and;
 pub mod andi;
 pub mod auipc;
@@ -125,6 +165,8 @@ pub mod lbu;
 pub mod ld;
 pub mod lh;
 pub mod lhu;
+pub mod lrd;
+pub mod lrw;
 pub mod lui;
 pub mod lw;
 pub mod lwu;
@@ -137,6 +179,8 @@ pub mod ori;
 pub mod rem;
 pub mod remu;
 pub mod sb;
+pub mod scd;
+pub mod scw;
 pub mod sd;
 pub mod sh;
 pub mod sll;
@@ -202,9 +246,16 @@ pub struct RAMWrite {
     pub post_value: u64,
 }
 
+#[derive(Default, Debug, Copy, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RAMAtomic {
+    pub read: RAMRead,
+    pub write: RAMWrite,
+}
+
 pub enum RAMAccess {
     Read(RAMRead),
     Write(RAMWrite),
+    Atomic(RAMAtomic),
     NoOp,
 }
 
@@ -214,6 +265,7 @@ impl RAMAccess {
             RAMAccess::Read(read) => read.address as usize,
             RAMAccess::Write(write) => write.address as usize,
             RAMAccess::NoOp => 0,
+            RAMAccess::Atomic(atomic) => atomic.read.address as usize,
         }
     }
 }
@@ -233,6 +285,12 @@ impl From<RAMWrite> for RAMAccess {
 impl From<()> for RAMAccess {
     fn from(_: ()) -> Self {
         Self::NoOp
+    }
+}
+
+impl From<RAMAtomic> for RAMAccess {
+    fn from(atomic: RAMAtomic) -> Self {
+        Self::Atomic(atomic)
     }
 }
 
@@ -436,6 +494,10 @@ define_rv32im_enums! {
         ADDIW, SLLIW, SRLIW, SRAIW, ADDW, SUBW, SLLW, SRLW, SRAW, LWU,
         // RV64M
         DIVUW, DIVW, MULW, REMUW, REMW,
+        // RV32A (Atomic Memory Operations)
+        LRW, SCW, AMOSWAPW, AMOADDW, AMOANDW, AMOORW, AMOXORW, AMOMINW, AMOMAXW, AMOMINUW, AMOMAXUW,
+        // RV64A (Atomic Memory Operations)
+        LRD, SCD, AMOSWAPD, AMOADDD, AMOANDD, AMOORD, AMOXORD, AMOMIND, AMOMAXD, AMOMINUD, AMOMAXUD,
         // Virtual
         VirtualAdvice, VirtualAssertEQ, VirtualAssertHalfwordAlignment, VirtualAssertLTE,
         VirtualAssertValidDiv0, VirtualAssertValidSignedRemainder, VirtualAssertValidUnsignedRemainder,
@@ -656,6 +718,63 @@ impl RV32IMInstruction {
             0b0001111 => {
                 // FENCE: I-type; the immediate encodes "pred" and "succ" flags.
                 Ok(FENCE::new(instr, address, true).into())
+            }
+            0b0101111 => {
+                // Atomic Memory Operations (A-extension): LR, SC, AMOSWAP, AMOADD, etc.
+                let funct3 = (instr >> 12) & 0x7;
+                let funct5 = (instr >> 27) & 0x1f;
+                let funct7 = (instr >> 25) & 0x7f;
+                
+                match (funct3, funct5, funct7) {
+                    // LR (Load Reserved)
+                    (0b010, 0b00010, 0b00010) => Ok(LRW::new(instr, address, true).into()),
+                    (0b011, 0b00010, 0b00010) => Ok(LRD::new(instr, address, true).into()),
+                    
+                    // SC (Store Conditional)
+                    (0b010, 0b00011, 0b00011) => Ok(SCW::new(instr, address, true).into()),
+                    (0b011, 0b00011, 0b00011) => Ok(SCD::new(instr, address, true).into()),
+                    
+                    // AMOSWAP
+                    (0b010, 0b00001, 0b0000100) => Ok(AMOSWAPW::new(instr, address, true).into()),
+                    (0b011, 0b00001, 0b0000100) => Ok(AMOSWAPD::new(instr, address, true).into()),
+                    
+                    // AMOADD
+                    (0b010, 0b00000, 0b00000) => Ok(AMOADDW::new(instr, address, true).into()),
+                    (0b011, 0b00000, 0b00000) => Ok(AMOADDD::new(instr, address, true).into()),
+                    
+                    // AMOAND
+                    (0b010, 0b01100, 0b110000) => Ok(AMOANDW::new(instr, address, true).into()),
+                    (0b011, 0b01100, 0b110000) => Ok(AMOANDD::new(instr, address, true).into()),
+                    
+                    // AMOOR
+                    (0b010, 0b01000, 0b100000) => Ok(AMOORW::new(instr, address, true).into()),
+                    (0b011, 0b01000, 0b100000) => Ok(AMOORD::new(instr, address, true).into()),
+                    
+                    // AMOXOR
+                    (0b010, 0b00100, 0b010000) => Ok(AMOXORW::new(instr, address, true).into()),
+                    (0b011, 0b00100, 0b010000) => Ok(AMOXORD::new(instr, address, true).into()),
+                    
+                    // AMOMIN
+                    (0b010, 0b10000, 0b1000000) => Ok(AMOMINW::new(instr, address, true).into()),
+                    (0b011, 0b10000, 0b1000000) => Ok(AMOMIND::new(instr, address, true).into()),
+                    
+                    // AMOMAX
+                    (0b010, 0b10100, 0b1010000) => Ok(AMOMAXW::new(instr, address, true).into()),
+                    (0b011, 0b10100, 0b1010000) => Ok(AMOMAXD::new(instr, address, true).into()),
+                    
+                    // AMOMINU
+                    (0b010, 0b11000, 0b1100000) => Ok(AMOMINUW::new(instr, address, true).into()),
+                    (0b011, 0b11000, 0b1100000) => Ok(AMOMINUD::new(instr, address, true).into()),
+                    
+                    // AMOMAXU
+                    (0b010, 0b11100, 0b1110000) => Ok(AMOMAXUW::new(instr, address, true).into()),
+                    (0b011, 0b11100, 0b1110000) => Ok(AMOMAXUD::new(instr, address, true).into()),
+                    
+                    _ => {
+                        eprintln!("Invalid atomic memory operation: instr=0x{:08x} funct3={:03b} funct5={:05b} funct7={:07b}", instr, funct3, funct5, funct7);
+                        Err("Invalid atomic memory operation")
+                    }
+                }
             }
             0b1110011 => {
                 // For now this only (potentially) maps to ECALL.
