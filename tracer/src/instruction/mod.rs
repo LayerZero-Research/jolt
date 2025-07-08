@@ -97,18 +97,27 @@ use inline_sha256::sha256init::SHA256INIT;
 use virtual_advice::VirtualAdvice;
 use virtual_assert_eq::VirtualAssertEQ;
 use virtual_assert_halfword_alignment::VirtualAssertHalfwordAlignment;
+use virtual_assert_word_alignment::VirtualAssertWordAlignment;
 use virtual_assert_lte::VirtualAssertLTE;
 use virtual_assert_valid_div0::VirtualAssertValidDiv0;
 use virtual_assert_valid_signed_remainder::VirtualAssertValidSignedRemainder;
 use virtual_assert_valid_unsigned_remainder::VirtualAssertValidUnsignedRemainder;
+use virtual_change_divisor::VirtualChangeDivisor;
+use virtual_change_divisor_w::VirtualChangeDivisorW;
+use virtual_lw::VirtualLW;
+use virtual_sw::VirtualSW;
 use virtual_move::VirtualMove;
 use virtual_movsign::VirtualMovsign;
 use virtual_muli::VirtualMULI;
 use virtual_pow2::VirtualPow2;
+use virtual_pow2_w::VirtualPow2W;
 use virtual_pow2i::VirtualPow2I;
+use virtual_pow2i_w::VirtualPow2IW;
 use virtual_rotri::VirtualROTRI;
 use virtual_shift_right_bitmask::VirtualShiftRightBitmask;
 use virtual_shift_right_bitmaski::VirtualShiftRightBitmaskI;
+use virtual_sign_extend::VirtualSignExtend;
+use virtual_extend::VirtualExtend;
 use virtual_sra::VirtualSRA;
 use virtual_srai::VirtualSRAI;
 use virtual_srl::VirtualSRL;
@@ -205,18 +214,27 @@ pub mod sw;
 pub mod virtual_advice;
 pub mod virtual_assert_eq;
 pub mod virtual_assert_halfword_alignment;
+pub mod virtual_assert_word_alignment;
 pub mod virtual_assert_lte;
 pub mod virtual_assert_valid_div0;
 pub mod virtual_assert_valid_signed_remainder;
 pub mod virtual_assert_valid_unsigned_remainder;
+pub mod virtual_change_divisor;
+pub mod virtual_change_divisor_w;
+pub mod virtual_lw;
+pub mod virtual_sw;
 pub mod virtual_move;
 pub mod virtual_movsign;
 pub mod virtual_muli;
 pub mod virtual_pow2;
 pub mod virtual_pow2i;
+pub mod virtual_pow2i_w;
+pub mod virtual_pow2_w;
 pub mod virtual_rotri;
 pub mod virtual_shift_right_bitmask;
 pub mod virtual_shift_right_bitmaski;
+pub mod virtual_sign_extend;
+pub mod virtual_extend;
 pub mod virtual_sra;
 pub mod virtual_srai;
 pub mod virtual_srl;
@@ -232,6 +250,7 @@ pub mod remw;
 
 #[cfg(test)]
 pub mod test;
+
 
 #[derive(Default, Debug, Copy, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RAMRead {
@@ -327,19 +346,19 @@ where
             register_state: Default::default(),
             ram_access: Default::default(),
         };
-        self.operands()
-            .capture_pre_execution_state(&mut cycle.register_state, cpu);
+        //self.operands()
+        //    .capture_pre_execution_state(&mut cycle.register_state, cpu);
         self.execute(cpu, &mut cycle.ram_access);
-        self.operands()
-            .capture_post_execution_state(&mut cycle.register_state, cpu);
-        if let Some(trace_vec) = trace {
-            trace_vec.push(cycle.into());
-        }
+        //self.operands()
+        //    .capture_post_execution_state(&mut cycle.register_state, cpu);
+        //if let Some(trace_vec) = trace {
+        //    trace_vec.push(cycle.into());
+        //}
     }
 }
 
 pub trait VirtualInstructionSequence: RISCVInstruction {
-    fn virtual_sequence(&self) -> Vec<RV32IMInstruction>;
+    fn virtual_sequence(&self, cpu: &Cpu) -> Vec<RV32IMInstruction>;
 }
 
 macro_rules! define_rv32im_enums {
@@ -499,8 +518,10 @@ define_rv32im_enums! {
         // RV64A (Atomic Memory Operations)
         LRD, SCD, AMOSWAPD, AMOADDD, AMOANDD, AMOORD, AMOXORD, AMOMIND, AMOMAXD, AMOMINUD, AMOMAXUD,
         // Virtual
-        VirtualAdvice, VirtualAssertEQ, VirtualAssertHalfwordAlignment, VirtualAssertLTE,
+        VirtualAdvice, VirtualAssertEQ, VirtualAssertHalfwordAlignment, VirtualAssertWordAlignment, VirtualAssertLTE,
         VirtualAssertValidDiv0, VirtualAssertValidSignedRemainder, VirtualAssertValidUnsignedRemainder,
+        VirtualChangeDivisor, VirtualChangeDivisorW, VirtualLW,VirtualSW,VirtualExtend,
+        VirtualSignExtend,VirtualPow2W, VirtualPow2IW,
         VirtualMove, VirtualMovsign, VirtualMULI, VirtualPow2, VirtualPow2I, VirtualROTRI,
         VirtualShiftRightBitmask, VirtualShiftRightBitmaskI,
         VirtualSRA, VirtualSRAI, VirtualSRL, VirtualSRLI,
