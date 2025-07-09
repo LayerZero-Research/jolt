@@ -4,11 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = ["jolt_sha256"]
 guest = []
-jolt_sha256 = ["jolt", "jolt/sha256"]
-sha2_crate = ["sha2"]
 
 [dependencies]
-jolt = { package = "jolt-sdk", path = "../../../jolt-sdk", features = ["sha256"], optional = true }
-sha2 = { version = "0.10", default-features = false, optional = true }
+sha2 = { version = "0.10", default-features = false}
+jolt = { package = "jolt-sdk", path = "../../../jolt-sdk"}
