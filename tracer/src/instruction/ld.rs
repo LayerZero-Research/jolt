@@ -17,7 +17,7 @@ impl LD {
     fn exec(&self, cpu: &mut Cpu, ram_access: &mut <LD as RISCVInstruction>::RAMAccess) {
         // The LD instruction loads a 64-bit value from memory into register rd for RV64I.
         let address =
-            (cpu.x[self.operands.rs1] as u64).wrapping_add(self.operands.imm as i32 as u64);
+            (cpu.x[self.operands.rs1] as u64).wrapping_add(self.operands.imm);
         let value = cpu.get_mut_mmu().load_doubleword(address);
         cpu.x[self.operands.rd] = match value {
             Ok((value, memory_read)) => {

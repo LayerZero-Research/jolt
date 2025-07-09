@@ -8,7 +8,7 @@ use super::RV32IMInstruction;
 use super::VirtualInstructionSequence;
 
 use super::{
-    format::{format_i::FormatI, format_r::FormatR, normalize_imm, InstructionFormat},
+    format::{format_i::FormatI, format_r::FormatR, InstructionFormat},
     RISCVInstruction, RISCVTrace, RV32IMCycle,
 };
 

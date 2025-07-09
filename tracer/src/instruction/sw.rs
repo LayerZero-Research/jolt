@@ -115,7 +115,7 @@ impl SW {
             operands: FormatI {
                 rd: v_address,
                 rs1: self.operands.rs1,
-                imm: self.operands.imm as u32 as u64,
+                imm: self.operands.imm as u64,
             },
             virtual_sequence_remaining: Some(12),
         };
@@ -126,7 +126,7 @@ impl SW {
             operands: FormatI {
                 rd: v_dword_address,
                 rs1: v_address,
-                imm: -8i64 as u32 as u64,
+                imm: -8i64 as u64,
             },
             virtual_sequence_remaining: Some(11),
         };

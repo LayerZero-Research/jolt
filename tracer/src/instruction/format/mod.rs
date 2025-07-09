@@ -54,6 +54,3 @@ pub fn normalize_register_value(value: i64, xlen: &Xlen) -> u64 {
     }
 }
 
-pub fn normalize_imm(imm: u64) -> i64 {
-    imm as i32 as i64
-}
