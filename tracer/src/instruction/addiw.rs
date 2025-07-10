@@ -1,10 +1,15 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{declare_riscv_instr, emulator::cpu::Cpu};
+use crate::{declare_riscv_instr, emulator::cpu::{Cpu, Xlen}};
+
+use super::addi::ADDI;
+use super::virtual_sign_extend::VirtualSignExtend;
+use super::RV32IMInstruction;
+use super::VirtualInstructionSequence;
 
 use super::{
-    format::{format_i::FormatI, normalize_imm, InstructionFormat},
-    RISCVInstruction, RISCVTrace,
+    format::{format_i::FormatI, InstructionFormat},
+    RISCVInstruction, RISCVTrace, RV32IMCycle,
 };
 
 declare_riscv_instr!(
@@ -23,7 +28,7 @@ impl ADDIW {
         // ADDIW rd, rs1, 0 writes the sign extension of the lower 32 bits of register rs1 into
         // register rd (assembler pseudoinstruction SEXT.W).
         cpu.x[self.operands.rd] =
-            cpu.x[self.operands.rs1].wrapping_add(normalize_imm(self.operands.imm)) as i32 as i64;
+            cpu.x[self.operands.rs1].wrapping_add(self.operands.imm as i64) as i32 as i64;
     }
 }
 
