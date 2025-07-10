@@ -40,6 +40,14 @@ pub struct BytecodePreprocessing {
 }
 
 impl BytecodePreprocessing {
+    pub fn get_bytecode(&self) -> &[RV32IMInstruction] {
+        &self.bytecode
+    }
+
+    pub fn get_bytecode_index(&self, index: usize) -> &RV32IMInstruction {
+        &self.bytecode[index]
+    }
+    
     #[tracing::instrument(skip_all, name = "BytecodePreprocessing::preprocess")]
     pub fn preprocess(mut bytecode: Vec<RV32IMInstruction>) -> Self {
         let mut virtual_address_map = BTreeMap::new();
@@ -103,7 +111,7 @@ impl BytecodePreprocessing {
 }
 
 #[tracing::instrument(skip_all)]
-fn bytecode_to_val<F: JoltField>(bytecode: &[RV32IMInstruction], gamma: F) -> Vec<F> {
+pub fn bytecode_to_val<F: JoltField>(bytecode: &[RV32IMInstruction], gamma: F) -> Vec<F> {
     let mut gamma_powers = vec![F::one()];
     for _ in 0..5 {
         gamma_powers.push(gamma * gamma_powers.last().unwrap());

@@ -22,3 +22,4 @@ pub mod poly;
 pub mod r1cs;
 pub mod subprotocols;
 pub mod utils;
+pub mod space_efficient_sumcheck;
