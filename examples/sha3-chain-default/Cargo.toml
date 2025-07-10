@@ -1,5 +1,5 @@
 [package]
-name = "sha2-chain-default"
+name = "sha3-chain-default"
 version = "0.1.0"
 edition = "2021"
 

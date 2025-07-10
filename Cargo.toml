@@ -41,6 +41,8 @@ members = [
     "examples/sha2-chain-default/guest",
     "examples/sha3-chain",
     "examples/sha3-chain/guest",
+    "examples/sha3-chain-default",
+    "examples/sha3-chain-default/guest",
     "examples/multi-function",
     "examples/multi-function/guest",
     "examples/alloc",

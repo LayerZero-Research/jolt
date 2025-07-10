@@ -3594,6 +3594,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha3-chain-default"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "jolt-sdk",
+ "sha3-chain-default-guest",
+]
+
+[[package]]
+name = "sha3-chain-default-guest"
+version = "0.1.0"
+dependencies = [
+ "jolt-sdk",
+ "sha3",
+]
+
+[[package]]
 name = "sha3-chain-guest"
 version = "0.1.0"
 dependencies = [
