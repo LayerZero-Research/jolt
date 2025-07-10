@@ -54,7 +54,7 @@ members = [
     "examples/overflow",
     "examples/overflow/guest",
     "examples/memory-ops",
-    "examples/memory-ops/guest", "inline_benchmark", "inline_trace_benchmark",
+    "examples/memory-ops/guest", "assembly_generator", "proof_trace_generator",
 ]
 
 [features]
