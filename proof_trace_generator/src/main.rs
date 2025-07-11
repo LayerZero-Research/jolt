@@ -44,52 +44,52 @@ fn main() {
             Err(e) => println!("❌ Failed to save trace analysis: {}", e),
         }
 
-        // Continue with proof generation using the original data
-        println!("\n=== STARTING PROOF GENERATION ===");
+        // // Continue with proof generation using the original data
+        // println!("\n=== STARTING PROOF GENERATION ===");
 
-        let preprocessing: JoltProverPreprocessing<Fr, Dory<KeccakTranscript>, KeccakTranscript> =
-            RV32IJoltVM::prover_preprocess(
-                bytecode.clone(),
-                io_device.memory_layout.clone(),
-                init_memory_state,
-                1 << 18,
-                1 << 18,
-                1 << 20,
-            );
+        // let preprocessing: JoltProverPreprocessing<Fr, Dory<KeccakTranscript>, KeccakTranscript> =
+        //     RV32IJoltVM::prover_preprocess(
+        //         bytecode.clone(),
+        //         io_device.memory_layout.clone(),
+        //         init_memory_state,
+        //         1 << 18,
+        //         1 << 18,
+        //         1 << 20,
+        //     );
 
-        let (jolt_proof, program_io, _) =
-            <RV32IJoltVM as Jolt<32, Fr, Dory<KeccakTranscript>, KeccakTranscript>>::prove(
-                io_device,
-                trace,
-                final_memory_state,
-                preprocessing.clone(),
-            );
+        // let (jolt_proof, program_io, _) =
+        //     <RV32IJoltVM as Jolt<32, Fr, Dory<KeccakTranscript>, KeccakTranscript>>::prove(
+        //         io_device,
+        //         trace,
+        //         final_memory_state,
+        //         preprocessing.clone(),
+        //     );
 
-        let verifier_preprocessing =
-            JoltVerifierPreprocessing::<Fr, Dory<KeccakTranscript>, KeccakTranscript>::from(
-                &preprocessing,
-            );
+        // let verifier_preprocessing =
+        //     JoltVerifierPreprocessing::<Fr, Dory<KeccakTranscript>, KeccakTranscript>::from(
+        //         &preprocessing,
+        //     );
 
-        println!("Proof sizing:");
-        serialize_and_print_size("jolt_proof", &jolt_proof);
-        serialize_and_print_size(" jolt_proof.commitments", &jolt_proof.commitments);
-        serialize_and_print_size(" jolt_proof.r1cs", &jolt_proof.r1cs);
-        serialize_and_print_size(" jolt_proof.bytecode", &jolt_proof.bytecode);
-        serialize_and_print_size(" jolt_proof.ram", &jolt_proof.ram);
-        serialize_and_print_size(" jolt_proof.registers", &jolt_proof.registers);
-        serialize_and_print_size(
-            " jolt_proof.instruction_lookups",
-            &jolt_proof.instruction_lookups,
-        );
-        serialize_and_print_size(" jolt_proof.opening_proof", &jolt_proof.opening_proof);
+        // println!("Proof sizing:");
+        // serialize_and_print_size("jolt_proof", &jolt_proof);
+        // serialize_and_print_size(" jolt_proof.commitments", &jolt_proof.commitments);
+        // serialize_and_print_size(" jolt_proof.r1cs", &jolt_proof.r1cs);
+        // serialize_and_print_size(" jolt_proof.bytecode", &jolt_proof.bytecode);
+        // serialize_and_print_size(" jolt_proof.ram", &jolt_proof.ram);
+        // serialize_and_print_size(" jolt_proof.registers", &jolt_proof.registers);
+        // serialize_and_print_size(
+        //     " jolt_proof.instruction_lookups",
+        //     &jolt_proof.instruction_lookups,
+        // );
+        // serialize_and_print_size(" jolt_proof.opening_proof", &jolt_proof.opening_proof);
 
-        let verification_result =
-            RV32IJoltVM::verify(verifier_preprocessing, jolt_proof, program_io, None);
-        assert!(
-            verification_result.is_ok(),
-            "Verification failed with error: {:?}",
-            verification_result.err()
-        );
+        // let verification_result =
+        //     RV32IJoltVM::verify(verifier_preprocessing, jolt_proof, program_io, None);
+        // assert!(
+        //     verification_result.is_ok(),
+        //     "Verification failed with error: {:?}",
+        //     verification_result.err()
+        // );
     };
 
     tasks.push((
