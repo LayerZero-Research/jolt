@@ -1,0 +1,15 @@
+[package]
+name = "inline_benchmark"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["inline_sha2_hasher"]
+sha2_hasher = ["sha2"]
+inline_sha2_hasher = ["inline_sha2"]
+sha3_hasher = ["sha3"]
+
+[dependencies]
+sha2 = { version = "0.10", default-features = false, optional = true }
+sha3 = { version = "0.10", default-features = false, optional = true }
+inline_sha2 = { package = "jolt-sdk", path = "../jolt-sdk", features = ["sha256"], optional = true }

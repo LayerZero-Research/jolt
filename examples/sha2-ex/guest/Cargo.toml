@@ -7,4 +7,5 @@ edition = "2021"
 guest = []
 
 [dependencies]
+#sha2 = { version = "0.10", default-features = false}
 jolt = { package = "jolt-sdk", path = "../../../jolt-sdk", features = ["sha256"] }

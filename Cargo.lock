@@ -1949,6 +1949,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "inline_benchmark"
+version = "0.1.0"
+dependencies = [
+ "jolt-sdk",
+ "sha2",
+ "sha3",
+]
+
+[[package]]
+name = "inline_trace_benchmark"
+version = "0.1.0"
+dependencies = [
+ "ark-bn254",
+ "ark-serialize 0.5.0",
+ "ark-serialize-derive 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "ark-std 0.5.0",
+ "bincode",
+ "jolt-core",
+ "postcard",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "tracer",
+ "tracing",
+ "tracing-chrome",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "io-uring"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2129,9 +2158,11 @@ dependencies = [
  "ark-bn254",
  "ark-ec",
  "common",
+ "hex-literal",
  "jolt-core",
  "jolt-sdk-macros",
  "postcard",
+ "sha3",
  "tracer",
 ]
 
@@ -3496,6 +3527,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha2-chain-default"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "jolt-sdk",
+ "sha2-chain-default-guest",
+]
+
+[[package]]
+name = "sha2-chain-default-guest"
+version = "0.1.0"
+dependencies = [
+ "jolt-sdk",
+ "sha2",
+]
+
+[[package]]
 name = "sha2-chain-guest"
 version = "0.1.0"
 dependencies = [
@@ -3545,6 +3593,23 @@ dependencies = [
  "hex",
  "jolt-sdk",
  "sha3-chain-guest",
+]
+
+[[package]]
+name = "sha3-chain-default"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "jolt-sdk",
+ "sha3-chain-default-guest",
+]
+
+[[package]]
+name = "sha3-chain-default-guest"
+version = "0.1.0"
+dependencies = [
+ "jolt-sdk",
+ "sha3",
 ]
 
 [[package]]
@@ -4018,6 +4083,7 @@ dependencies = [
  "common",
  "derive_more 2.0.1",
  "fnv",
+ "hex-literal",
  "itertools 0.10.5",
  "object",
  "paste",

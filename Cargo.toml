@@ -37,8 +37,12 @@ members = [
     "examples/sha3-ex/guest",
     "examples/sha2-chain",
     "examples/sha2-chain/guest",
+    "examples/sha2-chain-default",
+    "examples/sha2-chain-default/guest",
     "examples/sha3-chain",
     "examples/sha3-chain/guest",
+    "examples/sha3-chain-default",
+    "examples/sha3-chain-default/guest",
     "examples/multi-function",
     "examples/multi-function/guest",
     "examples/alloc",
@@ -50,7 +54,7 @@ members = [
     "examples/overflow",
     "examples/overflow/guest",
     "examples/memory-ops",
-    "examples/memory-ops/guest",
+    "examples/memory-ops/guest", "assembly_generator", "proof_trace_generator",
 ]
 
 [features]
