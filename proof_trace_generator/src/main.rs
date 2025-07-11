@@ -44,7 +44,7 @@ fn main() {
             Err(e) => println!("❌ Failed to save trace analysis: {}", e),
         }
 
-        // // Continue with proof generation using the original data
+        // Continue with proof generation using the original data
         // println!("\n=== STARTING PROOF GENERATION ===");
 
         // let preprocessing: JoltProverPreprocessing<Fr, Dory<KeccakTranscript>, KeccakTranscript> =
