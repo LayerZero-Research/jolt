@@ -1,9 +1,5 @@
 use ark_bn254::Fr;
 use jolt_core::host;
-use jolt_core::jolt::vm::rv32i_vm::RV32IJoltVM;
-use jolt_core::jolt::vm::{Jolt, JoltProverPreprocessing, JoltVerifierPreprocessing};
-use jolt_core::poly::commitment::dory::DoryCommitmentScheme as Dory;
-use jolt_core::utils::transcript::KeccakTranscript;
 
 #[allow(dead_code)]
 fn serialize_and_print_size(name: &str, item: &impl ark_serialize::CanonicalSerialize) {
@@ -30,14 +26,14 @@ fn main() {
     let mut program = host::Program::new(guest_name);
     let mut inputs = vec![];
     inputs.append(&mut postcard::to_stdvec(&[5u8; 32]).unwrap());
-    inputs.append(&mut postcard::to_stdvec(&1u32).unwrap());
+    inputs.append(&mut postcard::to_stdvec(&100u32).unwrap());
 
     let task = move || {
         let (trace, final_memory_state, io_device) = program.trace(&inputs);
         let (bytecode, init_memory_state) = program.decode();
         let result = program.trace_analyze::<Fr>(&inputs);
 
-        let filename = format!("{}_trace.txt", guest_name);
+        let filename = format!("{}_RV64_trace.txt", guest_name);
         // Write trace analysis to file
         match result.write_trace_analysis::<Fr>(&filename) {
             Ok(_) => println!("✅ Saved complete trace analysis to: {}", filename),
