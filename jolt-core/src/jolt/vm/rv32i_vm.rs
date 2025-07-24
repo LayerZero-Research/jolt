@@ -1,7 +1,7 @@
 use crate::field::JoltField;
-use crate::poly::commitment::hyperkzg::HyperKZG;
+use crate::poly::commitment::dory::DoryCommitmentScheme;
 use crate::r1cs::constraints::JoltRV32IMConstraints;
-use ark_bn254::{Bn254, Fr};
+use ark_bn254::Fr;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 
 use super::{Jolt, JoltProof};
@@ -66,7 +66,7 @@ pub trait Serializable: CanonicalSerialize + CanonicalDeserialize + Sized {
 }
 
 pub type ProofTranscript = KeccakTranscript;
-pub type PCS = HyperKZG<Bn254, ProofTranscript>;
+pub type PCS = DoryCommitmentScheme<ProofTranscript>;
 #[derive(CanonicalSerialize, CanonicalDeserialize, Clone)]
 pub struct JoltHyperKZGProof {
     pub proof: RV32IJoltProof<Fr, PCS, ProofTranscript>,
