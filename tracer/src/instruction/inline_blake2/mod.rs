@@ -469,9 +469,7 @@ impl Blake2SequenceBuilder {
 #[rustfmt::skip]
 pub fn execute_blake2b_compression(
     state: &mut [u64; 8],
-    message_words: &[u64; 16],
-    counter: u64,
-    is_final: bool,
+    message_words: &[u64; 18],
 ) {
     // Use the host implementation for compression
     use crate::instruction::inline_blake2::{BLAKE2B_IV, SIGMA};
@@ -482,11 +480,11 @@ pub fn execute_blake2b_compression(
     v[8..16].copy_from_slice(&BLAKE2B_IV);
 
     // Blake2b counter handling: XOR counter values with v[12] and v[13]
-    v[12] ^= counter; // counter_low
+    v[12] ^= message_words[16]; // counter_low
                       // v[13] ^= counter.shr(64) as u64;  // counter_high
 
     // Set final block flag if this is the last block
-    if is_final {
+    if message_words[17] != 0 {
         v[14] = !v[14]; // Invert v[14] for final block
     }
 

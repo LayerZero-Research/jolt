@@ -1,12 +1,17 @@
 //! Blake2b hash function optimized for Jolt zkVM.
 //!
-//! Uses custom RISC-V instruction on guest, tracer implementation on host.
+//! This implementation provides:
+//! - Custom RISC-V instruction support for guest execution
+//! - Reference implementation for host execution  
+//! - Streaming interface for large inputs
 
-const BLOCK_SIZE: usize = 128; // Blake2b block size in bytes
-const BLOCK_SIZE_U64: usize = BLOCK_SIZE / 8; // 16 words
-const STATE_SIZE: usize = 64; // Blake2b state size in bytes
-const STATE_SIZE_U64: usize = STATE_SIZE / 8; // 8 words
+// Blake2b constants
+const BLOCK_SIZE: usize = 128;
+const BLOCK_SIZE_U64: usize = 16; // BLOCK_SIZE / 8
+const STATE_SIZE: usize = 64;
+const STATE_SIZE_U64: usize = 8; // STATE_SIZE / 8
 const OUTPUT_SIZE: usize = 64;
+const MAX_OUTPUT_SIZE: usize = 64;
 
 /// Blake2b initialization vector (IV)
 #[rustfmt::skip]
@@ -17,30 +22,32 @@ const BLAKE2B_IV: [u64; 8] = [
     0x1f83d9abfb41bd6b, 0x5be0cd19137e2179,
 ];
 
-/// Blake2b hasher state for variable output lengths.
+/// Blake2b hasher state for streaming operation.
 pub struct Blake2b {
-    /// The 8-word (64-byte) Blake2b hash state.
+    /// Hash state (8 x 64-bit words)
     h: [u64; STATE_SIZE_U64],
-    /// Buffer for incomplete blocks.
+    /// Buffer for incomplete blocks
     buffer: [u8; BLOCK_SIZE],
-    /// Number of bytes in the buffer.
+    /// Current buffer length
     buffer_len: usize,
-    /// Total number of bytes processed.
+    /// Total bytes processed
     counter: u64,
 }
 
 impl Blake2b {
     /// Creates a new Blake2b hasher with specified output length.
-    #[inline(always)]
+    ///
+    /// # Panics
+    /// Panics if `output_len` is 0 or greater than 64.
     pub fn new(output_len: usize) -> Self {
-        assert!(output_len > 0 && output_len <= 64, "Invalid output length");
+        assert!(
+            output_len > 0 && output_len <= MAX_OUTPUT_SIZE,
+            "Output length must be between 1 and {MAX_OUTPUT_SIZE} bytes, got {output_len}"
+        );
 
-        // Blake2b initialization vector
         let mut h = BLAKE2B_IV;
-
-        // XOR h[0] with parameter block: 0x01010000 ^ (kk << 8) ^ nn
-        // where kk=0 (unkeyed) and nn=output_len
         h[0] ^= 0x01010000 ^ (output_len as u64);
+
         Self {
             h,
             buffer: [0; BLOCK_SIZE],
@@ -49,67 +56,25 @@ impl Blake2b {
         }
     }
 
-    /// Writes data to the hasher.
-    #[inline(always)]
+    /// Processes input data incrementally.
     pub fn update(&mut self, input: &[u8]) {
-        if input.len() == 0 {
+        if input.is_empty() {
             return;
         }
-        // If the buffer was filled to exactly BLOCK_SIZE in a previous update() call,
-        // we deferred compression to determine if it was the final block. Since we're
-        // receiving more data, we can now safely compress it as a non-final block.
-        if self.buffer_len == BLOCK_SIZE {
-            self.counter += BLOCK_SIZE as u64;
-            compression_caller(&mut self.h, &self.buffer, self.counter, false);
-            self.buffer_len = 0;
-        }
-
-        // Track the current position in the input data which is not compressed or stored to buffer
-        let mut offset = 0;
-        // If there is existing data in the buffer, fill it first before processing complete blocks
-        if self.buffer_len > 0 {
-            let space_available = BLOCK_SIZE - self.buffer_len;
-            let bytes_to_copy = space_available.min(input.len());
-            self.buffer[self.buffer_len..self.buffer_len + bytes_to_copy]
-                .copy_from_slice(&input[..bytes_to_copy]);
-            self.buffer_len += bytes_to_copy;
-            offset = bytes_to_copy;
-        }
-
-        // If the buffer is now full and there is more input data to process,
-        // compress the buffer as a non-final block since we know more data follows
-        if self.buffer_len == BLOCK_SIZE && offset < input.len() {
-            self.counter += BLOCK_SIZE as u64;
-            compression_caller(&mut self.h, &self.buffer, self.counter, false);
-            self.buffer_len = 0;
-        }
-
-        // Process complete blocks directly from the input data for efficiency
-        while offset + BLOCK_SIZE < input.len() {
-            self.counter += BLOCK_SIZE as u64;
-            compression_caller(
-                &mut self.h,
-                &input[offset..offset + BLOCK_SIZE],
-                self.counter,
-                false,
-            );
-            offset += BLOCK_SIZE;
-        }
-
-        // Store any remaining bytes in the buffer for processing later
-        let remaining = input.len() - offset;
-        if remaining > 0 {
-            self.buffer[..remaining].copy_from_slice(&input[offset..]);
-            self.buffer_len = remaining;
+        for char in input {
+            if self.buffer_len == 128 {
+                self.counter += BLOCK_SIZE as u64;
+                compression_caller(&mut self.h, &self.buffer, self.counter, false);
+                self.buffer_len = 0;
+            }
+            self.buffer[self.buffer_len] = *char;
+            self.buffer_len += 1;
         }
     }
 
-    /// Reads hash digest and consumes the hasher.
-    #[inline(always)]
+    /// Finalizes the hash and returns the digest.
     pub fn finalize(mut self) -> [u8; OUTPUT_SIZE] {
-        // Add remaining bytes to counter
         self.counter += self.buffer_len as u64;
-        // Pad buffer with zeros
         self.buffer[self.buffer_len..].fill(0);
         // Process final block
         compression_caller(&mut self.h, &self.buffer, self.counter, true);
@@ -122,8 +87,7 @@ impl Blake2b {
         hash
     }
 
-    /// Computes Blake2b hash of the input data in one call.
-    #[inline(always)]
+    /// Computes Blake2b hash in one call.
     pub fn digest(input: &[u8]) -> [u8; OUTPUT_SIZE] {
         let mut hasher = Self::new(OUTPUT_SIZE);
         hasher.update(input);
@@ -138,78 +102,65 @@ fn compression_caller(
     is_final: bool,
 ) {
     // Convert buffer to u64 words
-    let mut message = [0u64; BLOCK_SIZE_U64];
+    let mut message = [0u64; BLOCK_SIZE_U64 + 2];
     for i in 0..BLOCK_SIZE_U64 {
         message[i] = u64::from_le_bytes(message_block[i * 8..(i + 1) * 8].try_into().unwrap());
     }
 
+    message[16] = counter;
+    message[17] = is_final as u64;
+
     unsafe {
-        blake2b_compress(
-            hash_state.as_mut_ptr(),
-            message.as_ptr(),
-            counter,
-            is_final as u64, // final
-        );
+        blake2b_compress(hash_state.as_mut_ptr(), message.as_ptr());
     }
 }
 
 impl Default for Blake2b {
     fn default() -> Self {
-        Self::new(64)
+        Self::new(OUTPUT_SIZE)
     }
 }
 
-/// Calls the Blake2b compression custom instruction.
-///
-/// # Arguments
-/// * `state` - Pointer to the 8-word (64-byte) Blake2b state
-/// * `message` - Pointer to the 16-word (128-byte) message block
-/// * `counter` - Counter value (number of bytes processed)
-/// * `is_final` - Final block flag (1 if final, 0 otherwise)
+/// Blake2b compression function - guest implementation.
 ///
 /// # Safety
-/// - `state` must be a valid pointer to 64 bytes of readable and writable memory.
-/// - `message` must be a valid pointer to 128 bytes of readable memory.
-/// - Both pointers must be properly aligned for u64 access (8-byte alignment).
+/// - `state` must point to a valid array of 8 u64 values
+/// - `message` must point to a valid array of 18 u64 values (16 message + counter + final flag)
+/// - Both pointers must be properly aligned for u64 access
 #[cfg(not(feature = "host"))]
-pub unsafe fn blake2b_compress(state: *mut u64, message: *const u64, counter: u64, is_final: u64) {
+pub unsafe fn blake2b_compress(state: *mut u64, message: *const u64) {
     // Memory layout for Blake2 instruction:
     // rs1: points to state (64 bytes)
     // rs2: points to message block (128 bytes) + counter (8 bytes) + final flag (8 bytes)
-
-    // We need to set up memory with the message block followed by counter and final flag
-    let mut block_data = [0u64; 18]; // 16 words message + 1 word counter + 1 word final
-
-    // Copy message
-    core::ptr::copy_nonoverlapping(message, block_data.as_mut_ptr(), 16);
-    // Set counter and final flag
-    block_data[16] = counter;
-    block_data[17] = is_final;
 
     // Call Blake2 instruction using funct7=0x02 to distinguish from Keccak (0x01) and SHA-256 (0x00)
     core::arch::asm!(
         ".insn r 0x0B, 0x0, 0x02, x0, {}, {}",
         in(reg) state,
-        in(reg) block_data.as_ptr(),
+        in(reg) message,
         options(nostack)
     );
 }
 
+/// Blake2b compression function - host implementation.
+///
+/// # Safety  
+/// - `state` must point to a valid array of 8 u64 values
+/// - `message` must point to a valid array of 18 u64 values
 #[cfg(feature = "host")]
-pub unsafe fn blake2b_compress(state: *mut u64, message: *const u64, counter: u64, is_final: u64) {
-    // On the host, we call our reference implementation from the tracer crate.
+pub unsafe fn blake2b_compress(state: *mut u64, message: *const u64) {
     let state_slice = core::slice::from_raw_parts_mut(state, 8);
-    let message_slice = core::slice::from_raw_parts(message, 16);
-    let message_array: [u64; 16] = message_slice
-        .try_into()
-        .expect("Message slice was not 16 words");
+    let message_slice = core::slice::from_raw_parts(message, 18);
 
-    tracer::instruction::inline_blake2::execute_blake2b_compression(
-        state_slice.try_into().expect("State slice was not 8 words"),
-        &message_array,
-        counter,
-        is_final != 0,
-    );
+    // Convert to arrays for type safety
+    let state_array: &mut [u64; 8] = state_slice
+        .try_into()
+        .expect("State pointer must reference exactly 8 u64 values");
+    let message_array: [u64; 18] = message_slice
+        .try_into()
+        .expect("Message pointer must reference exactly 18 u64 values");
+
+    tracer::instruction::inline_blake2::execute_blake2b_compression(state_array, &message_array);
 }
 
 #[cfg(test)]

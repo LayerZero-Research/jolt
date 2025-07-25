@@ -58,12 +58,12 @@ impl BLAKE2 {
         load_words_from_memory(cpu, state_addr, &mut state).expect("Failed to load hash state");
 
         // Read 16-word message block
-        let mut message_words = [0u64; MESSAGE_BLOCK_SIZE];
+        let mut message_words = [0u64; MESSAGE_BLOCK_SIZE + 2];
         load_words_from_memory(cpu, block_addr, &mut message_words)
             .expect("Failed to load message block");
 
         // Load counter value after message block
-        let counter = {
+        message_words[16] = {
             let mut buffer = [0];
             load_words_from_memory(
                 cpu,
@@ -75,7 +75,7 @@ impl BLAKE2 {
         };
 
         // Load final block flag after counter
-        let is_final = {
+        message_words[17] = {
             let mut buffer = [0];
             load_words_from_memory(
                 cpu,
@@ -83,11 +83,11 @@ impl BLAKE2 {
                 &mut buffer,
             )
             .expect("Failed to load final flag");
-            buffer[0] != 0
+            buffer[0]
         };
 
         // Execute Blake2b compression
-        execute_blake2b_compression(&mut state, &message_words, counter, is_final);
+        execute_blake2b_compression(&mut state, &message_words);
 
         // Write result back to memory
         store_words_to_memory(cpu, state_addr, &state).expect("Failed to store result");
