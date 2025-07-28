@@ -92,8 +92,13 @@ use sw::SW;
 use xor::XOR;
 use xori::XORI;
 
+use inline_blake2::blake2::BLAKE2;
+use inline_blake3::blake3::BLAKE3;
+use inline_blake3::blake3_hash_modes::{BLAKE3_128, BLAKE3_192, BLAKE3_256, BLAKE3_64};
+use inline_keccak256::keccak256::KECCAK256;
 use inline_sha256::sha256::SHA256;
 use inline_sha256::sha256init::SHA256INIT;
+
 use virtual_advice::VirtualAdvice;
 use virtual_assert_eq::VirtualAssertEQ;
 use virtual_assert_halfword_alignment::VirtualAssertHalfwordAlignment;
@@ -107,13 +112,15 @@ use virtual_muli::VirtualMULI;
 use virtual_pow2::VirtualPow2;
 use virtual_pow2i::VirtualPow2I;
 use virtual_rotri::VirtualROTRI;
+use virtual_rotril::VirtualROTRIL;
 use virtual_shift_right_bitmask::VirtualShiftRightBitmask;
 use virtual_shift_right_bitmaski::VirtualShiftRightBitmaskI;
 use virtual_sra::VirtualSRA;
 use virtual_srai::VirtualSRAI;
 use virtual_srl::VirtualSRL;
 use virtual_srli::VirtualSRLI;
-
+use virtual_xor_rot::{VirtualROTXOR12L, VirtualROTXOR16L, VirtualROTXOR7L, VirtualROTXOR8L};
+use virtual_xor_rot::{VirtualROTXOR16, VirtualROTXOR24, VirtualROTXOR32, VirtualROTXOR63};
 use crate::emulator::cpu::Cpu;
 use derive_more::From;
 use format::{InstructionFormat, InstructionRegisterState, NormalizedOperands};
@@ -157,6 +164,9 @@ pub mod div;
 pub mod divu;
 pub mod ecall;
 pub mod fence;
+pub mod inline_blake2;
+pub mod inline_blake3;
+pub mod inline_keccak256;
 pub mod inline_sha256;
 pub mod jal;
 pub mod jalr;
@@ -215,12 +225,14 @@ pub mod virtual_muli;
 pub mod virtual_pow2;
 pub mod virtual_pow2i;
 pub mod virtual_rotri;
+pub mod virtual_rotril;
 pub mod virtual_shift_right_bitmask;
 pub mod virtual_shift_right_bitmaski;
 pub mod virtual_sra;
 pub mod virtual_srai;
 pub mod virtual_srl;
 pub mod virtual_srli;
+pub mod virtual_xor_rot;
 pub mod xor;
 pub mod xori;
 
@@ -501,11 +513,15 @@ define_rv32im_enums! {
         // Virtual
         VirtualAdvice, VirtualAssertEQ, VirtualAssertHalfwordAlignment, VirtualAssertLTE,
         VirtualAssertValidDiv0, VirtualAssertValidSignedRemainder, VirtualAssertValidUnsignedRemainder,
-        VirtualMove, VirtualMovsign, VirtualMULI, VirtualPow2, VirtualPow2I, VirtualROTRI,
+        VirtualMove, VirtualMovsign, VirtualMULI, VirtualPow2, VirtualPow2I, VirtualROTRI, VirtualROTRIL,
+        VirtualROTXOR16L, VirtualROTXOR12L, VirtualROTXOR8L, VirtualROTXOR7L,
+        VirtualROTXOR32, VirtualROTXOR24, VirtualROTXOR16, VirtualROTXOR63,
         VirtualShiftRightBitmask, VirtualShiftRightBitmaskI,
         VirtualSRA, VirtualSRAI, VirtualSRL, VirtualSRLI,
         // Extension
         SHA256, SHA256INIT,
+        KECCAK256, BLAKE2,
+        BLAKE3, BLAKE3_64, BLAKE3_128, BLAKE3_192, BLAKE3_256,
     ]
 }
 
@@ -791,18 +807,48 @@ impl RV32IMInstruction {
             // while funct3 should hold all necessary instructions for that operation.
             // funct7:
             // - 0x00: SHA256
+            // - 0x01: Keccak
+            // - 0x02: Blake2
+            // - 0x03: Blake3
             0b0001011 => {
                 // Custom-0 opcode: SHA256 compression instructions
                 let funct3 = (instr >> 12) & 0x7;
                 let funct7 = (instr >> 25) & 0x7f;
-                if funct7 == 0x00 {
-                    match funct3 {
-                        0x0 => Ok(SHA256::new(instr, address, true).into()),
-                        0x1 => Ok(SHA256INIT::new(instr, address, true).into()),
-                        _ => Err("Unknown funct3 for custom SHA256 instruction"),
+                match funct7 {
+                    0x00 => {
+                        // SHA256
+                        match funct3 {
+                            0x0 => Ok(SHA256::new(instr, address, true).into()),
+                            0x1 => Ok(SHA256INIT::new(instr, address, true).into()),
+                            _ => Err("Unknown funct3 for custom SHA256 instruction"),
+                        }
                     }
-                } else {
-                    Err("Unknown funct7 for custom-0 opcode")
+                    0x01 => {
+                        // Keccak
+                        match funct3 {
+                            0x0 => Ok(KECCAK256::new(instr, address, true).into()),
+                            _ => Err("Unknown funct3 for custom Keccak instruction"),
+                        }
+                    }
+                    0x02 => {
+                        // Blake2
+                        match funct3 {
+                            0x0 => Ok(BLAKE2::new(instr, address, true).into()),
+                            _ => Err("Unknown funct3 for custom Blake2 instruction"),
+                        }
+                    }
+                    0x03 => {
+                        // Blake3
+                        match funct3 {
+                            0x0 => Ok(BLAKE3::new(instr, address, true).into()),
+                            0x2 => Ok(BLAKE3_64::new(instr, address, true).into()),
+                            0x3 => Ok(BLAKE3_128::new(instr, address, true).into()),
+                            0x4 => Ok(BLAKE3_192::new(instr, address, true).into()),
+                            0x5 => Ok(BLAKE3_256::new(instr, address, true).into()),
+                            _ => Err("Unknown funct3 for custom Blake3 instruction"),
+                        }
+                    }
+                    _ => Err("Unknown funct7 for custom-0 opcode"),
                 }
             }
             _ => Err("Unknown opcode"),

@@ -32,6 +32,11 @@ pub mod toolchain;
 
 pub const DEFAULT_TARGET_DIR: &str = "/tmp/jolt-guest-targets";
 
+#[cfg(all(feature = "rv32", feature = "rv64"))]
+compile_error!("Cannot enable both rv32 and rv64 features");
+#[cfg(not(any(feature = "rv32", feature = "rv64")))]
+compile_error!("Must enable either rv32 or rv64 feature");
+
 #[derive(Clone)]
 pub struct Program {
     guest: String,
@@ -108,7 +113,13 @@ impl Program {
             let toolchain = if self.std {
                 "riscv32im-jolt-zkvm-elf"
             } else {
-                "riscv32im-unknown-none-elf"
+                if cfg!(feature = "rv64") {
+                    println!("target: {}", "riscv64imac-unknown-none-elf");
+                    "riscv64imac-unknown-none-elf"
+                } else {
+                    println!("target: {}", "riscv32im-unknown-none-elf");
+                    "riscv32im-unknown-none-elf"
+                }
             };
 
             let mut envs = vec![("CARGO_ENCODED_RUSTFLAGS", rust_flags.join("\x1f"))];
@@ -187,6 +198,8 @@ impl Program {
                 RV32IMInstruction::SRLI(srli) => srli.virtual_sequence(),
                 RV32IMInstruction::SHA256(sha256) => sha256.virtual_sequence(),
                 RV32IMInstruction::SHA256INIT(sha256init) => sha256init.virtual_sequence(),
+                RV32IMInstruction::KECCAK256(keccak256) => keccak256.virtual_sequence(),
+                RV32IMInstruction::BLAKE2(blake2) => blake2.virtual_sequence(),
                 _ => vec![instr],
             })
             .collect();
