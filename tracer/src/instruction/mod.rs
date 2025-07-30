@@ -23,6 +23,7 @@ use amoxord::AMOXORD;
 use amoxorw::AMOXORW;
 use and::AND;
 use andi::ANDI;
+use andn::ANDN;
 use ark_serialize::{
     CanonicalDeserialize, CanonicalSerialize, Compress, SerializationError, Valid, Validate,
 };
@@ -92,8 +93,10 @@ use sw::SW;
 use xor::XOR;
 use xori::XORI;
 
+use inline_keccak256::keccak256::KECCAK256;
 use inline_sha256::sha256::SHA256;
 use inline_sha256::sha256init::SHA256INIT;
+
 use virtual_advice::VirtualAdvice;
 use virtual_assert_eq::VirtualAssertEQ;
 use virtual_assert_halfword_alignment::VirtualAssertHalfwordAlignment;
@@ -146,6 +149,7 @@ pub mod amoxord;
 pub mod amoxorw;
 pub mod and;
 pub mod andi;
+pub mod andn;
 pub mod auipc;
 pub mod beq;
 pub mod bge;
@@ -157,6 +161,7 @@ pub mod div;
 pub mod divu;
 pub mod ecall;
 pub mod fence;
+pub mod inline_keccak256;
 pub mod inline_sha256;
 pub mod jal;
 pub mod jalr;
@@ -349,7 +354,7 @@ macro_rules! define_rv32im_enums {
         #[derive(Debug, IntoStaticStr, From, Clone, Serialize, Deserialize)]
         pub enum RV32IMInstruction {
             /// No-operation instruction (address)
-            NoOp(usize),
+            NoOp,
             UNIMPL,
             $(
                 $instr($instr),
@@ -361,7 +366,7 @@ macro_rules! define_rv32im_enums {
         )]
         pub enum RV32IMCycle {
             /// No-operation cycle (address)
-            NoOp(usize),
+            NoOp,
             $(
                 $instr(RISCVCycle<$instr>),
             )*
@@ -370,7 +375,7 @@ macro_rules! define_rv32im_enums {
         impl RV32IMCycle {
             pub fn ram_access(&self) -> RAMAccess {
                 match self {
-                    RV32IMCycle::NoOp(_) => RAMAccess::NoOp,
+                    RV32IMCycle::NoOp => RAMAccess::NoOp,
                     $(
                         RV32IMCycle::$instr(cycle) => cycle.ram_access.into(),
                     )*
@@ -379,7 +384,7 @@ macro_rules! define_rv32im_enums {
 
             pub fn rs1_read(&self) -> (usize, u64) {
                 match self {
-                    RV32IMCycle::NoOp(_) => (0, 0),
+                    RV32IMCycle::NoOp => (0, 0),
                     $(
                         RV32IMCycle::$instr(cycle) => (
                             cycle.instruction.operands.normalize().rs1,
@@ -391,7 +396,7 @@ macro_rules! define_rv32im_enums {
 
             pub fn rs2_read(&self) -> (usize, u64) {
                 match self {
-                    RV32IMCycle::NoOp(_) => (0, 0),
+                    RV32IMCycle::NoOp => (0, 0),
                     $(
                         RV32IMCycle::$instr(cycle) => (
                             cycle.instruction.operands.normalize().rs2,
@@ -403,7 +408,7 @@ macro_rules! define_rv32im_enums {
 
             pub fn rd_write(&self) -> (usize, u64, u64) {
                 match self {
-                    RV32IMCycle::NoOp(_) => (0, 0, 0),
+                    RV32IMCycle::NoOp => (0, 0, 0),
                     $(
                         RV32IMCycle::$instr(cycle) => (
                             cycle.instruction.operands.normalize().rd,
@@ -416,7 +421,7 @@ macro_rules! define_rv32im_enums {
 
             pub fn instruction(&self) -> RV32IMInstruction {
                 match self {
-                    RV32IMCycle::NoOp(address) => RV32IMInstruction::NoOp(*address),
+                    RV32IMCycle::NoOp => RV32IMInstruction::NoOp,
                     $(
                         RV32IMCycle::$instr(cycle) => cycle.instruction.into(),
                     )*
@@ -427,7 +432,7 @@ macro_rules! define_rv32im_enums {
         impl RV32IMInstruction {
             pub fn trace(&self, cpu: &mut Cpu, trace: Option<&mut Vec<RV32IMCycle>>) {
                 match self {
-                    RV32IMInstruction::NoOp(_) => panic!("Unsupported instruction: {:?}", self),
+                    RV32IMInstruction::NoOp => panic!("Unsupported instruction: {:?}", self),
                     RV32IMInstruction::UNIMPL => panic!("Unsupported instruction: {:?}", self),
                     $(
                         RV32IMInstruction::$instr(instr) => instr.trace(cpu, trace),
@@ -437,7 +442,7 @@ macro_rules! define_rv32im_enums {
 
             pub fn execute(&self, cpu: &mut Cpu) {
                 match self {
-                    RV32IMInstruction::NoOp(_) => panic!("Unsupported instruction: {:?}", self),
+                    RV32IMInstruction::NoOp => panic!("Unsupported instruction: {:?}", self),
                     RV32IMInstruction::UNIMPL => panic!("Unsupported instruction: {:?}", self),
                     $(
                         RV32IMInstruction::$instr(instr) => {
@@ -454,12 +459,7 @@ macro_rules! define_rv32im_enums {
 
             pub fn normalize(&self) -> NormalizedInstruction {
                 match self {
-                    RV32IMInstruction::NoOp(address) => {
-                        NormalizedInstruction {
-                            address: *address,
-                            ..Default::default()
-                        }
-                    },
+                    RV32IMInstruction::NoOp => Default::default(),
                     RV32IMInstruction::UNIMPL => Default::default(),
                     $(
                         RV32IMInstruction::$instr(instr) => NormalizedInstruction {
@@ -473,7 +473,7 @@ macro_rules! define_rv32im_enums {
 
             pub fn set_virtual_sequence_remaining(&mut self, remaining: Option<usize>) {
                 match self {
-                    RV32IMInstruction::NoOp(_) => (),
+                    RV32IMInstruction::NoOp => (),
                     RV32IMInstruction::UNIMPL => (),
                     $(
                         RV32IMInstruction::$instr(instr) => {instr.virtual_sequence_remaining = remaining;}
@@ -486,7 +486,7 @@ macro_rules! define_rv32im_enums {
 
 define_rv32im_enums! {
     instructions: [
-        ADD, ADDI, AND, ANDI, AUIPC, BEQ, BGE, BGEU, BLT, BLTU, BNE, DIV, DIVU,
+        ADD, ADDI, AND, ANDI, ANDN, AUIPC, BEQ, BGE, BGEU, BLT, BLTU, BNE, DIV, DIVU,
         ECALL, FENCE, JAL, JALR, LB, LBU, LD, LH, LHU, LUI, LW, MUL, MULH, MULHSU,
         MULHU, OR, ORI, REM, REMU, SB, SD, SH, SLL, SLLI, SLT, SLTI, SLTIU, SLTU,
         SRA, SRAI, SRL, SRLI, SUB, SW, XOR, XORI,
@@ -506,6 +506,7 @@ define_rv32im_enums! {
         VirtualSRA, VirtualSRAI, VirtualSRL, VirtualSRLI,
         // Extension
         SHA256, SHA256INIT,
+        KECCAK256,
     ]
 }
 
@@ -557,7 +558,7 @@ impl Valid for RV32IMInstruction {
 impl RV32IMInstruction {
     pub fn is_real(&self) -> bool {
         // ignore no-op
-        if matches!(self, RV32IMInstruction::NoOp(_)) {
+        if matches!(self, RV32IMInstruction::NoOp) {
             return false;
         }
 
@@ -685,6 +686,7 @@ impl RV32IMInstruction {
                     (0b101, 0b0100000) => Ok(SRA::new(instr, address, true).into()),
                     (0b110, 0b0000000) => Ok(OR::new(instr, address, true).into()),
                     (0b111, 0b0000000) => Ok(AND::new(instr, address, true).into()),
+                    (0b111, 0b0100000) => Ok(ANDN::new(instr, address, true).into()),
                     // RV32M extension
                     (0b000, 0b0000001) => Ok(MUL::new(instr, address, true).into()),
                     (0b001, 0b0000001) => Ok(MULH::new(instr, address, true).into()),
@@ -791,18 +793,28 @@ impl RV32IMInstruction {
             // while funct3 should hold all necessary instructions for that operation.
             // funct7:
             // - 0x00: SHA256
+            // - 0x01: Keccak
             0b0001011 => {
                 // Custom-0 opcode: SHA256 compression instructions
                 let funct3 = (instr >> 12) & 0x7;
                 let funct7 = (instr >> 25) & 0x7f;
-                if funct7 == 0x00 {
-                    match funct3 {
-                        0x0 => Ok(SHA256::new(instr, address, true).into()),
-                        0x1 => Ok(SHA256INIT::new(instr, address, true).into()),
-                        _ => Err("Unknown funct3 for custom SHA256 instruction"),
+                match funct7 {
+                    0x00 => {
+                        // SHA256
+                        match funct3 {
+                            0x0 => Ok(SHA256::new(instr, address, true).into()),
+                            0x1 => Ok(SHA256INIT::new(instr, address, true).into()),
+                            _ => Err("Unknown funct3 for custom SHA256 instruction"),
+                        }
                     }
-                } else {
-                    Err("Unknown funct7 for custom-0 opcode")
+                    0x01 => {
+                        // Keccak
+                        match funct3 {
+                            0x0 => Ok(KECCAK256::new(instr, address, true).into()),
+                            _ => Err("Unknown funct3 for custom Keccak instruction"),
+                        }
+                    }
+                    _ => Err("Unknown funct7 for custom-0 opcode"),
                 }
             }
             _ => Err("Unknown opcode"),
@@ -829,17 +841,5 @@ impl<T: RISCVInstruction> RISCVCycle<T> {
             ram_access: Default::default(),
             register_state,
         }
-    }
-}
-
-impl RV32IMCycle {
-    pub fn last_jalr(address: usize) -> Self {
-        Self::JALR(RISCVCycle {
-            instruction: JALR {
-                address: address as u64,
-                ..Default::default()
-            },
-            ..Default::default()
-        })
     }
 }
