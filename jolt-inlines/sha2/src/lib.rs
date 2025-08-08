@@ -12,6 +12,9 @@ pub mod exec;
 pub mod trace_generator;
 
 #[cfg(feature = "host")]
+pub mod c_ffi;
+
+#[cfg(feature = "host")]
 use tracer::register_inline;
 
 // Initialize and register inlines

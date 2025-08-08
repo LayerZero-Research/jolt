@@ -52,7 +52,7 @@ enum Value {
 /// Expects input words to be in RAM at location rs1..rs1+16
 /// Expects A..H to be in RAM at location rs2..rs2+8
 /// Output will be written to rs2..rs2+8
-struct Sha256SequenceBuilder {
+pub struct Sha256SequenceBuilder {
     address: u64,
     sequence: Vec<RV32IMInstruction>,
     /// Round id
@@ -68,7 +68,7 @@ struct Sha256SequenceBuilder {
 }
 
 impl Sha256SequenceBuilder {
-    fn new(
+    pub fn new(
         address: u64,
         vr: [usize; NEEDED_REGISTERS],
         operand_rs1: usize,
@@ -87,7 +87,7 @@ impl Sha256SequenceBuilder {
     }
 
     /// Loads and runs all SHA256 rounds
-    fn build(mut self) -> Vec<RV32IMInstruction> {
+    pub fn build(mut self) -> Vec<RV32IMInstruction> {
         if !self.initial {
             // Load initial hash values from memory when using custom IV
             // A..D loaded into registers 0..3 (will be used immediately)

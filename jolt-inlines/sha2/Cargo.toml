@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "SHA2 inline implementations for Jolt VM"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [features]
 default = []
 host = ["dep:ctor", "dep:tracer"]

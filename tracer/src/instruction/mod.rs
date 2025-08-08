@@ -443,6 +443,12 @@ macro_rules! define_rv32im_enums {
         }
 
         impl RV32IMInstruction {
+            pub fn enum_index(instr: &Self) -> u8 {
+                // Discriminant: https://doc.rust-lang.org/reference/items/enumerations.html#pointer-casting
+                let byte = unsafe { *(instr as *const Self as *const u8) };
+                byte
+            }
+
             pub fn trace(&self, cpu: &mut Cpu, trace: Option<&mut Vec<RV32IMCycle>>) {
                 match self {
                     RV32IMInstruction::NoOp => panic!("Unsupported instruction: {:?}", self),
@@ -506,6 +512,17 @@ macro_rules! define_rv32im_enums {
                         RV32IMInstruction::$instr(instr) => {instr.virtual_sequence_remaining = remaining;}
                     )*
                     RV32IMInstruction::INLINE(instr) => {instr.virtual_sequence_remaining = remaining;}
+                }
+            }
+
+            pub fn get_virtual_sequence_remaining(&self) -> Option<usize> {
+                match self {
+                    RV32IMInstruction::NoOp => None,
+                    RV32IMInstruction::UNIMPL => None,
+                    $(
+                        RV32IMInstruction::$instr(instr) => instr.virtual_sequence_remaining,
+                    )*
+                    RV32IMInstruction::INLINE(instr) => instr.virtual_sequence_remaining,
                 }
             }
         }
