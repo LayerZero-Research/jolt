@@ -1,7 +1,12 @@
-use jolt_sdk::serialize_and_print_size;
+use jolt_sdk::{postcard, serialize_and_print_size};
 use std::time::Instant;
 
 pub fn main() {
+    solution1();
+    // solution2();
+}
+
+pub fn solution1() {
     let save_to_disk = std::env::args().any(|arg| arg == "--save");
 
     let target_dir = "/tmp/jolt-guest-targets";
@@ -44,6 +49,50 @@ pub fn main() {
     }
 
     let is_valid = verify_fib(50, output, io_device.panic, proof);
+    println!("output: {output}");
+    println!("valid: {is_valid}");
+}
+
+pub fn solution2() {
+    let save_to_disk = std::env::args().any(|arg| arg == "--save");
+
+    let target_dir = "/tmp/jolt-guest-targets";
+    let memory_config = guest::memory_config_fib();
+
+    let mut builder = jolt_sdk::host::Program::new("fibonacci");
+    builder.set_func("fib");
+    builder.set_memory_config(memory_config);
+    builder.build(target_dir);
+
+    let elf_contents = builder.get_elf_contents().unwrap();
+
+    let mut program = jolt_sdk::guest::program::Program::new(&elf_contents, &memory_config);
+    let mut prover_preprocessing = jolt_sdk::guest::prover::preprocess(&program, 1024);
+    let mut verifier_preprocessing = jolt_sdk::guest::verifier::preprocess(&program, 1024);
+
+    let n: u32 = 10;
+    let mut input_bytes: Vec<u8> = vec![memory_config.max_input_size as u8];
+    input_bytes.append(&mut postcard::to_stdvec(&n).unwrap());
+
+    let now = Instant::now();
+    let mut output_bytes = vec![0; memory_config.max_output_size as usize];
+    let (proof, io_device, _) = jolt_sdk::guest::prover::prove(
+        &program,
+        &input_bytes,
+        &mut output_bytes,
+        &prover_preprocessing,
+    );
+    println!("Prover runtime: {} s", now.elapsed().as_secs_f64());
+
+    let is_valid = jolt_sdk::guest::verifier::verify(
+        &input_bytes,
+        &output_bytes,
+        proof,
+        &verifier_preprocessing,
+    )
+    .is_ok();
+
+    let output = postcard::from_bytes::<u128>(&output_bytes).unwrap();
     println!("output: {output}");
     println!("valid: {is_valid}");
 }
