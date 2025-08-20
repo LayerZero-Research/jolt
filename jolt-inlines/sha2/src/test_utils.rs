@@ -49,19 +49,19 @@ impl Sha256CpuHarness {
 
     /// Load an input block into DRAM and set `x10 = BLOCK_ADDR`.
     pub fn load_block(&mut self, block: &Sha256Block) {
-        self.harness.cpu.x[Self::RS1 as usize] = Self::BLOCK_ADDR as i64;
+        self.harness.write_register(Self::RS1, Self::BLOCK_ADDR);
         self.harness.set_memory32(Self::BLOCK_ADDR, block);
     }
 
     /// Load a state/IV into DRAM and set `x11 = STATE_ADDR`.
     pub fn load_state(&mut self, state: &Sha256State) {
-        self.harness.cpu.x[Self::RS2 as usize] = Self::STATE_ADDR as i64;
+        self.harness.write_register(Self::RS2, Self::STATE_ADDR);
         self.harness.set_memory32(Self::STATE_ADDR, state);
     }
 
     /// Set up output address for SHA256INIT (doesn't load initial state, just sets RS2 address).
     pub fn setup_output_only(&mut self) {
-        self.harness.cpu.x[Self::RS2 as usize] = Self::STATE_ADDR as i64;
+        self.harness.write_register(Self::RS2, Self::STATE_ADDR);
     }
 
     /// Read the SHA-256 state from DRAM.

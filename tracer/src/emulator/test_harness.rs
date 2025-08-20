@@ -94,6 +94,28 @@ impl CpuTestHarness {
         }
     }
 
+    pub fn write_registers(&mut self, register_indices: &[u8], values: &[u64]) {
+        assert_eq!(
+            register_indices.len(),
+            values.len(),
+            "Register indices and values must have the same length",
+        );
+        for (i, &reg_index) in register_indices.iter().enumerate() {
+            if reg_index == 0 {
+                continue;
+            }
+            let value = match self.cpu.xlen {
+                Xlen::Bit32 => (values[i] as u32 as i32) as i64,
+                Xlen::Bit64 => values[i] as i64,
+            };
+            self.cpu.x[reg_index as usize] = value;
+        }
+    }
+
+    pub fn write_register(&mut self, register_index: u8, value: u64) {
+        self.write_registers(&[register_index], &[value]);
+    }
+
     pub fn execute_inline_sequence(&mut self, sequence: &[RV32IMInstruction]) {
         for instr in sequence {
             instr.execute(&mut self.cpu);

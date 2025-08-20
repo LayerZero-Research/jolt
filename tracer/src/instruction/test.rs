@@ -1,7 +1,7 @@
 use core::panic::AssertUnwindSafe;
 use std::panic;
 
-use crate::emulator::cpu::Cpu;
+use crate::emulator::test_harness::CpuTestHarness;
 use crate::instruction::format::{InstructionFormat, InstructionRegisterState};
 use crate::instruction::NormalizedInstruction;
 
@@ -16,8 +16,6 @@ use super::{
     srai::SRAI, sraiw::SRAIW, sraw::SRAW, srl::SRL, srli::SRLI, srliw::SRLIW, srlw::SRLW,
     subw::SUBW, sw::SW, RISCVInstruction, RISCVTrace,
 };
-
-use crate::emulator::terminal::DummyTerminal;
 
 use common::constants::RISCV_REGISTER_COUNT;
 
@@ -50,8 +48,6 @@ fn test_rng() -> StdRng {
     StdRng::from_seed(seed)
 }
 
-const TEST_MEMORY_CAPACITY: u64 = 1024 * 1024;
-
 pub fn virtual_sequence_trace_test<I: RISCVInstruction + RISCVTrace + Copy>()
 where
     RV32IMCycle: From<RISCVCycle<I>>,
@@ -66,43 +62,40 @@ where
                 &mut rng,
             );
 
-        let mut original_cpu = Cpu::new(Box::new(DummyTerminal::default()));
-        original_cpu.get_mut_mmu().init_memory(TEST_MEMORY_CAPACITY);
-
-        let mut virtual_cpu = Cpu::new(Box::new(DummyTerminal::default()));
-        virtual_cpu.get_mut_mmu().init_memory(TEST_MEMORY_CAPACITY);
+        let mut original = CpuTestHarness::new();
+        let mut virtual_ = CpuTestHarness::new();
 
         if instr.operands.rs1 != 0 {
-            original_cpu.x[instr.operands.rs1 as usize] = register_state.rs1_value() as i64;
-            virtual_cpu.x[instr.operands.rs1 as usize] = register_state.rs1_value() as i64;
+            original.write_register(instr.operands.rs1, register_state.rs1_value());
+            virtual_.write_register(instr.operands.rs1, register_state.rs1_value());
         }
         if instr.operands.rs2 != 0 {
-            original_cpu.x[instr.operands.rs2 as usize] = register_state.rs2_value() as i64;
-            virtual_cpu.x[instr.operands.rs2 as usize] = register_state.rs2_value() as i64;
+            original.write_register(instr.operands.rs2, register_state.rs2_value());
+            virtual_.write_register(instr.operands.rs2, register_state.rs2_value());
         }
 
         let mut ram_access = Default::default();
 
         let res = panic::catch_unwind(AssertUnwindSafe(|| {
-            instruction.execute(&mut original_cpu, &mut ram_access);
+            instruction.execute(&mut original.cpu, &mut ram_access);
         }));
         if res.is_err() {
             continue;
         }
 
         let mut trace_vec = Vec::new();
-        instruction.trace(&mut virtual_cpu, Some(&mut trace_vec));
+        instruction.trace(&mut virtual_.cpu, Some(&mut trace_vec));
 
         assert_eq!(
-            original_cpu.pc, virtual_cpu.pc,
+            original.cpu.pc, virtual_.cpu.pc,
             "PC register has different values after execution"
         );
 
         for i in 0..RISCV_REGISTER_COUNT {
             assert_eq!(
-                original_cpu.x[i as usize], virtual_cpu.x[i as usize],
+                original.cpu.x[i as usize], virtual_.cpu.x[i as usize],
                 "Register {} has different values after execution. Original: {:?}, Virtual: {:?}",
-                i, original_cpu.x[i as usize], virtual_cpu.x[i as usize]
+                i, original.cpu.x[i as usize], virtual_.cpu.x[i as usize]
             );
         }
     }
