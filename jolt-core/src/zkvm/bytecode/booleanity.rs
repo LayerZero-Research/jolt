@@ -125,7 +125,7 @@ impl<F: JoltField> BooleanitySumcheck<F> {
 impl<F: JoltField> BooleanityProverState<F> {
     fn new(
         trace: &[RV32IMCycle],
-        preprocessing: &BytecodePreprocessing,
+        preprocessing: &BytecodePreprocessing<F>,
         eq_r_cycle: Vec<F>,
         G: Vec<Vec<F>>,
         r_address: &[F],

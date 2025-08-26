@@ -27,6 +27,7 @@ use crate::zkvm::ProverDebugInfo;
 #[cfg(feature = "allocative")]
 use allocative::FlameGraphBuilder;
 use anyhow::Context;
+use jolt_platform::println;
 use rayon::prelude::*;
 
 pub enum JoltDAG {}
@@ -264,7 +265,7 @@ impl JoltDAG {
 
         #[cfg(not(target_arch = "wasm32"))]
         print_current_memory_usage("Stage 5 baseline");
-
+        
         let opening_proof = accumulator.borrow_mut().reduce_and_prove(
             polynomials_map,
             opening_proof_hints,

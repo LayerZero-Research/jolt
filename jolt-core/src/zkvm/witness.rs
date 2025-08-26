@@ -13,7 +13,6 @@ use once_cell::sync::OnceCell;
 use rayon::prelude::*;
 use strum::IntoEnumIterator;
 use tracer::instruction::RV32IMCycle;
-
 use crate::{
     field::JoltField,
     poly::{
@@ -78,6 +77,9 @@ pub enum CommittedPolynomial {
     InstructionRa(usize),
     /// One-hot ra polynomial for the bytecode instance of Shout
     BytecodeRa(usize),
+    /// Dense Val polynomial for bytecode read/raf checking stages
+    /// There are three stages: `BytecodeVal(0)`, `BytecodeVal(1)`, `BytecodeVal(2)`
+    BytecodeVal(usize),
     /// One-hot ra/wa polynomial for the RAM instance of Twist
     /// Note that for RAM, ra and wa are the same polynomial because
     /// there is at most one load or store per cycle.
@@ -103,6 +105,8 @@ struct WitnessData {
     instruction_ra: [Vec<Option<usize>>; instruction_lookups::D],
     bytecode_ra: Vec<Vec<Option<usize>>>,
     ram_ra: Vec<Vec<Option<usize>>>,
+
+    bytecode_vals: [Vec<Option<usize>>; 1],
 }
 
 unsafe impl Send for WitnessData {}
@@ -125,6 +129,8 @@ impl WitnessData {
             instruction_ra: array::from_fn(|_| vec![None; trace_len]),
             bytecode_ra: (0..bytecode_d).map(|_| vec![None; trace_len]).collect(),
             ram_ra: (0..ram_d).map(|_| vec![None; trace_len]).collect(),
+
+            bytecode_vals: array::from_fn(|_| vec![None; trace_len]),
         }
     }
 }
@@ -166,6 +172,10 @@ impl AllCommittedPolynomials {
         for i in 0..bytecode_d {
             polynomials.push(CommittedPolynomial::BytecodeRa(i));
         }
+        for i in 0..1 {
+            polynomials.push(CommittedPolynomial::BytecodeVal(i));
+        }
+        
 
         unsafe {
             ALL_COMMITTED_POLYNOMIALS
@@ -265,6 +275,12 @@ impl CommittedPolynomial {
             match poly {
                 CommittedPolynomial::BytecodeRa(i) => {
                     bytecode_d = bytecode_d.max(*i + 1);
+                }
+                CommittedPolynomial::BytecodeVal(_) => {
+                    // We need bytecode_d for val polynomials too
+                    if bytecode_d == 0 {
+                        bytecode_d = preprocessing.shared.bytecode.d;
+                    }
                 }
                 CommittedPolynomial::RamRa(i) => {
                     ram_d = ram_d.max(*i + 1);
@@ -456,9 +472,27 @@ impl CommittedPolynomial {
                         results.insert(*poly, MultilinearPolynomial::OneHot(one_hot));
                     }
                 }
+                CommittedPolynomial::BytecodeVal(stage) => {
+                    // Use the precomputed val polynomials from preprocessing
+                    let coeffs = match stage {
+                        0 => preprocessing.shared.bytecode.val_1.clone(),
+                        // 1 => preprocessing.shared.bytecode.val_2.clone(),
+                        // 2 => preprocessing.shared.bytecode.val_3.clone(),
+                        _ => panic!("Invalid BytecodeVal stage: {}", stage),
+                    };
+                    results.insert(*poly, MultilinearPolynomial::<F>::from(coeffs));
+                }
             }
         }
         results
+    }
+
+    pub fn get_gamma_powers_deterministic<F: JoltField>(amount: usize) -> Vec<F> {
+        let mut gamma_powers = vec![F::one()];
+        for _ in 1..amount {
+            gamma_powers.push(F::from_u128(1000) * gamma_powers.last().unwrap());
+        }
+        gamma_powers
     }
 
     #[tracing::instrument(skip_all, name = "CommittedPolynomial::generate_witness")]
@@ -574,6 +608,16 @@ impl CommittedPolynomial {
                     })
                     .collect();
                 MultilinearPolynomial::OneHot(OneHotPolynomial::from_indices(addresses, K_chunk))
+            }
+            CommittedPolynomial::BytecodeVal(stage) => {
+                // Use the precomputed val polynomials from preprocessing
+                let coeffs = match stage {
+                    0 => preprocessing.shared.bytecode.val_1.clone(),
+                    // 1 => preprocessing.shared.bytecode.val_2.clone(),
+                    // 2 => preprocessing.shared.bytecode.val_3.clone(),
+                    _ => panic!("Invalid BytecodeVal stage: {}", stage),
+                };
+                MultilinearPolynomial::<F>::from(coeffs)
             }
             CommittedPolynomial::RamRa(i) => {
                 let d = self.ram_d();

@@ -50,7 +50,12 @@ impl<F: JoltField> RLCPolynomial<F> {
             .collect();
 
         if !dense_indices.is_empty() {
-            let dense_len = result.dense_rlc.len();
+            // Use the maximum length among dense polynomials to avoid truncation
+            let dense_len = dense_indices
+                .iter()
+                .map(|&i| polynomials[i].original_len())
+                .max()
+                .unwrap_or_else(|| result.dense_rlc.len());
 
             result.dense_rlc = (0..dense_len)
                 .into_par_iter()
@@ -62,6 +67,9 @@ impl<F: JoltField> RLCPolynomial<F> {
 
                         if i < poly.original_len() {
                             match poly {
+                                MultilinearPolynomial::LargeScalars(p) => {
+                                    acc += p.evals_ref()[i] * coeff;
+                                }
                                 MultilinearPolynomial::U8Scalars(p) => {
                                     acc += p.coeffs[i].field_mul(coeff);
                                 }

@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use crate::poly::compact_polynomial::SmallScalar;
 use crate::poly::opening_proof::SumcheckId;
 use crate::utils::math::Math;
 #[cfg(feature = "allocative")]
@@ -9,6 +10,7 @@ use crate::zkvm::bytecode::hamming_weight::HammingWeightSumcheck;
 use crate::zkvm::bytecode::read_raf_checking::ReadRafSumcheck;
 use crate::zkvm::dag::stage::SumcheckStages;
 use crate::zkvm::dag::state_manager::StateManager;
+use crate::zkvm::instruction::{InstructionFlags, NUM_CIRCUIT_FLAGS};
 use crate::zkvm::witness::{compute_d_parameter, VirtualPolynomial, DTH_ROOT_OF_K};
 use crate::{
     field::JoltField,
@@ -20,14 +22,15 @@ use crate::{
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use common::constants::{ALIGNMENT_FACTOR_BYTECODE, RAM_START_ADDRESS};
 use rayon::prelude::*;
-use tracer::instruction::{RV32IMCycle, RV32IMInstruction};
+use tracer::instruction::{NormalizedInstruction, RV32IMCycle, RV32IMInstruction};
 
 pub mod booleanity;
 pub mod hamming_weight;
 pub mod read_raf_checking;
 
 #[derive(Debug, Clone, CanonicalSerialize, CanonicalDeserialize)]
-pub struct BytecodePreprocessing {
+pub struct BytecodePreprocessing<F>
+where F: JoltField {
     pub code_size: usize,
     pub bytecode: Vec<RV32IMInstruction>,
     /// Maps the memory address of each instruction in the bytecode to its "virtual" address.
@@ -36,9 +39,52 @@ pub struct BytecodePreprocessing {
     /// Key: (ELF address, inline sequence index or 0)
     pub virtual_address_map: BTreeMap<(usize, u16), usize>,
     pub d: usize,
+    pub val_1: Vec<F>,
+    pub val_2: Vec<F>,
+    pub val_3: Vec<F>,
 }
 
-impl BytecodePreprocessing {
+
+// OMID"s change
+/// Returns a vec of evaluations:
+    // ///    Val(k) = unexpanded_pc(k) + gamma * imm(k)
+    // ///             + gamma^2 * circuit_flags[0](k) + gamma^3 * circuit_flags[1](k) + ...
+    // /// This particular Val virtualizes claims output by Spartan's "outer" sumcheck
+    // fn compute_val_1(
+    //     sm: &mut StateManager<F, impl Transcript, impl CommitmentScheme<Field = F>>,
+    //     gamma_powers: &[F],
+    // ) -> Vec<F> {
+    //     sm.get_bytecode()
+    //         .par_iter()
+    //         .map(|instruction| {
+    //             let NormalizedInstruction {
+    //                 address: unexpanded_pc,
+    //                 operands,
+    //                 ..
+    //             } = instruction.normalize();
+
+    //             let mut linear_combination = F::zero();
+    //             linear_combination += F::from_u64(unexpanded_pc as u64);
+    //             linear_combination += operands.imm.field_mul(gamma_powers[1]);
+    //             linear_combination += (operands.rd as u64).field_mul(gamma_powers[2]);
+    //             for (flag, gamma_power) in instruction
+    //                 .circuit_flags()
+    //                 .iter()
+    //                 .zip(gamma_powers[3..].iter())
+    //             {
+    //                 if *flag {
+    //                     linear_combination += *gamma_power;
+    //                 }
+    //             }
+
+    //             linear_combination
+    //         })
+    //         .collect()
+    // }
+
+
+
+impl<F: JoltField> BytecodePreprocessing<F> {
     #[tracing::instrument(skip_all, name = "BytecodePreprocessing::preprocess")]
     pub fn preprocess(mut bytecode: Vec<RV32IMInstruction>) -> Self {
         let mut virtual_address_map = BTreeMap::new();
@@ -75,12 +121,16 @@ impl BytecodePreprocessing {
 
         // Bytecode: Pad to nearest power of 2
         bytecode.resize(code_size, RV32IMInstruction::NoOp);
+        let val_1 = Self::compute_val_1(&bytecode, &Self::get_gamma_powers_deterministic(3 + NUM_CIRCUIT_FLAGS));
 
         Self {
             code_size,
             bytecode,
             virtual_address_map,
             d,
+            val_1,
+            val_2: Self::compute_val_2(),
+            val_3: Self::compute_val_3(),
         }
     }
 
@@ -93,6 +143,51 @@ impl BytecodePreprocessing {
             .virtual_address_map
             .get(&(instr.address, instr.inline_sequence_remaining.unwrap_or(0)))
             .unwrap()
+    }
+
+    fn compute_val_1(bytecode: &[RV32IMInstruction], gamma_powers: &[F]) -> Vec<F> {
+        bytecode
+            .par_iter()
+            .map(|instruction| {
+                let NormalizedInstruction {
+                    address: unexpanded_pc,
+                    operands,
+                    ..
+                } = instruction.normalize();
+
+                let mut linear_combination = F::zero();
+                linear_combination += F::from_u64(unexpanded_pc as u64);
+                linear_combination += operands.imm.field_mul(gamma_powers[1]);
+                linear_combination += (operands.rd as u64).field_mul(gamma_powers[2]);
+                for (flag, gamma_power) in instruction
+                    .circuit_flags()
+                    .iter()
+                    .zip(gamma_powers[3..].iter())
+                {
+                    if *flag {
+                        linear_combination += *gamma_power;
+                    }
+                }
+
+                linear_combination
+            })
+            .collect()
+    }
+
+    fn compute_val_2() -> Vec<F> {
+        Vec::new()
+    }
+
+    fn compute_val_3() -> Vec<F> {
+        Vec::new()
+    }
+
+    pub fn get_gamma_powers_deterministic(amount: usize) -> Vec<F> {
+        let mut gamma_powers = vec![F::one()];
+        for _ in 1..amount {
+            gamma_powers.push(F::from_u128(1000) * gamma_powers.last().unwrap());
+        }
+        gamma_powers
     }
 }
 
@@ -123,6 +218,9 @@ impl<F: JoltField, PCS: CommitmentScheme<Field = F>, T: Transcript> SumcheckStag
         let read_raf = ReadRafSumcheck::new_prover(sm);
         let booleanity = BooleanitySumcheck::new_prover(sm, E_1, F_1.clone());
         let hamming_weight = HammingWeightSumcheck::new_prover(sm, F_1);
+        
+        // Store _val_commitments for later verification
+        // TODO: Pass these commitments to the verifier when needed
 
         #[cfg(feature = "allocative")]
         {
@@ -141,7 +239,7 @@ impl<F: JoltField, PCS: CommitmentScheme<Field = F>, T: Transcript> SumcheckStag
     fn stage4_verifier_instances(
         &mut self,
         sm: &mut StateManager<'_, F, T, PCS>,
-    ) -> Vec<Box<dyn SumcheckInstance<F>>> {
+    ) -> Vec<Box<dyn SumcheckInstance<F>>> {        
         let read_checking = ReadRafSumcheck::new_verifier(sm);
         let booleanity = BooleanitySumcheck::new_verifier(sm);
         let hamming_weight = HammingWeightSumcheck::new_verifier(sm);
@@ -157,7 +255,7 @@ impl<F: JoltField, PCS: CommitmentScheme<Field = F>, T: Transcript> SumcheckStag
 #[inline(always)]
 #[tracing::instrument(skip_all, name = "Bytecode::compute_ra_evals")]
 fn compute_ra_evals<F: JoltField>(
-    preprocessing: &BytecodePreprocessing,
+    preprocessing: &BytecodePreprocessing<F>,
     trace: &[RV32IMCycle],
     eq_r_cycle: &[F],
 ) -> Vec<Vec<F>> {
