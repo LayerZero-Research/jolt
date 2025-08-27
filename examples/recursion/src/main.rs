@@ -90,7 +90,7 @@ impl GuestProgram {
                         max_input_size: 4096,
                         max_output_size: 4096,
                         memory_size: 33554432,
-                        stack_size: 1048576,
+                        stack_size: 10485760,
                         program_size: None,
                     }
                 } else {
