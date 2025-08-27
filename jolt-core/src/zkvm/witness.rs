@@ -669,12 +669,13 @@ impl CommittedPolynomial {
                     instruction_lookups::K_CHUNK,
                 ))
             }
+
             CommittedPolynomial::UnexpandedPC => {
                 let coeffs: Vec<F> = preprocessing.shared.bytecode.get_unexpanded_pc_vec();
                 MultilinearPolynomial::<F>::from(coeffs)
             }
             CommittedPolynomial::Imm => {
-                let coeffs = preprocessing.shared.bytecode.get_imm_vec();
+                let coeffs = preprocessing.shared.bytecode.get_imm_vec();;
                 MultilinearPolynomial::<F>::from(coeffs)
             }
             CommittedPolynomial::Rd => {

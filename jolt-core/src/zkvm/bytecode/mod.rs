@@ -9,7 +9,7 @@ use crate::zkvm::bytecode::hamming_weight::HammingWeightSumcheck;
 use crate::zkvm::bytecode::read_raf_checking::ReadRafSumcheck;
 use crate::zkvm::dag::stage::SumcheckStages;
 use crate::zkvm::dag::state_manager::StateManager;
-use crate::zkvm::instruction::InstructionFlags;
+use crate::zkvm::instruction::{CircuitFlags, InstructionFlags};
 use crate::zkvm::witness::{compute_d_parameter, VirtualPolynomial, DTH_ROOT_OF_K};
 use crate::{
     field::JoltField,
@@ -21,6 +21,7 @@ use crate::{
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use common::constants::{ALIGNMENT_FACTOR_BYTECODE, RAM_START_ADDRESS};
 use rayon::prelude::*;
+use strum::EnumCount;
 use tracer::instruction::{NormalizedInstruction, RV32IMCycle, RV32IMInstruction};
 
 pub mod booleanity;
@@ -60,7 +61,6 @@ impl BytecodePreprocessing {
             .par_iter()
             .map(|instruction| {
                 let NormalizedInstruction {
-                    address,
                     operands,
                     ..
                 } = instruction.normalize();
@@ -75,7 +75,6 @@ impl BytecodePreprocessing {
             .par_iter()
             .map(|instruction| {
                 let NormalizedInstruction {
-                    address,
                     operands,
                     ..
                 } = instruction.normalize();
