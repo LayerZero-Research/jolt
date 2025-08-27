@@ -36,9 +36,8 @@ pub mod registers;
 pub mod witness;
 
 #[derive(Debug, Clone, CanonicalSerialize, CanonicalDeserialize)]
-pub struct JoltSharedPreprocessing<F>
-where F: JoltField {
-    pub bytecode: BytecodePreprocessing<F>,
+pub struct JoltSharedPreprocessing {
+    pub bytecode: BytecodePreprocessing,
     pub ram: RAMPreprocessing,
     pub memory_layout: MemoryLayout,
 }
@@ -50,7 +49,7 @@ where
     PCS: CommitmentScheme<Field = F>,
 {
     pub generators: PCS::VerifierSetup,
-    pub shared: JoltSharedPreprocessing<F>,
+    pub shared: JoltSharedPreprocessing,
 }
 
 impl<F, PCS> Serializable for JoltVerifierPreprocessing<F, PCS>
@@ -90,7 +89,7 @@ where
     PCS: CommitmentScheme<Field = F>,
 {
     pub generators: PCS::ProverSetup,
-    pub shared: JoltSharedPreprocessing<F>,
+    pub shared: JoltSharedPreprocessing,
 }
 
 impl<F, PCS> Serializable for JoltProverPreprocessing<F, PCS>
@@ -157,7 +156,7 @@ where
         bytecode: Vec<RV32IMInstruction>,
         memory_layout: MemoryLayout,
         memory_init: Vec<(u64, u8)>,
-    ) -> JoltSharedPreprocessing<F> {
+    ) -> JoltSharedPreprocessing {
         let bytecode_preprocessing = BytecodePreprocessing::preprocess(bytecode);
         let ram_preprocessing = RAMPreprocessing::preprocess(memory_init);
 
@@ -427,6 +426,7 @@ mod tests {
         let elf_contents = elf_contents_opt.as_deref().expect("elf contents is None");
         let (jolt_proof, io_device, debug_info) =
             JoltRV32IM::prove(&preprocessing, elf_contents, &inputs);
+
         let verifier_preprocessing = JoltVerifierPreprocessing::from(&preprocessing);
         let verification_result =
             JoltRV32IM::verify(&verifier_preprocessing, jolt_proof, io_device, debug_info);

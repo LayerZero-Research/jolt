@@ -64,6 +64,13 @@ pub struct ReadRafSumcheck<F: JoltField> {
     val_polys: [MultilinearPolynomial<F>; STAGES],
     int_poly: IdentityPolynomial<F>,
     r_cycles: [Vec<F>; STAGES],
+
+    unexpanded_pc_vals: Vec<F>,
+    imm_vals: Vec<i128>,
+    rd_vals: Vec<u64>,
+    circuit_flags_val: [Vec<u8>; CircuitFlags::COUNT],
+
+    gamma_powers_val1: Vec<F>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -91,9 +98,9 @@ impl<F: JoltField> ReadRafSumcheck<F> {
         let gamma_sqr = gamma.square();
         let gamma_cub = gamma_sqr * gamma;
         let gamma_four = gamma_sqr.square();
-        let (val_1, rv_claim_1, r_cycle_1) = Self::compute_val_rv(sm, ReadCheckingValType::Stage1);
-        let (val_2, rv_claim_2, r_cycle_2) = Self::compute_val_rv(sm, ReadCheckingValType::Stage2);
-        let (val_3, rv_claim_3, r_cycle_3) = Self::compute_val_rv(sm, ReadCheckingValType::Stage3);
+        let (val_1, rv_claim_1, r_cycle_1, gamma_powers1) = Self::compute_val_rv(sm, ReadCheckingValType::Stage1);
+        let (val_2, rv_claim_2, r_cycle_2, gamma_powers2) = Self::compute_val_rv(sm, ReadCheckingValType::Stage2);
+        let (val_3, rv_claim_3, r_cycle_3, gamma_powers3) = Self::compute_val_rv(sm, ReadCheckingValType::Stage3);
         let (_, raf_claim) =
             sm.get_virtual_polynomial_opening(VirtualPolynomial::PC, SumcheckId::SpartanOuter);
         let (_, raf_shift_claim) =
@@ -183,21 +190,10 @@ impl<F: JoltField> ReadRafSumcheck<F> {
 
         // Create the val_polys - use precomputed ones from preprocessing for consistency
         let val_polys = [
-            MultilinearPolynomial::from(preprocessing.shared.bytecode.val_1.clone()),
+            MultilinearPolynomial::from(val_1),
             MultilinearPolynomial::from(val_2),
             MultilinearPolynomial::from(val_3),
         ];
-
-        // // Commit to the val_polys
-        // let (val_commitments, val_opening_hints): (Vec<_>, Vec<_>) = val_polys
-        //     .iter()
-        //     .map(|poly| PCS::commit(poly, &preprocessing.generators))
-        //     .unzip();
-
-        // // Append commitments to transcript
-        // for commitment in val_commitments.iter() {
-        //     sm.transcript.borrow_mut().append_serializable(commitment);
-        // }
 
         let sumcheck = Self {
             rv_claim,
@@ -220,6 +216,11 @@ impl<F: JoltField> ReadRafSumcheck<F> {
             gamma: [F::one(), gamma, gamma_sqr],
             gamma_sqr,
             gamma_cub,
+            unexpanded_pc_vals: sm.prover_state.as_ref().unwrap().preprocessing.shared.bytecode.get_unexpanded_pc_vec(),
+            imm_vals: sm.prover_state.as_ref().unwrap().preprocessing.shared.bytecode.get_imm_vec(),
+            rd_vals: sm.prover_state.as_ref().unwrap().preprocessing.shared.bytecode.get_rd_vec(),
+            circuit_flags_val: std::array::from_fn(|i| sm.prover_state.as_ref().unwrap().preprocessing.shared.bytecode.get_circuit_flags_vec(i)),
+            gamma_powers_val1: gamma_powers1,
         };
 
         sumcheck
@@ -237,9 +238,9 @@ impl<F: JoltField> ReadRafSumcheck<F> {
         let gamma_sqr = gamma.square();
         let gamma_cub = gamma_sqr * gamma;
         let gamma_four = gamma_sqr.square();
-        let (val_1, rv_claim_1, r_cycle_1) = Self::compute_val_rv(sm, ReadCheckingValType::Stage1);
-        let (val_2, rv_claim_2, r_cycle_2) = Self::compute_val_rv(sm, ReadCheckingValType::Stage2);
-        let (val_3, rv_claim_3, r_cycle_3) = Self::compute_val_rv(sm, ReadCheckingValType::Stage3);
+        let (val_1, rv_claim_1, r_cycle_1, gamma_powers1) = Self::compute_val_rv(sm, ReadCheckingValType::Stage1);
+        let (val_2, rv_claim_2, r_cycle_2, gamma_powers2) = Self::compute_val_rv(sm, ReadCheckingValType::Stage2);
+        let (val_3, rv_claim_3, r_cycle_3, gamma_powers3) = Self::compute_val_rv(sm, ReadCheckingValType::Stage3);
         let int_poly = IdentityPolynomial::new(log_K);
 
         assert_eq!(r_cycle_1.len(), r_cycle_2.len());
@@ -250,11 +251,6 @@ impl<F: JoltField> ReadRafSumcheck<F> {
             MultilinearPolynomial::from(val_2),
             MultilinearPolynomial::from(val_3),
         ];
-
-        // // Append commitments to transcript
-        // for commitment in val_commitments.iter() {
-        //     sm.transcript.borrow_mut().append_serializable(commitment);
-        // }
 
         let (_, raf_claim) =
             sm.get_virtual_polynomial_opening(VirtualPolynomial::PC, SumcheckId::SpartanOuter);
@@ -280,6 +276,11 @@ impl<F: JoltField> ReadRafSumcheck<F> {
             val_polys,
             int_poly,
             r_cycles: [r_cycle_1, r_cycle_2, r_cycle_3],
+            unexpanded_pc_vals: sm.verifier_state.as_ref().unwrap().preprocessing.shared.bytecode.get_unexpanded_pc_vec(),
+            imm_vals: sm.verifier_state.as_ref().unwrap().preprocessing.shared.bytecode.get_imm_vec(),
+            rd_vals: sm.verifier_state.as_ref().unwrap().preprocessing.shared.bytecode.get_rd_vec(),
+            circuit_flags_val: std::array::from_fn(|i| sm.verifier_state.as_ref().unwrap().preprocessing.shared.bytecode.get_circuit_flags_vec(i)),
+            gamma_powers_val1: gamma_powers1,
         }
     }
 
@@ -294,24 +295,22 @@ impl<F: JoltField> ReadRafSumcheck<F> {
     fn compute_val_rv(
         sm: &mut StateManager<F, impl Transcript, impl CommitmentScheme<Field = F>>,
         val_type: ReadCheckingValType,
-    ) -> (Vec<F>, F, Vec<F>) {
+    ) -> (Vec<F>, F, Vec<F>, Vec<F>) {
         match val_type {
             ReadCheckingValType::Stage1 => {
-                // let gamma_powers = get_gamma_powers(
-                //     &mut *sm.get_transcript().borrow_mut(),
-                //     3 + NUM_CIRCUIT_FLAGS,
-                // );
+                let gamma_powers = get_gamma_powers(
+                    &mut *sm.get_transcript().borrow_mut(),
+                    3 + NUM_CIRCUIT_FLAGS,
+                );
                 let (r_cycle, _) = sm.get_virtual_polynomial_opening(
                     VirtualPolynomial::Imm,
                     SumcheckId::SpartanOuter,
                 );
-                // let val_1 = Self::compute_val_1(sm, &Self::get_gamma_powers_deterministic(3 + NUM_CIRCUIT_FLAGS));
-                // println!("val1: {:?}", val_1);
                 (
-                    Self::compute_val_1(sm, &Self::get_gamma_powers_deterministic(3 + NUM_CIRCUIT_FLAGS)),
-                    // val_1,
-                    Self::compute_rv_claim_1(sm, &Self::get_gamma_powers_deterministic(3 + NUM_CIRCUIT_FLAGS)),
+                    Self::compute_val_1(sm, &gamma_powers),
+                    Self::compute_rv_claim_1(sm, &gamma_powers),
                     r_cycle.r,
+                    gamma_powers,
                 )
             }
             ReadCheckingValType::Stage2 => {
@@ -325,6 +324,7 @@ impl<F: JoltField> ReadRafSumcheck<F> {
                     Self::compute_val_2(sm, &gamma_powers),
                     Self::compute_rv_claim_2(sm, &gamma_powers),
                     r_cycle.r,
+                    gamma_powers,
                 )
             }
             ReadCheckingValType::Stage3 => {
@@ -341,6 +341,7 @@ impl<F: JoltField> ReadRafSumcheck<F> {
                     Self::compute_val_3(sm, &gamma_powers),
                     Self::compute_rv_claim_3(sm, &gamma_powers),
                     r_cycle.r,
+                    gamma_powers,
                 )
             }
         }
@@ -354,6 +355,9 @@ impl<F: JoltField> ReadRafSumcheck<F> {
         sm: &mut StateManager<F, impl Transcript, impl CommitmentScheme<Field = F>>,
         gamma_powers: &[F],
     ) -> Vec<F> {
+        if sm.prover_state.is_none() {
+            return vec![F::zero(); sm.get_bytecode().len()]
+        }
         sm.get_bytecode()
             .par_iter()
             .map(|instruction| {
@@ -737,17 +741,47 @@ impl<F: JoltField> SumcheckInstance<F> for ReadRafSumcheck<F> {
                 .1
         });
 
-        // Read committed Val openings at r_address_prime for each stage
-        let val_stage_claims: [F; 1] = [0]
-            .map(|stage| {
+        let unexpanded_pc_claim =
+            acc.borrow()
+                .get_committed_polynomial_opening(
+        CommittedPolynomial::UnexpandedPC,
+        SumcheckId::BytecodeReadRaf,
+                )
+                .1;
+        let imm_claim =
+            acc.borrow()
+                .get_committed_polynomial_opening(
+        CommittedPolynomial::Imm,
+        SumcheckId::BytecodeReadRaf,
+                )
+                .1;
+        let rd_claim =
+            acc.borrow()
+                .get_committed_polynomial_opening(
+        CommittedPolynomial::Rd,
+        SumcheckId::BytecodeReadRaf,
+                )
+                .1;
+        let circuit_claim = (0..CircuitFlags::COUNT).map(|i| {
                 acc.borrow()
                     .get_committed_polynomial_opening(
-                        CommittedPolynomial::BytecodeVal(stage),
+                        CommittedPolynomial::CircuitFlags(i),
                         SumcheckId::BytecodeReadRaf,
                     )
                     .1
             });
 
+        let mut linear_combination = F::zero();
+        linear_combination += unexpanded_pc_claim;
+        linear_combination += imm_claim.mul(self.gamma_powers_val1[1]);
+        linear_combination += rd_claim.mul(self.gamma_powers_val1[2]);
+        for (flag, gamma_power) in circuit_claim
+            .zip(self.gamma_powers_val1[3..].iter())
+        {
+                linear_combination += flag.mul(gamma_power);
+        }
+        println!("Random Linear Combination: {}", linear_combination);
+        // println!("Random Linear Combination Original: {}", val_stage_claims[0]);
         // We have a separate Val polynomial for each stage
         // Additionally, for stages 1 and 3 we have an Int polynomial for RAF
         // So we would have:
@@ -756,24 +790,30 @@ impl<F: JoltField> SumcheckInstance<F> for ReadRafSumcheck<F> {
         // Stage 3: gamma^2 * (Val_3 + gamma^2 * Int)
         // Which matches with the input claim:
         // rv_1 + gamma * rv_2 + gamma^2 * rv_3 + gamma^3 * raf_1 + gamma^4 * raf_3
-        let val = self
-            .val_polys
+        // Use linear_combination for Stage 1 (val_polys[0]), keep current logic for the rest
+        let stage1_term = (linear_combination + int_poly * self.gamma_cub)
+            * EqPolynomial::mle(&self.r_cycles[0], &r_cycle_prime)
+            * self.gamma[0];
+
+        let val_rest: F = self
+            .val_polys[1..]
             .iter()
-            .zip(self.r_cycles.iter())
-            .zip(self.gamma.iter())
+            .zip(self.r_cycles[1..].iter())
+            .zip(self.gamma[1..].iter())
             .zip([
-                int_poly * self.gamma_cub, // RAF for Stage1
-                F::zero(),                 // There's no raf for Stage2
-                int_poly * self.gamma_sqr, // RAF for Stage3
+                F::zero(),                 // Stage 2 RAF term
+                int_poly * self.gamma_sqr, // Stage 3 RAF term
             ])
-            .map(|(((val, r_cycle), gamma), int_poly)| {
-                (val.evaluate(r_address_prime) + int_poly)
+            .map(|(((val, r_cycle), gamma), int_term)| {
+                (val.evaluate(r_address_prime) + int_term)
                     * EqPolynomial::mle(r_cycle, &r_cycle_prime)
                     * gamma
             })
             .sum::<F>();
+
+        let val = stage1_term + val_rest;
         println!("val.evaluate(r_address: {}", self.val_polys[0].evaluate(r_address_prime));
-        println!("Openning Point: {}", val_stage_claims[0]);
+        // println!("Openning Point: {}", val_stage_claims[0]);
 
         ra_claims.fold(val, |running, ra_claim| running * ra_claim)
     }
@@ -809,15 +849,85 @@ impl<F: JoltField> SumcheckInstance<F> for ReadRafSumcheck<F> {
 
         // Append dense openings for val polynomials at r_address
         // Use the bound polynomial's final claim to avoid recomputation mismatches
-        for (i, val_poly) in self.val_polys.iter().enumerate() {
-            let val_claim = val_poly.final_sumcheck_claim();
+        // for (i, val_poly) in self.val_polys.iter().enumerate() {
+        //     let val_claim = val_poly.final_sumcheck_claim();
+        //     accumulator.borrow_mut().append_dense(
+        //         vec![CommittedPolynomial::BytecodeVal(i)],
+        //         SumcheckId::BytecodeReadRaf,
+        //         r_address.r.clone(),
+        //         &[val_claim],
+        //     );
+        //     break;
+        // }
+
+        let unexpanded_pc_poly = MultilinearPolynomial::<F>::from(self.unexpanded_pc_vals.clone());
+        let unexpanded_pc_eval = unexpanded_pc_poly.evaluate(&r_address.r);
+        accumulator.borrow_mut().append_dense(
+            vec![CommittedPolynomial::UnexpandedPC],
+            SumcheckId::BytecodeReadRaf,
+            r_address.r.clone(),
+            &[unexpanded_pc_eval],
+        );
+        let imm_poly = MultilinearPolynomial::<F>::from(self.imm_vals.clone());
+        let imm_eval = imm_poly.evaluate(&r_address.r);
+        accumulator.borrow_mut().append_dense(
+            vec![CommittedPolynomial::Imm],
+            SumcheckId::BytecodeReadRaf,
+            r_address.r.clone(),
+            &[imm_eval],
+        );
+        let rd_poly = MultilinearPolynomial::<F>::from(self.rd_vals.clone());
+        let rd_eval = rd_poly.evaluate(&r_address.r);
+        accumulator.borrow_mut().append_dense(
+            vec![CommittedPolynomial::Rd],
+            SumcheckId::BytecodeReadRaf,
+            r_address.r.clone(),
+            &[rd_eval],
+        );
+        for i in 0..CircuitFlags::COUNT {
+            let circut_poly = MultilinearPolynomial::<F>::from(self.circuit_flags_val[i].clone());
+            let circuit_eval = circut_poly.evaluate(&r_address.r);
             accumulator.borrow_mut().append_dense(
-                vec![CommittedPolynomial::BytecodeVal(i)],
+                vec![CommittedPolynomial::CircuitFlags(i)],
                 SumcheckId::BytecodeReadRaf,
                 r_address.r.clone(),
-                &[val_claim],
+                &[circuit_eval],
             );
-            break;
+        }
+
+        // Batch open UnexpandedPC, Imm, Rd, and all CircuitFlags at r_address
+        {
+            let mut polynomials = Vec::with_capacity(3 + CircuitFlags::COUNT);
+            polynomials.push(CommittedPolynomial::UnexpandedPC);
+            polynomials.push(CommittedPolynomial::Imm);
+            polynomials.push(CommittedPolynomial::Rd);
+            for i in 0..CircuitFlags::COUNT {
+                polynomials.push(CommittedPolynomial::CircuitFlags(i));
+            }
+
+            // Compute claims at the same opening point
+            let mut claims: Vec<F> = Vec::with_capacity(polynomials.len());
+            let unexpanded_pc_eval = MultilinearPolynomial::<F>::from(self.unexpanded_pc_vals.clone())
+                .evaluate(&r_address.r);
+            let imm_eval = MultilinearPolynomial::<F>::from(self.imm_vals.clone())
+                .evaluate(&r_address.r);
+            let rd_eval = MultilinearPolynomial::<F>::from(self.rd_vals.clone())
+                .evaluate(&r_address.r);
+            claims.push(unexpanded_pc_eval);
+            claims.push(imm_eval);
+            claims.push(rd_eval);
+            for i in 0..CircuitFlags::COUNT {
+                let circuit_eval = MultilinearPolynomial::<F>::from(self.circuit_flags_val[i].clone())
+                    .evaluate(&r_address.r);
+                claims.push(circuit_eval);
+            }
+
+            accumulator.borrow_mut().append_dense(
+                polynomials,
+                SumcheckId::BytecodeReadRaf,
+                r_address.r.clone(),
+                &claims,
+            );
         }
     }
 
@@ -827,7 +937,7 @@ impl<F: JoltField> SumcheckInstance<F> for ReadRafSumcheck<F> {
         opening_point: OpeningPoint<BIG_ENDIAN, F>,
     ) {
         let (r_address, r_cycle) = opening_point.split_at(self.log_K);
-        
+
         // Cache openings for ra polynomials
         (0..self.d).for_each(|i| {
             let r_address = &r_address.r[self.log_K_chunk * i..self.log_K_chunk * (i + 1)];
@@ -837,17 +947,44 @@ impl<F: JoltField> SumcheckInstance<F> for ReadRafSumcheck<F> {
                 [r_address, &r_cycle.r].concat(),
             );
         });
-        // println!("Hello");
-        // // Append dense openings for val polynomials at r_address
-        for i in 0..3 {
+        accumulator.borrow_mut().append_dense(
+            vec![CommittedPolynomial::UnexpandedPC],
+            SumcheckId::BytecodeReadRaf,
+            r_address.r.clone(),
+        );
+        accumulator.borrow_mut().append_dense(
+            vec![CommittedPolynomial::Imm],
+            SumcheckId::BytecodeReadRaf,
+            r_address.r.clone(),
+        );
+        accumulator.borrow_mut().append_dense(
+            vec![CommittedPolynomial::Rd],
+            SumcheckId::BytecodeReadRaf,
+            r_address.r.clone(),
+        );
+        for i in 0..CircuitFlags::COUNT {
             accumulator.borrow_mut().append_dense(
-                vec![CommittedPolynomial::BytecodeVal(i)],
+                vec![CommittedPolynomial::CircuitFlags(i)],
                 SumcheckId::BytecodeReadRaf,
                 r_address.r.clone(),
             );
-            break;
         }
-        // println!("by");
+
+        // Batch open UnexpandedPC, Imm, Rd, and all CircuitFlags at r_address
+        {
+            let mut polynomials = Vec::with_capacity(3 + CircuitFlags::COUNT);
+            polynomials.push(CommittedPolynomial::UnexpandedPC);
+            polynomials.push(CommittedPolynomial::Imm);
+            polynomials.push(CommittedPolynomial::Rd);
+            for i in 0..CircuitFlags::COUNT {
+                polynomials.push(CommittedPolynomial::CircuitFlags(i));
+            }
+            accumulator.borrow_mut().append_dense(
+                polynomials,
+                SumcheckId::BytecodeReadRaf,
+                r_address.r.clone(),
+            );
+        }
     }
 
     #[cfg(feature = "allocative")]
