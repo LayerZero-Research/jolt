@@ -12,3 +12,4 @@ pub use jolt_core::zkvm::{
     dag::proof_serialization::JoltProof, Jolt, JoltProverPreprocessing, JoltRV32IM,
     JoltVerifierPreprocessing, RV32IMJoltProof, Serializable,
 };
+pub use jolt_core::poly::commitment::dory::test_pairing_output_msm;

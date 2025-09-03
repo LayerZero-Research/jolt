@@ -1244,6 +1244,64 @@ impl AppendToTranscript for DoryCommitment {
     }
 }
 
+use ark_ec::scalar_mul::variable_base::VariableBaseMSM as ArkVariableBaseMSM;
+pub fn test_pairing_output_msm(num_elems: usize) {
+    // Test MSM operation on PairingOutput<Bn254> to debug the combine_commitments issue
+    use ark_bn254::{Bn254, Fr, G1Projective, G2Projective};
+    use ark_ec::pairing::{Pairing as ArkPairing, PairingOutput};
+    use ark_ff::UniformRand;
+    use ark_std::rand::thread_rng;
+    
+    let mut rng = thread_rng();
+    
+    // Create some random G1 and G2 elements
+    let g1 = G1Projective::rand(&mut rng);
+    let g2 = G2Projective::rand(&mut rng);
+    
+    // Create PairingOutput elements by pairing G1 and G2 elements
+    let mut pairing_bases = Vec::new();
+    let mut coeffs = Vec::new();
+    
+    for _ in 0..num_elems {
+        // Create a random scalar for G1
+        let scalar_g1 = Fr::rand(&mut rng);
+        let g1_scaled = g1 * scalar_g1;
+        
+        // Compute pairing to get PairingOutput
+        let pairing_result: PairingOutput<Bn254> = Bn254::pairing(g1_scaled, g2);
+        pairing_bases.push(pairing_result);
+        
+        // Create a random coefficient
+        let coeff = Fr::rand(&mut rng);
+        coeffs.push(coeff);
+    }
+        
+    // Prepare DoryCommitments for combine_commitments test
+    let commitments: Vec<DoryCommitment> = pairing_bases
+        .iter()
+        .map(|po| {
+            let wrapper = JoltGTWrapper::from(*po);
+            DoryCommitment(wrapper)
+        })
+        .collect();
+
+        // Convert to PairingOutput<Bn254> first (as you already do)
+        let pairing_bases: Vec<PairingOutput<Bn254>> = commitments
+            .iter()
+            .map(|c| c.borrow().0.clone().into())
+            .collect();
+        
+        // Call MSM via UFCS on the concrete type
+        let result0: Result<PairingOutput<Bn254>, usize> = <PairingOutput<Bn254> as ArkVariableBaseMSM>::msm_serial(&pairing_bases, &coeffs);
+        let result = result0.unwrap_or_else(|bad_index| panic!(
+            "MSM failed at index {}: bases.len() = {}, coeffs.len() = {}",
+            bad_index, pairing_bases.len(), coeffs.len()
+        ));
+        
+        // Convert back to DoryCommitment
+        let batched_commitment1 = DoryCommitment(JoltGTWrapper::from(result));    
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

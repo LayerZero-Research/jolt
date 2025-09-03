@@ -2199,6 +2199,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b15813163c1d831bf4a13c3610c05c0d03b39feb07f7e09fa234dac9b15aaf39"
 
 [[package]]
+name = "pairing-msm"
+version = "0.1.0"
+dependencies = [
+ "jolt-sdk",
+ "pairing-msm-guest",
+]
+
+[[package]]
+name = "pairing-msm-guest"
+version = "0.1.0"
+dependencies = [
+ "jolt-sdk",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.12.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
