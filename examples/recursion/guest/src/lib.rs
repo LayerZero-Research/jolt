@@ -5,6 +5,7 @@ use jolt_sdk::{self as jolt};
 extern crate alloc;
 
 use ark_serialize::{CanonicalDeserialize, Compress, Validate};
+use jolt::test_pairing_output_msm;
 use jolt::Jolt;
 use jolt::{JoltDevice, JoltRV32IM, JoltVerifierPreprocessing, RV32IMJoltProof, F, PCS};
 
@@ -26,6 +27,10 @@ fn verify(bytes: &[u8]) -> u32 {
     };
 
     let mut cursor = std::io::Cursor::new(data_bytes);
+
+    start_cycle_tracking("Pairing_MSM");
+    test_pairing_output_msm(30);
+    end_cycle_tracking("Pairing_MSM");
 
     start_cycle_tracking("deserialize preprocessing");
     let verifier_preprocessing: JoltVerifierPreprocessing<F, PCS> =
