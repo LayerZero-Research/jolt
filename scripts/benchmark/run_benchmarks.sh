@@ -11,6 +11,7 @@
 #   --policy bind|interleave        NUMA memory policy. Default: env PIN_POLICY or bind
 #   --max-scale N                   Max scale exponent (passed to jolt_runner.sh as first arg)
 #   --min-scale M                   Min scale exponent (passed as second arg)
+#   --resume                        Resume from previous run (skip completed benchmarks)
 #   -h | --help                     Show this help
 #
 # Examples:
@@ -25,6 +26,20 @@
 #   - This script forwards only max/min scale to jolt_runner.sh. Edit that script for bench list.
 
 set -euo pipefail
+
+# =============================================================================
+# DEFAULTS - All configurable parameters are defined here
+# =============================================================================
+
+# Scale range defaults (can be overridden by flags or env vars)
+DEFAULT_MAX_SCALE=30
+DEFAULT_MIN_SCALE=21
+
+# NUMA pinning defaults (can be overridden by flags or env vars)  
+DEFAULT_PIN_NODES=${PIN_NODES:-0}
+DEFAULT_PIN_POLICY=${PIN_POLICY:-bind}
+
+# =============================================================================
 
 show_help() {
   sed -n '2,40p' "$0"
@@ -56,7 +71,7 @@ if [[ "$OS_NAME" == "Linux" ]]; then
   IS_LINUX=1
 fi
 
-# Defaults (can be overridden by flags or env)
+# Initialize variables with defaults
 # Prep by default on Linux; skip on macOS
 if (( IS_LINUX )); then
   PREP=1
@@ -64,10 +79,11 @@ else
   PREP=0
 fi
 PIN=0
-PIN_NODES_DEFAULT=${PIN_NODES:-0}
-PIN_POLICY_DEFAULT=${PIN_POLICY:-bind}
-MAX_SCALE=""
-MIN_SCALE=""
+RESUME=0
+PIN_NODES_DEFAULT="$DEFAULT_PIN_NODES"
+PIN_POLICY_DEFAULT="$DEFAULT_PIN_POLICY"
+MAX_SCALE="$DEFAULT_MAX_SCALE"
+MIN_SCALE="$DEFAULT_MIN_SCALE"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -75,6 +91,7 @@ while [[ $# -gt 0 ]]; do
     --no-prep) PREP=0 ;;
     --pin) PIN=1 ;;
     --no-pin) PIN=0 ;;
+    --resume) RESUME=1 ;;
     --nodes)
       [[ $# -lt 2 ]] && { echo "--nodes requires a value"; exit 1; }
       PIN_NODES_DEFAULT="$2"; shift ;;
@@ -107,13 +124,9 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-# Apply defaults if not provided
-MAX_SCALE=${MAX_SCALE:-30}
-MIN_SCALE=${MIN_SCALE:-21}
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-echo "OS: $OS_NAME | prep=$PREP pin=$PIN | nodes=$PIN_NODES_DEFAULT policy=$PIN_POLICY_DEFAULT"
+echo "OS: $OS_NAME | prep=$PREP pin=$PIN resume=$RESUME | nodes=$PIN_NODES_DEFAULT policy=$PIN_POLICY_DEFAULT"
 
 # 1) Prep machine (Linux only)
 if (( PREP )); then
@@ -132,18 +145,24 @@ if [[ ! -x "$BENCH_SCRIPT" ]]; then
   chmod +x "$BENCH_SCRIPT" 2>/dev/null || true
 fi
 
+# Build arguments for benchmark script
+BENCH_ARGS=("$MAX_SCALE" "$MIN_SCALE")
+if (( RESUME )); then
+  BENCH_ARGS+=("--resume")
+fi
+
 if (( PIN )) && (( IS_LINUX )); then
   echo "==> Running benchmarks with NUMA pinning"
   export PIN_NODES="$PIN_NODES_DEFAULT"
   export PIN_POLICY="$PIN_POLICY_DEFAULT"
-  "$SCRIPT_DIR/pin_numa.sh" "$BENCH_SCRIPT" "$MAX_SCALE" "$MIN_SCALE"
+  "$SCRIPT_DIR/pin_numa.sh" "$BENCH_SCRIPT" "${BENCH_ARGS[@]}"
 else
   if (( PIN )) && (( ! IS_LINUX )); then
     echo "==> Skipping pin on $OS_NAME (Linux-only). Running benchmarks directly."
   else
     echo "==> Running benchmarks without pinning"
   fi
-  "$BENCH_SCRIPT" "$MAX_SCALE" "$MIN_SCALE"
+  "$BENCH_SCRIPT" "${BENCH_ARGS[@]}"
 fi
 
 echo "All benchmarks completed."
