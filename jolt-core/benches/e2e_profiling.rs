@@ -70,19 +70,15 @@ fn get_fib_input(scale: usize) -> u32 {
     70000u32 * scale_factor as u32
 }
 
-fn get_sha2_chain_iterations(scale: usize) -> u32 {
-    400 * (1 << (scale - 20)) as u32
-}
+// Use 95% of trace capacity for benchmark purposes
+const SAFETY_MARGIN: f64 = 0.95;
+const CYCLES_PER_SHA256: f64 = 3396.0;
+const CYCLES_PER_SHA3: f64 = 4330.0;
+const CYCLES_PER_BTREEMAP_OP: f64 = 1319.0;
 
-fn get_sha3_chain_iterations(scale: usize) -> u32 {
-    let iterations = 200 * (1 << (scale - 20)) as u32;
-    println!("number of sha3 iterations: {:?}", iterations);
-    iterations
-}
-
-fn get_btreemap_ops(scale: usize) -> u32 {
-    let scale_factor = 1 << (scale - 20);
-    800u32 * scale_factor as u32
+fn scale_to_ops(scale: usize, cycles_per_op: f64) -> u32 {
+    let target_capacity = (1 << scale) as f64 * SAFETY_MARGIN;
+    std::cmp::max(1, (target_capacity / cycles_per_op) as u32)
 }
 
 fn run_benchmark(
@@ -141,7 +137,7 @@ pub fn master_benchmark(
                 postcard::to_stdvec(&get_fib_input(scale)).unwrap()
             }),
             BenchType::Sha2Chain => ("sha2-chain", |scale| {
-                let iterations = get_sha2_chain_iterations(scale);
+                let iterations = scale_to_ops(scale, CYCLES_PER_SHA256);
                 [
                     postcard::to_stdvec(&[5u8; 32]).unwrap(),
                     postcard::to_stdvec(&iterations).unwrap(),
@@ -149,7 +145,8 @@ pub fn master_benchmark(
                 .concat()
             }),
             BenchType::Sha3Chain => ("sha3-chain", |scale| {
-                let iterations = get_sha3_chain_iterations(scale);
+                let iterations = scale_to_ops(scale, CYCLES_PER_SHA3);
+                println!("number of sha3 iterations: {:?}", iterations);
                 [
                     postcard::to_stdvec(&[5u8; 32]).unwrap(),
                     postcard::to_stdvec(&iterations).unwrap(),
@@ -159,7 +156,7 @@ pub fn master_benchmark(
             BenchType::Sha2 => panic!("Use sha2-chain instead"),
             BenchType::Sha3 => panic!("Use sha3-chain instead"),
             BenchType::Btreemap => ("btreemap", |scale| {
-                postcard::to_stdvec(&get_btreemap_ops(scale)).unwrap()
+                postcard::to_stdvec(&scale_to_ops(scale, CYCLES_PER_BTREEMAP_OP)).unwrap()
             }),
         };
 
@@ -254,14 +251,14 @@ fn prove_example_with_trace(
     let (trace, _, program_io) = program.trace(&serialized_input);
     let trace_length = trace.len();
 
-    println!("Trace length: {trace_length}");
+    println!(
+        "Trace length: {trace_length} ({:.1}% of 2^{scale})",
+        (trace_length as f64 / max_trace_length as f64) * 100.0
+    );
     assert!(
         trace_length <= max_trace_length,
         "Trace length is greater than max trace length"
     );
-    println!("Stack size: {}", program_io.memory_layout.stack_size);
-    println!("Heap size: {}", program_io.memory_layout.memory_size);
-
     let preprocessing = JoltRV32IM::prover_preprocess(
         bytecode.clone(),
         program_io.memory_layout.clone(),
