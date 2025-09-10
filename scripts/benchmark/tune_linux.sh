@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
 # Fast system-level tuning for zkVM benchmarks on Ubuntu 24.
-# Run this whole script (ideally with sudo). It sets performance governor,
-# enables THP, reduces I/O jitter, tames background services, and shows how to
-# pin your run to a NUMA node and specific cores.
+# 
+# Usage:
+#   ./tune_linux.sh           # Full system setup (run once after boot)
+#   ./tune_linux.sh --cache-only  # Per-run prep (page cache drop + ulimits)
+#
+# Full setup: performance governor, THP, reduces I/O jitter, tames background services
+# Per-run prep: drops page cache and sets ulimits for clean benchmark runs
 
 set -euo pipefail
+
+CACHE_ONLY=false
+if [[ "${1:-}" == "--cache-only" ]]; then
+    CACHE_ONLY=true
+fi
 
 need_sudo() {
   if [[ "$EUID" -ne 0 ]]; then
@@ -13,6 +22,29 @@ need_sudo() {
   fi
 }
 need_sudo "$@"
+
+if [[ "$CACHE_ONLY" == "true" ]]; then
+    echo "==> Running per-run prep (cache drop + ulimits)"
+else
+    echo "==> Running full system setup"
+    echo "==> Setting CPU to performance mode"
+fi
+
+# Per-run prep: always run these
+if [[ "$CACHE_ONLY" == "true" ]] || [[ "$CACHE_ONLY" == "false" ]]; then
+    echo "==> Increasing file descriptor & memlock limits for current shell"
+    ulimit -n 1048576 || true
+    ulimit -l unlimited 2>/dev/null || true
+
+    echo "==> Dropping page cache for clean benchmark runs"
+    sync
+    echo 3 > /proc/sys/vm/drop_caches
+fi
+
+# Skip persistent settings if cache-only mode
+if [[ "$CACHE_ONLY" == "true" ]]; then
+    exit 0
+fi
 
 echo "==> Setting CPU to performance mode"
 if command -v powerprofilesctl >/dev/null 2>&1; then
@@ -50,15 +82,6 @@ echo "==> Stopping irqbalance to reduce cross-core interrupts (optional)"
 if systemctl list-unit-files | grep -q '^irqbalance\.service'; then
   systemctl stop irqbalance || true
 fi
-
-echo "==> Increasing file descriptor & memlock limits for current shell"
-ulimit -n 1048576 || true
-ulimit -l unlimited 2>/dev/null || true
-
-echo "==> Dropping page cache (optional, for clean benchmark runs)"
-# Comment out if you prefer warm cache runs.
-sync
-echo 3 > /proc/sys/vm/drop_caches
 
 echo "==> Detecting NUMA topology and preparing core list on node 0"
 if ! command -v lscpu >/dev/null 2>&1; then
