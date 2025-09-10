@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: ./jolt_runner.sh [MAX_TRACE_LENGTH] [MIN_TRACE_LENGTH]
-set -euox pipefail
+set -euo pipefail
 
 # Mitigate stack overflow
 export RUST_MIN_STACK=33554432
@@ -77,6 +77,7 @@ for scale in $(seq $MIN_TRACE_LENGTH $MAX_TRACE_LENGTH); do
         if [ ${#TIME_CMD[@]} -gt 0 ] && [ "$TIME_WITH_GB_CONVERSION" = true ]; then
             # Capture time output to convert KB to GB
             TIME_OUTPUT_FILE=$(mktemp)
+            echo "RUST_MIN_STACK=$RUST_MIN_STACK ${TIME_CMD[*]} -o \"$TIME_OUTPUT_FILE\" $JOLT_BIN benchmark --name \"$bench\" --scale \"$scale\" --format chrome"
             "${TIME_CMD[@]}" -o "$TIME_OUTPUT_FILE" "$JOLT_BIN" benchmark --name "$bench" --scale "$scale" --format chrome
             
             # Parse and display with GB conversion
@@ -87,8 +88,10 @@ for scale in $(seq $MIN_TRACE_LENGTH $MAX_TRACE_LENGTH); do
                 rm -f "$TIME_OUTPUT_FILE"
             fi
         elif [ ${#TIME_CMD[@]} -gt 0 ]; then
+            echo "RUST_MIN_STACK=$RUST_MIN_STACK ${TIME_CMD[*]} $JOLT_BIN benchmark --name \"$bench\" --scale \"$scale\" --format chrome"
             "${TIME_CMD[@]}" "$JOLT_BIN" benchmark --name "$bench" --scale "$scale" --format chrome
         else
+            echo "RUST_MIN_STACK=$RUST_MIN_STACK $JOLT_BIN benchmark --name \"$bench\" --scale \"$scale\" --format chrome"
             "$JOLT_BIN" benchmark --name "$bench" --scale "$scale" --format chrome
         fi
     done
