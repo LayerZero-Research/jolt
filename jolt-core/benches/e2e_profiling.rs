@@ -268,7 +268,7 @@ fn prove_example_with_trace(
         max_trace_length,
     );
 
-    let span = tracing::info_span!("{}_2^{}", bench_name, scale);
+    let span = tracing::info_span!("prove_benchmark", bench_name, scale);
     let start = Instant::now();
     let elf_contents_opt = program.get_elf_contents();
     let elf_contents = elf_contents_opt.as_deref().expect("elf contents is None");
