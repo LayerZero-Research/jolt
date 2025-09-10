@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Usage: ./jolt_runner.sh [MAX_TRACE_LENGTH] [MIN_TRACE_LENGTH]
-set -euo pipefail
+set -euox pipefail
+
+# Mitigate stack overflow
+export RUST_MIN_STACK=33554432
 
 # Find the project root by looking for Cargo.toml
 find_project_root() {
@@ -23,7 +26,7 @@ if [[ -z "$PROJECT_ROOT" ]]; then
 fi
 cd "$PROJECT_ROOT"
 
-MIN_TRACE_LENGTH=${2:-20}
+MIN_TRACE_LENGTH=${2:-21}
 MAX_TRACE_LENGTH=${1:-27}
 BENCH_LIST="fibonacci sha2-chain sha3-chain btreemap"
 echo "Running benchmarks with TRACE_LENGTH=$MIN_TRACE_LENGTH..$MAX_TRACE_LENGTH"
