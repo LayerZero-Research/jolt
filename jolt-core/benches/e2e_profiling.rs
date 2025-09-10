@@ -5,8 +5,6 @@ use jolt_core::zkvm::{Jolt, JoltRV32IM};
 use std::fs;
 use std::io::Write;
 use std::time::Instant;
-use tracing_chrome::ChromeLayerBuilder;
-use tracing_subscriber::{self, prelude::*};
 
 #[derive(Debug, Copy, Clone, clap::ValueEnum)]
 pub enum BenchType {
@@ -83,14 +81,6 @@ fn run_benchmark(
     input_fn: fn(usize) -> Vec<u8>,
     bench_scale: usize,
 ) -> (usize, std::time::Duration) {
-    let bench_name_escaped = bench_name.replace("-", "_");
-    let trace_file =
-        format!("benchmark-runs/perfetto_traces/{bench_name_escaped}_{bench_scale}.json");
-
-    let (chrome_layer, _guard) = ChromeLayerBuilder::new().file(trace_file).build();
-    let subscriber = tracing_subscriber::registry().with(chrome_layer);
-    let _guard = tracing::subscriber::set_default(subscriber);
-
     let input = input_fn(bench_scale);
     let max_trace_length = 1 << bench_scale;
 

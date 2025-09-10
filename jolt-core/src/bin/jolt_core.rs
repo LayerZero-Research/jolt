@@ -57,7 +57,11 @@ fn main() {
     }
 }
 
-fn trace(args: ProfileArgs, benchmark_fn: Vec<(tracing::Span, Box<dyn FnOnce()>)>) {
+fn trace(
+    args: ProfileArgs,
+    benchmark_fn: Vec<(tracing::Span, Box<dyn FnOnce()>)>,
+    trace_file: Option<String>,
+) {
     let mut layers = Vec::new();
 
     let log_layer = tracing_subscriber::fmt::layer()
@@ -87,10 +91,18 @@ fn trace(args: ProfileArgs, benchmark_fn: Vec<(tracing::Span, Box<dyn FnOnce()>)
             layers.push(collector_layer);
         }
         if format.contains(&Format::Chrome) {
-            let (chrome_layer, guard) = ChromeLayerBuilder::new().build();
+            let (chrome_layer, guard) = if let Some(file) = &trace_file {
+                ChromeLayerBuilder::new().file(file).build()
+            } else {
+                ChromeLayerBuilder::new().build()
+            };
             layers.push(chrome_layer.boxed());
             guards.push(Box::new(guard));
-            println!("Running tracing-chrome. Files will be saved as trace-<some timestamp>.json and can be viewed in https://ui.perfetto.dev/");
+            if trace_file.is_some() {
+                tracing::info!("Running tracing-chrome. Files will be saved in benchmark-runs/perfetto_traces/ and can be viewed in https://ui.perfetto.dev/");
+            } else {
+                tracing::info!("Running tracing-chrome. Files will be saved as trace-<some timestamp>.json and can be viewed in https://ui.perfetto.dev/");
+            }
         }
     }
 
@@ -104,12 +116,28 @@ fn trace(args: ProfileArgs, benchmark_fn: Vec<(tracing::Span, Box<dyn FnOnce()>)
 }
 
 fn trace_only(args: ProfileArgs) {
-    trace(args.clone(), benchmarks(args.name))
+    trace(args.clone(), benchmarks(args.name), None)
 }
 
 fn benchmark_and_trace(args: BenchmarkArgs) {
+    // Generate trace filename
+    let bench_name = match args.profile_args.name {
+        BenchType::Fibonacci => "fibonacci",
+        BenchType::Sha2Chain => "sha2_chain",
+        BenchType::Sha3Chain => "sha3_chain",
+        BenchType::Btreemap => "btreemap",
+        BenchType::Sha2 => panic!("Use sha2-chain instead"),
+        BenchType::Sha3 => panic!("Use sha3-chain instead"),
+    };
+    let trace_file = format!(
+        "benchmark-runs/perfetto_traces/{}_{}.json",
+        bench_name, args.scale
+    );
+    std::fs::create_dir_all("benchmark-runs/perfetto_traces").ok();
+
     trace(
         args.profile_args.clone(),
         master_benchmark(args.profile_args.name, args.scale),
+        Some(trace_file),
     )
 }
