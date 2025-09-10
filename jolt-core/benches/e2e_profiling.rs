@@ -2,6 +2,12 @@ use jolt_core::host;
 use jolt_core::zkvm::JoltVerifierPreprocessing;
 use jolt_core::zkvm::{Jolt, JoltRV32IM};
 
+use std::fs;
+use std::io::Write;
+use std::time::Instant;
+use tracing_chrome::ChromeLayerBuilder;
+use tracing_subscriber::{self, prelude::*};
+
 #[derive(Debug, Copy, Clone, clap::ValueEnum)]
 pub enum BenchType {
     Btreemap,
@@ -9,6 +15,7 @@ pub enum BenchType {
     Sha2,
     Sha3,
     Sha2Chain,
+    Sha3Chain,
 }
 
 pub fn benchmarks(bench_type: BenchType) -> Vec<(tracing::Span, Box<dyn FnOnce()>)> {
@@ -17,6 +24,7 @@ pub fn benchmarks(bench_type: BenchType) -> Vec<(tracing::Span, Box<dyn FnOnce()
         BenchType::Sha2 => sha2(),
         BenchType::Sha3 => sha3(),
         BenchType::Sha2Chain => sha2_chain(),
+        BenchType::Sha3Chain => sha3_chain(),
         BenchType::Fibonacci => fibonacci(),
     }
 }
@@ -46,8 +54,147 @@ fn sha2_chain() -> Vec<(tracing::Span, Box<dyn FnOnce()>)> {
     use sha2_inline as _;
     let mut inputs = vec![];
     inputs.append(&mut postcard::to_stdvec(&[5u8; 32]).unwrap());
-    inputs.append(&mut postcard::to_stdvec(&1000u32).unwrap());
+    inputs.append(&mut postcard::to_stdvec(&50u32).unwrap());
     prove_example("sha2-chain-guest", inputs)
+}
+
+fn sha3_chain() -> Vec<(tracing::Span, Box<dyn FnOnce()>)> {
+    let mut inputs = vec![];
+    inputs.append(&mut postcard::to_stdvec(&[5u8; 32]).unwrap());
+    inputs.append(&mut postcard::to_stdvec(&20u32).unwrap());
+    prove_example("sha3-chain-guest", inputs)
+}
+
+fn get_fib_input(scale: usize) -> u32 {
+    let scale_factor = 1 << (scale - 20);
+    70000u32 * scale_factor as u32
+}
+
+fn get_sha2_chain_iterations(scale: usize) -> u32 {
+    400 * (1 << (scale - 20)) as u32
+}
+
+fn get_sha3_chain_iterations(scale: usize) -> u32 {
+    let iterations = 200 * (1 << (scale - 20)) as u32;
+    println!("number of sha3 iterations: {:?}", iterations);
+    iterations
+}
+
+fn get_btreemap_ops(scale: usize) -> u32 {
+    let scale_factor = 1 << (scale - 20);
+    800u32 * scale_factor as u32
+}
+
+fn run_benchmark(
+    bench_name: &str,
+    input_fn: fn(usize) -> Vec<u8>,
+    bench_scale: usize,
+) -> (usize, std::time::Duration) {
+    println!("Running {bench_name} benchmark at scale 2^{bench_scale}");
+
+    let bench_name_escaped = bench_name.replace("-", "_");
+    let trace_file = format!("perfetto_traces/{bench_name_escaped}_{bench_scale}.json");
+
+    let (chrome_layer, _guard) = ChromeLayerBuilder::new().file(trace_file).build();
+    let subscriber = tracing_subscriber::registry().with(chrome_layer);
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let input = input_fn(bench_scale);
+    let max_trace_length = 1 << bench_scale;
+
+    prove_example_with_trace(
+        &format!("{bench_name}-guest"),
+        input,
+        max_trace_length,
+        bench_name,
+        bench_scale,
+    )
+}
+
+fn get_memory_params(bench_type: &str, _bench_scale: usize) -> (u64, u64) {
+    // DEFAULT_STACK_SIZE: 4096
+    let base_stack_size = 1024 * 1024;
+    // DEFAULT_MEMORY_SIZE: 32 * 1024 * 1024
+    let base_heap_size = 1024 * 10;
+
+    match bench_type {
+        // memory_size = 10240
+        // BenchType::Fibonacci => (10 * 1024 * 1024, 0, 0),
+        // memory_size = 10240
+        // BenchType::Sha2 | BenchType::Sha2Chain => (0, 0, 0),
+        // memory_size = 10240
+        // BenchType::Sha3 | BenchType::Sha3Chain => (0, 0, 0),
+        "btreemap" => (10000, 10000000),
+        _ => (base_stack_size, base_heap_size),
+    }
+}
+
+pub fn master_benchmark(
+    bench_type: BenchType,
+    bench_scale: usize,
+) -> Vec<(tracing::Span, Box<dyn FnOnce()>)> {
+    if let Err(e) = fs::create_dir_all("perfetto_traces") {
+        eprintln!("Warning: Failed to create perfetto_traces directory: {e}");
+    }
+
+    let task = move || {
+        let (bench_name, input_fn): (&str, fn(usize) -> Vec<u8>) = match bench_type {
+            BenchType::Fibonacci => ("fibonacci", |scale| {
+                postcard::to_stdvec(&get_fib_input(scale)).unwrap()
+            }),
+            BenchType::Sha2Chain => ("sha2-chain", |scale| {
+                let iterations = get_sha2_chain_iterations(scale);
+                [
+                    postcard::to_stdvec(&[5u8; 32]).unwrap(),
+                    postcard::to_stdvec(&iterations).unwrap(),
+                ]
+                .concat()
+            }),
+            BenchType::Sha3Chain => ("sha3-chain", |scale| {
+                let iterations = get_sha3_chain_iterations(scale);
+                [
+                    postcard::to_stdvec(&[5u8; 32]).unwrap(),
+                    postcard::to_stdvec(&iterations).unwrap(),
+                ]
+                .concat()
+            }),
+            BenchType::Sha2 => panic!("Use sha2-chain instead"),
+            BenchType::Sha3 => panic!("Use sha3-chain instead"),
+            BenchType::Btreemap => ("btreemap", |scale| {
+                postcard::to_stdvec(&get_btreemap_ops(scale)).unwrap()
+            }),
+        };
+
+        let (trace_length, duration) = run_benchmark(bench_name, input_fn, bench_scale);
+
+        println!(
+            "  Prover completed in {:.2}s ({:.2} kHz)",
+            duration.as_secs_f64(),
+            trace_length as f64 / duration.as_secs_f64() / 1000.0
+        );
+
+        let summary_line = format!(
+            "{},{},{:.2},{},{:.2}\n",
+            bench_name,
+            bench_scale,
+            duration.as_secs_f64(),
+            trace_length,
+            trace_length as f64 / duration.as_secs_f64()
+        );
+        if let Err(e) = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("perfetto_traces/timings.csv")
+            .and_then(|mut f| f.write_all(summary_line.as_bytes()))
+        {
+            eprintln!("Failed to write timing: {e}");
+        }
+    };
+
+    vec![(
+        tracing::info_span!("MasterBenchmark"),
+        Box::new(task) as Box<dyn FnOnce()>,
+    )]
 }
 
 fn prove_example(
@@ -55,7 +202,7 @@ fn prove_example(
     serialized_input: Vec<u8>,
 ) -> Vec<(tracing::Span, Box<dyn FnOnce()>)> {
     let mut tasks = Vec::new();
-    let mut program = host::Program::new(example_name);
+    let mut program: host::Program = host::Program::new(example_name);
     let (bytecode, init_memory_state, _) = program.decode();
     let (_, _, program_io) = program.trace(&serialized_input);
 
@@ -88,4 +235,54 @@ fn prove_example(
     ));
 
     tasks
+}
+
+fn prove_example_with_trace(
+    example_name: &str,
+    serialized_input: Vec<u8>,
+    max_trace_length: usize,
+    bench_name: &str,
+    scale: usize,
+) -> (usize, std::time::Duration) {
+    let mut program: host::Program = host::Program::new(example_name);
+    let (stack_size, heap_size) = get_memory_params(bench_name, scale);
+    if stack_size > 0 {
+        program.set_stack_size(stack_size);
+    }
+    if heap_size > 0 {
+        program.set_memory_size(heap_size);
+    }
+    let (bytecode, init_memory_state, _) = program.decode();
+    let (trace, _, program_io) = program.trace(&serialized_input);
+    let trace_length = trace.len();
+
+    println!("Trace length: {trace_length}");
+    println!("Stack size: {}", program_io.memory_layout.stack_size);
+    println!("Heap size: {}", program_io.memory_layout.memory_size);
+
+    let preprocessing = JoltRV32IM::prover_preprocess(
+        bytecode.clone(),
+        program_io.memory_layout.clone(),
+        init_memory_state,
+        max_trace_length,
+    );
+
+    let span = tracing::info_span!("{}_2^{}", bench_name, scale);
+    let start = Instant::now();
+    let elf_contents_opt = program.get_elf_contents();
+    let elf_contents = elf_contents_opt.as_deref().expect("elf contents is None");
+    let (jolt_proof, program_io, _) =
+        span.in_scope(|| JoltRV32IM::prove(&preprocessing, &elf_contents, &serialized_input));
+    let prove_duration = start.elapsed();
+
+    let verifier_preprocessing = JoltVerifierPreprocessing::from(&preprocessing);
+    let verification_result =
+        JoltRV32IM::verify(&verifier_preprocessing, jolt_proof, program_io, None);
+    assert!(
+        verification_result.is_ok(),
+        "Verification failed with error: {:?}",
+        verification_result.err()
+    );
+
+    (trace_length, prove_duration)
 }
