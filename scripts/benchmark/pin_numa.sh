@@ -30,7 +30,7 @@ CMD=( "$@" )
 : "${PIN_POLICY:=bind}"
 : "${SHOW_TIMING:=0}"
 
-echo "Running command '$FULL_CMD' with NUMA pinning"
+echo "Running command '${CMD[*]}' with NUMA pinning"
 echo "PIN_NODES=${PIN_NODES} | PIN_POLICY=${PIN_POLICY}"
 
 # Check required tools

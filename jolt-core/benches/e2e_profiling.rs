@@ -87,7 +87,8 @@ fn run_benchmark(
     bench_scale: usize,
 ) -> (usize, std::time::Duration) {
     let bench_name_escaped = bench_name.replace("-", "_");
-    let trace_file = format!("perfetto_traces/{bench_name_escaped}_{bench_scale}.json");
+    let trace_file =
+        format!("benchmark-runs/perfetto_traces/{bench_name_escaped}_{bench_scale}.json");
 
     let (chrome_layer, _guard) = ChromeLayerBuilder::new().file(trace_file).build();
     let subscriber = tracing_subscriber::registry().with(chrome_layer);
@@ -127,8 +128,11 @@ pub fn master_benchmark(
     bench_type: BenchType,
     bench_scale: usize,
 ) -> Vec<(tracing::Span, Box<dyn FnOnce()>)> {
-    if let Err(e) = fs::create_dir_all("perfetto_traces") {
-        eprintln!("Warning: Failed to create perfetto_traces directory: {e}");
+    if let Err(e) = fs::create_dir_all("benchmark-runs/perfetto_traces") {
+        eprintln!("Warning: Failed to create benchmark-runs/perfetto_traces directory: {e}");
+    }
+    if let Err(e) = fs::create_dir_all("benchmark-runs/results") {
+        eprintln!("Warning: Failed to create benchmark-runs/results directory: {e}");
     }
 
     let task = move || {
@@ -169,20 +173,31 @@ pub fn master_benchmark(
         );
 
         let summary_line = format!(
-            "{},{},{:.2},{},{:.2}\n",
+            "{},{},{:.2},{},{:.2}",
             bench_name,
             bench_scale,
             duration.as_secs_f64(),
             trace_length,
             trace_length as f64 / duration.as_secs_f64()
         );
+
+        // Write individual result file for resume detection
+        let individual_file = format!("benchmark-runs/results/{}_{}.csv", bench_name, bench_scale);
+        if let Err(e) = fs::write(&individual_file, &summary_line) {
+            eprintln!(
+                "Failed to write individual result file {}: {e}",
+                individual_file
+            );
+        }
+
+        // Also append to consolidated timings file
         if let Err(e) = fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open("perfetto_traces/timings.csv")
-            .and_then(|mut f| f.write_all(summary_line.as_bytes()))
+            .open("benchmark-runs/results/timings.csv")
+            .and_then(|mut f| f.write_all(format!("{}\n", summary_line).as_bytes()))
         {
-            eprintln!("Failed to write timing: {e}");
+            eprintln!("Failed to write consolidated timing: {e}");
         }
     };
 

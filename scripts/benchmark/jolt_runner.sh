@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
-# Usage: ./jolt_runner.sh [MAX_TRACE_LENGTH] [MIN_TRACE_LENGTH]
+# Usage: ./jolt_runner.sh [MAX_TRACE_LENGTH] [MIN_TRACE_LENGTH] [--resume]
 set -euo pipefail
+
+MIN_TRACE_LENGTH=${2:-21}
+MAX_TRACE_LENGTH=${1:-27}
+RESUME_MODE=false
+BENCH_LIST="fibonacci sha2-chain sha3-chain btreemap"
+
+# Check for --resume flag
+for arg in "$@"; do
+    if [[ "$arg" == "--resume" ]]; then
+        RESUME_MODE=true
+        break
+    fi
+done
 
 # Mitigate stack overflow
 export RUST_MIN_STACK=33554432
@@ -26,9 +39,6 @@ if [[ -z "$PROJECT_ROOT" ]]; then
 fi
 cd "$PROJECT_ROOT"
 
-MIN_TRACE_LENGTH=${2:-21}
-MAX_TRACE_LENGTH=${1:-27}
-BENCH_LIST="fibonacci sha2-chain sha3-chain btreemap"
 echo "Running benchmarks with TRACE_LENGTH=$MIN_TRACE_LENGTH..$MAX_TRACE_LENGTH"
 
 # if [ -d "perfetto_traces" ]; then
@@ -36,7 +46,7 @@ echo "Running benchmarks with TRACE_LENGTH=$MIN_TRACE_LENGTH..$MAX_TRACE_LENGTH"
 #     rm -rf perfetto_traces
 # fi
 
-mkdir -p perfetto_traces
+mkdir -p benchmark-runs/perfetto_traces benchmark-runs/results
 
 # Detect GNU time (gtime on macOS, /usr/bin/time GNU on Linux)
 TIME_CMD=()
@@ -51,8 +61,8 @@ elif [[ -x /usr/bin/time ]] && /usr/bin/time --version 2>&1 | grep -qi 'GNU'; th
     TIME_WITH_GB_CONVERSION=true
 fi
 
-if [ ! -f "perfetto_traces/timings.csv" ]; then
-    echo "benchmark_name,scale,prover_time_s,trace_length,proving_hz" >perfetto_traces/timings.csv
+if [ ! -f "benchmark-runs/results/timings.csv" ]; then
+    echo "benchmark_name,scale,prover_time_s,trace_length,proving_hz" >benchmark-runs/results/timings.csv
 fi
 
 # Build once, then run the binary for all iterations
@@ -66,13 +76,25 @@ if [ ! -x "$JOLT_BIN" ]; then
     exit 1
 fi
 
-# Clean up existing SRM files
-rm *.srs || true
+# Clean up existing SRS files (skip if resuming)
+if [ "$RESUME_MODE" = false ]; then
+    echo "Cleaning up existing .srs files..."
+    rm -f *.srs
+else
+    echo "Resume mode: preserving existing .srs files"
+fi
 
 for scale in $(seq $MIN_TRACE_LENGTH $MAX_TRACE_LENGTH); do
     echo ">>> Running benchmarks at scale 2^$scale"
     
     for bench in $BENCH_LIST; do
+        # Check if this benchmark is already completed (resume logic)
+        result_file="benchmark-runs/results/${bench}_${scale}.csv"
+        if [ "$RESUME_MODE" = true ] && [ -f "$result_file" ]; then
+            echo "> $bench at scale 2^$scale: SKIPPED (already completed)"
+            continue
+        fi
+        
         echo "> $bench at scale 2^$scale"
         if [ ${#TIME_CMD[@]} -gt 0 ] && [ "$TIME_WITH_GB_CONVERSION" = true ]; then
             # Capture time output to convert KB to GB
@@ -96,3 +118,8 @@ for scale in $(seq $MIN_TRACE_LENGTH $MAX_TRACE_LENGTH); do
         fi
     done
 done
+
+echo "Creating final consolidated results..."
+echo "benchmark_name,scale,prover_time_s,trace_length,proving_hz" > benchmark-runs/results/timings.csv
+cat benchmark-runs/results/*_*.csv >> benchmark-runs/results/timings.csv || true
+echo "Results consolidated in benchmark-runs/results/timings.csv"

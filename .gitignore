@@ -45,3 +45,6 @@ bin/act
 
 # Inline Traces
 *.joltinline
+
+# benchmark-runs
+benchmark-runs/
