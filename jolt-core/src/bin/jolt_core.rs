@@ -2,7 +2,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[path = "../../benches/e2e_profiling.rs"]
 mod e2e_profiling;
-use e2e_profiling::{benchmarks, BenchType};
+use e2e_profiling::{benchmarks, master_benchmark, BenchType};
 
 use std::any::Any;
 
@@ -19,9 +19,10 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     Profile(ProfileArgs),
+    Benchmark(BenchmarkArgs),
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 struct ProfileArgs {
     /// Output formats
     #[clap(short, long, value_enum)]
@@ -30,6 +31,16 @@ struct ProfileArgs {
     /// Type of benchmark to run
     #[clap(long, value_enum)]
     name: BenchType,
+}
+
+#[derive(Args, Debug)]
+struct BenchmarkArgs {
+    #[clap(flatten)]
+    profile_args: ProfileArgs,
+
+    /// Max trace length to use (as 2^scale)
+    #[clap(short, long, default_value_t = 20)]
+    scale: usize,
 }
 
 #[derive(Debug, Clone, ValueEnum, PartialEq)]
@@ -41,11 +52,12 @@ enum Format {
 fn main() {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Profile(args) => trace(args),
+        Commands::Profile(args) => trace_only(args),
+        Commands::Benchmark(args) => benchmark_and_trace(args),
     }
 }
 
-fn trace(args: ProfileArgs) {
+fn trace(args: ProfileArgs, benchmark_fn: Vec<(tracing::Span, Box<dyn FnOnce()>)>) {
     let mut layers = Vec::new();
 
     let log_layer = tracing_subscriber::fmt::layer()
@@ -83,10 +95,21 @@ fn trace(args: ProfileArgs) {
     }
 
     tracing_subscriber::registry().with(layers).init();
-    for (span, bench) in benchmarks(args.name).into_iter() {
+    for (span, bench) in benchmark_fn.into_iter() {
         span.to_owned().in_scope(|| {
             bench();
             tracing::info!("Bench Complete");
         });
     }
+}
+
+fn trace_only(args: ProfileArgs) {
+    trace(args.clone(), benchmarks(args.name))
+}
+
+fn benchmark_and_trace(args: BenchmarkArgs) {
+    trace(
+        args.profile_args.clone(),
+        master_benchmark(args.profile_args.name, args.scale),
+    )
 }
