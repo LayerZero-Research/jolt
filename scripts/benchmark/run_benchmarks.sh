@@ -108,8 +108,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Apply defaults if not provided
-MAX_SCALE=${MAX_SCALE:-27}
-MIN_SCALE=${MIN_SCALE:-20}
+MAX_SCALE=${MAX_SCALE:-30}
+MIN_SCALE=${MIN_SCALE:-21}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

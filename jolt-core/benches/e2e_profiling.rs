@@ -90,8 +90,6 @@ fn run_benchmark(
     input_fn: fn(usize) -> Vec<u8>,
     bench_scale: usize,
 ) -> (usize, std::time::Duration) {
-    println!("Running {bench_name} benchmark at scale 2^{bench_scale}");
-
     let bench_name_escaped = bench_name.replace("-", "_");
     let trace_file = format!("perfetto_traces/{bench_name_escaped}_{bench_scale}.json");
 
@@ -113,9 +111,9 @@ fn run_benchmark(
 
 fn get_memory_params(bench_type: &str, _bench_scale: usize) -> (u64, u64) {
     // DEFAULT_STACK_SIZE: 4096
-    let base_stack_size = 1024 * 1024;
+    let base_stack_size = 1024 * 1024 * 10;
     // DEFAULT_MEMORY_SIZE: 32 * 1024 * 1024
-    let base_heap_size = 1024 * 10;
+    let base_heap_size = 1024 * 1024 * 10;
 
     match bench_type {
         // memory_size = 10240
