@@ -128,5 +128,7 @@ done
 
 echo "Creating final consolidated results..."
 echo "benchmark_name,scale,prover_time_s,trace_length,proving_hz" > benchmark-runs/results/timings.csv
-cat benchmark-runs/results/*_*.csv >> benchmark-runs/results/timings.csv || true
+for csv_file in benchmark-runs/results/*_*.csv; do
+    [ -f "$csv_file" ] && cat "$csv_file" && echo
+done >> benchmark-runs/results/timings.csv
 echo "Results consolidated in benchmark-runs/results/timings.csv"
