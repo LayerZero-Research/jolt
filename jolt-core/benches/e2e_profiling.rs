@@ -255,6 +255,10 @@ fn prove_example_with_trace(
     let trace_length = trace.len();
 
     println!("Trace length: {trace_length}");
+    assert!(
+        trace_length <= max_trace_length,
+        "Trace length is greater than max trace length"
+    );
     println!("Stack size: {}", program_io.memory_layout.stack_size);
     println!("Heap size: {}", program_io.memory_layout.memory_size);
 
