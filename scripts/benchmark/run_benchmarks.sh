@@ -5,7 +5,7 @@
 #   ./scripts/benchmark/run_benchmarks.sh [flags]
 #
 # Flags:
-#   --prep | --no-prep              Run machine prep (Linux only, requires sudo). Default: --prep on Linux, --no-prep on macOS
+#   --prep | --no-prep              Run full system setup (Linux only, requires sudo). Default: --prep on Linux, --no-prep on macOS
 #   --pin  | --no-pin               Run benchmarks under NUMA pinning. Default: --no-pin
 #   --nodes NODES                   NUMA nodes to pin to (e.g. 0, 0-3, 0,2). Default: env PIN_NODES or 0
 #   --policy bind|interleave        NUMA memory policy. Default: env PIN_POLICY or bind
@@ -23,6 +23,7 @@
 #
 # Notes:
 #   - On macOS, prep and pin are skipped automatically.
+#   - Per-run prep (page cache drop) runs automatically on Linux for clean benchmarks.
 #   - This script forwards only max/min scale to jolt_runner.sh. Edit that script for bench list.
 
 set -euo pipefail
@@ -138,7 +139,7 @@ if (( PREP )); then
   fi
 fi
 
-# 2) Run benchmarks, optionally pinned (Linux only)
+# 4) Run benchmarks, optionally pinned (Linux only)
 BENCH_SCRIPT="$SCRIPT_DIR/jolt_runner.sh"
 if [[ ! -x "$BENCH_SCRIPT" ]]; then
   # Try to make it executable; ignore failure
@@ -149,6 +150,12 @@ fi
 BENCH_ARGS=("$MAX_SCALE" "$MIN_SCALE")
 if (( RESUME )); then
   BENCH_ARGS+=("--resume")
+fi
+
+# 3) Per-run prep: drop page cache for clean benchmarks (Linux only)
+if (( IS_LINUX )); then
+  echo "==> Running per-run prep (cache drop)"
+  "$SCRIPT_DIR/tune_linux.sh" --cache-only
 fi
 
 if (( PIN )) && (( IS_LINUX )); then

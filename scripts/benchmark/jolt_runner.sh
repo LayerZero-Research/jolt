@@ -106,7 +106,14 @@ for scale in $(seq $MIN_TRACE_LENGTH $MAX_TRACE_LENGTH); do
             if [[ -f "$TIME_OUTPUT_FILE" ]]; then
                 IFS=, read -r elapsed_time max_rss_kb cpu_pct < "$TIME_OUTPUT_FILE"
                 max_rss_gb=$(python3 -c "print(f'{float('$max_rss_kb') / 1024 / 1024:.2f}')")
-                echo "Elapsed: ${elapsed_time} | Max RSS: ${max_rss_gb} GB | CPU: ${cpu_pct}"
+                
+                # Convert M:SS.SS to seconds
+                if [[ "$elapsed_time" == *:* ]]; then
+                    elapsed_seconds=$(echo "$elapsed_time" | awk -F: '{print $1*60 + $2}')
+                    echo "Elapsed: ${elapsed_time} (${elapsed_seconds}s) | Max RSS: ${max_rss_gb} GB | CPU: ${cpu_pct}"
+                else
+                    echo "Elapsed: ${elapsed_time} | Max RSS: ${max_rss_gb} GB | CPU: ${cpu_pct}"
+                fi
                 rm -f "$TIME_OUTPUT_FILE"
             fi
         elif [ ${#TIME_CMD[@]} -gt 0 ]; then
