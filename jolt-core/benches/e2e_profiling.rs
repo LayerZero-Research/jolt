@@ -66,7 +66,7 @@ fn sha3_chain() -> Vec<(tracing::Span, Box<dyn FnOnce()>)> {
 }
 
 // Use 95% of trace capacity for benchmark purposes
-const SAFETY_MARGIN: f64 = 0.95;
+const SAFETY_MARGIN: f64 = 0.9;
 // Measured empirically for RV64
 const CYCLES_PER_SHA256: f64 = 3396.0;
 const CYCLES_PER_SHA3: f64 = 4330.0;
