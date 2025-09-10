@@ -65,16 +65,13 @@ fn sha3_chain() -> Vec<(tracing::Span, Box<dyn FnOnce()>)> {
     prove_example("sha3-chain-guest", inputs)
 }
 
-fn get_fib_input(scale: usize) -> u32 {
-    let scale_factor = 1 << (scale - 20);
-    70000u32 * scale_factor as u32
-}
-
 // Use 95% of trace capacity for benchmark purposes
 const SAFETY_MARGIN: f64 = 0.95;
+// Measured empirically for RV64
 const CYCLES_PER_SHA256: f64 = 3396.0;
 const CYCLES_PER_SHA3: f64 = 4330.0;
-const CYCLES_PER_BTREEMAP_OP: f64 = 1319.0;
+const CYCLES_PER_BTREEMAP_OP: f64 = 1400.0;
+const CYCLES_PER_FIBONACCI_UNIT: f64 = 12.0;
 
 fn scale_to_ops(scale: usize, cycles_per_op: f64) -> u32 {
     let target_capacity = (1 << scale) as f64 * SAFETY_MARGIN;
@@ -138,7 +135,7 @@ pub fn master_benchmark(
     let task = move || {
         let (bench_name, input_fn): (&str, fn(usize) -> Vec<u8>) = match bench_type {
             BenchType::Fibonacci => ("fibonacci", |scale| {
-                postcard::to_stdvec(&get_fib_input(scale)).unwrap()
+                postcard::to_stdvec(&scale_to_ops(scale, CYCLES_PER_FIBONACCI_UNIT)).unwrap()
             }),
             BenchType::Sha2Chain => ("sha2-chain", |scale| {
                 let iterations = scale_to_ops(scale, CYCLES_PER_SHA256);
