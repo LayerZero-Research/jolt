@@ -415,6 +415,11 @@ pub fn compute_claimed_witness_evals<F: JoltField>(
 ) -> Vec<F> {
     let eq_rx = EqPolynomial::evals(r_cycle);
 
+    tracing::info!(
+        "compute_claimed_witness_evals/eq_rx.len() = {}",
+        eq_rx.len()
+    );
+
     let num_chunks = rayon::current_num_threads().next_power_of_two();
     let chunk_size = (eq_rx.len() / num_chunks).max(1);
 

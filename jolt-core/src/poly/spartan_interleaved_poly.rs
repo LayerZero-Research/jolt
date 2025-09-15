@@ -185,6 +185,26 @@ impl<const NUM_SVO_ROUNDS: usize, F: JoltField> SpartanInterleavedPolynomial<NUM
         let num_x_out_vals = 1usize << iter_num_x_out_vars;
         let num_x_in_step_vals = 1usize << iter_num_x_in_step_vars;
 
+        // Snapshot config for comparison between workloads
+        tracing::info!("new_with_precompute_config:");
+        tracing::info!(
+            "  vars: out={} in={} in_step={} in_constraint={}",
+            iter_num_x_out_vars,
+            iter_num_x_in_vars,
+            iter_num_x_in_step_vars,
+            iter_num_x_in_constraint_vars
+        );
+        tracing::info!(
+            "  r1cs: uniform={} rem_uniform={}",
+            num_uniform_r1cs_constraints,
+            rem_num_uniform_r1cs_constraints
+        );
+        tracing::info!(
+            "  vals: out={} in_step={}",
+            num_x_out_vals,
+            num_x_in_step_vals
+        );
+
         struct PrecomputeTaskOutput<F: JoltField> {
             ab_coeffs_local: Vec<SparseCoefficient<F>>,
             svo_accums_zero_local: [F; NUM_ACCUMS_EVAL_ZERO],
