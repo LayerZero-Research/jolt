@@ -64,6 +64,8 @@ fn trace(
 ) {
     let mut layers = Vec::new();
 
+    let log_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")); // Default if RUST_LOG not set
+
     let log_layer = tracing_subscriber::fmt::layer()
         .compact()
         .with_target(false)
@@ -71,7 +73,7 @@ fn trace(
         .with_line_number(false)
         .with_thread_ids(false)
         .with_thread_names(false)
-        .with_filter(EnvFilter::from_default_env()) // reads RUST_LOG
+        .with_filter(log_filter.clone())
         .boxed();
     layers.push(log_layer);
 
@@ -87,6 +89,7 @@ fn trace(
                 .with_line_number(false)
                 .with_thread_ids(false)
                 .with_thread_names(false)
+                .with_filter(log_filter)
                 .boxed();
             layers.push(collector_layer);
         }
