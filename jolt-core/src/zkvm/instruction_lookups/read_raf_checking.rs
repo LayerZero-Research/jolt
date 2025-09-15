@@ -330,6 +330,9 @@ impl<F: JoltField> SumcheckInstance<F> for ReadRafSumcheck<F> {
         if round < LOG_K {
             rayon::scope(|s| {
                 s.spawn(|_| {
+                    let _span =
+                        tracing::info_span!("ReadRafProverState::bind/suffix_polys", round = round)
+                            .entered();
                     ps.suffix_polys.par_iter_mut().for_each(|polys| {
                         polys
                             .par_iter_mut()

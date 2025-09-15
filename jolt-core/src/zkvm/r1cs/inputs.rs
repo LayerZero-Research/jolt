@@ -389,6 +389,23 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>> WitnessRowAccessor<F>
     }
 }
 
+#[tracing::instrument(skip_all, fields(chunk_index, chunk_size))]
+fn evaluate_witness_chunk<F: JoltField>(
+    (chunk_index, eq_chunk): (usize, &[F]),
+    chunk_size: usize,
+    accessor: &dyn WitnessRowAccessor<F>,
+) -> [F; NUM_R1CS_INPUTS] {
+    let mut chunk_result = [F::zero(); NUM_R1CS_INPUTS];
+    let mut t = chunk_index * chunk_size;
+    for eq_rx_t in eq_chunk {
+        for i in 0..NUM_R1CS_INPUTS {
+            chunk_result[i] += accessor.value_at(i, t).mul_01_optimized(*eq_rx_t);
+        }
+        t += 1;
+    }
+    chunk_result
+}
+
 /// Compute `z(r_cycle) = Σ_t eq(r_cycle, t) * P_i(t)` for all inputs i, without
 /// materializing P_i. Returns `[P_0(r_cycle), P_1(r_cycle), ...]` in input order.
 #[tracing::instrument(skip_all)]
@@ -405,15 +422,7 @@ pub fn compute_claimed_witness_evals<F: JoltField>(
         .par_chunks(chunk_size)
         .enumerate()
         .map(|(chunk_index, eq_chunk)| {
-            let mut chunk_result = [F::zero(); NUM_R1CS_INPUTS];
-            let mut t = chunk_index * chunk_size;
-            for eq_rx_t in eq_chunk {
-                for i in 0..NUM_R1CS_INPUTS {
-                    chunk_result[i] += accessor.value_at(i, t).mul_01_optimized(*eq_rx_t);
-                }
-                t += 1;
-            }
-            chunk_result
+            evaluate_witness_chunk((chunk_index, eq_chunk), chunk_size, accessor)
         })
         .reduce(
             || [F::zero(); NUM_R1CS_INPUTS],

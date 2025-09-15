@@ -196,6 +196,12 @@ impl<F: JoltField> ReadWriteCheckingProverState<F> {
         // TODO(moodlezoup): could potentially generate these checkpoints in the tracer
         // Generate checkpoints as a flat vector because it will be turned into the
         // materialized Val polynomial after the first half of sumcheck.
+        let _span2 = tracing::info_span!(
+            "compute checkpoints/val_checkpoints",
+            num_chunks = num_chunks,
+            K = K
+        )
+        .entered();
         let mut val_checkpoints: Vec<F> = unsafe_allocate_zero_vec(K * num_chunks);
         val_checkpoints
             .par_chunks_mut(K)
@@ -206,6 +212,7 @@ impl<F: JoltField> ReadWriteCheckingProverState<F> {
                     .zip(checkpoint.iter())
                     .for_each(|(dest, src)| *dest = F::from_i128(*src))
             });
+        drop(_span2);
 
         drop(_guard);
         drop(span);

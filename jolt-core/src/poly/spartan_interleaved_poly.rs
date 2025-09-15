@@ -222,6 +222,14 @@ impl<const NUM_SVO_ROUNDS: usize, F: JoltField> SpartanInterleavedPolynomial<NUM
                 let x_out_end = std::cmp::min((chunk_idx + 1) * x_out_chunk_size, num_x_out_vals);
                 let cycles_per_chunk = (x_out_end - x_out_start) * num_x_in_step_vals;
 
+                let _span = tracing::info_span!(
+                    "NewSpartanInterleavedPolynomial::new_with_precompute/spartan_precompute_chunk",
+                    chunk = chunk_idx,
+                    total_chunks = num_parallel_chunks,
+                    cycles_per_chunk = cycles_per_chunk,
+                )
+                .entered();
+
                 let max_ab_coeffs_capacity = 2 * cycles_per_chunk * num_uniform_r1cs_constraints;
                 let mut chunk_ab_coeffs: Vec<SparseCoefficient<F>> =
                     Vec::with_capacity(max_ab_coeffs_capacity);
