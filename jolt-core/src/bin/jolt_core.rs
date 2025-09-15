@@ -92,9 +92,12 @@ fn trace(
         }
         if format.contains(&Format::Chrome) {
             let (chrome_layer, guard) = if let Some(file) = &trace_file {
-                ChromeLayerBuilder::new().file(file).build()
+                ChromeLayerBuilder::new()
+                    .file(file)
+                    .include_args(true)
+                    .build()
             } else {
-                ChromeLayerBuilder::new().build()
+                ChromeLayerBuilder::new().include_args(true).build()
             };
             layers.push(chrome_layer.boxed());
             guards.push(Box::new(guard));
