@@ -389,7 +389,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>> WitnessRowAccessor<F>
     }
 }
 
-#[tracing::instrument(skip(eq_chunk, accessor), fields(t))]
+#[tracing::instrument(skip(eq_chunk, accessor), fields(num_elems, num_elem_sparse, sparsity))]
 fn evaluate_witness_chunk<F: JoltField>(
     (chunk_index, eq_chunk): (usize, &[F]),
     chunk_size: usize,
@@ -397,13 +397,25 @@ fn evaluate_witness_chunk<F: JoltField>(
 ) -> [F; NUM_R1CS_INPUTS] {
     let mut chunk_result = [F::zero(); NUM_R1CS_INPUTS];
     let mut t = chunk_index * chunk_size;
+    let mut num_elem_sparse = 0;
     for eq_rx_t in eq_chunk {
         for i in 0..NUM_R1CS_INPUTS {
-            chunk_result[i] += accessor.value_at(i, t).mul_01_optimized(*eq_rx_t);
+            // chunk_result[i] += accessor.value_at(i, t).mul_01_optimized(*eq_rx_t);
+            let val = accessor.value_at(i, t);
+            if val.is_zero() || val.is_one() {
+                num_elem_sparse += 1;
+            }
+            chunk_result[i] += val.mul_01_optimized(*eq_rx_t);
         }
         t += 1;
     }
-    tracing::Span::current().record("t", t);
+    tracing::Span::current().record("num_elems", NUM_R1CS_INPUTS * chunk_size);
+    tracing::Span::current().record("num_elem_sparse", num_elem_sparse);
+    tracing::Span::current().record(
+        "sparsity",
+        num_elem_sparse as f64 / (NUM_R1CS_INPUTS * chunk_size) as f64,
+    );
+
     chunk_result
 }
 
