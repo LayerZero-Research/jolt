@@ -27,7 +27,15 @@ use crate::zkvm::ProverDebugInfo;
 #[cfg(feature = "allocative")]
 use allocative::FlameGraphBuilder;
 use anyhow::Context;
+use pprof;
 use rayon::prelude::*;
+
+#[cfg(feature = "pprof")]
+use pprof::protos::Message;
+#[cfg(feature = "pprof")]
+use std::fs::File;
+#[cfg(feature = "pprof")]
+use std::io::Write;
 
 pub enum JoltDAG {}
 
@@ -74,6 +82,8 @@ impl JoltDAG {
         }
         drop(commitments);
 
+        // TODO: do a loop of stages so that spans and guards are more systematic and we have less boilerplate for allocative etc
+
         // Stage 1:
         // #[cfg(not(target_arch = "wasm32"))]
         // print_current_memory_usage("Stage 1 baseline");
@@ -89,9 +99,31 @@ impl JoltDAG {
         let mut bytecode_dag = BytecodeDag::default();
 
         tracing::info!("Stage 1 proving");
+        #[cfg(feature = "pprof")]
+        let pprof_guard = pprof::ProfilerGuardBuilder::default()
+            .frequency(1000)
+            .blocklist(&["libc", "libgcc", "pthread", "vdso"])
+            .build()
+            .unwrap();
+
         spartan_dag
             .stage1_prove(&mut state_manager)
             .context("Stage 1")?;
+
+        #[cfg(feature = "pprof")]
+        {
+            if let Ok(report) = pprof_guard.report().build() {
+                let mut file = File::create("pprof/stage1.pb").unwrap();
+                let profile = report.pprof().unwrap();
+                let mut content = Vec::new();
+                profile.encode(&mut content).unwrap();
+                file.write_all(&content).unwrap();
+
+                let file_svg = File::create("pprof/stage1.svg").unwrap();
+                report.flamegraph(file_svg).unwrap();
+            };
+            drop(pprof_guard);
+        }
 
         drop(_guard);
         drop(span);

@@ -21,7 +21,7 @@ license-file = "LICENSE"
 keywords = ["SNARK", "cryptography", "proofs", "zkVM"]
 
 [features]
-default = ["host"]
+default = ["host", "pprof"]
 host = [
     "dep:reqwest",
     "dep:tokio",
@@ -49,6 +49,7 @@ minimal = [
     "rayon",
 ]
 allocative = ["dep:inferno", "ark-ff/allocative"]
+pprof = ["dep:pprof", "dep:prost"]
 test_incremental = []
 
 [dependencies]
@@ -112,6 +113,8 @@ sha2_inline = { package = "jolt-inlines-sha2", path = "../jolt-inlines/sha2", fe
 sha3_inline = { package = "jolt-inlines-keccak256", path = "../jolt-inlines/keccak256", features = [
     "host",
 ], optional = true }
+pprof = { version = "0.15", features = ["prost-codec", "flamegraph"], optional = true }
+prost = { version = "0.14", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5.1", features = ["html_reports"] }
