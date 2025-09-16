@@ -389,7 +389,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>> WitnessRowAccessor<F>
     }
 }
 
-#[tracing::instrument(skip_all, fields(chunk_index, chunk_size))]
+#[tracing::instrument(skip(eq_chunk, accessor), fields(t))]
 fn evaluate_witness_chunk<F: JoltField>(
     (chunk_index, eq_chunk): (usize, &[F]),
     chunk_size: usize,
@@ -403,6 +403,7 @@ fn evaluate_witness_chunk<F: JoltField>(
         }
         t += 1;
     }
+    tracing::Span::current().record("t", t);
     chunk_result
 }
 
@@ -414,11 +415,6 @@ pub fn compute_claimed_witness_evals<F: JoltField>(
     accessor: &dyn WitnessRowAccessor<F>,
 ) -> Vec<F> {
     let eq_rx = EqPolynomial::evals(r_cycle);
-
-    tracing::info!(
-        "compute_claimed_witness_evals/eq_rx.len() = {}",
-        eq_rx.len()
-    );
 
     let num_chunks = rayon::current_num_threads().next_power_of_two();
     let chunk_size = (eq_rx.len() / num_chunks).max(1);
