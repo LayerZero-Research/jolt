@@ -11,115 +11,7 @@ use tracing_subscriber::fmt::format::{FormatEvent, FormatFields};
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{self, prelude::*, EnvFilter};
 
-struct GlogFormatter;
-
-fn days_to_month_day(days_since_epoch: u64) -> (u8, u8) {
-    // Calculate year and day within year from Unix epoch (Jan 1, 1970)
-    let mut year = 1970;
-    let mut remaining_days = days_since_epoch;
-
-    // Find the current year
-    loop {
-        let days_in_year = if is_leap_year(year) { 366 } else { 365 };
-        if remaining_days >= days_in_year {
-            remaining_days -= days_in_year;
-            year += 1;
-        } else {
-            break;
-        }
-    }
-
-    // Now we have remaining_days within the current year
-    let is_leap = is_leap_year(year);
-    let month_days = if is_leap {
-        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-
-    let mut month = 1;
-    for &days_in_month in &month_days {
-        if remaining_days >= days_in_month as u64 {
-            remaining_days -= days_in_month as u64;
-            month += 1;
-        } else {
-            break;
-        }
-    }
-
-    let day = remaining_days + 1; // Days are 1-indexed
-    (month, day as u8)
-}
-
-fn is_leap_year(year: u64) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
-}
-
-impl<S, N> FormatEvent<S, N> for GlogFormatter
-where
-    S: tracing::Subscriber + for<'a> LookupSpan<'a>,
-    N: for<'a> FormatFields<'a> + 'static,
-{
-    fn format_event(
-        &self,
-        ctx: &tracing_subscriber::fmt::FmtContext<'_, S, N>,
-        mut writer: tracing_subscriber::fmt::format::Writer<'_>,
-        event: &tracing::Event<'_>,
-    ) -> std::fmt::Result {
-        let level = match *event.metadata().level() {
-            tracing::Level::ERROR => "\x1b[31mE\x1b[0m",
-            tracing::Level::WARN => "\x1b[33mW\x1b[0m",
-            tracing::Level::INFO => "\x1b[32mI\x1b[0m",
-            tracing::Level::DEBUG => "\x1b[36mD\x1b[0m",
-            tracing::Level::TRACE => "\x1b[37mT\x1b[0m",
-        };
-
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap();
-        let total_secs = now.as_secs();
-
-        // Calculate days since epoch to get month/day
-        let days_since_epoch = total_secs / 86400;
-        let (month, day) = days_to_month_day(days_since_epoch);
-
-        // Calculate time of day
-        let day_secs = total_secs % 86400;
-        let (hours, mins, secs) = (day_secs / 3600, day_secs % 3600 / 60, day_secs % 60);
-
-        let thread_id = format!("{:?}", std::thread::current().id())
-            .chars()
-            .filter(|c| c.is_ascii_digit())
-            .collect::<String>()
-            .parse::<u64>()
-            .unwrap_or(1);
-
-        let filename = std::path::Path::new(event.metadata().file().unwrap_or("unknown"))
-            .file_name()
-            .and_then(|f| f.to_str())
-            .unwrap_or("unknown");
-
-        write!(
-            writer,
-            "{}\x1b[90m{:02}{:02} {:02}:{:02}:{:02}.{:03} {} {}:{}]\x1b[0m ",
-            level,
-            month,
-            day,
-            hours,
-            mins,
-            secs,
-            now.subsec_millis(),
-            thread_id,
-            filename,
-            event.metadata().line().unwrap_or(0)
-        )?;
-
-        ctx.field_format().format_fields(writer.by_ref(), event)?;
-        write!(writer, "\n")?;
-
-        Ok(())
-    }
-}
+use tracing_glog::{Glog, GlogFields, LocalTime};
 
 /// Search for a pattern in a file and display the lines that contain it.
 #[derive(Parser, Debug)]
@@ -153,6 +45,10 @@ struct BenchmarkArgs {
     /// Max trace length to use (as 2^scale)
     #[clap(short, long, default_value_t = 20)]
     scale: usize,
+
+    /// Target trace size to use. If not supplied, will be set to 90% of 2^scale.
+    #[clap(short, long)]
+    target_trace_size: Option<usize>,
 }
 
 #[derive(Debug, Clone, ValueEnum, PartialEq)]
@@ -178,8 +74,15 @@ fn trace(
 
     let log_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
+    let fmt = Glog::default()
+        .with_span_names(false)
+        .with_thread_names(false)
+        .with_target(false)
+        .with_timer(LocalTime::default());
+
     let log_layer = tracing_subscriber::fmt::layer()
-        .event_format(GlogFormatter)
+        .event_format(fmt)
+        .fmt_fields(GlogFields::default().compact())
         .with_filter(log_filter.clone())
         .boxed();
     layers.push(log_layer);
@@ -237,7 +140,7 @@ fn benchmark_and_trace(args: BenchmarkArgs) {
 
     trace(
         args.profile_args.clone(),
-        master_benchmark(args.profile_args.name, args.scale),
+        master_benchmark(args.profile_args.name, args.scale, args.target_trace_size),
         Some(trace_file),
     )
 }

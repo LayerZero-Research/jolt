@@ -21,7 +21,7 @@ license-file = "LICENSE"
 keywords = ["SNARK", "cryptography", "proofs", "zkVM"]
 
 [features]
-default = ["host", "pprof"]
+default = ["host", "pprof"] # TODO: Remove prrof before merging PR
 host = [
     "dep:reqwest",
     "dep:tokio",
@@ -37,17 +37,11 @@ prover = [
     "ark-ec/parallel",
     "ark-ff/parallel",
     "ark-std/parallel",
-    "dory/parallel"
+    "dory/parallel",
 ]
 # This is for building jolt-core without prover capabilities, e.g. for recursion
 # jolt-core needs std and rayon to compile, so these are the minimal set of features.
-minimal = [
-    "ark-ec/std",
-    "ark-ff/std",
-    "ark-std/std",
-    "ark-ff/asm",
-    "rayon",
-]
+minimal = ["ark-ec/std", "ark-ff/std", "ark-std/std", "ark-ff/asm", "rayon"]
 allocative = ["dep:inferno", "ark-ff/allocative"]
 pprof = ["dep:pprof", "dep:prost"]
 test_incremental = []
@@ -85,6 +79,7 @@ thiserror = "1.0.58"
 tracing = "0.1.37"
 tracing-chrome = "0.7.1"
 tracing-subscriber = { version = "0.3.20", features = ["fmt", "env-filter"] }
+tracing-glog = "0.4.1"
 target-lexicon = { version = "0.12.14", optional = true }
 reqwest = { version = "0.12.3", features = [
     "json",
@@ -113,7 +108,10 @@ sha2_inline = { package = "jolt-inlines-sha2", path = "../jolt-inlines/sha2", fe
 sha3_inline = { package = "jolt-inlines-keccak256", path = "../jolt-inlines/keccak256", features = [
     "host",
 ], optional = true }
-pprof = { version = "0.15", features = ["prost-codec", "flamegraph"], optional = true }
+pprof = { version = "0.15", features = [
+    "prost-codec",
+    "flamegraph",
+], optional = true }
 prost = { version = "0.14", optional = true }
 
 [dev-dependencies]

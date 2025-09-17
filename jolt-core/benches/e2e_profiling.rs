@@ -1,3 +1,5 @@
+use common::constants::{DEFAULT_MAX_INPUT_SIZE, DEFAULT_MAX_OUTPUT_SIZE};
+use common::jolt_device::MemoryConfig;
 use jolt_core::host;
 use jolt_core::zkvm::JoltVerifierPreprocessing;
 use jolt_core::zkvm::{Jolt, JoltRV32IM};
@@ -68,12 +70,12 @@ const SAFETY_MARGIN: f64 = 0.9;
 // Measured empirically for RV64
 const CYCLES_PER_SHA256: f64 = 3396.0;
 const CYCLES_PER_SHA3: f64 = 4330.0;
-const CYCLES_PER_BTREEMAP_OP: f64 = 1400.0;
+// Based on empirical data: 1406 cycles/op (2^24), 1531 cycles/op (2^27), 1568 cycles/op (2^28)
+const CYCLES_PER_BTREEMAP_OP: f64 = 1550.0;
 const CYCLES_PER_FIBONACCI_UNIT: f64 = 12.0;
 
-fn scale_to_ops(scale: usize, cycles_per_op: f64) -> u32 {
-    let target_capacity = (1 << scale) as f64 * SAFETY_MARGIN;
-    std::cmp::max(1, (target_capacity / cycles_per_op) as u32)
+fn scale_to_ops(target_trace_size: usize, cycles_per_op: f64) -> u32 {
+    std::cmp::max(1, (target_trace_size as f64 / cycles_per_op) as u32)
 }
 
 fn run_benchmark(
@@ -93,7 +95,7 @@ fn run_benchmark(
     )
 }
 
-fn get_memory_params(bench_type: &str, _bench_scale: usize) -> (u64, u64) {
+fn get_memory_params(bench_type: &str, _bench_scale: usize) -> MemoryConfig {
     // DEFAULT_STACK_SIZE: 4096
     let base_stack_size = 1024 * 1024 * 10;
     // DEFAULT_MEMORY_SIZE: 32 * 1024 * 1024
@@ -106,14 +108,35 @@ fn get_memory_params(bench_type: &str, _bench_scale: usize) -> (u64, u64) {
         // BenchType::Sha2 | BenchType::Sha2Chain => (0, 0, 0),
         // memory_size = 10240
         // BenchType::Sha3 | BenchType::Sha3Chain => (0, 0, 0),
-        "btreemap" => (10000, 10000000),
-        _ => (base_stack_size, base_heap_size),
+        "fibonacci" => MemoryConfig {
+            max_input_size: 7000000,
+            max_output_size: 1024,
+            stack_size: base_stack_size,
+            memory_size: 33554432,
+            // memory_size: base_heap_size,
+            program_size: None,
+        },
+        "btreemap" => MemoryConfig {
+            max_input_size: 10000,
+            max_output_size: 10000000,
+            stack_size: base_stack_size,
+            memory_size: base_heap_size,
+            program_size: None,
+        },
+        _ => MemoryConfig {
+            max_input_size: DEFAULT_MAX_INPUT_SIZE,
+            max_output_size: DEFAULT_MAX_OUTPUT_SIZE,
+            stack_size: base_stack_size,
+            memory_size: base_heap_size,
+            program_size: None,
+        },
     }
 }
 
 pub fn master_benchmark(
     bench_type: BenchType,
     bench_scale: usize,
+    target_trace_size: Option<usize>,
 ) -> Vec<(tracing::Span, Box<dyn FnOnce()>)> {
     if let Err(e) = fs::create_dir_all("benchmark-runs/perfetto_traces") {
         eprintln!("Warning: Failed to create benchmark-runs/perfetto_traces directory: {e}");
@@ -121,22 +144,25 @@ pub fn master_benchmark(
     if let Err(e) = fs::create_dir_all("benchmark-runs/results") {
         eprintln!("Warning: Failed to create benchmark-runs/results directory: {e}");
     }
+    let bench_target_trace_size =
+        target_trace_size.unwrap_or(((1 << bench_scale) as f64 * SAFETY_MARGIN) as usize);
 
     let task = move || {
         let (bench_name, input_fn): (&str, fn(usize) -> Vec<u8>) = match bench_type {
-            BenchType::Fibonacci => ("fibonacci", |scale| {
-                postcard::to_stdvec(&scale_to_ops(scale, CYCLES_PER_FIBONACCI_UNIT)).unwrap()
+            BenchType::Fibonacci => ("fibonacci", |target_trace_size_| {
+                postcard::to_stdvec(&scale_to_ops(target_trace_size_, CYCLES_PER_FIBONACCI_UNIT))
+                    .unwrap()
             }),
-            BenchType::Sha2Chain => ("sha2-chain", |scale| {
-                let iterations = scale_to_ops(scale, CYCLES_PER_SHA256);
+            BenchType::Sha2Chain => ("sha2-chain", |target_trace_size_| {
+                let iterations = scale_to_ops(target_trace_size_, CYCLES_PER_SHA256);
                 [
                     postcard::to_stdvec(&[5u8; 32]).unwrap(),
                     postcard::to_stdvec(&iterations).unwrap(),
                 ]
                 .concat()
             }),
-            BenchType::Sha3Chain => ("sha3-chain", |scale| {
-                let iterations = scale_to_ops(scale, CYCLES_PER_SHA3);
+            BenchType::Sha3Chain => ("sha3-chain", |target_trace_size_| {
+                let iterations = scale_to_ops(target_trace_size_, CYCLES_PER_SHA3);
                 println!("number of sha3 iterations: {:?}", iterations);
                 [
                     postcard::to_stdvec(&[5u8; 32]).unwrap(),
@@ -146,12 +172,21 @@ pub fn master_benchmark(
             }),
             BenchType::Sha2 => panic!("Use sha2-chain instead"),
             BenchType::Sha3 => panic!("Use sha3-chain instead"),
-            BenchType::Btreemap => ("btreemap", |scale| {
-                postcard::to_stdvec(&scale_to_ops(scale, CYCLES_PER_BTREEMAP_OP)).unwrap()
+            BenchType::Btreemap => ("btreemap", |target_trace_size_| {
+                postcard::to_stdvec(&scale_to_ops(target_trace_size_, CYCLES_PER_BTREEMAP_OP))
+                    .unwrap()
             }),
         };
 
-        let (trace_length, duration) = run_benchmark(bench_name, input_fn, bench_scale);
+        let input = input_fn(bench_target_trace_size);
+        let max_trace_length = 1 << bench_scale;
+        let (trace_length, duration) = prove_example_with_trace(
+            &format!("{bench_name}-guest"),
+            input,
+            max_trace_length,
+            bench_name,
+            bench_scale,
+        );
 
         println!(
             "  Prover completed in {:.2}s ({:.2} kHz)",
@@ -242,13 +277,8 @@ fn prove_example_with_trace(
     scale: usize,
 ) -> (usize, std::time::Duration) {
     let mut program: host::Program = host::Program::new(example_name);
-    let (stack_size, heap_size) = get_memory_params(bench_name, scale);
-    if stack_size > 0 {
-        program.set_stack_size(stack_size);
-    }
-    if heap_size > 0 {
-        program.set_memory_size(heap_size);
-    }
+    let memory_config = get_memory_params(bench_name, scale);
+    program.set_memory_config(memory_config);
     let (bytecode, init_memory_state, _) = program.decode();
     let (trace, _, program_io) = program.trace(&serialized_input);
     let trace_length = trace.len();
