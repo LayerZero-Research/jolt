@@ -7,6 +7,9 @@ MAX_TRACE_LENGTH=${1:-27}
 RESUME_MODE=false
 BENCH_LIST="fibonacci sha2-chain sha3-chain btreemap"
 
+ulimit -n 1048576 || echo "Failed to increase ulimit to 1048576"
+ulimit -l unlimited 2>/dev/null || echo "Failed to increase ulimit to unlimited"
+
 # Check for --resume flag
 for arg in "$@"; do
     if [[ "$arg" == "--resume" ]]; then
