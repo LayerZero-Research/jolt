@@ -83,37 +83,14 @@ if systemctl list-unit-files | grep -q '^irqbalance\.service'; then
   systemctl stop irqbalance || true
 fi
 
-echo "==> Detecting NUMA topology and preparing core list on node 0"
-if ! command -v lscpu >/dev/null 2>&1; then
-  apt-get update && apt-get install -y util-linux
-fi
+echo "==> Installing util-linux and numactl"
+command -v lscpu >/dev/null 2>&1 || { 
+  echo "Installing util-linux (for lscpu)..." 
+  sudo apt-get update && sudo apt-get install -y util-linux
+}
+command -v numactl >/dev/null 2>&1 || { 
+  echo "Installing numactl..." 
+  sudo apt-get update && sudo apt-get install -y numactl
+}
 
-# Build a comma-separated list of CPU IDs that belong to NUMA node 0.
-CORES_NODE0=$(lscpu -e=CPU,NODE | awk '$2 == 0 {print $1}' | paste -sd, -)
-if [[ -z "${CORES_NODE0}" ]]; then
-  echo "Could not determine cores for NUMA node 0; using all cores."
-  CORES_NODE0=$(lscpu -e=CPU | awk 'NR>1{print $1}' | paste -sd, -)
-fi
-echo "Cores on node 0: ${CORES_NODE0}"
-
-echo "==> Example: run your binary pinned to node 0 + those cores, high priority"
-echo
-cat <<'EOF'
-
-# Replace ./target/release/your-binary and <args> as needed.
-# chrt -f uses FIFO scheduling; requires root. If you prefer normal policy, drop chrt.
-
-numactl --cpunodebind=0 --membind=0 \
-taskset -c __CORES_NODE0__ \
-chrt -f 80 \
-./target/release/your-binary <args>
-
-EOF
-echo
-
-# Print a ready-to-paste command with actual cores filled in:
-echo "Ready-to-paste command with detected cores:"
-echo "numactl --cpunodebind=0 --membind=0 taskset -c ${CORES_NODE0} chrt -f 80 ./target/release/your-binary <args>"
-
-echo
-echo "All set. Run the command above to benchmark."
+echo "==> System tuning complete. "
