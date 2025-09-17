@@ -14,9 +14,28 @@ use tracing_subscriber::{self, prelude::*, EnvFilter};
 struct GlogFormatter;
 
 fn days_to_month_day(days_since_epoch: u64) -> (u8, u8) {
-    // Simplified calendar calculation for current year only
-    let mut remaining_days = days_since_epoch % 365; // Current year approximation
-    let month_days = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    // Calculate year and day within year from Unix epoch (Jan 1, 1970)
+    let mut year = 1970;
+    let mut remaining_days = days_since_epoch;
+
+    // Find the current year
+    loop {
+        let days_in_year = if is_leap_year(year) { 366 } else { 365 };
+        if remaining_days >= days_in_year {
+            remaining_days -= days_in_year;
+            year += 1;
+        } else {
+            break;
+        }
+    }
+
+    // Now we have remaining_days within the current year
+    let is_leap = is_leap_year(year);
+    let month_days = if is_leap {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
 
     let mut month = 1;
     for &days_in_month in &month_days {
@@ -30,6 +49,10 @@ fn days_to_month_day(days_since_epoch: u64) -> (u8, u8) {
 
     let day = remaining_days + 1; // Days are 1-indexed
     (month, day as u8)
+}
+
+fn is_leap_year(year: u64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }
 
 impl<S, N> FormatEvent<S, N> for GlogFormatter
