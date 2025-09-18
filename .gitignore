@@ -48,3 +48,9 @@ bin/act
 
 # benchmark-runs
 benchmark-runs/
+benchmark-runs-backup/
+
+# Profiling
+*.pb 
+trace-*.json
+*.svg
