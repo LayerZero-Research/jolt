@@ -102,20 +102,6 @@ fn get_memory_params(bench_type: &str, _bench_scale: usize) -> MemoryConfig {
     let base_heap_size = 1024 * 1024 * 10;
 
     match bench_type {
-        // memory_size = 10240
-        // BenchType::Fibonacci => (10 * 1024 * 1024, 0, 0),
-        // memory_size = 10240
-        // BenchType::Sha2 | BenchType::Sha2Chain => (0, 0, 0),
-        // memory_size = 10240
-        // BenchType::Sha3 | BenchType::Sha3Chain => (0, 0, 0),
-        "fibonacci" => MemoryConfig {
-            max_input_size: 7000000,
-            max_output_size: 1024,
-            stack_size: base_stack_size,
-            memory_size: 33554432,
-            // memory_size: base_heap_size,
-            program_size: None,
-        },
         "btreemap" => MemoryConfig {
             max_input_size: 10000,
             max_output_size: 10000000,
