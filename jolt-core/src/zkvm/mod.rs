@@ -1,3 +1,4 @@
+use core::hint::black_box;
 use std::{
     fs::File,
     io::{Read, Write},
@@ -23,6 +24,7 @@ use crate::{
 use ark_bn254::Fr;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use common::jolt_device::MemoryLayout;
+use jolt_platform::{end_cycle_tracking, start_cycle_tracking};
 use tracer::{instruction::Instruction, JoltDevice};
 
 pub mod bytecode;
@@ -286,8 +288,9 @@ where
                 .map_or(0, |pos| pos + 1),
         );
 
-        let state_manager = proof.to_verifier_state_manager(preprocessing, program_io);
-
+        start_cycle_tracking("proof.to_verifier_state_manager()");
+        let state_manager = black_box(proof.to_verifier_state_manager(black_box(preprocessing), black_box(program_io)));
+        end_cycle_tracking("proof.to_verifier_state_manager()");
         #[cfg(test)]
         {
             if let Some(debug_info) = _debug_info {
@@ -300,7 +303,9 @@ where
             }
         }
 
-        JoltDAG::verify(state_manager).expect("Verification failed");
+        start_cycle_tracking(" JoltDAG::verify()");
+        black_box(JoltDAG::verify(black_box(state_manager)).expect("Verification failed"));
+        end_cycle_tracking(" JoltDAG::verify()");
 
         Ok(())
     }

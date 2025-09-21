@@ -40,6 +40,8 @@ use crate::{
     utils::{errors::ProofVerifyError, math::Math},
     zkvm::witness::{CommittedPolynomial, VirtualPolynomial},
 };
+use core::hint::black_box;
+use jolt_platform::{end_cycle_tracking, start_cycle_tracking};
 
 pub type Endianness = bool;
 pub const BIG_ENDIAN: Endianness = false;
@@ -1142,6 +1144,10 @@ where
         reduced_opening_proof: &ReducedOpeningProof<F, PCS, ProofTranscript>,
         transcript: &mut ProofTranscript,
     ) -> Result<(), ProofVerifyError> {
+        let mut black_box_number = 0;
+        
+        start_cycle_tracking("reduce_and_verify()::init");
+        
         #[cfg(test)]
         if let Some(prover_openings) = &self.prover_opening_accumulator {
             assert_eq!(prover_openings.len(), self.len());
@@ -1158,8 +1164,10 @@ where
                 }
             })
             .sum();
+        black_box(&total_challenges_needed);
 
         let all_gammas: Vec<F> = transcript.challenge_vector(total_challenges_needed);
+        black_box(&all_gammas);
 
         let mut gamma_offsets = vec![0];
         for sumcheck in self.sumchecks.iter() {
@@ -1170,6 +1178,7 @@ where
             };
             gamma_offsets.push(gamma_offsets.last().unwrap() + num_gammas);
         }
+        black_box(&gamma_offsets);
 
         self.sumchecks
             .par_iter_mut()
@@ -1183,6 +1192,7 @@ where
                 let gammas_slice = &all_gammas[offset..offset + num_gammas];
                 sumcheck.prepare_sumcheck(None, gammas_slice);
             });
+        black_box(&self.sumchecks);
 
         let num_sumcheck_rounds = self
             .sumchecks
@@ -1190,28 +1200,43 @@ where
             .map(|opening| opening.opening_point.len())
             .max()
             .unwrap();
+        black_box(&num_sumcheck_rounds);
 
         self.sumchecks
             .iter_mut()
             .zip(reduced_opening_proof.sumcheck_claims.iter())
             .for_each(|(opening, claim)| opening.sumcheck_claim = Some(*claim));
+        black_box(&self.sumchecks);
+        
+        black_box_number += 1;
+        black_box(&black_box_number);
 
         // Verify the sumcheck
         let r_sumcheck =
             self.verify_batch_opening_reduction(&reduced_opening_proof.sumcheck_proof, transcript)?;
+        black_box(&r_sumcheck);
 
         transcript.append_scalars(&reduced_opening_proof.sumcheck_claims);
+        black_box(&reduced_opening_proof.sumcheck_claims);
 
         let gamma: F = transcript.challenge_scalar();
+        black_box(&gamma);
         let mut gamma_powers = vec![F::one()];
         for i in 1..self.sumchecks.len() {
             gamma_powers.push(gamma_powers[i - 1] * gamma);
         }
+        black_box(&gamma_powers);
+        black_box_number += 1;
+        black_box(&black_box_number);
+        end_cycle_tracking("reduce_and_verify()::init");
 
         // Compute the commitment for the reduced opening proof by homomorphically combining
         // the commitments of the individual polynomials.
+        start_cycle_tracking("reduce_and_verify()::combine_commitmnets");
+        
         let joint_commitment = {
             let mut rlc_map = HashMap::new();
+            black_box(&rlc_map);
             for (gamma, sumcheck) in gamma_powers.iter().zip(self.sumchecks.iter()) {
                 for (coeff, polynomial) in
                     sumcheck.rlc_coeffs.iter().zip(sumcheck.polynomials.iter())
@@ -1221,17 +1246,29 @@ where
                     } else {
                         rlc_map.insert(polynomial, *coeff * gamma);
                     }
+                    black_box(&polynomial);
+                    black_box(&coeff);
                 }
             }
+            black_box(&rlc_map);
 
             let (coeffs, commitments): (Vec<F>, Vec<PCS::Commitment>) = rlc_map
                 .into_iter()
                 .map(|(k, v)| (v, commitment_map.remove(k).unwrap()))
                 .unzip();
+            black_box(&coeffs);
+            black_box(&commitments);
             debug_assert!(commitment_map.is_empty(), "Every commitment should be used");
 
-            PCS::combine_commitments(&commitments, &coeffs)
+            let combined = PCS::combine_commitments(&commitments, &coeffs);
+            black_box(&combined);
+            combined
         };
+        black_box(&joint_commitment);
+        
+        end_cycle_tracking("reduce_and_verify()::combine_commitmnets");
+        black_box_number += 1;
+        black_box(&black_box_number);
 
         #[cfg(test)]
         assert_eq!(
@@ -1240,26 +1277,48 @@ where
         );
 
         // Compute joint claim = ∑ᵢ γⁱ⋅ claimᵢ
+        start_cycle_tracking("reduce_and_verify()::joint_claim");
+        
         let joint_claim: F = gamma_powers
             .iter()
             .zip(reduced_opening_proof.sumcheck_claims.iter())
             .zip(self.sumchecks.iter())
             .map(|((coeff, claim), opening)| {
                 let r_slice = &r_sumcheck[..num_sumcheck_rounds - opening.opening_point.len()];
+                black_box(&r_slice);
                 let lagrange_eval: F = r_slice.iter().map(|r| F::one() - r).product();
-                *coeff * claim * lagrange_eval
+                black_box(&lagrange_eval);
+                let result = *coeff * claim * lagrange_eval;
+                black_box(&result);
+                result
             })
             .sum();
+        black_box(&joint_claim);
+        
+        end_cycle_tracking("reduce_and_verify()::joint_claim");
+        black_box_number += 1;
+        black_box(&black_box_number);
 
         // Verify the reduced opening proof
-        PCS::verify(
+        start_cycle_tracking("reduce_and_verify()::verify");
+        
+        let result = PCS::verify(
             &reduced_opening_proof.joint_opening_proof,
             pcs_setup,
             transcript,
             &r_sumcheck,
             &joint_claim,
             &joint_commitment,
-        )
+        );
+        black_box(&result);
+        
+        end_cycle_tracking("reduce_and_verify()::verify");
+        black_box_number += 1;
+        black_box(&black_box_number);
+        
+        println!("black_box_number is {black_box_number}");
+        
+        result
     }
 
     /// Verifies the sumcheck proven in `ProverOpeningAccumulator::prove_batch_opening_reduction`.

@@ -1,4 +1,5 @@
-use std::{cell::RefCell, iter::once, rc::Rc};
+use std::{cell::RefCell, hint::black_box, iter::once, rc::Rc};
+use jolt_platform::{end_cycle_tracking, start_cycle_tracking};
 
 use crate::{
     field::JoltField,
@@ -221,9 +222,26 @@ impl<F: JoltField> ReadRafSumcheck<F> {
         let gamma_sqr = gamma.square();
         let gamma_cub = gamma_sqr * gamma;
         let gamma_four = gamma_sqr.square();
+        
+        start_cycle_tracking("compute_val_rv_all");
+        
         let (val_1, rv_claim_1, r_cycle_1) = Self::compute_val_rv(sm, ReadCheckingValType::Stage1);
+        black_box(&val_1);
+        black_box(&rv_claim_1);
+        black_box(&r_cycle_1);
+        
         let (val_2, rv_claim_2, r_cycle_2) = Self::compute_val_rv(sm, ReadCheckingValType::Stage2);
+        black_box(&val_2);
+        black_box(&rv_claim_2);
+        black_box(&r_cycle_2);
+        
         let (val_3, rv_claim_3, r_cycle_3) = Self::compute_val_rv(sm, ReadCheckingValType::Stage3);
+        black_box(&val_3);
+        black_box(&rv_claim_3);
+        black_box(&r_cycle_3);
+        
+        end_cycle_tracking("compute_val_rv_all");
+        
         let int_poly = IdentityPolynomial::new(log_K);
 
         assert_eq!(r_cycle_1.len(), r_cycle_2.len());

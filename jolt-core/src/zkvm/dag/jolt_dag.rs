@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use core::hint::black_box;
 
 use crate::field::JoltField;
 use crate::poly::commitment::commitment_scheme::CommitmentScheme;
@@ -24,6 +25,7 @@ use crate::zkvm::witness::{
     compute_d_parameter, AllCommittedPolynomials, CommittedPolynomial, DTH_ROOT_OF_K,
 };
 use crate::zkvm::ProverDebugInfo;
+use jolt_platform::{end_cycle_tracking, start_cycle_tracking};
 #[cfg(feature = "allocative")]
 use allocative::FlameGraphBuilder;
 use anyhow::Context;
@@ -325,54 +327,95 @@ impl JoltDAG {
     >(
         mut state_manager: StateManager<'a, F, ProofTranscript, PCS>,
     ) -> Result<(), anyhow::Error> {
+        let mut black_box_val = 0;
+        start_cycle_tracking("JoltDag::verify()::init");
+        
         state_manager.fiat_shamir_preamble();
+        black_box(&state_manager);
 
         let ram_K = state_manager.ram_K;
+        black_box(&ram_K);
         let bytecode_d = state_manager.get_verifier_data().0.shared.bytecode.d;
+        black_box(&bytecode_d);
         let _guard = AllCommittedPolynomials::initialize(compute_d_parameter(ram_K), bytecode_d);
+        black_box(&_guard);
 
         // Append commitments to transcript
         let commitments = state_manager.get_commitments();
+        black_box(&commitments);
         let transcript = state_manager.get_transcript();
+        black_box(&transcript);
         for commitment in commitments.borrow().iter() {
             transcript.borrow_mut().append_serializable(commitment);
+            black_box(&commitment);
         }
+        
+        end_cycle_tracking("JoltDag::verify()::init");
+
+        black_box_val += 1;
+        black_box(&black_box_val);
 
         // Stage 1:
+        start_cycle_tracking("JoltDag::verify()::stage1");
+        
         let (preprocessing, _, trace_length) = state_manager.get_verifier_data();
+        black_box(&preprocessing);
+        black_box(&trace_length);
         let padded_trace_length = trace_length.next_power_of_two();
+        black_box(&padded_trace_length);
         let mut spartan_dag = SpartanDag::<F>::new::<ProofTranscript>(padded_trace_length);
+        black_box(&spartan_dag);
         let mut lookups_dag = LookupsDag::default();
+        black_box(&lookups_dag);
         let mut registers_dag = RegistersDag::default();
+        black_box(&registers_dag);
         let mut ram_dag = RamDag::new_verifier(&state_manager);
+        black_box(&ram_dag);
         let mut bytecode_dag = BytecodeDag::default();
-        spartan_dag
+        black_box(&bytecode_dag);
+        let stage1_result = spartan_dag
             .stage1_verify(&mut state_manager)
             .context("Stage 1")?;
+        black_box(&stage1_result);
+            
+        end_cycle_tracking("JoltDag::verify()::stage1");
+
+        // Black box to prevent compiler optimization  
+        black_box_val += 1;
+        black_box(&black_box_val);
 
         // Stage 2:
+        start_cycle_tracking("JoltDag::verify()::stage2");
+        
         let stage2_instances: Vec<_> = std::iter::empty()
             .chain(spartan_dag.stage2_verifier_instances(&mut state_manager))
             .chain(registers_dag.stage2_verifier_instances(&mut state_manager))
             .chain(ram_dag.stage2_verifier_instances(&mut state_manager))
             .chain(lookups_dag.stage2_verifier_instances(&mut state_manager))
             .collect();
+        black_box(&stage2_instances);
         let stage2_instances_ref: Vec<&dyn SumcheckInstance<F>> = stage2_instances
             .iter()
             .map(|instance| &**instance as &dyn SumcheckInstance<F>)
             .collect();
+        black_box(&stage2_instances_ref);
 
         let proofs = state_manager.proofs.borrow();
+        black_box(&proofs);
         let stage2_proof_data = proofs
             .get(&ProofKeys::Stage2Sumcheck)
             .expect("Stage 2 sumcheck proof not found");
+        black_box(&stage2_proof_data);
         let stage2_proof = match stage2_proof_data {
             ProofData::SumcheckProof(proof) => proof,
             _ => panic!("Invalid proof type for stage 2"),
         };
+        black_box(&stage2_proof);
 
         let transcript = state_manager.get_transcript();
+        black_box(&transcript);
         let opening_accumulator = state_manager.get_verifier_accumulator();
+        black_box(&opening_accumulator);
         let _r_stage2 = BatchedSumcheck::verify(
             stage2_proof,
             stage2_instances_ref,
@@ -380,29 +423,43 @@ impl JoltDAG {
             &mut *transcript.borrow_mut(),
         )
         .context("Stage 2")?;
+        black_box(&_r_stage2);
 
         drop(proofs);
+        
+        end_cycle_tracking("JoltDag::verify()::stage2");
+
+        // Black box to prevent compiler optimization  
+        black_box_val += 1;
+        black_box(&black_box_val);
 
         // Stage 3:
+        start_cycle_tracking("JoltDag::verify()::stage3");
+        
         let stage3_instances: Vec<_> = std::iter::empty()
             .chain(spartan_dag.stage3_verifier_instances(&mut state_manager))
             .chain(registers_dag.stage3_verifier_instances(&mut state_manager))
             .chain(lookups_dag.stage3_verifier_instances(&mut state_manager))
             .chain(ram_dag.stage3_verifier_instances(&mut state_manager))
             .collect();
+        black_box(&stage3_instances);
         let stage3_instances_ref: Vec<&dyn SumcheckInstance<F>> = stage3_instances
             .iter()
             .map(|instance| &**instance as &dyn SumcheckInstance<F>)
             .collect();
+        black_box(&stage3_instances_ref);
 
         let proofs = state_manager.proofs.borrow();
+        black_box(&proofs);
         let stage3_proof_data = proofs
             .get(&ProofKeys::Stage3Sumcheck)
             .expect("Stage 3 sumcheck proof not found");
+        black_box(&stage3_proof_data);
         let stage3_proof = match stage3_proof_data {
             ProofData::SumcheckProof(proof) => proof,
             _ => panic!("Invalid proof type for stage 3"),
         };
+        black_box(&stage3_proof);
 
         let _r_stage3 = BatchedSumcheck::verify(
             stage3_proof,
@@ -411,28 +468,42 @@ impl JoltDAG {
             &mut *transcript.borrow_mut(),
         )
         .context("Stage 3")?;
+        black_box(&_r_stage3);
 
         drop(proofs);
+        
+        end_cycle_tracking("JoltDag::verify()::stage3");
+
+        // Black box to prevent compiler optimization  
+        black_box_val += 1;
+        black_box(&black_box_val);
 
         // Stage 4:
+        start_cycle_tracking("JoltDag::verify()::stage4");
+        
         let stage4_instances: Vec<_> = std::iter::empty()
             .chain(ram_dag.stage4_verifier_instances(&mut state_manager))
             .chain(bytecode_dag.stage4_verifier_instances(&mut state_manager))
             .chain(lookups_dag.stage4_verifier_instances(&mut state_manager))
             .collect();
+        black_box(&stage4_instances);
         let stage4_instances_ref: Vec<&dyn SumcheckInstance<F>> = stage4_instances
             .iter()
             .map(|instance| &**instance as &dyn SumcheckInstance<F>)
             .collect();
+        black_box(&stage4_instances_ref);
 
         let proofs = state_manager.proofs.borrow();
+        black_box(&proofs);
         let stage4_proof_data = proofs
             .get(&ProofKeys::Stage4Sumcheck)
             .expect("Stage 4 sumcheck proof not found");
+        black_box(&stage4_proof_data);
         let stage4_proof = match stage4_proof_data {
             ProofData::SumcheckProof(proof) => proof,
             _ => panic!("Invalid proof type for stage 4"),
         };
+        black_box(&stage4_proof);
 
         let _r_stage4 = BatchedSumcheck::verify(
             stage4_proof,
@@ -441,25 +512,40 @@ impl JoltDAG {
             &mut *transcript.borrow_mut(),
         )
         .context("Stage 4")?;
+        black_box(&_r_stage4);
+        
+        end_cycle_tracking("JoltDag::verify()::stage4");
 
-        // Batch-prove all openings
+        // Black box to prevent compiler optimization  
+        black_box_val += 1;
+        black_box(&black_box_val);
+
+        // Stage 5 / Batch opening verification
+        start_cycle_tracking("JoltDag::verify()::stage5");
+        
         let batched_opening_proof = proofs
             .get(&ProofKeys::ReducedOpeningProof)
             .expect("Reduced opening proof not found");
+        black_box(&batched_opening_proof);
         let batched_opening_proof = match batched_opening_proof {
             ProofData::ReducedOpeningProof(proof) => proof,
             _ => panic!("Invalid proof type for stage 4"),
         };
+        black_box(&batched_opening_proof);
 
         let mut commitments_map = HashMap::new();
+        black_box(&commitments_map);
         for polynomial in AllCommittedPolynomials::iter() {
             commitments_map.insert(
                 *polynomial,
                 commitments.borrow()[polynomial.to_index()].clone(),
             );
+            black_box(&polynomial);
         }
+        black_box(&commitments_map);
         let accumulator = state_manager.get_verifier_accumulator();
-        accumulator
+        black_box(&accumulator);
+        let result = accumulator
             .borrow_mut()
             .reduce_and_verify(
                 &preprocessing.generators,
@@ -468,6 +554,13 @@ impl JoltDAG {
                 &mut *transcript.borrow_mut(),
             )
             .context("Stage 5")?;
+        black_box(&result);
+            
+        end_cycle_tracking("JoltDag::verify()::stage5");
+
+        black_box_val += 1;
+        black_box(&black_box_val);
+        println!("black_box_val is {black_box_val}");
 
         Ok(())
     }
