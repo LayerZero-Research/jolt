@@ -78,23 +78,6 @@ fn scale_to_ops(target_trace_size: usize, cycles_per_op: f64) -> u32 {
     std::cmp::max(1, (target_trace_size as f64 / cycles_per_op) as u32)
 }
 
-fn run_benchmark(
-    bench_name: &str,
-    input_fn: fn(usize) -> Vec<u8>,
-    bench_scale: usize,
-) -> (usize, std::time::Duration) {
-    let input = input_fn(bench_scale);
-    let max_trace_length = 1 << bench_scale;
-
-    prove_example_with_trace(
-        &format!("{bench_name}-guest"),
-        input,
-        max_trace_length,
-        bench_name,
-        bench_scale,
-    )
-}
-
 fn get_memory_params(bench_type: &str, _bench_scale: usize) -> MemoryConfig {
     // DEFAULT_STACK_SIZE: 4096
     let base_stack_size = 1024 * 1024 * 10;
