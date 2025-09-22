@@ -11,6 +11,7 @@
 #   --policy bind|interleave        NUMA memory policy. Default: env PIN_POLICY or bind
 #   --max-scale N                   Max scale exponent (passed to jolt_runner.sh as first arg)
 #   --min-scale M                   Min scale exponent (passed as second arg)
+#   --benchmarks "bench1 bench2"    Space-separated list of benchmarks to run. Default: "fibonacci sha2-chain sha3-chain btreemap"
 #   --resume                        Resume from previous run (skip completed benchmarks)
 #   -h | --help                     Show this help
 #
@@ -21,10 +22,13 @@
 #   # Linux AWS: default does prep; pinned run on nodes 0-3
 #   ./scripts/benchmark/run_benchmarks.sh --pin --nodes 0-3 --policy bind --max-scale 27 --min-scale 20
 #
+#   # Run only specific benchmarks
+#   ./scripts/benchmark/run_benchmarks.sh --benchmarks "fibonacci sha2-chain" --max-scale 25
+#
 # Notes:
 #   - On macOS, prep and pin are skipped automatically.
 #   - Per-run prep (page cache drop) runs automatically on Linux for clean benchmarks.
-#   - This script forwards only max/min scale to jolt_runner.sh. Edit that script for bench list.
+#   - This script forwards scale range and benchmark list to jolt_runner.sh.
 
 set -euo pipefail
 
@@ -35,6 +39,9 @@ set -euo pipefail
 # Scale range defaults (can be overridden by flags or env vars)
 DEFAULT_MAX_SCALE=30
 DEFAULT_MIN_SCALE=21
+
+# Benchmark list default (matches jolt_runner.sh default)
+DEFAULT_BENCHMARKS="fibonacci sha2-chain sha3-chain btreemap"
 
 # NUMA pinning defaults (can be overridden by flags or env vars)  
 DEFAULT_PIN_NODES=${PIN_NODES:-0}
@@ -85,6 +92,7 @@ PIN_NODES_DEFAULT="$DEFAULT_PIN_NODES"
 PIN_POLICY_DEFAULT="$DEFAULT_PIN_POLICY"
 MAX_SCALE="$DEFAULT_MAX_SCALE"
 MIN_SCALE="$DEFAULT_MIN_SCALE"
+BENCHMARKS="$DEFAULT_BENCHMARKS"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -105,6 +113,9 @@ while [[ $# -gt 0 ]]; do
     --min-scale)
       [[ $# -lt 2 ]] && { echo "--min-scale requires a value"; exit 1; }
       MIN_SCALE="$2"; shift ;;
+    --benchmarks)
+      [[ $# -lt 2 ]] && { echo "--benchmarks requires a value"; exit 1; }
+      BENCHMARKS="$2"; shift ;;
     -h|--help) show_help; exit 0 ;;
     --) shift; break ;;
     *)
@@ -151,6 +162,7 @@ BENCH_ARGS=("$MAX_SCALE" "$MIN_SCALE")
 if (( RESUME )); then
   BENCH_ARGS+=("--resume")
 fi
+BENCH_ARGS+=("--benchmarks" "$BENCHMARKS")
 
 # 3) Per-run prep: drop page cache for clean benchmarks (Linux only)
 if (( IS_LINUX )); then

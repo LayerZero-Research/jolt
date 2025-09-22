@@ -1,22 +1,66 @@
 #!/usr/bin/env bash
-# Usage: ./jolt_runner.sh [MAX_TRACE_LENGTH] [MIN_TRACE_LENGTH] [--resume]
+# Usage: ./jolt_runner.sh [MAX_TRACE_LENGTH] [MIN_TRACE_LENGTH] [--resume] [--benchmarks "bench1 bench2"]
 set -euo pipefail
 
-MIN_TRACE_LENGTH=${2:-21}
-MAX_TRACE_LENGTH=${1:-27}
+# Initialize defaults
+MAX_TRACE_LENGTH=27
+MIN_TRACE_LENGTH=21
 RESUME_MODE=false
-BENCH_LIST="fibonacci sha2-chain sha3-chain btreemap"
+BENCH_LIST="fibonacci sha2-chain sha3-chain btreemap"  # Default list
 
-ulimit -n 1048576 || echo "Failed to increase ulimit to 1048576"
-ulimit -l unlimited 2>/dev/null || echo "Failed to increase ulimit to unlimited"
+ulimit -n 1048576 || echo "Failed to increase ulimit -nto 1048576"
+ulimit -l unlimited 2>/dev/null || echo "Failed to increase ulimit -l to unlimited"
+ulimit -a
 
-# Check for --resume flag
-for arg in "$@"; do
-    if [[ "$arg" == "--resume" ]]; then
-        RESUME_MODE=true
-        break
-    fi
+# Set Rayon and Rust environment variables for optimal performance
+echo "==> Setting Rayon and Rust environment variables"
+export RAYON_NUM_THREADS=${RAYON_NUM_THREADS:-$(nproc)}
+export RAYON_THREAD_STACK_SIZE=${RAYON_THREAD_STACK_SIZE:-67108864}  # 64MB per thread
+export RUST_MIN_STACK=${RUST_MIN_STACK:-134217728}  # 128MB stack size
+export RUST_STACK_GUARD_SIZE=${RUST_STACK_GUARD_SIZE:-0}  # Disable guard pages for high thread count
+
+# Calculate MB values for display (ensure we have numeric values)
+RAYON_STACK_MB=$((RAYON_THREAD_STACK_SIZE/1024/1024))
+RUST_STACK_MB=$((RUST_MIN_STACK/1024/1024))
+
+echo "Rayon configuration: threads=$RAYON_NUM_THREADS, stack_size=${RAYON_THREAD_STACK_SIZE} bytes (${RAYON_STACK_MB}MB)"
+echo "Rust configuration: min_stack=${RUST_MIN_STACK} bytes (${RUST_STACK_MB}MB), guard_size=$RUST_STACK_GUARD_SIZE"
+
+# Parse command line arguments
+POSITIONAL_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --resume)
+            RESUME_MODE=true
+            shift
+            ;;
+        --benchmarks)
+            if [[ $# -lt 2 ]]; then
+                echo "Error: --benchmarks requires a value" >&2
+                exit 1
+            fi
+            BENCH_LIST="$2"
+            shift 2
+            ;;
+        --*)
+            echo "Error: Unknown option $1" >&2
+            exit 1
+            ;;
+        *)
+            # Collect positional arguments
+            POSITIONAL_ARGS+=("$1")
+            shift
+            ;;
+    esac
 done
+
+# Handle positional arguments (MAX_TRACE_LENGTH and MIN_TRACE_LENGTH)
+if [[ ${#POSITIONAL_ARGS[@]} -ge 1 ]]; then
+    MAX_TRACE_LENGTH="${POSITIONAL_ARGS[0]}"
+fi
+if [[ ${#POSITIONAL_ARGS[@]} -ge 2 ]]; then
+    MIN_TRACE_LENGTH="${POSITIONAL_ARGS[1]}"
+fi
 
 # Mitigate stack overflow
 export RUST_MIN_STACK=33554432
