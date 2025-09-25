@@ -71,6 +71,8 @@ members = [
     "examples/random/guest",
     "examples/ec-bench",
     "examples/ec-bench/guest",
+    "examples/hash-bench",
+    "examples/hash-bench/guest",
 ]
 
 [features]

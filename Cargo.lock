@@ -197,7 +197,7 @@ dependencies = [
 [[package]]
 name = "ark-ff-asm"
 version = "0.5.0"
-source = "git+https://github.com/a16z/arkworks-algebra?branch=feat%2Ffewer-reductions#6cb3aa13855187bfa0a0c54da09c9100774751cb"
+source = "git+https://github.com/a16z/arkworks-algebra?branch=feat%2Ffewer-reductions#001264f28c8dffd5455be5100508aef1a707b0af"
 dependencies = [
  "quote",
  "syn 2.0.106",
@@ -206,7 +206,7 @@ dependencies = [
 [[package]]
 name = "ark-ff-macros"
 version = "0.5.0"
-source = "git+https://github.com/a16z/arkworks-algebra?branch=feat%2Ffewer-reductions#6cb3aa13855187bfa0a0c54da09c9100774751cb"
+source = "git+https://github.com/a16z/arkworks-algebra?branch=feat%2Ffewer-reductions#001264f28c8dffd5455be5100508aef1a707b0af"
 dependencies = [
  "num-bigint",
  "num-traits",
@@ -218,7 +218,7 @@ dependencies = [
 [[package]]
 name = "ark-poly"
 version = "0.5.0"
-source = "git+https://github.com/a16z/arkworks-algebra?branch=feat%2Ffewer-reductions#6cb3aa13855187bfa0a0c54da09c9100774751cb"
+source = "git+https://github.com/a16z/arkworks-algebra?branch=feat%2Ffewer-reductions#001264f28c8dffd5455be5100508aef1a707b0af"
 dependencies = [
  "ahash",
  "ark-ff",
@@ -256,7 +256,7 @@ dependencies = [
 [[package]]
 name = "ark-serialize-derive"
 version = "0.5.0"
-source = "git+https://github.com/a16z/arkworks-algebra?branch=feat%2Ffewer-reductions#6cb3aa13855187bfa0a0c54da09c9100774751cb"
+source = "git+https://github.com/a16z/arkworks-algebra?branch=feat%2Ffewer-reductions#001264f28c8dffd5455be5100508aef1a707b0af"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1225,6 +1225,34 @@ checksum = "459196ed295495a68f7d7fe1d84f6c4b7ff0e21fe3017b2f283c6fac3ad803c9"
 dependencies = [
  "cfg-if",
  "crunchy",
+]
+
+[[package]]
+name = "hash-bench"
+version = "0.1.0"
+dependencies = [
+ "hashbench-guest",
+ "hex",
+ "jolt-inlines-blake2",
+ "jolt-inlines-blake3",
+ "jolt-inlines-keccak256",
+ "jolt-inlines-sha2",
+ "jolt-sdk",
+]
+
+[[package]]
+name = "hashbench-guest"
+version = "0.1.0"
+dependencies = [
+ "blake2",
+ "blake3",
+ "jolt-inlines-blake2",
+ "jolt-inlines-blake3",
+ "jolt-inlines-keccak256",
+ "jolt-inlines-sha2",
+ "jolt-sdk",
+ "sha2",
+ "sha3",
 ]
 
 [[package]]
@@ -3007,6 +3035,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.106",
+]
+
+[[package]]
+name = "sha2"
+version = "0.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
 ]
 
 [[package]]

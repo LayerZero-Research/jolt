@@ -14,6 +14,7 @@ pub struct Blake2b {
 }
 
 impl Blake2b {
+    #[inline(always)]
     pub fn new() -> Self {
         let mut h = IV;
         h[0] ^= 0x01010000 ^ (OUTPUT_SIZE as u64);
@@ -28,21 +29,79 @@ impl Blake2b {
 
     /// Process input data incrementally.
     pub fn update(&mut self, input: &[u8]) {
-        if input.is_empty() {
+        let input_len = input.len();
+        if input_len == 0 {
             return;
         }
-        for byte in input {
-            if self.buffer_len == BLOCK_INPUT_SIZE_IN_BYTES {
+        
+        let mut offset = 0;
+        
+        // Handle partial buffer first
+        if self.buffer_len != 0 {
+            let needed = BLOCK_INPUT_SIZE_IN_BYTES - self.buffer_len;
+            let to_copy = needed.min(input_len);
+            
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    input.as_ptr(),
+                    self.buffer.as_mut_ptr().add(self.buffer_len),
+                    to_copy,
+                );
+            }
+            
+            self.buffer_len += to_copy;
+            offset = to_copy;
+            
+            // Only process if we have a complete block AND there's more data
+            // (to ensure we don't process what might be the final block)
+            if self.buffer_len == BLOCK_INPUT_SIZE_IN_BYTES && offset < input_len {
                 self.counter += BLOCK_INPUT_SIZE_IN_BYTES as u64;
                 compression_caller(&mut self.h, &self.buffer, self.counter, false);
                 self.buffer_len = 0;
             }
-            self.buffer[self.buffer_len] = *byte;
-            self.buffer_len += 1;
+        }
+        
+        // Process complete blocks directly from input
+        // We need to keep at least one byte to ensure we don't process what might be the final block
+        // This guarantees the final block is always processed in finalize() with is_final=true
+        while offset + BLOCK_INPUT_SIZE_IN_BYTES < input_len {
+            // Copy directly to buffer and process
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    input.as_ptr().add(offset),
+                    self.buffer.as_mut_ptr(),
+                    BLOCK_INPUT_SIZE_IN_BYTES,
+                );
+            }
+            
+            self.counter += BLOCK_INPUT_SIZE_IN_BYTES as u64;
+            compression_caller(&mut self.h, &self.buffer, self.counter, false);
+            offset += BLOCK_INPUT_SIZE_IN_BYTES;
+        }
+        
+        // Buffer any remaining bytes
+        let final_bytes = input_len - offset;
+        if final_bytes > 0 {
+            // If buffer was just emptied, copy remaining bytes
+            if self.buffer_len == 0 {
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        input.as_ptr().add(offset),
+                        self.buffer.as_mut_ptr(),
+                        final_bytes,
+                    );
+                }
+                self.buffer_len = final_bytes;
+            } else {
+                // Buffer still has data from partial block handling
+                // This only happens when we had partial data and the new input
+                // completed the buffer exactly
+            }
         }
     }
 
     /// Finalize and return BLAKE2b digest.
+    #[inline(always)]
     pub fn finalize(mut self) -> [u8; OUTPUT_SIZE] {
         self.counter += self.buffer_len as u64;
         self.buffer[self.buffer_len..].fill(0);
@@ -59,6 +118,7 @@ impl Blake2b {
     }
 
     /// Computes BLAKE2b hash in one call.
+    #[inline(always)]
     pub fn digest(input: &[u8]) -> [u8; OUTPUT_SIZE] {
         let mut hasher = Self::new();
         hasher.update(input);
@@ -66,20 +126,40 @@ impl Blake2b {
     }
 }
 
+#[inline(always)]
 fn compression_caller(
     hash_state: &mut [u64; STATE_VECTOR_LEN],
     message_block: &[u8],
     counter: u64,
     is_final: bool,
 ) {
-    // Convert buffer to u64 words.
+    debug_assert_eq!(message_block.len(), BLOCK_INPUT_SIZE_IN_BYTES);
+    
+    // Prepare message array with counter and final flag
     let mut message = [0u64; MSG_BLOCK_LEN + 2];
-    for i in 0..MSG_BLOCK_LEN {
-        message[i] = u64::from_le_bytes(message_block[i * 8..(i + 1) * 8].try_into().unwrap());
+    
+    // Efficiently copy message block as u64 words
+    // Since Blake2b uses little-endian and we're on a little-endian system,
+    // we can directly reinterpret the bytes as u64
+    unsafe {
+        // Cast the byte array to u64 array pointer
+        let src_ptr = message_block.as_ptr() as *const u64;
+        let dst_ptr = message.as_mut_ptr();
+        
+        // Copy 16 u64 words (128 bytes) directly
+        core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, MSG_BLOCK_LEN);
     }
-
-    message[16] = counter;
-    message[17] = is_final as u64;
+    
+    // For big-endian systems, we would need to swap bytes
+    #[cfg(target_endian = "big")]
+    {
+        for i in 0..MSG_BLOCK_LEN {
+            message[i] = message[i].swap_bytes();
+        }
+    }
+    
+    message[MSG_BLOCK_LEN] = counter;
+    message[MSG_BLOCK_LEN + 1] = is_final as u64;
 
     unsafe {
         blake2b_compress(hash_state.as_mut_ptr(), message.as_ptr());

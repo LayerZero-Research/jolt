@@ -12,7 +12,7 @@ pub struct Blake3 {
     /// Current buffer length
     buffer_len: usize,
     /// Total bytes processed
-    counter: u64,
+    total_len: usize,
 }
 
 #[repr(align(4))]
@@ -20,12 +20,13 @@ pub struct Aligned64ByteInput(pub [u8; BLOCK_INPUT_SIZE_IN_BYTES]);
 
 /// Note: Current implementation only supports hashing input of at most 64 bytes. Larger inputs are not supported yet.
 impl Blake3 {
+    #[inline(always)]
     pub fn new() -> Self {
         Self {
             h: IV,
             buffer: [0; BLOCK_INPUT_SIZE_IN_BYTES],
             buffer_len: 0,
-            counter: 0,
+            total_len: 0,
         }
     }
 
@@ -33,40 +34,80 @@ impl Blake3 {
     ///
     /// # Panics
     /// Panics if the total input exceeds 64 bytes.
+    #[inline(always)]
     pub fn update(&mut self, input: &[u8]) {
-        if input.is_empty() {
+        let input_len = input.len();
+        if input_len == 0 {
             return;
         }
-        for byte in input {
-            if self.buffer_len == BLOCK_INPUT_SIZE_IN_BYTES {
-                panic!("Buffer is full and cannot add any new data");
-            }
-            self.buffer[self.buffer_len] = *byte;
-            self.buffer_len += 1;
+        
+        // Check if adding this input would exceed 64 bytes total
+        let new_total = self.total_len + input_len;
+        if new_total > BLOCK_INPUT_SIZE_IN_BYTES {
+            panic!("Total input exceeds 64 bytes. BLAKE3 currently only supports inputs up to 64 bytes.");
         }
+        
+        // Bulk copy the input to buffer
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                input.as_ptr(),
+                self.buffer.as_mut_ptr().add(self.buffer_len),
+                input_len,
+            );
+        }
+        
+        self.buffer_len += input_len;
+        self.total_len = new_total;
     }
 
     /// Finalizes the hash and returns the digest.
+    #[inline(always)]
     pub fn finalize(mut self) -> [u8; OUTPUT_SIZE_IN_BYTES] {
-        self.buffer[self.buffer_len..].fill(0);
+        // Zero out remaining buffer bytes
+        if self.buffer_len < BLOCK_INPUT_SIZE_IN_BYTES {
+            unsafe {
+                core::ptr::write_bytes(
+                    self.buffer.as_mut_ptr().add(self.buffer_len),
+                    0,
+                    BLOCK_INPUT_SIZE_IN_BYTES - self.buffer_len,
+                );
+            }
+        }
+        
         // Process final block
         compression_caller(
             &mut self.h,
             &self.buffer,
-            self.counter,
+            0,  // counter is always 0 for single block
             self.buffer_len as u32,
             FLAG_CHUNK_START | FLAG_CHUNK_END | FLAG_ROOT,
         );
 
-        // Extract hash bytes
+        // Extract hash bytes more efficiently
         let mut hash = [0u8; OUTPUT_SIZE_IN_BYTES];
-        let state_bytes: &[u8] = unsafe {
-            core::slice::from_raw_parts(self.h.as_ptr() as *const u8, CHAINING_VALUE_LEN * 4)
-        };
-        hash.copy_from_slice(&state_bytes[..OUTPUT_SIZE_IN_BYTES]);
+        
+        // Convert state directly to bytes (little-endian)
+        #[cfg(target_endian = "little")]
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                self.h.as_ptr() as *const u8,
+                hash.as_mut_ptr(),
+                OUTPUT_SIZE_IN_BYTES,
+            );
+        }
+        
+        #[cfg(target_endian = "big")]
+        {
+            for i in 0..CHAINING_VALUE_LEN {
+                let bytes = self.h[i].to_le_bytes();
+                hash[i * 4..(i + 1) * 4].copy_from_slice(&bytes);
+            }
+        }
+        
         hash
     }
 
+    #[inline(always)]
     pub fn digest(input: &[u8]) -> [u8; OUTPUT_SIZE_IN_BYTES] {
         let mut hasher = Self::new();
         hasher.update(input);
@@ -100,6 +141,7 @@ impl Blake3 {
     }
 }
 
+#[inline(always)]
 fn compression_caller(
     hash_state: &mut [u32; CHAINING_VALUE_LEN],
     message_block: &[u8],
@@ -107,10 +149,24 @@ fn compression_caller(
     input_bytes_num: u32,
     flags: u32,
 ) {
-    // Convert buffer to u32 words
+    // Convert buffer to u32 words more efficiently
     let mut message = [0u32; MSG_BLOCK_LEN + COUNTER_LEN + 2];
-    for i in 0..MSG_BLOCK_LEN {
-        message[i] = u32::from_le_bytes(message_block[i * 4..(i + 1) * 4].try_into().unwrap());
+    
+    // Cast the byte buffer directly to u32 array for better performance
+    #[cfg(target_endian = "little")]
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            message_block.as_ptr() as *const u32,
+            message.as_mut_ptr(),
+            MSG_BLOCK_LEN,
+        );
+    }
+    
+    #[cfg(target_endian = "big")]
+    {
+        for i in 0..MSG_BLOCK_LEN {
+            message[i] = u32::from_le_bytes(message_block[i * 4..(i + 1) * 4].try_into().unwrap());
+        }
     }
 
     message[MSG_BLOCK_LEN] = counter as u32;
