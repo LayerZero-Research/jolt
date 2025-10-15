@@ -682,6 +682,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "compressed"
+version = "0.1.0"
+dependencies = [
+ "compressed-guest",
+ "jolt-sdk",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "compressed-guest"
+version = "0.1.0"
+dependencies = [
+ "jolt-sdk",
+]
+
+[[package]]
 name = "console"
 version = "0.15.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
