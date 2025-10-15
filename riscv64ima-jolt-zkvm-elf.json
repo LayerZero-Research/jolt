@@ -1,0 +1,32 @@
+{
+  "arch": "riscv64",
+  "cpu": "generic-rv64",
+  "features": "+m,+a",
+  "llvm-target": "riscv64",
+  "llvm-abiname": "lp64",
+  "data-layout": "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128",
+  "target-endian": "little",
+  "target-pointer-width": "64",
+  "panic-strategy": "abort",
+  "relocation-model": "static",
+  "code-model": "medium",
+  "linker": "rust-lld",
+  "linker-flavor": "gnu-lld",
+  "max-atomic-width": 64,
+  "disable-redzone": true,
+  "executables": true,
+  "eh-frame-header": false,
+  "emit-debug-gdb-scripts": false,
+  "abi": "lp64",
+  "vendor": "jolt",
+  "os": "zkvm",
+  "metadata": {
+    "description": "Jolt ZKVM RISC-V (RV64IMA ISA)"
+  },
+  "env": "",
+  "has-rpath": false,
+  "position-independent-executables": false,
+  "singlethread": true,
+  "crt-static-default": true,
+  "crt-static-respected": true
+}
