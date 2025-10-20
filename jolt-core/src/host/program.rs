@@ -96,7 +96,9 @@ impl Program {
                 "-C".to_string(),
                 format!("link-arg=-T{}", self.linker_path()),
                 "-C".to_string(),
-                "passes=lower-atomic".to_string(),
+                "target-feature=-c".to_string(),
+                "-C".to_string(),
+                "passes=lower-atomic".to_string(),                
                 "-C".to_string(),
                 "panic=abort".to_string(),
             ];
@@ -127,19 +129,35 @@ impl Program {
             ]);
 
             let target_triple = if self.std {
-                "riscv64imac-jolt-zkvm-elf"
+                "riscv64imac-jolt-linux-musl"
             } else {
                 "riscv64imac-unknown-none-elf"
             };
 
-            let mut envs = vec![("CARGO_ENCODED_RUSTFLAGS", rust_flags.join("\x1f"))];
-
+            // Add custom libc for std builds
             if self.std {
-                envs.push((
-                    "RUSTUP_TOOLCHAIN",
-                    format!("{channel}-jolt-{TOOLCHAIN_VERSION}"),
-                ));
+                rust_flags.extend_from_slice(&[
+                    "-C".to_string(),
+                    "link-arg=-L/workspaces/jolt/custom-libc/lib".to_string(),
+                    "-C".to_string(), 
+                    "link-arg=-lc".to_string(),
+                    "-C".to_string(),
+                    "link-arg=-lunwind".to_string(),
+                ]);
             }
+
+            let mut envs = vec![
+                ("RUST_TARGET_PATH", "/workspaces/jolt/".to_string()),
+                ("RUSTC_BOOTSTRAP", "1".to_string()),
+                ("CARGO_ENCODED_RUSTFLAGS", rust_flags.join("\x1f")),
+            ];
+
+            // if self.std {
+            //     envs.push((
+            //         "RUSTUP_TOOLCHAIN",
+            //         format!("{channel}-jolt-{TOOLCHAIN_VERSION}"),
+            //     ));
+            // }
 
             if let Some(func) = &self.func {
                 envs.push(("JOLT_FUNC_NAME", func.to_string()));
@@ -182,6 +200,10 @@ impl Program {
 
             let args = [
                 "build",
+                "-Z",
+                "build-std=core,alloc,panic_abort,compiler_builtins,std",
+                "-Z",
+                "build-std-features=compiler-builtins-mem",
                 "--release",
                 "--features",
                 "guest",
