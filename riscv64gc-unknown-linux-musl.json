@@ -1,0 +1,86 @@
+{
+  "arch": "riscv64",
+  "cpu": "generic-rv64",
+  "features": "+m,+a,+f,+d,+c,+zicsr,+zifencei",
+  "llvm-target": "riscv64-unknown-linux-musl",
+  "llvm-abiname": "lp64d",
+  "data-layout": "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128",
+  "target-pointer-width": 64,
+  "os": "linux",
+  "env": "musl",
+  "target-family": [
+    "unix"
+  ],
+  "max-atomic-width": 64,
+  "has-thread-local": true,
+  "code-model": "medium",
+  "linker-flavor": "gnu-cc",
+  "dynamic-linking": true,
+  "position-independent-executables": true,
+  "relro-level": "full",
+  "has-rpath": true,
+  "pre-link-objects-fallback": {
+    "dynamic-dylib": [
+      "crti.o",
+      "crtbeginS.o"
+    ],
+    "dynamic-nopic-exe": [
+      "crt1.o",
+      "crti.o",
+      "crtbegin.o"
+    ],
+    "dynamic-pic-exe": [
+      "Scrt1.o",
+      "crti.o",
+      "crtbeginS.o"
+    ],
+    "static-dylib": [
+      "crti.o",
+      "crtbeginS.o"
+    ],
+    "static-nopic-exe": [
+      "crt1.o",
+      "crti.o",
+      "crtbegin.o"
+    ],
+    "static-pic-exe": [
+      "rcrt1.o",
+      "crti.o",
+      "crtbeginS.o"
+    ]
+  },
+  "post-link-objects-fallback": {
+    "dynamic-dylib": [
+      "crtendS.o",
+      "crtn.o"
+    ],
+    "dynamic-nopic-exe": [
+      "crtend.o",
+      "crtn.o"
+    ],
+    "dynamic-pic-exe": [
+      "crtendS.o",
+      "crtn.o"
+    ],
+    "static-dylib": [
+      "crtendS.o",
+      "crtn.o"
+    ],
+    "static-nopic-exe": [
+      "crtend.o",
+      "crtn.o"
+    ],
+    "static-pic-exe": [
+      "crtendS.o",
+      "crtn.o"
+    ]
+  },
+  "crt-static-respected": true,
+  "crt-objects-fallback": "musl",
+  "metadata": {
+    "description": "RISC-V Linux (kernel 4.20, musl 1.2.3)",
+    "host_tools": false,
+    "std": true,
+    "tier": 3
+  }
+}
