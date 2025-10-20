@@ -2,42 +2,27 @@
   "arch": "riscv64",
   "cpu": "generic-rv64",
   "features": "+m,+a,+c",
-  "llvm-target": "riscv64-unknown-linux-elf",
+  "llvm-target": "riscv64",
   "llvm-abiname": "lp64",
   "data-layout": "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128",
-  "target-endian": "little",
-  "target-pointer-width": 64,
-  "os": "linux",
-  "env": "",
-  "vendor": "jolt",
-  "abi": "lp64",
-  "target-family": [
-    "unix"
-  ],
+  "target-pointer-width": "64",
   "max-atomic-width": 64,
-  "singlethread": true,
-  "has-thread-local": false,
-  "disable-redzone": true,
   "panic-strategy": "abort",
   "relocation-model": "static",
   "code-model": "medium",
   "linker": "rust-lld",
   "linker-flavor": "gnu-lld",
-  "executables": true,
-  "dynamic-linking": false,
-  "position-independent-executables": false,
-  "has-rpath": false,
-  "crt-static-default": true,
-  "crt-static-respected": true,
+  "crt-objects-fallback": "false",
   "emit-debug-gdb-scripts": false,
-  "supported-split-debuginfo": [
-    "off"
+  "supported-sanitizers": [
+    "shadow-call-stack",
+    "kernel-address"
   ],
   "eh-frame-header": false,
   "metadata": {
-    "description": "RISC-V 64-bit for Jolt prover with Linux ABI (RV64IMAC ISA)",
-    "tier": 3,
-    "host-tools": false,
-    "std": true
+    "description": "Bare RISC-V (RV64IMAC ISA)",
+    "host_tools": false,
+    "std": false,
+    "tier": 2
   }
 }
