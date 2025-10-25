@@ -162,6 +162,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for InnerSumcheck<F> {
         }
     }
 
+    fn name(&self) -> String {
+        "inner".to_string()
+    }
+
     fn input_claim(&self, acc: Option<&RefCell<dyn OpeningAccumulator<F>>>) -> F {
         let acc = acc.unwrap().borrow();
         let (_, claim_Az) = acc

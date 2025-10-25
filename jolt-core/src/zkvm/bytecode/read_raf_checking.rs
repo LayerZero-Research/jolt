@@ -775,6 +775,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for ReadRafSumcheck<F> 
         self.log_K + self.log_T
     }
 
+    fn name(&self) -> String {
+        "bytecode_read_raf".to_string()
+    }
+
     fn input_claim(&self, _acc: Option<&RefCell<dyn OpeningAccumulator<F>>>) -> F {
         self.rv_claim
     }

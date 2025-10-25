@@ -170,6 +170,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for ValEvaluationSumche
         self.num_rounds
     }
 
+    fn name(&self) -> String {
+        "ram_val_evaluation".to_string()
+    }
+
     fn input_claim(&self, acc: Option<&RefCell<dyn OpeningAccumulator<F>>>) -> F {
         let (_, claimed_evaluation) = acc.unwrap().borrow().get_virtual_polynomial_opening(
             VirtualPolynomial::RamVal,

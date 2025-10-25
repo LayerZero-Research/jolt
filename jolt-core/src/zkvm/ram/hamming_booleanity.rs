@@ -86,6 +86,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for HammingBooleanitySu
         self.log_T
     }
 
+    fn name(&self) -> String {
+        "ram_hamming_booleanity".to_string()
+    }
+
     fn input_claim(&self, _acc: Option<&RefCell<dyn OpeningAccumulator<F>>>) -> F {
         F::zero()
     }

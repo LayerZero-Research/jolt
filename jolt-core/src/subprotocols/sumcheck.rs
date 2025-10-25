@@ -278,7 +278,7 @@ impl BatchedSumcheck {
                 .iter_mut()
                 .zip(individual_claims.iter())
                 .enumerate()
-                .map(|(sumcheck_idx, (sumcheck, previous_claim))| {
+                .map(|(_sumcheck_idx, (sumcheck, previous_claim))| {
                     let num_rounds = sumcheck.num_rounds();
                     if remaining_rounds > num_rounds {
                         // We haven't gotten to this sumcheck's variables yet, so
@@ -307,8 +307,7 @@ impl BatchedSumcheck {
                             std::fs::create_dir_all("dumps")
                                 .expect("Failed to create sumcheck dump directory");
 
-                            let output_path =
-                                format!("dumps/3_evals_{}.txt", sumcheck.name());
+                            let output_path = format!("dumps/3_evals_{}.txt", sumcheck.name());
 
                             // Open file in append mode
                             let mut file = std::fs::OpenOptions::new()

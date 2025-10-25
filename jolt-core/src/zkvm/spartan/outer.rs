@@ -708,6 +708,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for OuterRemainingSumch
         1 + self.num_cycles_bits
     }
 
+    fn name(&self) -> String {
+        "outer_remaining".to_string()
+    }
+
     fn input_claim(&self, _acc: Option<&RefCell<dyn OpeningAccumulator<F>>>) -> F {
         self.input_claim
     }

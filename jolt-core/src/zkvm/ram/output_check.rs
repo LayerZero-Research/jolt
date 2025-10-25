@@ -177,6 +177,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for OutputSumcheck<F> {
         self.K.log_2()
     }
 
+    fn name(&self) -> String {
+        "output".to_string()
+    }
+
     fn input_claim(&self, _acc: Option<&RefCell<dyn OpeningAccumulator<F>>>) -> F {
         F::zero()
     }
@@ -528,6 +532,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for ValFinalSumcheck<F>
 
     fn num_rounds(&self) -> usize {
         self.T.log_2()
+    }
+
+    fn name(&self) -> String {
+        "val_final".to_string()
     }
 
     fn input_claim(&self, acc: Option<&RefCell<dyn OpeningAccumulator<F>>>) -> F {

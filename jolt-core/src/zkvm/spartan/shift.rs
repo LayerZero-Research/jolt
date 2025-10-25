@@ -123,6 +123,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for ShiftSumcheck<F> {
         self.log_T
     }
 
+    fn name(&self) -> String {
+        "shift".to_string()
+    }
+
     fn input_claim(&self, acc: Option<&RefCell<dyn OpeningAccumulator<F>>>) -> F {
         let acc = acc.unwrap().borrow();
         let (_, next_pc_eval) =

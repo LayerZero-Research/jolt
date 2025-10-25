@@ -213,6 +213,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for BooleanitySumcheck<
         DTH_ROOT_OF_K.log_2() + self.T.log_2()
     }
 
+    fn name(&self) -> String {
+        "ram_booleanity".to_string()
+    }
+
     fn input_claim(&self, _acc: Option<&RefCell<dyn OpeningAccumulator<F>>>) -> F {
         F::zero() // Always zero for booleanity
     }

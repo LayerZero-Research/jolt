@@ -115,6 +115,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for InstructionInputSum
         self.log_T
     }
 
+    fn name(&self) -> String {
+        "instruction_input".to_string()
+    }
+
     fn input_claim(&self, acc: Option<&RefCell<dyn OpeningAccumulator<F>>>) -> F {
         let acc = acc.unwrap().borrow();
         let (_, right_claim_stage_1) = acc.get_virtual_polynomial_opening(

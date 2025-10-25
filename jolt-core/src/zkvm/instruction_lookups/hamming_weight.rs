@@ -87,6 +87,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for HammingWeightSumche
         LOG_K_CHUNK
     }
 
+    fn name(&self) -> String {
+        "instruction_hamming_weight".to_string()
+    }
+
     fn input_claim(&self, _acc: Option<&RefCell<dyn OpeningAccumulator<F>>>) -> F {
         self.gamma.iter().sum()
     }
@@ -245,7 +249,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for HammingWeightSumche
 
         // Create the output file
         std::fs::create_dir_all("dumps").ok();
-        let filename = "dumps/1_mlp_instruction_lookups_hamming_weight.txt";
+        let filename = "dumps/1_mlp_instruction_hamming_weight.txt";
         let mut file = match File::create(filename) {
             Ok(f) => f,
             Err(e) => {

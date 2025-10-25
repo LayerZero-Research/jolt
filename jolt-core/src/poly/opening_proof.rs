@@ -437,6 +437,10 @@ where
         self.opening_point.len()
     }
 
+    fn name(&self) -> String {
+        "opening_proof_reduction".to_string()
+    }
+
     fn input_claim(&self, _acc: Option<&RefCell<dyn OpeningAccumulator<F>>>) -> F {
         self.input_claim
     }

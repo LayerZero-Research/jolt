@@ -955,6 +955,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for RamReadWriteCheckin
         self.K.log_2() + self.T.log_2()
     }
 
+    fn name(&self) -> String {
+        "ram_read_write_checking".to_string()
+    }
+
     fn input_claim(&self, acc: Option<&RefCell<dyn OpeningAccumulator<F>>>) -> F {
         let acc = acc.unwrap().borrow();
         let (_, rv_claim) = acc.get_virtual_polynomial_opening(

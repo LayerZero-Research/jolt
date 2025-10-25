@@ -730,6 +730,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for ProductVirtualRemai
         self.num_cycle_vars
     }
 
+    fn name(&self) -> String {
+        "product_virtual_remainder".to_string()
+    }
+
     fn input_claim(&self, _acc: Option<&RefCell<dyn OpeningAccumulator<F>>>) -> F {
         self.input_claim
     }
@@ -990,6 +994,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for ProductVirtualInner
     }
     fn num_rounds(&self) -> usize {
         0
+    }
+
+    fn name(&self) -> String {
+        "product_virtual_inner".to_string()
     }
     fn input_claim(&self, _acc: Option<&RefCell<dyn OpeningAccumulator<F>>>) -> F {
         self.claim

@@ -131,6 +131,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for RafEvaluationSumche
         self.log_K
     }
 
+    fn name(&self) -> String {
+        "ram_raf_evaluation".to_string()
+    }
+
     fn input_claim(&self, acc: Option<&RefCell<dyn OpeningAccumulator<F>>>) -> F {
         let acc = acc.unwrap().borrow();
         let (_, raf_claim) = acc.get_virtual_polynomial_opening(

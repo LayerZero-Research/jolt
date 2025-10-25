@@ -94,6 +94,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for HammingWeightSumche
         self.log_K_chunk
     }
 
+    fn name(&self) -> String {
+        "bytecode_hamming_weight".to_string()
+    }
+
     fn input_claim(&self, _acc: Option<&RefCell<dyn OpeningAccumulator<F>>>) -> F {
         self.gamma.iter().sum()
     }

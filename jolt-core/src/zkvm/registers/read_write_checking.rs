@@ -1315,6 +1315,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for RegistersReadWriteC
         K.log_2() + self.T.log_2()
     }
 
+    fn name(&self) -> String {
+        "registers_read_write_checking".to_string()
+    }
+
     fn input_claim(&self, acc: Option<&RefCell<dyn OpeningAccumulator<F>>>) -> F {
         let acc = acc.unwrap().borrow();
         let (_, rd_wv_claim) = acc.get_virtual_polynomial_opening(

@@ -147,6 +147,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for HammingWeightSumche
         DTH_ROOT_OF_K.log_2()
     }
 
+    fn name(&self) -> String {
+        "ram_hamming_weight".to_string()
+    }
+
     fn input_claim(&self, acc: Option<&RefCell<dyn OpeningAccumulator<F>>>) -> F {
         let acc = acc.unwrap().borrow();
         let (_, hamming_booleanity_claim) = acc.get_virtual_polynomial_opening(

@@ -300,6 +300,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for ReadRafSumcheck<F> 
         LOG_K + self.log_T
     }
 
+    fn name(&self) -> String {
+        "instruction_read_raf".to_string()
+    }
+
     fn input_claim(&self, acc: Option<&RefCell<dyn OpeningAccumulator<F>>>) -> F {
         let acc = acc.unwrap().borrow();
         let (_, rv_claim_spartan) = acc.get_virtual_polynomial_opening(
@@ -708,7 +712,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for ReadRafSumcheck<F> 
 
         // Create the output file
         std::fs::create_dir_all("dumps").ok();
-        let filename = "dumps/1_mlp_instruction_lookups_read_raf.txt";
+        let filename = "dumps/1_mlp_instruction_read_raf.txt";
         let mut file = match File::create(filename) {
             Ok(f) => f,
             Err(e) => {

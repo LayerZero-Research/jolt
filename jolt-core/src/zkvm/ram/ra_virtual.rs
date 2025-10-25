@@ -267,6 +267,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for RaSumcheck<F> {
         self.T.log_2()
     }
 
+    fn name(&self) -> String {
+        "ram_ra_virtualization".to_string()
+    }
+
     #[tracing::instrument(skip_all, name = "RamRaVirtualization::bind")]
     fn bind(&mut self, r_j: F::Challenge, _: usize) {
         let prover_state = self
