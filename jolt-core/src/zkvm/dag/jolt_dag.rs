@@ -55,6 +55,212 @@ impl JoltDAG {
         let trace_length = trace.len();
         let padded_trace_length = trace_length.next_power_of_two();
 
+        // Dump trace
+        {
+            use crate::zkvm::r1cs::inputs::R1CSCycleInputs;
+            use std::fs::File;
+            use std::io::Write;
+
+            // Open file for writing trace
+            let mut trace_file =
+                File::create("trace-r1cs.txt").expect("Failed to create trace file");
+
+            // Write the number of cycles as the first line
+            writeln!(&mut trace_file, "{}", trace_length).expect("Failed to write trace length");
+
+            // Write each cycle as a single line
+            for i in 0..trace_length {
+                let row = R1CSCycleInputs::from_trace::<F>(&preprocessing.shared, &trace, i);
+
+                // Convert SignedBigInt values to signed decimal representation
+                let right_input_signed = row.right_input.to_i128();
+                let imm_signed = row.imm.to_i128();
+
+                // Handle product separately since it can be larger than i128
+                // We'll write it as a string with optional negative sign
+                let product_string = if row.product.is_positive {
+                    row.product.magnitude_as_u128().to_string()
+                } else {
+                    format!("-{}", row.product.magnitude_as_u128())
+                };
+
+                // Write all values in a single line
+                write!(
+                    &mut trace_file,
+                    "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} ",
+                    row.left_input,
+                    right_input_signed,
+                    product_string,
+                    row.left_lookup,
+                    row.right_lookup,
+                    row.lookup_output,
+                    row.rs1_read_value,
+                    row.rs2_read_value,
+                    row.rd_write_value,
+                    row.ram_addr,
+                    row.ram_read_value,
+                    row.ram_write_value,
+                    row.pc,
+                    row.next_pc,
+                    row.unexpanded_pc,
+                    row.next_unexpanded_pc,
+                    imm_signed
+                )
+                .expect("Failed to write trace values");
+
+                // Write the 13 circuit flags as 0/1
+                for flag in row.flags.iter() {
+                    write!(&mut trace_file, "{} ", if *flag { 1 } else { 0 })
+                        .expect("Failed to write flag");
+                }
+
+                // Write the remaining boolean fields as 0/1
+                writeln!(
+                    &mut trace_file,
+                    "{} {} {} {} {} {} {}",
+                    if row.next_is_noop { 1 } else { 0 },
+                    if row.should_jump { 1 } else { 0 },
+                    if row.should_branch { 1 } else { 0 },
+                    if row.write_lookup_output_to_rd_addr {
+                        1
+                    } else {
+                        0
+                    },
+                    if row.write_pc_to_rd_addr { 1 } else { 0 },
+                    if row.next_is_virtual { 1 } else { 0 },
+                    if row.next_is_first_in_sequence { 1 } else { 0 }
+                )
+                .expect("Failed to write boolean fields");
+            }
+
+            // Create schema file with column names and types
+            let mut schema_file =
+                File::create("trace-r1cs-schema.txt").expect("Failed to create schema file");
+
+            // Write column names header
+            writeln!(
+                &mut schema_file,
+                "# Column names and types for trace-r1cs.txt"
+            )
+            .expect("Failed to write header");
+            writeln!(
+                &mut schema_file,
+                "# Each line in the trace contains these values in order:"
+            )
+            .expect("Failed to write header");
+            writeln!(&mut schema_file).expect("Failed to write empty line");
+
+            // Write detailed schema with column names and types
+            writeln!(&mut schema_file, "# Basic instruction inputs and outputs")
+                .expect("Failed to write section header");
+            writeln!(&mut schema_file, "left_input: U64").expect("Failed to write schema");
+            writeln!(
+                &mut schema_file,
+                "right_input: S65  # Signed 64-bit value + sign bit"
+            )
+            .expect("Failed to write schema");
+            writeln!(
+                &mut schema_file,
+                "product: S129  # Signed 128-bit value + sign bit"
+            )
+            .expect("Failed to write schema");
+            writeln!(&mut schema_file).expect("Failed to write empty line");
+
+            writeln!(&mut schema_file, "# Lookup operands and output")
+                .expect("Failed to write section header");
+            writeln!(&mut schema_file, "left_lookup: U64").expect("Failed to write schema");
+            writeln!(&mut schema_file, "right_lookup: U128").expect("Failed to write schema");
+            writeln!(&mut schema_file, "lookup_output: U64").expect("Failed to write schema");
+            writeln!(&mut schema_file).expect("Failed to write empty line");
+
+            writeln!(&mut schema_file, "# Register values")
+                .expect("Failed to write section header");
+            writeln!(&mut schema_file, "rs1_read_value: U64").expect("Failed to write schema");
+            writeln!(&mut schema_file, "rs2_read_value: U64").expect("Failed to write schema");
+            writeln!(&mut schema_file, "rd_write_value: U64").expect("Failed to write schema");
+            writeln!(&mut schema_file).expect("Failed to write empty line");
+
+            writeln!(&mut schema_file, "# RAM access").expect("Failed to write section header");
+            writeln!(&mut schema_file, "ram_addr: U64").expect("Failed to write schema");
+            writeln!(&mut schema_file, "ram_read_value: U64").expect("Failed to write schema");
+            writeln!(&mut schema_file, "ram_write_value: U64").expect("Failed to write schema");
+            writeln!(&mut schema_file).expect("Failed to write empty line");
+
+            writeln!(&mut schema_file, "# Program counter values")
+                .expect("Failed to write section header");
+            writeln!(&mut schema_file, "pc: U64  # Expanded PC").expect("Failed to write schema");
+            writeln!(&mut schema_file, "next_pc: U64  # Next expanded PC")
+                .expect("Failed to write schema");
+            writeln!(
+                &mut schema_file,
+                "unexpanded_pc: U64  # Original/unexpanded PC"
+            )
+            .expect("Failed to write schema");
+            writeln!(
+                &mut schema_file,
+                "next_unexpanded_pc: U64  # Next unexpanded PC"
+            )
+            .expect("Failed to write schema");
+            writeln!(&mut schema_file).expect("Failed to write empty line");
+
+            writeln!(&mut schema_file, "# Immediate value")
+                .expect("Failed to write section header");
+            writeln!(&mut schema_file, "imm: S65  # Signed immediate value")
+                .expect("Failed to write schema");
+            writeln!(&mut schema_file).expect("Failed to write empty line");
+
+            writeln!(&mut schema_file, "# Circuit flags (13 flags total)")
+                .expect("Failed to write section header");
+            writeln!(&mut schema_file, "flag_add_operands: U1").expect("Failed to write schema");
+            writeln!(&mut schema_file, "flag_subtract_operands: U1")
+                .expect("Failed to write schema");
+            writeln!(&mut schema_file, "flag_multiply_operands: U1")
+                .expect("Failed to write schema");
+            writeln!(&mut schema_file, "flag_load: U1").expect("Failed to write schema");
+            writeln!(&mut schema_file, "flag_store: U1").expect("Failed to write schema");
+            writeln!(&mut schema_file, "flag_jump: U1").expect("Failed to write schema");
+            writeln!(&mut schema_file, "flag_write_lookup_output_to_rd: U1")
+                .expect("Failed to write schema");
+            writeln!(&mut schema_file, "flag_virtual_instruction: U1")
+                .expect("Failed to write schema");
+            writeln!(&mut schema_file, "flag_assert: U1").expect("Failed to write schema");
+            writeln!(&mut schema_file, "flag_do_not_update_unexpanded_pc: U1")
+                .expect("Failed to write schema");
+            writeln!(&mut schema_file, "flag_advice: U1").expect("Failed to write schema");
+            writeln!(&mut schema_file, "flag_is_compressed: U1").expect("Failed to write schema");
+            writeln!(&mut schema_file, "flag_is_first_in_sequence: U1")
+                .expect("Failed to write schema");
+            writeln!(&mut schema_file).expect("Failed to write empty line");
+
+            writeln!(&mut schema_file, "# Additional boolean fields")
+                .expect("Failed to write section header");
+            writeln!(&mut schema_file, "next_is_noop: U1").expect("Failed to write schema");
+            writeln!(&mut schema_file, "should_jump: U1").expect("Failed to write schema");
+            writeln!(&mut schema_file, "should_branch: U1").expect("Failed to write schema");
+            writeln!(&mut schema_file, "write_lookup_output_to_rd_addr: U1")
+                .expect("Failed to write schema");
+            writeln!(&mut schema_file, "write_pc_to_rd_addr: U1").expect("Failed to write schema");
+            writeln!(&mut schema_file, "next_is_virtual: U1").expect("Failed to write schema");
+            writeln!(&mut schema_file, "next_is_first_in_sequence: U1")
+                .expect("Failed to write schema");
+            writeln!(&mut schema_file).expect("Failed to write empty line");
+
+            // Also write a simple type-only line for easy parsing
+            writeln!(
+                &mut schema_file,
+                "# Compact type list (one line with all types in order):"
+            )
+            .expect("Failed to write section header");
+            writeln!(&mut schema_file, "U64 S65 S129 U64 U128 U64 U64 U64 U64 U64 U64 U64 U64 U64 U64 U64 S65 U1 U1 U1 U1 U1 U1 U1 U1 U1 U1 U1 U1 U1 U1 U1 U1 U1 U1 U1 U1")
+                .expect("Failed to write schema");
+
+            tracing::info!(
+                "Trace dumped to trace-r1cs.txt with {} cycles",
+                trace_length
+            );
+            tracing::info!("Schema written to trace-r1cs-schema.txt");
+        } // End dump trace
+
         tracing::info!("bytecode size: {}", preprocessing.shared.bytecode.code_size);
 
         let ram_K = state_manager.ram_K;

@@ -75,6 +75,19 @@ pub trait SumcheckInstance<F: JoltField, T: Transcript>: Send + Sync + MaybeAllo
 
     #[cfg(feature = "allocative")]
     fn update_flamegraph(&self, flamegraph: &mut FlameGraphBuilder);
+
+    /// Returns a descriptive name for this sumcheck instance
+    /// Default uses the type name, but implementations can override for better names
+    fn name(&self) -> String {
+        // Use the type name as a fallback
+        std::any::type_name::<Self>()
+            .split("::")
+            .last()
+            .unwrap_or("unknown")
+            .to_string()
+    }
+
+    fn dump_mlp(&self) {}
 }
 
 pub enum SingleSumcheck {}
@@ -214,6 +227,44 @@ impl BatchedSumcheck {
         let mut r_sumcheck: Vec<F::Challenge> = Vec::with_capacity(max_num_rounds);
         let mut compressed_polys: Vec<CompressedUniPoly<F>> = Vec::with_capacity(max_num_rounds);
 
+        tracing::info!("Dumping {} sumcheck instances", sumcheck_instances.len());
+
+        // Create metadata file for sumcheck dump
+        {
+            use std::io::Write;
+
+            // Create directory if it doesn't exist
+            std::fs::create_dir_all("dumps").expect("Failed to create sumcheck dump directory");
+
+            let metadata_path = "dumps/metadata.txt";
+            let mut metadata_file =
+                std::fs::File::create(&metadata_path).expect("Failed to create metadata file");
+
+            writeln!(metadata_file, "Sumcheck Dump Metadata").expect("Failed to write metadata");
+            writeln!(metadata_file, "======================").expect("Failed to write metadata");
+            writeln!(
+                metadata_file,
+                "Number of sumcheck instances: {}",
+                sumcheck_instances.len()
+            )
+            .expect("Failed to write metadata");
+            writeln!(metadata_file, "").expect("Failed to write metadata");
+
+            for (idx, sumcheck) in sumcheck_instances.iter().enumerate() {
+                writeln!(
+                    metadata_file,
+                    "Sumcheck {}: {} rounds",
+                    idx,
+                    sumcheck.num_rounds()
+                )
+                .expect("Failed to write metadata");
+            }
+        }
+
+        for sumcheck in sumcheck_instances.iter() {
+            sumcheck.dump_mlp();
+        }
+
         for round in 0..max_num_rounds {
             #[cfg(not(target_arch = "wasm32"))]
             {
@@ -226,7 +277,8 @@ impl BatchedSumcheck {
             let univariate_polys: Vec<UniPoly<F>> = sumcheck_instances
                 .iter_mut()
                 .zip(individual_claims.iter())
-                .map(|(sumcheck, previous_claim)| {
+                .enumerate()
+                .map(|(sumcheck_idx, (sumcheck, previous_claim))| {
                     let num_rounds = sumcheck.num_rounds();
                     if remaining_rounds > num_rounds {
                         // We haven't gotten to this sumcheck's variables yet, so
@@ -245,6 +297,67 @@ impl BatchedSumcheck {
                         let offset = max_num_rounds - sumcheck.num_rounds();
                         let mut univariate_poly_evals =
                             sumcheck.compute_prover_message(round - offset, *previous_claim);
+                        // tracing::info!("Evals (Round {round}): compute_prover_message/univariate_poly_evals: {univariate_poly_evals:?}");
+
+                        // Dump univariate_poly_evals to file [[memory:2757483]]
+                        {
+                            use std::io::Write;
+
+                            // Create directory if it doesn't exist
+                            std::fs::create_dir_all("dumps")
+                                .expect("Failed to create sumcheck dump directory");
+
+                            let output_path =
+                                format!("dumps/3_evals_{}.txt", sumcheck.name());
+
+                            // Open file in append mode
+                            let mut file = std::fs::OpenOptions::new()
+                                .create(true)
+                                .append(true)
+                                .open(&output_path)
+                                .expect("Failed to open sumcheck dump file");
+
+                            // On round 0 for this sumcheck (when offset equals round), write the length and first round header
+                            let sumcheck_round = round - offset;
+                            if sumcheck_round == 0 {
+                                // Clear the file on first round
+                                let mut file = std::fs::File::create(&output_path)
+                                    .expect("Failed to create sumcheck dump file");
+                                writeln!(file, "{}", univariate_poly_evals.len())
+                                    .expect("Failed to write length");
+                                writeln!(file, "ROUND 0:").expect("Failed to write round header");
+                            } else {
+                                writeln!(file, "ROUND {}:", sumcheck_round)
+                                    .expect("Failed to write round header");
+                            }
+
+                            // Write each field element as hex
+                            for eval in &univariate_poly_evals {
+                                // Serialize field element to bytes
+                                let mut bytes = Vec::new();
+                                eval.serialize_compressed(&mut bytes)
+                                    .expect("Failed to serialize field element");
+
+                                // Ensure we have the expected number of bytes
+                                // Field elements are serialized in little-endian format
+                                if bytes.len() < F::NUM_BYTES {
+                                    // Pad with zeros if needed
+                                    bytes.resize(F::NUM_BYTES, 0);
+                                }
+
+                                // Reverse to get big-endian (most significant first)
+                                bytes.reverse();
+
+                                // Convert to hex string
+                                let hex_string = bytes
+                                    .iter()
+                                    .map(|b| format!("{:02x}", b))
+                                    .collect::<String>();
+                                writeln!(file, "{}", hex_string)
+                                    .expect("Failed to write hex value");
+                            }
+                        }
+
                         univariate_poly_evals.insert(1, *previous_claim - univariate_poly_evals[0]);
                         UniPoly::from_evals(&univariate_poly_evals)
                     }
@@ -322,6 +435,57 @@ impl BatchedSumcheck {
                     transcript,
                     sumcheck.normalize_opening_point(r_slice),
                 );
+            }
+        }
+
+        // tracing::info!("Round randomness: r_sumcheck: {r_sumcheck:?}");
+
+        // Dump round randomness to file [[memory:2757483]]
+        {
+            use std::io::Write;
+
+            // Create directory if it doesn't exist (in case no sumchecks were active)
+            std::fs::create_dir_all("dumps").expect("Failed to create sumcheck dump directory");
+
+            let output_path = "dumps/4_randomness_sumcheck.txt";
+
+            // Create/overwrite the file
+            let mut file = std::fs::File::create(&output_path)
+                .expect("Failed to create sumcheck randomness dump file");
+
+            // Write the length N
+            writeln!(file, "{}", r_sumcheck.len()).expect("Failed to write length");
+
+            // Write each round's randomness
+            for (round_idx, challenge) in r_sumcheck.iter().enumerate() {
+                writeln!(file, "ROUND {}:", round_idx).expect("Failed to write round header");
+
+                // Convert F::Challenge to F
+                let field_elem: F = (*challenge).into();
+
+                // Serialize field element to bytes
+                let mut bytes = Vec::new();
+                field_elem
+                    .serialize_compressed(&mut bytes)
+                    .expect("Failed to serialize field element");
+
+                // Ensure we have the expected number of bytes
+                // Field elements are serialized in little-endian format
+                if bytes.len() < F::NUM_BYTES {
+                    // Pad with zeros if needed
+                    bytes.resize(F::NUM_BYTES, 0);
+                }
+
+                // Reverse to get big-endian (most significant first)
+                bytes.reverse();
+
+                // Convert to hex string
+                let hex_string = bytes
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect::<String>();
+
+                writeln!(file, "{}", hex_string).expect("Failed to write hex value");
             }
         }
 

@@ -214,4 +214,76 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for HammingWeightSumche
     fn update_flamegraph(&self, flamegraph: &mut FlameGraphBuilder) {
         flamegraph.visit_root(self);
     }
+
+    fn dump_mlp(&self) {
+        use ark_serialize::Compress;
+        use std::fs::File;
+        use std::io::Write;
+
+        // Extract all BN254 values from the MLP polynomials
+        let mut all_values: Vec<F> = Vec::new();
+
+        if let Some(prover_state) = &self.prover_state {
+            for poly in &prover_state.ra {
+                // Extract values based on the polynomial type
+                match poly {
+                    MultilinearPolynomial::LargeScalars(dense_poly) => {
+                        // Add all values from the dense polynomial
+                        all_values.extend(&dense_poly.Z);
+                    }
+                    // TODO: Handle other polynomial types if needed [[memory:2757483]]
+                    // For now, we only handle LargeScalars which contains DensePolynomial
+                    _ => {
+                        tracing::warn!("Unhandled polynomial type in dump_mlp: {:?}", poly);
+                    }
+                }
+            }
+        }
+
+        // Get the count before using the values
+        let value_count = all_values.len();
+
+        // Create the output file
+        std::fs::create_dir_all("dumps").ok();
+        let filename = "dumps/1_mlp_instruction_lookups_hamming_weight.txt";
+        let mut file = match File::create(filename) {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::error!("Failed to create MLP dump file: {}", e);
+                return;
+            }
+        };
+
+        // Write the count of BN254 values (in decimal)
+        if let Err(e) = writeln!(file, "{}", value_count) {
+            tracing::error!("Failed to write to MLP dump file: {}", e);
+            return;
+        }
+
+        // Write each BN254 value as hex (most significant byte first)
+        for value in all_values {
+            // Serialize the field element to bytes
+            let mut bytes = Vec::new();
+            if let Err(e) = value.serialize_with_mode(&mut bytes, Compress::No) {
+                tracing::error!("Failed to serialize field element: {}", e);
+                continue;
+            }
+
+            // BN254 field elements are 32 bytes (256 bits)
+            // Convert to hex string with most significant byte first
+            // The serialization is little-endian, so we need to reverse
+            bytes.reverse();
+            let hex_string = bytes
+                .iter()
+                .map(|b| format!("{:02X}", b))
+                .collect::<String>();
+
+            if let Err(e) = writeln!(file, "{}", hex_string) {
+                tracing::error!("Failed to write to MLP dump file: {}", e);
+                return;
+            }
+        }
+
+        tracing::info!("MLP dump written to {} ({} values)", filename, value_count);
+    }
 }
