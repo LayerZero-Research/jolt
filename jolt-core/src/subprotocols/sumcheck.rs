@@ -20,6 +20,34 @@ use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::rc::Rc;
 
+/// Helper function to get the binary name for dump directory structure.
+/// Tries in order:
+/// 1. JOLT_DUMP_BINARY_NAME environment variable
+/// 2. Current executable name (inferred from path)
+/// 3. "default" as fallback
+pub fn get_binary_name() -> String {
+    // First try environment variable
+    if let Ok(name) = std::env::var("JOLT_DUMP_BINARY_NAME") {
+        return name;
+    }
+
+    // Try to infer from current executable
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(file_stem) = exe_path.file_stem() {
+            if let Some(name) = file_stem.to_str() {
+                // Filter out common Rust build artifacts
+                let name = name.to_string();
+                if !name.starts_with("deps") && !name.contains('-') {
+                    return name;
+                }
+            }
+        }
+    }
+
+    // Fallback
+    "default".to_string()
+}
+
 /// Trait for a sumcheck instance that can be batched with other instances.
 ///
 /// This trait defines the interface needed to participate in the `BatchedSumcheck` protocol,
@@ -87,7 +115,94 @@ pub trait SumcheckInstance<F: JoltField, T: Transcript>: Send + Sync + MaybeAllo
             .to_string()
     }
 
-    fn dump_mlp(&self) {}
+    /// Collects the MLP values from this sumcheck instance for dumping.
+    /// Returns a map where keys are polynomial names and values are the polynomial evaluations.
+    /// Returns None if there are no values to dump (e.g., no prover state).
+    /// Implementations should override this to extract values from their specific prover state.
+    fn collect_mlp_values(&self) -> Option<std::collections::HashMap<String, Vec<F>>> {
+        None
+    }
+
+    /// Dumps input polynomial values to files for debugging/analysis.
+    /// Each polynomial is written to a separate file with the given instance number.
+    fn dump(&self, instance_number: usize) {
+        use ark_serialize::Compress;
+        use std::fs::File;
+        use std::io::Write;
+
+        // Get the values to dump
+        let polynomials = match self.collect_mlp_values() {
+            Some(polys) => polys,
+            None => return, // Nothing to dump
+        };
+
+        if polynomials.is_empty() {
+            return; // Nothing to dump
+        }
+
+        // Get binary name from env variable or use default
+        let binary_name = get_binary_name();
+
+        // Create the output directory structure
+        let dir_path = format!("dumps/{}/{}/inputs", binary_name, self.name());
+        if let Err(e) = std::fs::create_dir_all(&dir_path) {
+            tracing::error!("Failed to create input dump directory: {}", e);
+            return;
+        }
+
+        // Dump each polynomial to a separate file
+        for (poly_name, values) in polynomials {
+            let filename = format!("{}/{}.{}.txt", dir_path, poly_name, instance_number);
+
+            // Check if file already exists
+            if std::path::Path::new(&filename).exists() {
+                tracing::error!(
+                    "Input dump file already exists: {}. Overwriting existing file.",
+                    filename
+                );
+            }
+
+            let mut file = match File::create(&filename) {
+                Ok(f) => f,
+                Err(e) => {
+                    tracing::error!("Failed to create input dump file {}: {}", filename, e);
+                    continue;
+                }
+            };
+
+            // Write the count of values (in decimal)
+            if let Err(e) = writeln!(file, "{}", values.len()) {
+                tracing::error!("Failed to write to input dump file {}: {}", filename, e);
+                continue;
+            }
+
+            // Write each value as hex (most significant byte first) [[memory:2757483]]
+            for value in values {
+                // Serialize the field element to bytes
+                let mut bytes = Vec::new();
+                if let Err(e) = value.serialize_with_mode(&mut bytes, Compress::No) {
+                    tracing::error!("Failed to serialize field element: {}", e);
+                    continue;
+                }
+
+                // BN254 field elements are 32 bytes (256 bits)
+                // Convert to hex string with most significant byte first
+                // The serialization is little-endian, so we need to reverse
+                bytes.reverse();
+                let hex_string = bytes
+                    .iter()
+                    .map(|b| format!("{:02X}", b))
+                    .collect::<String>();
+
+                if let Err(e) = writeln!(file, "{}", hex_string) {
+                    tracing::error!("Failed to write to input dump file {}: {}", filename, e);
+                    break;
+                }
+            }
+
+            tracing::info!("Input dump written to {}", filename);
+        }
+    }
 }
 
 pub enum SingleSumcheck {}
@@ -187,6 +302,24 @@ impl BatchedSumcheck {
         opening_accumulator: Option<Rc<RefCell<ProverOpeningAccumulator<F>>>>,
         transcript: &mut ProofTranscript,
     ) -> (SumcheckInstanceProof<F, ProofTranscript>, Vec<F::Challenge>) {
+        // Try to get stage info from current span
+        let stage_info = tracing::Span::current()
+            .metadata()
+            .and_then(|meta| {
+                let name = meta.name();
+                if name.contains("Stage") && name.contains("sumchecks") {
+                    // Extract stage number from span name like "Stage 1 sumchecks"
+                    name.split_whitespace()
+                        .nth(1)
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .map(|stage_num| format!("stage{}", stage_num))
+                } else if name.contains("opening_proof_reduction") {
+                    Some("opening_proof_reduction".to_string())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "default".to_string());
         let max_num_rounds = sumcheck_instances
             .iter()
             .map(|sumcheck| sumcheck.num_rounds())
@@ -233,12 +366,24 @@ impl BatchedSumcheck {
         {
             use std::io::Write;
 
-            // Create directory if it doesn't exist
-            std::fs::create_dir_all("dumps").expect("Failed to create sumcheck dump directory");
+            // Get binary name from env variable or use default
+            let binary_name = get_binary_name();
 
-            let metadata_path = "dumps/metadata.txt";
-            let mut metadata_file =
-                std::fs::File::create(&metadata_path).expect("Failed to create metadata file");
+            // Create directory if it doesn't exist
+            let dump_dir = format!("dumps/{}", binary_name);
+            std::fs::create_dir_all(&dump_dir).expect("Failed to create sumcheck dump directory");
+
+            let metadata_path = format!("{}/metadata_{}.txt", dump_dir, stage_info);
+
+            let mut metadata_file = if std::path::Path::new(&metadata_path).exists() {
+                // Append to existing file
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&metadata_path)
+                    .expect("Failed to open metadata file for appending")
+            } else {
+                std::fs::File::create(&metadata_path).expect("Failed to create metadata file")
+            };
 
             writeln!(metadata_file, "Sumcheck Dump Metadata").expect("Failed to write metadata");
             writeln!(metadata_file, "======================").expect("Failed to write metadata");
@@ -250,19 +395,66 @@ impl BatchedSumcheck {
             .expect("Failed to write metadata");
             writeln!(metadata_file, "").expect("Failed to write metadata");
 
+            writeln!(metadata_file, "Sumcheck Index -> Name Mapping:")
+                .expect("Failed to write metadata");
+            writeln!(metadata_file, "-------------------------------")
+                .expect("Failed to write metadata");
             for (idx, sumcheck) in sumcheck_instances.iter().enumerate() {
                 writeln!(
                     metadata_file,
-                    "Sumcheck {}: {} rounds",
+                    "  Sumcheck {:2}: {} ({} rounds)",
                     idx,
+                    sumcheck.name(),
                     sumcheck.num_rounds()
                 )
                 .expect("Failed to write metadata");
             }
+            writeln!(metadata_file, "").expect("Failed to write metadata");
+
+            writeln!(metadata_file, "Directory structure:").expect("Failed to write metadata");
+            writeln!(metadata_file, "--------------------").expect("Failed to write metadata");
+            writeln!(
+                metadata_file,
+                "  dumps/<binary_name>/<sumcheck_name>/inputs/ - Input polynomials"
+            )
+            .expect("Failed to write metadata");
+            writeln!(
+                metadata_file,
+                "  dumps/<binary_name>/<sumcheck_name>/evals/ - Round evaluations"
+            )
+            .expect("Failed to write metadata");
+            writeln!(metadata_file, "").expect("Failed to write metadata");
+            writeln!(metadata_file, "File naming:").expect("Failed to write metadata");
+            writeln!(
+                metadata_file,
+                "  Input files: <polynomial_name>.<instance_number>.txt"
+            )
+            .expect("Failed to write metadata");
+            writeln!(
+                metadata_file,
+                "  Eval files: round_<round>.<instance_number>.txt"
+            )
+            .expect("Failed to write metadata");
         }
 
-        for sumcheck in sumcheck_instances.iter() {
-            sumcheck.dump_mlp();
+        // Track instance numbers for each sumcheck type
+        let mut instance_counters: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+
+        // First, assign instance numbers to each sumcheck
+        let instance_numbers: Vec<usize> = sumcheck_instances
+            .iter()
+            .map(|sumcheck| {
+                let name = sumcheck.name();
+                let counter = instance_counters.entry(name.clone()).or_insert(0);
+                *counter += 1;
+                *counter
+            })
+            .collect();
+
+        // Then dump each sumcheck with its assigned instance number
+        for (sumcheck, instance_num) in sumcheck_instances.iter().zip(instance_numbers.iter()) {
+            sumcheck.dump(*instance_num);
         }
 
         for round in 0..max_num_rounds {
@@ -278,7 +470,7 @@ impl BatchedSumcheck {
                 .iter_mut()
                 .zip(individual_claims.iter())
                 .enumerate()
-                .map(|(_sumcheck_idx, (sumcheck, previous_claim))| {
+                .map(|(sumcheck_idx, (sumcheck, previous_claim))| {
                     let num_rounds = sumcheck.num_rounds();
                     if remaining_rounds > num_rounds {
                         // We haven't gotten to this sumcheck's variables yet, so
@@ -303,32 +495,38 @@ impl BatchedSumcheck {
                         {
                             use std::io::Write;
 
-                            // Create directory if it doesn't exist
-                            std::fs::create_dir_all("dumps")
-                                .expect("Failed to create sumcheck dump directory");
+                            // Get binary name
+                            let binary_name = get_binary_name();
 
-                            let output_path = format!("dumps/3_evals_{}.txt", sumcheck.name());
+                            // Get instance number for this sumcheck
+                            let sumcheck_instance_num = instance_numbers[sumcheck_idx];
 
-                            // Open file in append mode
-                            let mut file = std::fs::OpenOptions::new()
-                                .create(true)
-                                .append(true)
-                                .open(&output_path)
-                                .expect("Failed to open sumcheck dump file");
+                            // Create directory structure
+                            let dump_dir =
+                                format!("dumps/{}/{}/evals", binary_name, sumcheck.name());
+                            std::fs::create_dir_all(&dump_dir)
+                                .expect("Failed to create sumcheck eval dump directory");
 
-                            // On round 0 for this sumcheck (when offset equals round), write the length and first round header
                             let sumcheck_round = round - offset;
-                            if sumcheck_round == 0 {
-                                // Clear the file on first round
-                                let mut file = std::fs::File::create(&output_path)
-                                    .expect("Failed to create sumcheck dump file");
-                                writeln!(file, "{}", univariate_poly_evals.len())
-                                    .expect("Failed to write length");
-                                writeln!(file, "ROUND 0:").expect("Failed to write round header");
-                            } else {
-                                writeln!(file, "ROUND {}:", sumcheck_round)
-                                    .expect("Failed to write round header");
+                            let filename = format!(
+                                "{}/round_{}.{}.txt",
+                                dump_dir, sumcheck_round, sumcheck_instance_num
+                            );
+
+                            // Check if file already exists
+                            if std::path::Path::new(&filename).exists() {
+                                tracing::error!(
+                                    "Eval dump file already exists: {}. Overwriting existing file.",
+                                    filename
+                                );
                             }
+
+                            let mut file = std::fs::File::create(&filename)
+                                .expect("Failed to create sumcheck eval dump file");
+
+                            // Write the length
+                            writeln!(file, "{}", univariate_poly_evals.len())
+                                .expect("Failed to write length");
 
                             // Write each field element as hex
                             for eval in &univariate_poly_evals {
@@ -443,22 +641,24 @@ impl BatchedSumcheck {
         {
             use std::io::Write;
 
-            // Create directory if it doesn't exist (in case no sumchecks were active)
-            std::fs::create_dir_all("dumps").expect("Failed to create sumcheck dump directory");
+            // Get binary name from env variable or use default
+            let binary_name = get_binary_name();
 
-            let output_path = "dumps/4_randomness_sumcheck.txt";
+            // Create directory structure
+            let dump_dir = format!("dumps/{}/randomness", binary_name);
+            std::fs::create_dir_all(&dump_dir).expect("Failed to create randomness dump directory");
 
-            // Create/overwrite the file
-            let mut file = std::fs::File::create(&output_path)
+            // Dump all randomness to a stage-specific file
+            let filename = format!("{}/sumcheck_randomness_{}.txt", dump_dir, stage_info);
+
+            let mut file = std::fs::File::create(&filename)
                 .expect("Failed to create sumcheck randomness dump file");
 
             // Write the length N
             writeln!(file, "{}", r_sumcheck.len()).expect("Failed to write length");
 
             // Write each round's randomness
-            for (round_idx, challenge) in r_sumcheck.iter().enumerate() {
-                writeln!(file, "ROUND {}:", round_idx).expect("Failed to write round header");
-
+            for challenge in r_sumcheck.iter() {
                 // Convert F::Challenge to F
                 let field_elem: F = (*challenge).into();
 

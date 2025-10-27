@@ -136,6 +136,12 @@ fn trace(args: ProfileArgs) {
     let bench_name = normalize_bench_name(&args.name.to_string());
     let timestamp = Local::now().format("%Y%m%d-%H%M");
     let trace_name = format!("{bench_name}_{timestamp}");
+
+    // Set JOLT_DUMP_BINARY_NAME to the benchmark name if not already set
+    if std::env::var("JOLT_DUMP_BINARY_NAME").is_err() {
+        std::env::set_var("JOLT_DUMP_BINARY_NAME", &bench_name);
+    }
+
     let _guards = setup_tracing(args.format, &trace_name);
 
     for (span, bench) in benchmarks(args.name).into_iter() {
@@ -158,6 +164,13 @@ fn run_benchmark(args: BenchmarkArgs) {
 
     let bench_name = normalize_bench_name(&args.profile_args.name.to_string());
     let trace_name = format!("{bench_name}_{scale}");
+
+    // Set JOLT_DUMP_BINARY_NAME to the benchmark name with scale if not already set
+    if std::env::var("JOLT_DUMP_BINARY_NAME").is_err() {
+        let dump_name = format!("{bench_name}_{scale}");
+        std::env::set_var("JOLT_DUMP_BINARY_NAME", &dump_name);
+    }
+
     let _guards = setup_tracing(args.profile_args.format, &trace_name);
 
     // Call master_benchmark with parameters

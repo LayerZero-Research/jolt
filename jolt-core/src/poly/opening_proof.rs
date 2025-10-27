@@ -438,7 +438,8 @@ where
     }
 
     fn name(&self) -> String {
-        "opening_proof_reduction".to_string()
+        // Include the sumcheck_id to distinguish between multiple instances
+        format!("opening_proof_reduction_{:?}", self.sumcheck_id)
     }
 
     fn input_claim(&self, _acc: Option<&RefCell<dyn OpeningAccumulator<F>>>) -> F {

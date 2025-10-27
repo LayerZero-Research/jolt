@@ -61,9 +61,25 @@ impl JoltDAG {
             use std::fs::File;
             use std::io::Write;
 
+            // Get binary name for directory structure
+            let binary_name = crate::subprotocols::sumcheck::get_binary_name();
+
+            // Create dumps directory if it doesn't exist
+            let dump_dir = format!("dumps/{}", binary_name);
+            std::fs::create_dir_all(&dump_dir).ok();
+
+            let trace_path = format!("{}/trace-r1cs.txt", dump_dir);
+
+            // Check if file already exists
+            if std::path::Path::new(&trace_path).exists() {
+                tracing::error!(
+                    "Trace file already exists: {}. Overwriting existing file.",
+                    trace_path
+                );
+            }
+
             // Open file for writing trace
-            let mut trace_file =
-                File::create("trace-r1cs.txt").expect("Failed to create trace file");
+            let mut trace_file = File::create(&trace_path).expect("Failed to create trace file");
 
             // Write the number of cycles as the first line
             writeln!(&mut trace_file, "{}", trace_length).expect("Failed to write trace length");
@@ -134,8 +150,17 @@ impl JoltDAG {
             }
 
             // Create schema file with column names and types
-            let mut schema_file =
-                File::create("trace-r1cs-schema.txt").expect("Failed to create schema file");
+            let schema_path = format!("{}/trace-r1cs-schema.txt", dump_dir);
+
+            // Check if file already exists
+            if std::path::Path::new(&schema_path).exists() {
+                tracing::error!(
+                    "Schema file already exists: {}. Overwriting existing file.",
+                    schema_path
+                );
+            }
+
+            let mut schema_file = File::create(&schema_path).expect("Failed to create schema file");
 
             // Write column names header
             writeln!(
@@ -252,13 +277,14 @@ impl JoltDAG {
             )
             .expect("Failed to write section header");
             writeln!(&mut schema_file, "U64 S65 S129 U64 U128 U64 U64 U64 U64 U64 U64 U64 U64 U64 U64 U64 S65 U1 U1 U1 U1 U1 U1 U1 U1 U1 U1 U1 U1 U1 U1 U1 U1 U1 U1 U1 U1")
-                .expect("Failed to write schema");
+            .expect("Failed to write schema");
 
             tracing::info!(
-                "Trace dumped to trace-r1cs.txt with {} cycles",
+                "Trace dumped to {} with {} cycles",
+                trace_path,
                 trace_length
             );
-            tracing::info!("Schema written to trace-r1cs-schema.txt");
+            tracing::info!("Schema written to {}", schema_path);
         } // End dump trace
 
         tracing::info!("bytecode size: {}", preprocessing.shared.bytecode.code_size);
