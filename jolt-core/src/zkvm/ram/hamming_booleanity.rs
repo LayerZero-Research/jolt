@@ -99,7 +99,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for HammingBooleanitySu
         name = "RamHammingBooleanitySumcheck::compute_prover_message"
     )]
     fn compute_prover_message(&mut self, _round: usize, previous_claim: F) -> Vec<F> {
-        let p = self.prover_state.as_ref().unwrap();
+        let p: &HammingBooleanityProverState<F> = self.prover_state.as_ref().unwrap();
         let eq = &p.eq_r_cycle;
         let H = &p.H;
 
@@ -287,29 +287,8 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for HammingBooleanitySu
             }
         }
 
-        // Extract GruenSplitEqPolynomial data if desired
-        // This contains the initial equality polynomial evaluations split for optimization
-        if !ps.eq_r_cycle.E_in_vec.is_empty() {
-            // Flatten all E_in evaluations into a single vector
-            let e_in_values: Vec<F> = ps
-                .eq_r_cycle
-                .E_in_vec
-                .iter()
-                .flat_map(|vec| vec.clone())
-                .collect();
-            polynomials.insert("eq_E_in".to_string(), e_in_values);
-        }
-
-        if !ps.eq_r_cycle.E_out_vec.is_empty() {
-            // Flatten all E_out evaluations into a single vector
-            let e_out_values: Vec<F> = ps
-                .eq_r_cycle
-                .E_out_vec
-                .iter()
-                .flat_map(|vec| vec.clone())
-                .collect();
-            polynomials.insert("eq_E_out".to_string(), e_out_values);
-        }
+        // Extract GruenSplitEqPolynomial data including tau
+        polynomials.extend(ps.eq_r_cycle.dump());
 
         if polynomials.is_empty() {
             None

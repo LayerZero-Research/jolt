@@ -315,6 +315,42 @@ impl<F: JoltField> GruenSplitEqPolynomial<F> {
         })
     }
 
+    /// Dumps the internal state for debugging/serialization
+    pub fn dump(&self) -> std::collections::HashMap<String, Vec<F>> {
+        use std::collections::HashMap;
+
+        let mut data = HashMap::new();
+
+        // Dump tau (w) vector
+        data.insert(
+            "tau".to_string(),
+            self.w.iter().map(|&c| c.into()).collect(),
+        );
+
+        // Dump current scalar
+        data.insert("current_scalar".to_string(), vec![self.current_scalar]);
+
+        // Dump current index
+        data.insert(
+            "current_index".to_string(),
+            vec![F::from_u64(self.current_index as u64)],
+        );
+
+        // Dump E_in evaluations if present
+        if !self.E_in_vec.is_empty() {
+            let e_in_values: Vec<F> = self.E_in_vec.iter().flat_map(|vec| vec.clone()).collect();
+            data.insert("eq_E_in".to_string(), e_in_values);
+        }
+
+        // Dump E_out evaluations if present
+        if !self.E_out_vec.is_empty() {
+            let e_out_values: Vec<F> = self.E_out_vec.iter().flat_map(|vec| vec.clone()).collect();
+            data.insert("eq_E_out".to_string(), e_out_values);
+        }
+
+        data
+    }
+
     /// Emulates the behavior of EqPolynomial::evals(&self.w).par_iter().enumerate()
     /// Only works if `self.binding_order` is `BindingOrder::HighToLow`.
     /// For the low-to-high version, see `par_iter_low_to_high`.
