@@ -260,34 +260,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for HammingBooleanitySu
     }
 
     fn collect_mlp_values(&self) -> Option<std::collections::HashMap<String, Vec<F>>> {
-        use std::collections::HashMap;
-
+        let mut polynomials = std::collections::HashMap::new();
         let ps = self.prover_state.as_ref()?;
-        let mut polynomials = HashMap::new();
 
-        // Extract the H polynomial values
-        match &ps.H {
-            MultilinearPolynomial::LargeScalars(dense_poly) => {
-                polynomials.insert("H".to_string(), dense_poly.Z.clone());
-            }
-            MultilinearPolynomial::BoolScalars(compact_poly) => {
-                // Convert bool values to F
-                let values: Vec<F> = compact_poly
-                    .coeffs
-                    .iter()
-                    .map(|&b| if b { F::one() } else { F::zero() })
-                    .collect();
-                polynomials.insert("H".to_string(), values);
-            }
-            _ => {
-                tracing::warn!(
-                    "Unhandled polynomial type for H in RamHammingBooleanitySumcheck: {:?}",
-                    std::mem::discriminant(&ps.H)
-                );
-            }
-        }
-
-        // Extract GruenSplitEqPolynomial data including tau
+        polynomials.extend(ps.H.dump("H"));
         polynomials.extend(ps.eq_r_cycle.dump());
 
         if polynomials.is_empty() {

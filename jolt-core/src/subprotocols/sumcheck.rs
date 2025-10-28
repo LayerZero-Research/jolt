@@ -8,6 +8,8 @@ use crate::poly::opening_proof::{
     OpeningPoint, ProverOpeningAccumulator, VerifierOpeningAccumulator, BIG_ENDIAN,
 };
 use crate::poly::unipoly::{CompressedUniPoly, UniPoly};
+use crate::poly::multilinear_polynomial::MultilinearPolynomial;
+use crate::poly::split_eq_poly::GruenSplitEqPolynomial;
 use crate::transcripts::{AppendToTranscript, Transcript};
 use crate::utils::errors::ProofVerifyError;
 #[cfg(not(target_arch = "wasm32"))]

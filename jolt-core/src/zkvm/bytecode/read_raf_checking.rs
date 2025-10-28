@@ -1088,26 +1088,12 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for ReadRafSumcheck<F> 
     }
 
     fn collect_mlp_values(&self) -> Option<std::collections::HashMap<String, Vec<F>>> {
-        use std::collections::HashMap;
+        let mut polynomials = std::collections::HashMap::new();
+        let ps = self.prover_state.as_ref()?;
 
-        let mut polynomials = HashMap::new();
-
-        if let Some(prover_state) = &self.prover_state {
-            // Handle the F array of N_STAGES polynomials
-            for (i, poly) in prover_state.F.iter().enumerate() {
-                match poly {
-                    MultilinearPolynomial::LargeScalars(dense_poly) => {
-                        polynomials.insert(format!("F_{}", i), dense_poly.Z.clone());
-                    }
-                    _ => {
-                        tracing::warn!(
-                            "Unhandled polynomial type in collect_mlp_values (F[{}]): {:?}",
-                            i,
-                            poly
-                        );
-                    }
-                }
-            }
+        // Handle the F array of N_STAGES polynomials
+        for (i, poly) in ps.F.iter().enumerate() {
+            polynomials.extend(poly.dump(&format!("F_{}", i)));
         }
 
         if polynomials.is_empty() {

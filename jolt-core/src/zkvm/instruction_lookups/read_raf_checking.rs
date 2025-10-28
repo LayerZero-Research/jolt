@@ -656,55 +656,22 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for ReadRafSumcheck<F> 
     }
 
     fn collect_mlp_values(&self) -> Option<std::collections::HashMap<String, Vec<F>>> {
-        use std::collections::HashMap;
+        let mut polynomials = std::collections::HashMap::new();
+        let ps = self.prover_state.as_ref()?;
 
-        let mut polynomials = HashMap::new();
+        // Handle the optional ra polynomial
+        if let Some(ra) = &ps.ra {
+            polynomials.extend(ra.dump("ra"));
+        }
 
-        if let Some(prover_state) = &self.prover_state {
-            // Handle the ra polynomial
-            if let Some(ra) = &prover_state.ra {
-                match ra {
-                    MultilinearPolynomial::LargeScalars(dense_poly) => {
-                        polynomials.insert("ra".to_string(), dense_poly.Z.clone());
-                    }
-                    _ => {
-                        tracing::warn!(
-                            "Unhandled polynomial type in collect_mlp_values (ra): {:?}",
-                            ra
-                        );
-                    }
-                }
-            }
+        // Handle the optional combined_val_polynomial
+        if let Some(poly) = &ps.combined_val_polynomial {
+            polynomials.extend(poly.dump("combined_val"));
+        }
 
-            // Handle the combined_val_polynomial
-            if let Some(poly) = &prover_state.combined_val_polynomial {
-                match poly {
-                    MultilinearPolynomial::LargeScalars(dense_poly) => {
-                        polynomials.insert("combined_val".to_string(), dense_poly.Z.clone());
-                    }
-                    _ => {
-                        tracing::warn!(
-                            "Unhandled polynomial type in collect_mlp_values (combined_val): {:?}",
-                            poly
-                        );
-                    }
-                }
-            }
-
-            // Handle the combined_raf_val_polynomial
-            if let Some(poly) = &prover_state.combined_raf_val_polynomial {
-                match poly {
-                    MultilinearPolynomial::LargeScalars(dense_poly) => {
-                        polynomials.insert("combined_raf_val".to_string(), dense_poly.Z.clone());
-                    }
-                    _ => {
-                        tracing::warn!(
-                            "Unhandled polynomial type in collect_mlp_values (combined_raf_val): {:?}",
-                            poly
-                        );
-                    }
-                }
-            }
+        // Handle the optional combined_raf_val_polynomial
+        if let Some(poly) = &ps.combined_raf_val_polynomial {
+            polynomials.extend(poly.dump("combined_raf_val"));
         }
 
         if polynomials.is_empty() {

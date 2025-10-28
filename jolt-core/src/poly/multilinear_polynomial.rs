@@ -94,6 +94,64 @@ impl<F: JoltField> MultilinearPolynomial<F> {
         }
     }
 
+    /// Dump the polynomial coefficients for debugging/serialization
+    pub fn dump(&self, name: &str) -> std::collections::HashMap<String, Vec<F>> {
+        let mut data = std::collections::HashMap::new();
+
+        let values = match self {
+            MultilinearPolynomial::LargeScalars(dense) => dense.Z.clone(),
+            MultilinearPolynomial::BoolScalars(compact) => compact
+                .coeffs
+                .iter()
+                .map(|&b| if b { F::one() } else { F::zero() })
+                .collect(),
+            MultilinearPolynomial::U8Scalars(compact) => compact
+                .coeffs
+                .iter()
+                .map(|&v| F::from_u64(v as u64))
+                .collect(),
+            MultilinearPolynomial::U16Scalars(compact) => compact
+                .coeffs
+                .iter()
+                .map(|&v| F::from_u64(v as u64))
+                .collect(),
+            MultilinearPolynomial::U32Scalars(compact) => compact
+                .coeffs
+                .iter()
+                .map(|&v| F::from_u64(v as u64))
+                .collect(),
+            MultilinearPolynomial::U64Scalars(compact) => {
+                compact.coeffs.iter().map(|&v| F::from_u64(v)).collect()
+            }
+            MultilinearPolynomial::U128Scalars(compact) => {
+                compact.coeffs.iter().map(|&v| F::from_u128(v)).collect()
+            }
+            MultilinearPolynomial::I64Scalars(compact) => {
+                compact.coeffs.iter().map(|&v| F::from_i64(v)).collect()
+            }
+            MultilinearPolynomial::I128Scalars(compact) => {
+                compact.coeffs.iter().map(|&v| F::from_i128(v)).collect()
+            }
+            MultilinearPolynomial::S128Scalars(compact) => {
+                compact.coeffs.iter().map(|v| v.to_field()).collect()
+            }
+            MultilinearPolynomial::RLC(_) => {
+                tracing::warn!("Cannot extract field elements from RLC polynomial");
+                vec![]
+            }
+            MultilinearPolynomial::OneHot(_) => {
+                tracing::warn!("Cannot extract field elements from OneHot polynomial");
+                vec![]
+            }
+        };
+
+        if !values.is_empty() {
+            data.insert(name.to_string(), values);
+        }
+
+        data
+    }
+
     /// The current length of the polynomial
     pub fn len(&self) -> usize {
         match self {

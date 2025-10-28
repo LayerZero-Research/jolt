@@ -230,28 +230,11 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for HammingWeightSumche
     }
 
     fn collect_mlp_values(&self) -> Option<std::collections::HashMap<String, Vec<F>>> {
-        use std::collections::HashMap;
+        let mut polynomials = std::collections::HashMap::new();
+        let ps = self.prover_state.as_ref()?;
 
-        let mut polynomials = HashMap::new();
-
-        if let Some(prover_state) = &self.prover_state {
-            for (i, poly) in prover_state.ra.iter().enumerate() {
-                // Extract values based on the polynomial type
-                match poly {
-                    MultilinearPolynomial::LargeScalars(dense_poly) => {
-                        polynomials.insert(format!("ra_{}", i), dense_poly.Z.clone());
-                    }
-                    // TODO: Handle other polynomial types if needed [[memory:2757483]]
-                    // For now, we only handle LargeScalars which contains DensePolynomial
-                    _ => {
-                        tracing::warn!(
-                            "Unhandled polynomial type in collect_mlp_values (ra[{}]): {:?}",
-                            i,
-                            poly
-                        );
-                    }
-                }
-            }
+        for (i, poly) in ps.ra.iter().enumerate() {
+            polynomials.extend(poly.dump(&format!("ra_{}", i)));
         }
 
         if polynomials.is_empty() {
