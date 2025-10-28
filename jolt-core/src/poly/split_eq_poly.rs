@@ -20,10 +20,12 @@ use crate::{field::JoltField, poly::eq_poly::EqPolynomial, utils::math::Math};
 /// - If `i < n/2`, then `E_in_vec.last().unwrap() = [eq(w[n/2..(n/2 + i + 1)], x) for all x in {0,
 ///   1}^{n/2 - i - 1}]`; else `E_in_vec` is empty
 ///
+/// Note: `w` corresponds to τ (tau).
 /// Implements both LowToHigh ordering and HighToLow ordering.
 pub struct GruenSplitEqPolynomial<F: JoltField> {
     pub(crate) current_index: usize,
     pub(crate) current_scalar: F,
+    /// The evaluation point vector (also known as tau/τ)
     pub(crate) w: Vec<F::Challenge>,
     pub(crate) E_in_vec: Vec<Vec<F>>,
     pub(crate) E_out_vec: Vec<Vec<F>>,
@@ -321,7 +323,7 @@ impl<F: JoltField> GruenSplitEqPolynomial<F> {
 
         let mut data = HashMap::new();
 
-        // Dump w vector (the equality polynomial evaluation points)
+        // Dump w vector (the equality polynomial evaluation points, or tau)
         data.insert(
             "gruen_split_eq.w".to_string(),
             self.w.iter().map(|&c| c.into()).collect(),
