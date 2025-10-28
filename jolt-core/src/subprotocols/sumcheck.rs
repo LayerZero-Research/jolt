@@ -375,15 +375,8 @@ impl BatchedSumcheck {
 
             let metadata_path = format!("{}/metadata_{}.txt", dump_dir, stage_info);
 
-            let mut metadata_file = if std::path::Path::new(&metadata_path).exists() {
-                // Append to existing file
-                std::fs::OpenOptions::new()
-                    .append(true)
-                    .open(&metadata_path)
-                    .expect("Failed to open metadata file for appending")
-            } else {
-                std::fs::File::create(&metadata_path).expect("Failed to create metadata file")
-            };
+            let mut metadata_file =
+                std::fs::File::create(&metadata_path).expect("Failed to create metadata file");
 
             writeln!(metadata_file, "Sumcheck Dump Metadata").expect("Failed to write metadata");
             writeln!(metadata_file, "======================").expect("Failed to write metadata");
