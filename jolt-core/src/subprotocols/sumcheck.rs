@@ -242,6 +242,30 @@ impl SingleSumcheck {
 
             sumcheck_instance.bind(r_j, round);
         }
+        
+        // DEBUG: Dump randomness for single sumcheck instance
+        {
+            use std::io::Write;
+            use ark_serialize::{CanonicalSerialize, Compress};
+            
+            let binary_name = get_binary_name();
+            let instance_name = sumcheck_instance.name();
+            let dump_dir = format!("dumps/{}/{}/debug/single", binary_name, instance_name);
+            std::fs::create_dir_all(&dump_dir).ok();
+            
+            if let Ok(mut file) = std::fs::File::create(format!("{}/randomness_full.txt", dump_dir)) {
+                writeln!(file, "{}", r_sumcheck.len()).ok();
+                for r_j in &r_sumcheck {
+                    let field_elem: F = (*r_j).into();
+                    let mut bytes = Vec::new();
+                    field_elem.serialize_compressed(&mut bytes).ok();
+                    bytes.resize(32, 0);
+                    bytes.reverse();
+                    let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                    writeln!(file, "{}", hex).ok();
+                }
+            }
+        }
 
         if let Some(opening_accumulator) = opening_accumulator {
             // Cache polynomial opening claims, to be proven using either an
@@ -678,6 +702,25 @@ impl BatchedSumcheck {
                     .collect::<String>();
 
                 writeln!(file, "{}", hex_string).expect("Failed to write hex value");
+            }
+            
+            // DEBUG: Also dump instance-specific randomness from batched execution
+            for (sumcheck, instance_num) in sumcheck_instances.iter().zip(instance_numbers.iter()) {
+                let instance_name = sumcheck.name();
+                let instance_dump_dir = format!("dumps/{}/{}/debug/batched", binary_name, instance_name);
+                std::fs::create_dir_all(&instance_dump_dir).ok();
+                if let Ok(mut f) = std::fs::File::create(format!("{}/randomness_full_{}.txt", instance_dump_dir, instance_num)) {
+                    writeln!(f, "{}", r_sumcheck.len()).ok();
+                    for r_j in &r_sumcheck {
+                        let field_elem: F = (*r_j).into();
+                        let mut bytes = Vec::new();
+                        field_elem.serialize_compressed(&mut bytes).ok();
+                        bytes.resize(32, 0);
+                        bytes.reverse();
+                        let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                        writeln!(f, "{}", hex).ok();
+                    }
+                }
             }
         }
 

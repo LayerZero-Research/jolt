@@ -145,12 +145,45 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for RafEvaluationSumche
     }
 
     #[tracing::instrument(skip_all, name = "RamRafEvaluationSumcheck::compute_prover_message")]
-    fn compute_prover_message(&mut self, _round: usize, _previous_claim: F) -> Vec<F> {
+    fn compute_prover_message(&mut self, round: usize, _previous_claim: F) -> Vec<F> {
         let ps = self
             .prover_state
             .as_ref()
             .expect("Prover state not initialized");
         const DEGREE: usize = 2;
+
+        // DEBUG: Dump full ra and unmap vectors for round 0
+        if round == 0 {
+            use std::io::Write;
+            use ark_serialize::{CanonicalSerialize, Compress};
+            
+            let binary_name = crate::subprotocols::sumcheck::get_binary_name();
+            let dump_dir = format!("dumps/{}/ram_raf_evaluation/debug", binary_name);
+            std::fs::create_dir_all(&dump_dir).ok();
+            
+            // Dump full RA vector
+            if let Ok(mut file) = std::fs::File::create(format!("{}/ra_full.txt", dump_dir)) {
+                writeln!(file, "{}", ps.ra.len()).ok();
+                for i in 0..ps.ra.len() {
+                    let val = ps.ra.get_bound_coeff(i);
+                    let mut bytes = Vec::new();
+                    val.serialize_compressed(&mut bytes).ok();
+                    bytes.resize(32, 0);
+                    bytes.reverse();
+                    let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                    writeln!(file, "{}", hex).ok();
+                }
+            }
+            
+            // Dump full unmap evaluations for all indices
+            if let Ok(mut file) = std::fs::File::create(format!("{}/unmap_sumcheck_evals.txt", dump_dir)) {
+                writeln!(file, "# unmap sumcheck_evals for all i in 0..len/2, degree=2, HighToLow").ok();
+                for i in 0..(ps.ra.len() / 2) {
+                    let evals = ps.unmap.sumcheck_evals(i, DEGREE, BindingOrder::HighToLow);
+                    writeln!(file, "{} {} {}", i, evals[0], evals[1]).ok();
+                }
+            }
+        }
 
         (0..ps.ra.len() / 2)
             .into_par_iter()
@@ -176,7 +209,42 @@ impl<F: JoltField, T: Transcript> SumcheckInstance<F, T> for RafEvaluationSumche
     }
 
     #[tracing::instrument(skip_all, name = "RamRafEvaluationSumcheck::bind")]
-    fn bind(&mut self, r_j: F::Challenge, _round: usize) {
+    fn bind(&mut self, r_j: F::Challenge, round: usize) {
+        // DEBUG: Dump the challenge for this round
+        if round == 0 {
+            use std::io::Write;
+            use ark_serialize::{CanonicalSerialize, Compress};
+            
+            let binary_name = crate::subprotocols::sumcheck::get_binary_name();
+            let dump_dir = format!("dumps/{}/ram_raf_evaluation/debug", binary_name);
+            std::fs::create_dir_all(&dump_dir).ok();
+            
+            if let Ok(mut file) = std::fs::File::create(format!("{}/challenges.txt", dump_dir)) {
+                writeln!(file, "{}", self.log_K).ok(); // Will write num_rounds challenges
+            }
+        }
+        
+        // Append each challenge
+        {
+            use std::io::Write;
+            use ark_serialize::{CanonicalSerialize, Compress};
+            
+            let binary_name = crate::subprotocols::sumcheck::get_binary_name();
+            let dump_dir = format!("dumps/{}/ram_raf_evaluation/debug", binary_name);
+            
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .append(true)
+                .open(format!("{}/challenges.txt", dump_dir)) {
+                let r_field: F = r_j.into();
+                let mut bytes = Vec::new();
+                r_field.serialize_compressed(&mut bytes).ok();
+                bytes.resize(32, 0);
+                bytes.reverse();
+                let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                writeln!(file, "{}", hex).ok();
+            }
+        }
+        
         if let Some(prover_state) = &mut self.prover_state {
             rayon::join(
                 || prover_state.ra.bind_parallel(r_j, BindingOrder::HighToLow),
