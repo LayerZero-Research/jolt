@@ -277,4 +277,48 @@ mod tests {
             hex!("c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470")
         );
     }
+
+    #[test]
+    fn test_keccak256_aligned_vs_unaligned() {
+        // Test various sizes including rate boundary (136 bytes)
+        let test_sizes = [
+            0, 1, 7, 8, 31, 32, 63, 64, 135, 136, 137, 200, 272, 512, 1024, 2048,
+        ];
+
+        for &size in &test_sizes {
+            // Create aligned buffer
+            let aligned: Vec<u8> = (0..size).map(|i| (i * 37 + 11) as u8).collect();
+
+            // Create unaligned buffer by adding 1-byte offset
+            let mut unaligned_buf = vec![0u8; size + 1];
+            unaligned_buf[1..].copy_from_slice(&aligned);
+            let unaligned = &unaligned_buf[1..];
+
+            // Verify alignment difference
+            if size > 0 {
+                assert_ne!(
+                    aligned.as_ptr() as usize % 8,
+                    unaligned.as_ptr() as usize % 8,
+                    "Test setup error: pointers should have different alignment"
+                );
+            }
+
+            // Both should produce identical results
+            let aligned_result = Keccak256::digest(&aligned);
+            let unaligned_result = Keccak256::digest(unaligned);
+
+            assert_eq!(
+                aligned_result, unaligned_result,
+                "Keccak256: aligned vs unaligned mismatch at size {size}"
+            );
+
+            // Also verify against reference implementation
+            use sha3::{Digest, Keccak256 as RefKeccak};
+            let expected: [u8; 32] = RefKeccak::digest(&aligned).into();
+            assert_eq!(
+                aligned_result, expected,
+                "Keccak256: result doesn't match reference at size {size}"
+            );
+        }
+    }
 }

@@ -191,6 +191,7 @@ impl Sha256 {
             }
 
             // Second block: all zeros except length at the end
+            // Note: length is written directly as big-endian u32 values (no swap needed)
             self.buffer[0].write(0);
             self.buffer[1].write(0);
             self.buffer[2].write(0);
@@ -205,8 +206,8 @@ impl Sha256 {
             self.buffer[11].write(0);
             self.buffer[12].write(0);
             self.buffer[13].write(0);
-            self.buffer[14].write(swap_bytes((bit_len >> 32) as u32));
-            self.buffer[15].write(swap_bytes(bit_len as u32));
+            self.buffer[14].write((bit_len >> 32) as u32);
+            self.buffer[15].write(bit_len as u32);
 
             unsafe {
                 sha256_compression(

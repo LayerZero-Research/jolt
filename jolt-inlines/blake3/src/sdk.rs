@@ -432,4 +432,45 @@ mod tests {
         let maxes = [0xFFu8; 64];
         assert_eq!(Blake3::digest(&maxes), compute_expected_result(&maxes));
     }
+
+    #[test]
+    fn test_blake3_aligned_vs_unaligned() {
+        // Test various sizes up to 64 bytes (Blake3 block size limit)
+        let test_sizes = [0, 1, 3, 4, 7, 8, 15, 16, 31, 32, 33, 63, 64];
+
+        for &size in &test_sizes {
+            // Create aligned buffer
+            let aligned: Vec<u8> = (0..size).map(|i| (i * 37 + 11) as u8).collect();
+
+            // Create unaligned buffer by adding 1-byte offset
+            let mut unaligned_buf = vec![0u8; size + 1];
+            unaligned_buf[1..].copy_from_slice(&aligned);
+            let unaligned = &unaligned_buf[1..];
+
+            // Verify alignment difference
+            if size > 0 {
+                assert_ne!(
+                    aligned.as_ptr() as usize % 4,
+                    unaligned.as_ptr() as usize % 4,
+                    "Test setup error: pointers should have different alignment"
+                );
+            }
+
+            // Both should produce identical results
+            let aligned_result = Blake3::digest(&aligned);
+            let unaligned_result = Blake3::digest(unaligned);
+
+            assert_eq!(
+                aligned_result, unaligned_result,
+                "Blake3: aligned vs unaligned mismatch at size {size}"
+            );
+
+            // Also verify against reference implementation
+            let expected = compute_expected_result(&aligned);
+            assert_eq!(
+                aligned_result, expected,
+                "Blake3: result doesn't match reference at size {size}"
+            );
+        }
+    }
 }
