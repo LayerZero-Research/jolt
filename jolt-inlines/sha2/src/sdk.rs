@@ -38,7 +38,6 @@ impl Sha256 {
     #[inline(always)]
     pub fn new() -> Self {
         Self {
-            // We these uninitialized as a cycle optimization
             state: [MaybeUninit::uninit(); 8],
             buffer: [MaybeUninit::uninit(); 16],
             buffer_len: 0,
@@ -60,6 +59,9 @@ impl Sha256 {
     /// Writes data to the hasher.
     #[inline(always)]
     pub fn update(&mut self, input: &[u8]) {
+        #[cfg(target_endian = "big")]
+        panic!("Big-endian not supported");
+
         let input_len = input.len();
         if input_len == 0 {
             return;
@@ -89,11 +91,8 @@ impl Sha256 {
             offset = to_copy;
 
             if self.buffer_len == 64 {
-                #[cfg(target_endian = "little")]
-                {
-                    let buf = unsafe { self.buffer_as_u32_mut() };
-                    Sha256::swap_bytes(buf);
-                }
+                let buf = unsafe { self.buffer_as_u32_mut() };
+                Sha256::swap_bytes(buf);
 
                 unsafe {
                     self.sha256_compress();
@@ -107,9 +106,7 @@ impl Sha256 {
         let remaining_blocks = (input_len - offset) >> 6; // div by 64
         let blocks_end = offset + (remaining_blocks << 6);
 
-        // Process blocks in batches to improve cache locality
         while offset < blocks_end {
-            // Load directly into aligned buffer
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     input.as_ptr().add(offset),
@@ -118,11 +115,8 @@ impl Sha256 {
                 );
             }
 
-            #[cfg(target_endian = "little")]
-            {
-                let buf = unsafe { self.buffer_as_u32_mut() };
-                Sha256::swap_bytes(buf);
-            }
+            let buf = unsafe { self.buffer_as_u32_mut() };
+            Sha256::swap_bytes(buf);
 
             unsafe {
                 self.sha256_compress();
@@ -148,6 +142,9 @@ impl Sha256 {
     /// Reads hash digest and consumes the hasher.
     #[inline(always)]
     pub fn finalize(mut self) -> [u8; 32] {
+        #[cfg(target_endian = "big")]
+        panic!("Big-endian not supported");
+
         let bit_len = self.total_len << 3; // * 8
 
         // Cast buffer to u8 for padding
@@ -162,22 +159,16 @@ impl Sha256 {
         if self.buffer_len < 56 {
             // Single block case - zero padding and add length
             unsafe {
-                // Zero fill from padding_start to 56
                 core::ptr::write_bytes(
                     buffer_u8.as_mut_ptr().add(padding_start),
                     0,
                     56 - padding_start,
                 );
-
-                // Write length as big-endian u64
                 *(buffer_u8.as_mut_ptr().add(56) as *mut u64) = bit_len.to_be();
             }
 
-            #[cfg(target_endian = "little")]
-            {
-                let buf = unsafe { self.buffer_as_u32_mut() };
-                Sha256::swap_bytes(buf);
-            }
+            let buf = unsafe { self.buffer_as_u32_mut() };
+            Sha256::swap_bytes(buf);
 
             unsafe {
                 self.sha256_compress();
@@ -185,7 +176,6 @@ impl Sha256 {
         } else {
             // Two block case
             unsafe {
-                // Zero fill rest of first block
                 core::ptr::write_bytes(
                     buffer_u8.as_mut_ptr().add(padding_start),
                     0,
@@ -193,18 +183,14 @@ impl Sha256 {
                 );
             }
 
-            #[cfg(target_endian = "little")]
-            {
-                let buf = unsafe { self.buffer_as_u32_mut() };
-                Sha256::swap_bytes(buf);
-            }
+            let buf = unsafe { self.buffer_as_u32_mut() };
+            Sha256::swap_bytes(buf);
 
             unsafe {
                 self.sha256_compress();
             }
 
             // Second block: all zeros except length at the end
-            // Unroll the loop for cycle optimization
             self.buffer[0].write(0);
             self.buffer[1].write(0);
             self.buffer[2].write(0);
@@ -219,18 +205,8 @@ impl Sha256 {
             self.buffer[11].write(0);
             self.buffer[12].write(0);
             self.buffer[13].write(0);
-
-            // Write length in last 8 bytes
-            #[cfg(target_endian = "little")]
-            {
-                self.buffer[14].write(swap_bytes((bit_len >> 32) as u32));
-                self.buffer[15].write(swap_bytes(bit_len as u32));
-            }
-            #[cfg(target_endian = "big")]
-            {
-                self.buffer[14].write((bit_len >> 32) as u32);
-                self.buffer[15].write(bit_len as u32);
-            }
+            self.buffer[14].write(swap_bytes((bit_len >> 32) as u32));
+            self.buffer[15].write(swap_bytes(bit_len as u32));
 
             unsafe {
                 sha256_compression(
@@ -240,30 +216,20 @@ impl Sha256 {
             }
         }
 
-        // Convert state to bytes
+        // Convert state to bytes (swap bytes for little-endian output)
         let mut result = [0u8; 32];
         unsafe {
             let result_u32 = core::slice::from_raw_parts_mut(result.as_mut_ptr() as *mut u32, 8);
             let state = self.state_as_u32();
-
-            #[cfg(target_endian = "little")]
-            {
-                // Unroll the loop for cycle optimization
-                result_u32[0] = swap_bytes(state[0]);
-                result_u32[1] = swap_bytes(state[1]);
-                result_u32[2] = swap_bytes(state[2]);
-                result_u32[3] = swap_bytes(state[3]);
-                result_u32[4] = swap_bytes(state[4]);
-                result_u32[5] = swap_bytes(state[5]);
-                result_u32[6] = swap_bytes(state[6]);
-                result_u32[7] = swap_bytes(state[7]);
-            }
-            #[cfg(target_endian = "big")]
-            {
-                core::ptr::copy_nonoverlapping(state.as_ptr(), result_u32.as_mut_ptr(), 8);
-            }
+            result_u32[0] = swap_bytes(state[0]);
+            result_u32[1] = swap_bytes(state[1]);
+            result_u32[2] = swap_bytes(state[2]);
+            result_u32[3] = swap_bytes(state[3]);
+            result_u32[4] = swap_bytes(state[4]);
+            result_u32[5] = swap_bytes(state[5]);
+            result_u32[6] = swap_bytes(state[6]);
+            result_u32[7] = swap_bytes(state[7]);
         }
-
         result
     }
 
@@ -291,10 +257,8 @@ impl Sha256 {
         }
     }
 
-    #[cfg(target_endian = "little")]
     #[inline(always)]
     fn swap_bytes(buf: &mut [u32]) {
-        // Unroll the loop for cycle optimization
         buf[0] = swap_bytes(buf[0]);
         buf[1] = swap_bytes(buf[1]);
         buf[2] = swap_bytes(buf[2]);

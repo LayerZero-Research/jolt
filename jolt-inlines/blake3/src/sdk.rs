@@ -1,7 +1,7 @@
 //! This file provides high-level API to use BLAKE3 compression, both in host and guest mode.
 use crate::{
     BLOCK_INPUT_SIZE_IN_BYTES, CHAINING_VALUE_LEN, COUNTER_LEN, FLAG_CHUNK_END, FLAG_CHUNK_START,
-    FLAG_ROOT, IV, MSG_BLOCK_LEN, OUTPUT_SIZE_IN_BYTES,
+    FLAG_KEYED_HASH, FLAG_ROOT, IV, MSG_BLOCK_LEN, OUTPUT_SIZE_IN_BYTES,
 };
 
 pub struct Blake3 {
@@ -14,9 +14,6 @@ pub struct Blake3 {
     /// Total bytes processed
     counter: u64,
 }
-
-#[repr(align(4))]
-pub struct Aligned64ByteInput(pub [u8; BLOCK_INPUT_SIZE_IN_BYTES]);
 
 /// Note: Current implementation only supports hashing input of at most 64 bytes. Larger inputs are not supported yet.
 impl Blake3 {
@@ -87,60 +84,72 @@ impl Blake3 {
             FLAG_CHUNK_START | FLAG_CHUNK_END | FLAG_ROOT,
         );
 
-        // Safety: [u32; 8] and [u8; 32] have identical size (32 bytes)
-        #[cfg(target_endian = "little")]
-        {
-            unsafe {
-                core::mem::transmute::<[u32; CHAINING_VALUE_LEN], [u8; OUTPUT_SIZE_IN_BYTES]>(
-                    self.h,
-                )
-            }
-        }
-
         #[cfg(target_endian = "big")]
-        {
-            // For big-endian, convert each u32 to little-endian bytes
-            let mut hash = [0u8; OUTPUT_SIZE_IN_BYTES];
-            for i in 0..CHAINING_VALUE_LEN {
-                let bytes = self.h[i].to_le_bytes();
-                hash[i * 4..(i + 1) * 4].copy_from_slice(&bytes);
-            }
-            hash
+        panic!("Big-endian not supported");
+
+        unsafe {
+            core::mem::transmute::<[u32; CHAINING_VALUE_LEN], [u8; OUTPUT_SIZE_IN_BYTES]>(self.h)
         }
     }
 
+    /// Computes BLAKE3 hash in one call.
+    /// Uses zero-copy optimization. Only supports inputs up to 64 bytes.
     #[inline(always)]
     pub fn digest(input: &[u8]) -> [u8; OUTPUT_SIZE_IN_BYTES] {
-        let mut hasher = Self::new();
-        hasher.update(input);
-        hasher.finalize()
+        let len = input.len();
+        if len > BLOCK_INPUT_SIZE_IN_BYTES {
+            panic!("Input too large: {len} bytes, max is {BLOCK_INPUT_SIZE_IN_BYTES}");
+        }
+
+        let mut h = IV;
+
+        // Pad input to 64 bytes if needed
+        let mut block = [0u8; BLOCK_INPUT_SIZE_IN_BYTES];
+        if len > 0 {
+            unsafe {
+                core::ptr::copy_nonoverlapping(input.as_ptr(), block.as_mut_ptr(), len);
+            }
+        }
+
+        compression_no_copy(
+            &mut h,
+            &block,
+            0,
+            len as u32,
+            FLAG_CHUNK_START | FLAG_CHUNK_END | FLAG_ROOT,
+        );
+
+        output_hash(h)
     }
 
     /// Computes a keyed BLAKE3 hash for given input and key.
-    ///
-    /// Note: This only works for 64-byte inputs
+    /// Only supports inputs up to 64 bytes.
     #[inline(always)]
-    pub fn keyed_hash(
-        input: &Aligned64ByteInput,
-        key: [u32; CHAINING_VALUE_LEN],
-    ) -> [u8; OUTPUT_SIZE_IN_BYTES] {
+    pub fn keyed_hash(input: &[u8], key: [u32; CHAINING_VALUE_LEN]) -> [u8; OUTPUT_SIZE_IN_BYTES] {
+        let len = input.len();
+        if len > BLOCK_INPUT_SIZE_IN_BYTES {
+            panic!("Input too large: {len} bytes, max is {BLOCK_INPUT_SIZE_IN_BYTES}");
+        }
+
         let mut h = key;
 
-        #[cfg(target_endian = "big")]
-        {
-            unimplemented!()
+        // Pad input to 64 bytes if needed
+        let mut block = [0u8; BLOCK_INPUT_SIZE_IN_BYTES];
+        if len > 0 {
+            unsafe {
+                core::ptr::copy_nonoverlapping(input.as_ptr(), block.as_mut_ptr(), len);
+            }
         }
 
-        // Cast is safe as [u8; 64] and [u32; 16] have same size/alignment.
-        let message = unsafe { &*(input.0.as_ptr() as *const [u32; 16]) };
+        compression_no_copy(
+            &mut h,
+            &block,
+            0,
+            len as u32,
+            FLAG_CHUNK_START | FLAG_CHUNK_END | FLAG_ROOT | FLAG_KEYED_HASH,
+        );
 
-        // Both h and message are properly aligned and sized.
-        unsafe {
-            blake3_keyed64_compress(h.as_mut_ptr(), message.as_ptr());
-        }
-
-        // [u32; 8] and [u8; 32] have identical memory layout on little-endian.
-        unsafe { core::mem::transmute::<[u32; CHAINING_VALUE_LEN], [u8; OUTPUT_SIZE_IN_BYTES]>(h) }
+        output_hash(h)
     }
 }
 
@@ -152,31 +161,18 @@ fn compression_caller(
     input_bytes_num: u32,
     flags: u32,
 ) {
+    #[cfg(target_endian = "big")]
+    panic!("Big-endian not supported");
+
     let mut message = [0u32; MSG_BLOCK_LEN + COUNTER_LEN + 2];
     debug_assert_eq!(message_block.len(), BLOCK_INPUT_SIZE_IN_BYTES);
 
-    #[cfg(target_endian = "little")]
     unsafe {
-        // Direct memory copy on little-endian
         core::ptr::copy_nonoverlapping(
             message_block.as_ptr() as *const u32,
             message.as_mut_ptr(),
             MSG_BLOCK_LEN,
         );
-    }
-
-    #[cfg(target_endian = "big")]
-    {
-        // For big-endian, we need to convert each u32
-        for i in 0..MSG_BLOCK_LEN {
-            let offset = i * 4;
-            message[i] = u32::from_le_bytes([
-                message_block[offset],
-                message_block[offset + 1],
-                message_block[offset + 2],
-                message_block[offset + 3],
-            ]);
-        }
     }
 
     message[MSG_BLOCK_LEN] = counter as u32;
@@ -192,6 +188,46 @@ fn compression_caller(
 impl Default for Blake3 {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Convert hash state to output bytes.
+#[inline(always)]
+fn output_hash(h: [u32; CHAINING_VALUE_LEN]) -> [u8; OUTPUT_SIZE_IN_BYTES] {
+    #[cfg(target_endian = "big")]
+    panic!("Big-endian not supported");
+
+    unsafe { core::mem::transmute(h) }
+}
+
+/// Compress with minimal copying.
+#[inline(always)]
+fn compression_no_copy(
+    hash_state: &mut [u32; CHAINING_VALUE_LEN],
+    block: &[u8],
+    counter: u64,
+    input_bytes_num: u32,
+    flags: u32,
+) {
+    #[cfg(target_endian = "big")]
+    panic!("Big-endian not supported");
+
+    let mut message = [0u32; MSG_BLOCK_LEN + COUNTER_LEN + 2];
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            block.as_ptr(),
+            message.as_mut_ptr() as *mut u8,
+            BLOCK_INPUT_SIZE_IN_BYTES,
+        );
+    }
+
+    message[MSG_BLOCK_LEN] = counter as u32;
+    message[MSG_BLOCK_LEN + 1] = (counter >> 32) as u32;
+    message[MSG_BLOCK_LEN + COUNTER_LEN] = input_bytes_num;
+    message[MSG_BLOCK_LEN + COUNTER_LEN + 1] = flags;
+
+    unsafe {
+        blake3_compress(hash_state.as_mut_ptr(), message.as_ptr());
     }
 }
 
@@ -342,16 +378,15 @@ mod tests {
     #[test]
     fn test_keyed_digest_random_keys_match_standard() {
         for _ in 0..1000 {
-            let input = super::Aligned64ByteInput(generate_random_bytes(64).try_into().unwrap());
+            let input = generate_random_bytes(64);
             let key_bytes = generate_random_bytes(CHAINING_VALUE_LEN * 4);
             let mut key = [0u32; CHAINING_VALUE_LEN];
             key.copy_from_slice(&bytes_to_u32_vec(&key_bytes));
             let result = Blake3::keyed_hash(&input, key);
-            let expected = compute_keyed_expected_result(&input.0, key);
+            let expected = compute_keyed_expected_result(&input, key);
             assert_eq!(
                 result, expected,
-                "keyed digest mismatch for input={:02x?} and random key={key:x?}",
-                input.0
+                "keyed digest mismatch for input={input:02x?} and random key={key:x?}",
             );
         }
     }
