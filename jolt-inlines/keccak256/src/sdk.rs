@@ -121,26 +121,24 @@ impl Keccak256 {
         hash
     }
 
-    /// Computes Keccak-256 hash of the input data in one call.
-    /// Uses zero-copy optimization: processes input directly without internal buffer copy.
+    /// Computes Keccak-256 hash in one call.
     #[inline(always)]
     pub fn digest(input: &[u8]) -> [u8; HASH_LEN] {
         let len = input.len();
         let mut state = [0u64; 25];
 
-        // Process complete blocks directly from input
+        // Process complete 136-byte blocks
         let full_blocks = len / RATE_IN_BYTES;
         let mut offset = 0;
 
         for _ in 0..full_blocks {
-            absorb_block_no_copy(&mut state, &input[offset..offset + RATE_IN_BYTES]);
+            absorb(&mut state, &input[offset..offset + RATE_IN_BYTES]);
             offset += RATE_IN_BYTES;
         }
 
-        // Process final partial block with padding
+        // Final block with Keccak padding (0x01 at start, 0x80 at end)
         let remaining = len - offset;
         let mut final_block = [0u8; RATE_IN_BYTES];
-
         if remaining > 0 {
             unsafe {
                 core::ptr::copy_nonoverlapping(
@@ -150,14 +148,11 @@ impl Keccak256 {
                 );
             }
         }
-
-        // Apply Keccak padding: 0x01 at start, 0x80 at end
         final_block[remaining] = 0x01;
         final_block[RATE_IN_BYTES - 1] |= 0x80;
 
-        absorb_block_no_copy(&mut state, &final_block);
-
-        output_hash(state)
+        absorb(&mut state, &final_block);
+        to_bytes(state)
     }
 
     /// Absorbs a full block from the internal buffer into the state.
@@ -185,7 +180,7 @@ impl Default for Keccak256 {
 
 /// Convert state to output hash bytes.
 #[inline(always)]
-fn output_hash(state: [u64; 25]) -> [u8; HASH_LEN] {
+fn to_bytes(state: [u64; 25]) -> [u8; HASH_LEN] {
     #[cfg(target_endian = "big")]
     panic!("Big-endian not supported");
 
@@ -196,9 +191,9 @@ fn output_hash(state: [u64; 25]) -> [u8; HASH_LEN] {
     hash
 }
 
-/// Absorb a full rate block into state without internal buffer copy.
+/// Absorb a 136-byte block into state (handles aligned/unaligned input).
 #[inline(always)]
-fn absorb_block_no_copy(state: &mut [u64; 25], block: &[u8]) {
+fn absorb(state: &mut [u64; 25], block: &[u8]) {
     let ptr = block.as_ptr();
 
     if ptr as usize % 8 == 0 {

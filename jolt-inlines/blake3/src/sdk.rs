@@ -92,8 +92,7 @@ impl Blake3 {
         }
     }
 
-    /// Computes BLAKE3 hash in one call.
-    /// Uses zero-copy optimization. Only supports inputs up to 64 bytes.
+    /// Computes BLAKE3 hash in one call (max 64 bytes input).
     #[inline(always)]
     pub fn digest(input: &[u8]) -> [u8; OUTPUT_SIZE_IN_BYTES] {
         let len = input.len();
@@ -102,8 +101,6 @@ impl Blake3 {
         }
 
         let mut h = IV;
-
-        // Pad input to 64 bytes if needed
         let mut block = [0u8; BLOCK_INPUT_SIZE_IN_BYTES];
         if len > 0 {
             unsafe {
@@ -111,19 +108,17 @@ impl Blake3 {
             }
         }
 
-        compression_no_copy(
+        compress(
             &mut h,
             &block,
             0,
             len as u32,
             FLAG_CHUNK_START | FLAG_CHUNK_END | FLAG_ROOT,
         );
-
-        output_hash(h)
+        to_bytes(h)
     }
 
-    /// Computes a keyed BLAKE3 hash for given input and key.
-    /// Only supports inputs up to 64 bytes.
+    /// Computes a keyed BLAKE3 hash (max 64 bytes input).
     #[inline(always)]
     pub fn keyed_hash(input: &[u8], key: [u32; CHAINING_VALUE_LEN]) -> [u8; OUTPUT_SIZE_IN_BYTES] {
         let len = input.len();
@@ -132,8 +127,6 @@ impl Blake3 {
         }
 
         let mut h = key;
-
-        // Pad input to 64 bytes if needed
         let mut block = [0u8; BLOCK_INPUT_SIZE_IN_BYTES];
         if len > 0 {
             unsafe {
@@ -141,15 +134,14 @@ impl Blake3 {
             }
         }
 
-        compression_no_copy(
+        compress(
             &mut h,
             &block,
             0,
             len as u32,
             FLAG_CHUNK_START | FLAG_CHUNK_END | FLAG_ROOT | FLAG_KEYED_HASH,
         );
-
-        output_hash(h)
+        to_bytes(h)
     }
 }
 
@@ -193,16 +185,16 @@ impl Default for Blake3 {
 
 /// Convert hash state to output bytes.
 #[inline(always)]
-fn output_hash(h: [u32; CHAINING_VALUE_LEN]) -> [u8; OUTPUT_SIZE_IN_BYTES] {
+fn to_bytes(h: [u32; CHAINING_VALUE_LEN]) -> [u8; OUTPUT_SIZE_IN_BYTES] {
     #[cfg(target_endian = "big")]
     panic!("Big-endian not supported");
 
     unsafe { core::mem::transmute(h) }
 }
 
-/// Compress with minimal copying.
+/// Compress a 64-byte block.
 #[inline(always)]
-fn compression_no_copy(
+fn compress(
     hash_state: &mut [u32; CHAINING_VALUE_LEN],
     block: &[u8],
     counter: u64,

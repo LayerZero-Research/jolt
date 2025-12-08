@@ -117,84 +117,34 @@ impl Blake2b {
     }
 
     /// Computes BLAKE2b hash in one call.
-    /// Uses zero-copy optimization: processes full 128-byte blocks directly from input.
     #[inline(always)]
     pub fn digest(input: &[u8]) -> [u8; OUTPUT_SIZE] {
         let mut h = IV;
         h[0] ^= 0x01010000 ^ (OUTPUT_SIZE as u64);
 
         let len = input.len();
+
+        // Empty input: single padded block
         if len == 0 {
             let block = [0u8; BLOCK_INPUT_SIZE_IN_BYTES];
-            compression_no_copy(&mut h, &block, 0, true);
-            return output_hash(h);
+            compress(&mut h, &block, 0, true);
+            return to_bytes(h);
         }
 
-        let full_blocks = len / BLOCK_INPUT_SIZE_IN_BYTES;
-        let tail_len = len % BLOCK_INPUT_SIZE_IN_BYTES;
-
-        let non_final_blocks = if tail_len == 0 && full_blocks > 0 {
-            full_blocks - 1
-        } else {
-            full_blocks
-        };
-
-        for i in 0..non_final_blocks {
-            let offset = i * BLOCK_INPUT_SIZE_IN_BYTES;
-            let block = &input[offset..offset + BLOCK_INPUT_SIZE_IN_BYTES];
-            let counter = ((i + 1) * BLOCK_INPUT_SIZE_IN_BYTES) as u64;
-            compression_no_copy(&mut h, block, counter, false);
-        }
-
-        let final_counter = len as u64;
-        if tail_len == 0 {
-            let offset = (full_blocks - 1) * BLOCK_INPUT_SIZE_IN_BYTES;
-            let block = &input[offset..offset + BLOCK_INPUT_SIZE_IN_BYTES];
-            compression_no_copy(&mut h, block, final_counter, true);
-        } else {
-            let tail_offset = full_blocks * BLOCK_INPUT_SIZE_IN_BYTES;
-            let mut tail = [0u8; BLOCK_INPUT_SIZE_IN_BYTES];
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    input.as_ptr().add(tail_offset),
-                    tail.as_mut_ptr(),
-                    tail_len,
-                );
-            }
-            compression_no_copy(&mut h, &tail, final_counter, true);
-        }
-
-        output_hash(h)
-    }
-
-    /// Optimized digest for small inputs (≤128 bytes).
-    #[inline(always)]
-    pub fn digest_64(input: &[u8]) -> [u8; OUTPUT_SIZE] {
-        let mut h = IV;
-        h[0] ^= 0x01010000 ^ (OUTPUT_SIZE as u64);
-
-        let len = input.len();
-        if len == 0 {
-            let block = [0u8; BLOCK_INPUT_SIZE_IN_BYTES];
-            compression_no_copy_v2(&mut h, &block, 0, true);
-            return output_hash(h);
-        }
-
-        // For inputs <= 128 bytes, single block with padding
+        // Small input (≤128 bytes): single block, use unaligned-safe path
         if len <= BLOCK_INPUT_SIZE_IN_BYTES {
             let mut block = [0u8; BLOCK_INPUT_SIZE_IN_BYTES];
             unsafe {
                 core::ptr::copy_nonoverlapping(input.as_ptr(), block.as_mut_ptr(), len);
             }
-            compression_no_copy_v2(&mut h, &block, len as u64, true);
-            return output_hash(h);
+            compress_unaligned(&mut h, &block, len as u64, true);
+            return to_bytes(h);
         }
 
-        // For larger inputs, use general v2 path
+        // Large input: process full blocks, then final block
         let full_blocks = len / BLOCK_INPUT_SIZE_IN_BYTES;
         let tail_len = len % BLOCK_INPUT_SIZE_IN_BYTES;
-
-        let non_final_blocks = if tail_len == 0 && full_blocks > 0 {
+        let non_final_blocks = if tail_len == 0 {
             full_blocks - 1
         } else {
             full_blocks
@@ -203,35 +153,42 @@ impl Blake2b {
         for i in 0..non_final_blocks {
             let offset = i * BLOCK_INPUT_SIZE_IN_BYTES;
             let block = &input[offset..offset + BLOCK_INPUT_SIZE_IN_BYTES];
-            let counter = ((i + 1) * BLOCK_INPUT_SIZE_IN_BYTES) as u64;
-            compression_no_copy_v2(&mut h, block, counter, false);
+            compress(
+                &mut h,
+                block,
+                ((i + 1) * BLOCK_INPUT_SIZE_IN_BYTES) as u64,
+                false,
+            );
         }
 
-        let final_counter = len as u64;
+        // Final block
         if tail_len == 0 {
             let offset = (full_blocks - 1) * BLOCK_INPUT_SIZE_IN_BYTES;
-            let block = &input[offset..offset + BLOCK_INPUT_SIZE_IN_BYTES];
-            compression_no_copy_v2(&mut h, block, final_counter, true);
+            compress(
+                &mut h,
+                &input[offset..offset + BLOCK_INPUT_SIZE_IN_BYTES],
+                len as u64,
+                true,
+            );
         } else {
-            let tail_offset = full_blocks * BLOCK_INPUT_SIZE_IN_BYTES;
             let mut tail = [0u8; BLOCK_INPUT_SIZE_IN_BYTES];
             unsafe {
                 core::ptr::copy_nonoverlapping(
-                    input.as_ptr().add(tail_offset),
+                    input.as_ptr().add(full_blocks * BLOCK_INPUT_SIZE_IN_BYTES),
                     tail.as_mut_ptr(),
                     tail_len,
                 );
             }
-            compression_no_copy_v2(&mut h, &tail, final_counter, true);
+            compress(&mut h, &tail, len as u64, true);
         }
 
-        output_hash(h)
+        to_bytes(h)
     }
 }
 
 /// Convert hash state to output bytes.
 #[inline(always)]
-fn output_hash(h: [u64; STATE_VECTOR_LEN]) -> [u8; OUTPUT_SIZE] {
+fn to_bytes(h: [u64; STATE_VECTOR_LEN]) -> [u8; OUTPUT_SIZE] {
     #[cfg(target_endian = "big")]
     panic!("Big-endian not supported");
 
@@ -267,14 +224,9 @@ fn compression_caller(
     }
 }
 
-/// Compress a 128-byte block with minimal copying.
+/// Compress a 128-byte block (requires aligned input for direct u64 reads).
 #[inline(always)]
-fn compression_no_copy(
-    hash_state: &mut [u64; STATE_VECTOR_LEN],
-    block: &[u8],
-    counter: u64,
-    is_final: bool,
-) {
+fn compress(hash_state: &mut [u64; STATE_VECTOR_LEN], block: &[u8], counter: u64, is_final: bool) {
     #[cfg(target_endian = "big")]
     panic!("Big-endian not supported");
 
@@ -295,10 +247,9 @@ fn compression_no_copy(
     }
 }
 
-/// Compress using explicit 8-byte unaligned reads.
-/// Each u64 word is loaded separately using MaybeUninit.
+/// Compress a 128-byte block with unaligned-safe reads.
 #[inline(always)]
-fn compression_no_copy_v2(
+fn compress_unaligned(
     hash_state: &mut [u64; STATE_VECTOR_LEN],
     block: &[u8],
     counter: u64,
