@@ -1,10 +1,11 @@
 use crate::field::JoltField;
 use crate::msm::VariableBaseMSM;
-use crate::poly::commitment::dory::DoryGlobals;
+use crate::poly::commitment::dory::{DoryContext, DoryGlobals};
 use crate::poly::multilinear_polynomial::MultilinearPolynomial;
 use crate::utils::thread::{drop_in_background_thread, unsafe_allocate_zero_vec};
 use crate::zkvm::config::OneHotParams;
 use crate::zkvm::instruction::LookupQuery;
+use crate::zkvm::ram::read_write_checking::RamReadWriteCheckingProver;
 use crate::zkvm::ram::remap_address;
 use crate::zkvm::{bytecode::BytecodePreprocessing, witness::CommittedPolynomial};
 use allocative::Allocative;
@@ -42,6 +43,9 @@ pub struct StreamingRLCContext<F: JoltField> {
 pub struct RLCPolynomial<F: JoltField> {
     /// Random linear combination of dense (i.e. length T) polynomials.
     /// Empty if using streaming mode.
+    pub trusted_advice_poly_coeffs: Vec<F>,
+    pub trusted_advice_poly_rows: usize,
+    pub trusted_advice_poly_columns: usize,
     pub dense_rlc: Vec<F>,
     /// Random linear combination of one-hot polynomials (length T x K
     /// for some K). Instead of pre-emptively combining these polynomials,
@@ -67,6 +71,9 @@ impl<F: JoltField> RLCPolynomial<F> {
             dense_rlc: unsafe_allocate_zero_vec(DoryGlobals::get_T()),
             one_hot_rlc: vec![],
             streaming_context: None,
+            trusted_advice_poly_coeffs: vec![],
+            trusted_advice_poly_rows: 0,
+            trusted_advice_poly_columns: 0,
         }
     }
 
@@ -78,6 +85,9 @@ impl<F: JoltField> RLCPolynomial<F> {
         lazy_trace: LazyTraceIterator,
         preprocessing: Arc<RLCStreamingData>,
         one_hot_params: &OneHotParams,
+        trusted_advice_poly_coeffs: Vec<F>,
+        trusted_advice_poly_rows: usize,
+        trusted_advice_poly_columns: usize,
     ) -> Self {
         Self {
             dense_rlc: vec![],   // Not materialized in streaming mode
@@ -89,6 +99,9 @@ impl<F: JoltField> RLCPolynomial<F> {
                 preprocessing,
                 one_hot_params: one_hot_params.clone(),
             })),
+            trusted_advice_poly_coeffs: trusted_advice_poly_coeffs,
+            trusted_advice_poly_rows: trusted_advice_poly_rows,
+            trusted_advice_poly_columns: trusted_advice_poly_columns,
         }
     }
 
@@ -97,6 +110,10 @@ impl<F: JoltField> RLCPolynomial<F> {
         poly_ids: Vec<CommittedPolynomial>,
         polynomials: Vec<Arc<MultilinearPolynomial<F>>>,
         coefficients: &[F],
+        trusted_advice_poly_coeffs: Vec<F>,
+        trusted_advice_poly_rows: usize,
+        trusted_advice_poly_columns: usize,
+        trusted_advice_gamma: F,
         streaming_context: Option<(LazyTraceIterator, Arc<RLCStreamingData>, OneHotParams)>,
     ) -> Self {
         debug_assert_eq!(polynomials.len(), coefficients.len());
@@ -110,7 +127,9 @@ impl<F: JoltField> RLCPolynomial<F> {
 
         for (poly_id, coeff) in poly_ids.iter().zip(coefficients.iter()) {
             match poly_id {
-                CommittedPolynomial::RdInc | CommittedPolynomial::RamInc => {
+                CommittedPolynomial::RdInc | CommittedPolynomial::RamInc 
+                | CommittedPolynomial::TrustedAdvice | CommittedPolynomial::UntrustedAdvice 
+                => {
                     dense_polys.push((*poly_id, *coeff));
                 }
                 CommittedPolynomial::InstructionRa(_)
@@ -121,17 +140,22 @@ impl<F: JoltField> RLCPolynomial<F> {
             }
         }
 
+        let coeffs = trusted_advice_poly_coeffs.iter().map(|c| *c * trusted_advice_gamma).collect();
+
         Self::new_streaming(
             dense_polys,
             onehot_polys,
             lazy_trace,
             preprocessing,
             &one_hot_params,
+            coeffs,
+            trusted_advice_poly_rows,
+            trusted_advice_poly_columns,
         )
     }
 
     /// Materializes a streaming RLC polynomial for testing purposes.
-    #[cfg(test)]
+    // #[cfg(test)]
     pub fn materialize(
         &self,
         _poly_ids: &[CommittedPolynomial],
@@ -143,6 +167,8 @@ impl<F: JoltField> RLCPolynomial<F> {
         if self.streaming_context.is_none() {
             return self.clone();
         }
+
+        tracing::info!("Hereeeeeeeeeee trusted_advice_info={:?}", self.trusted_advice_poly_coeffs);
 
         let mut result = RLCPolynomial::<F>::new();
         let dense_indices: Vec<usize> = polynomials
@@ -206,6 +232,9 @@ impl<F: JoltField> RLCPolynomial<F> {
                 result.one_hot_rlc.push((coefficients[i], poly.clone()));
             }
         }
+        result.trusted_advice_poly_coeffs = self.trusted_advice_poly_coeffs.clone();
+        result.trusted_advice_poly_rows = self.trusted_advice_poly_rows;
+        result.trusted_advice_poly_columns = self.trusted_advice_poly_columns;
 
         result
     }
@@ -289,6 +318,7 @@ impl<F: JoltField> RLCPolynomial<F> {
     /// linear combination of the resulting products.
     #[tracing::instrument(skip_all, name = "RLCPolynomial::vector_matrix_product")]
     pub fn vector_matrix_product(&self, left_vec: &[F]) -> Vec<F> {
+        tracing::info!("Computing vector-matrix product in RLCPolynomial::vector_matrix_product");
         let num_columns = DoryGlobals::get_num_columns();
 
         // Compute the vector-matrix product for dense submatrix
@@ -297,6 +327,7 @@ impl<F: JoltField> RLCPolynomial<F> {
             self.streaming_vector_matrix_product(left_vec, num_columns, Arc::clone(ctx))
         } else {
             // Linear space mode: use pre-computed dense_rlc
+            tracing::info!("Computing vector-matrix product in linear space mode");
             (0..num_columns)
                 .into_par_iter()
                 .map(|col_index| {
@@ -311,6 +342,47 @@ impl<F: JoltField> RLCPolynomial<F> {
                 .collect()
         };
 
+        let trusted_advice_poly_coeffs = self.trusted_advice_poly_coeffs.clone();
+        let ta_columns = self.trusted_advice_poly_columns;
+        let ta_rows = self.trusted_advice_poly_rows;
+        tracing::info!("Hereeeeee ta_columns={}, ta_rows={}", ta_columns, ta_rows);
+        
+        // Compute trusted advice contribution for each column
+        // Vector-matrix product: result[col] = Σ_row left_vec[row] * TA[row, col]
+        // TA[row, col] is stored at flat_index = row * ta_columns + col
+
+        let mut ta_contribution = vec![F::zero(); result.len()];
+        for col_index in 0..ta_columns {
+            for row_index in 0..ta_rows {
+                let flat_index = row_index * ta_columns + col_index;
+                ta_contribution[col_index] += trusted_advice_poly_coeffs[flat_index] * left_vec[row_index];
+                tracing::info!("flat_index={}, row_index={}, col_index={}, adding {} * {} = {}", flat_index, row_index, col_index, trusted_advice_poly_coeffs[flat_index], left_vec[row_index], trusted_advice_poly_coeffs[flat_index] * left_vec[row_index]);
+            }
+        }
+        // let ta_contribution: Vec<F> = (0..result.len())
+        //     .par_iter_mut()
+        //     .map(|row_index| {
+        //         if row_index >= ta_rows {
+        //             F::zero()
+        //         } else {
+        //             (0..ta_columns)
+        //                 .map(|col_index| {
+        //                     let flat_index = row_index * ta_columns + col_index;
+        //                     tracing::info!("flat_index={}, row_index={}, col_index={}", flat_index, row_index, col_index);
+        //                     tracing::info!("addding {} * {} = {}", trusted_advice_poly_coeffs[flat_index], left_vec[row_index], trusted_advice_poly_coeffs[flat_index] * left_vec[row_index]);
+        //                     trusted_advice_poly_coeffs[flat_index] * left_vec[row_index]
+        //                 })
+        //                 .sum::<F>()
+        //         }
+        //     })
+        //     .collect();
+        
+        // Add trusted advice contribution to result
+        for (r, ta) in result.iter_mut().zip(ta_contribution.iter()) {
+            *r += *ta;
+        }
+        let x = result[0];
+
         // Compute the vector-matrix product for one-hot polynomials (linear space)
         for (coeff, poly) in self.one_hot_rlc.iter() {
             match poly.as_ref() {
@@ -320,6 +392,8 @@ impl<F: JoltField> RLCPolynomial<F> {
                 _ => panic!("Expected OneHot polynomial in one_hot_rlc"),
             }
         }
+
+        tracing::info!("Result: {:?}, one_hot contribution: {:?}", result, result[0] - x);
 
         result
     }
@@ -343,6 +417,9 @@ impl<F: JoltField> RLCPolynomial<F> {
             | CommittedPolynomial::BytecodeRa(_)
             | CommittedPolynomial::RamRa(_) => {
                 panic!("One-hot polynomials should not be passed to extract_dense_value")
+            }
+            CommittedPolynomial::TrustedAdvice | CommittedPolynomial::UntrustedAdvice => {
+                panic!("Trusted or untrusted advice polynomials should not be passed to extract_dense_value")
             }
         }
     }
@@ -371,6 +448,9 @@ impl<F: JoltField> RLCPolynomial<F> {
             CommittedPolynomial::RdInc | CommittedPolynomial::RamInc => {
                 panic!("Dense polynomials should not be passed to extract_onehot_k")
             }
+            CommittedPolynomial::TrustedAdvice | CommittedPolynomial::UntrustedAdvice => {
+                panic!("Trusted or untrusted advice polynomials should not be passed to extract_onehot_k")
+            }
         }
     }
 
@@ -384,6 +464,8 @@ impl<F: JoltField> RLCPolynomial<F> {
         ctx: Arc<StreamingRLCContext<F>>,
     ) -> Vec<F> {
         let T = DoryGlobals::get_T();
+        let trace_len = ctx.lazy_trace.clone().count();
+        tracing::info!("Hereeee trace_len={}, num_columns={}", trace_len, num_columns);
 
         let result = ctx
             .lazy_trace
@@ -396,12 +478,18 @@ impl<F: JoltField> RLCPolynomial<F> {
                 // Nested parallelism: process columns within chunk in parallel
                 let chunk_result: Vec<F> = chunk
                     .par_iter()
-                    .map(|cycle| {
+                    .enumerate()
+                    .map(|(col_idx, cycle)| {
                         let mut val = F::zero();
 
-                        // Process DENSE POLYNOMIALS (RdInc, RamInc)
+                        // Process DENSE POLYNOMIALS (RdInc, RamInc, TrustedAdvice)
                         for (poly_id, coeff) in &ctx.dense_polys {
-                            let dense_val = Self::extract_dense_value(poly_id, cycle);
+                            let dense_val = match poly_id {
+                                CommittedPolynomial::TrustedAdvice => {
+                                    F::zero()
+                                }
+                                _ => Self::extract_dense_value(poly_id, cycle),
+                            };
                             val += left_vec[row_idx] * *coeff * dense_val;
                         }
 
