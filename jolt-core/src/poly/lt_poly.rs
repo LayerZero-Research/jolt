@@ -34,6 +34,7 @@ impl<F: JoltField> LtPolynomial<F> {
         match bind_order {
             BindingOrder::HighToLow => self.bind_high_to_low(r_j),
             BindingOrder::LowToHigh => self.bind_low_to_high(r_j),
+            BindingOrder::Indexed(_) => panic!("Indexed binding order not supported for LtPolynomial"),
         }
     }
 

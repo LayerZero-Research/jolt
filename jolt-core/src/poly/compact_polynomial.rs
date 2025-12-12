@@ -62,10 +62,10 @@ impl<T: SmallScalar, F: JoltField> CompactPolynomial<T, F> {
     pub fn split_eq_evaluate(&self, r_len: usize, eq_one: &[F], eq_two: &[F]) -> F {
         const PARALLEL_THRESHOLD: usize = 16;
         if r_len < PARALLEL_THRESHOLD {
-            tracing::info!("evaluate_split_eq_serial");
+            // tracing::info!("evaluate_split_eq_serial");
             self.evaluate_split_eq_serial(eq_one, eq_two)
         } else {
-            tracing::info!("evaluate_split_eq_parallel");
+            // tracing::info!("evaluate_split_eq_parallel");
             self.evaluate_split_eq_parallel(eq_one, eq_two)
         }
     }
@@ -89,7 +89,7 @@ impl<T: SmallScalar, F: JoltField> CompactPolynomial<T, F> {
         eval
     }
     fn evaluate_split_eq_serial(&self, eq_one: &[F], eq_two: &[F]) -> F {
-        tracing::info!("Hereeeeee evaluate_split_eq_serial");
+        // tracing::info!("Hereeeeee evaluate_split_eq_serial");
         let eval: F = (0..eq_one.len())
             .map(|x1| {
                 let partial_sum = (0..eq_two.len())
@@ -97,7 +97,7 @@ impl<T: SmallScalar, F: JoltField> CompactPolynomial<T, F> {
                         let idx = x1 * eq_two.len() + x2;
                         let v = self.coeffs[idx].field_mul(eq_two[x2]);
                         if !v.is_zero() {
-                            tracing::info!("idx={}, x1={}, x2={}, v={:?}, eq_two[x2]={:?}, eq_one[x1]={:?}, self.coeffs[idx]={:?}", idx, x1, x2, v, eq_two[x2], eq_one[x1], self.coeffs[idx].to_field::<F>());
+                            // tracing::info!("idx={}, x1={}, x2={}, v={:?}, eq_two[x2]={:?}, eq_one[x1]={:?}, self.coeffs[idx]={:?}", idx, x1, x2, v, eq_two[x2], eq_one[x1], self.coeffs[idx].to_field::<F>());
                         }
                         v
                     })
@@ -201,6 +201,29 @@ impl<T: SmallScalar, F: JoltField> PolynomialBinding<F> for CompactPolynomial<T,
                     }
                 }
                 BindingOrder::HighToLow => {
+
+                    let index = self.get_num_vars() - 1;
+
+
+                    assert!(index < self.get_num_vars(), "Indexed binding order out of bounds");
+                    tracing::info!("index={}, bound_coeffs.len={}", index, self.bound_coeffs.len());
+                    tracing::info!("num of vars={}", self.get_num_vars());
+
+                    let addition = 1 << index;
+                    tracing::info!("addition={}", addition);
+                    let mut bound_coeffs2 = vec![F::zero(); n];
+                    for i in 0..(1 << index) {
+                        for j in 0..(1 << (self.get_num_vars()-index-1)) {
+                            let fixed_part = i + j*(1 << (index + 1));
+                            tracing::info!("i={}, j={}, fixed_part={}, addition={}, bound_coeffs.len={}", i, j, fixed_part, addition, bound_coeffs2.len());
+                            let a = self.bound_coeffs[fixed_part];
+                            let b = self.bound_coeffs[fixed_part+addition];
+                            bound_coeffs2[i + j*(1 << index)] = r * (b - a) + a;
+                            tracing::info!("i + j*(1 << index)={:?}, a={:?}, b={:?}, r={:?}", i + j*(1 << index), a, b, r);
+                        }
+                    }
+
+
                     let (left, right) = self.bound_coeffs.split_at_mut(n);
                     left.iter_mut()
                         .zip(right.iter())
@@ -208,6 +231,23 @@ impl<T: SmallScalar, F: JoltField> PolynomialBinding<F> for CompactPolynomial<T,
                         .for_each(|(a, b)| {
                             *a += r * (*b - *a);
                         });
+                    left.iter().zip(bound_coeffs2.iter()).enumerate().for_each(|(i, (a, b))| {
+                        assert_eq!(*a, *b, "bound_coeffs and 222 bound_coeffs2 are not equal at index {}", i);
+                    });
+                }
+                BindingOrder::Indexed(index) => {
+                    assert!(index < self.get_num_vars(), "Indexed binding order out of bounds");
+
+                    let addition = 2^index;
+                    unsafe { self.bound_coeffs.set_len(n) };
+                    for i in 0..2^(index) {
+                        for j in 0..2^(self.get_num_vars()-index-1) {
+                            let fixed_part = i + j*2^(index + 1);
+                            let a = self.bound_coeffs[fixed_part];
+                            let b = self.bound_coeffs[fixed_part+addition];
+                            self.bound_coeffs[i + j*2^index] = r * (b - a);
+                        }
+                    }
                 }
             }
         } else {
@@ -255,6 +295,30 @@ impl<T: SmallScalar, F: JoltField> PolynomialBinding<F> for CompactPolynomial<T,
                         })
                         .collect();
                 }
+                BindingOrder::Indexed(index) => {
+                    assert!(index < self.get_num_vars(), "Indexed binding order out of bounds");
+
+                    let addition = 2^index;
+                    self.bound_coeffs = Vec::with_capacity(n);
+                    for i in 0..2^(index) {
+                        for j in 0..2^(self.get_num_vars()-index-1) {
+                            let fixed_part = i + j*2^(index + 1);
+                            let a = self.coeffs[fixed_part];
+                            let b = self.coeffs[fixed_part+addition];
+                            self.bound_coeffs[i + j*2^index] = match a.cmp(&b) {
+                                Ordering::Equal => a.to_field(),
+                                // a < b: Compute a + r * (b - a)
+                                Ordering::Less => {
+                                    a.to_field::<F>() + b.diff_mul_field::<F>(a, r.into())
+                                }
+                                // a > b: Compute a - r * (a - b)
+                                Ordering::Greater => {
+                                    a.to_field::<F>() - a.diff_mul_field::<F>(b, r.into())
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -294,6 +358,27 @@ impl<T: SmallScalar, F: JoltField> PolynomialBinding<F> for CompactPolynomial<T,
                         .for_each(|(a, b)| {
                             *a += r * (*b - *a);
                         });
+                }
+                BindingOrder::Indexed(index) => {
+                    assert!(index < self.get_num_vars(), "Indexed binding order out of bounds");
+                    // tracing::info!("index={}, bound_coeffs.len={}", index, self.bound_coeffs.len());
+                    // tracing::info!("num of vars={}", self.get_num_vars());
+
+                    let addition = 1 << index;
+                    // tracing::info!("addition={}", addition);
+                    let mut bound_coeffs = vec![F::zero(); n];
+                    for i in 0..(1 << index) {
+                        for j in 0..(1 << (self.get_num_vars()-index-1)) {
+                            let fixed_part = i + j*(1 << (index + 1));
+                            // tracing::info!("i={}, j={}, fixed_part={}, addition={}, bound_coeffs.len={}", i, j, fixed_part, addition, bound_coeffs.len());
+                            let a = self.bound_coeffs[fixed_part];
+                            let b = self.bound_coeffs[fixed_part+addition];
+                            bound_coeffs[i + j*(1 << index)] = r * (b - a) + a;
+                            // tracing::info!("i + j*(1 << index)={:?}, a={:?}, b={:?}, r={:?}", i + j*(1 << index), a, b, r);
+                        }
+                    }
+                    unsafe { bound_coeffs.set_len(n) };
+                    self.bound_coeffs = bound_coeffs;
                 }
             }
         } else {
@@ -337,6 +422,28 @@ impl<T: SmallScalar, F: JoltField> PolynomialBinding<F> for CompactPolynomial<T,
                             }
                         })
                         .collect();
+                }
+                BindingOrder::Indexed(index) => {
+                    let addition = 1 << index;
+                    self.bound_coeffs = vec![F::zero(); n];
+                    for i in 0..(1 << index) {
+                        for j in 0..(1 << (self.get_num_vars()-index-1)) {
+                            let fixed_part = i + j*(1 << (index + 1));
+                            let a = self.coeffs[fixed_part];
+                            let b = self.coeffs[fixed_part+addition];
+                            self.bound_coeffs[i + j*(1 << index)] = match a.cmp(&b) {
+                                Ordering::Equal => a.to_field(),
+                                // a < b: Compute a + r * (b - a)
+                                Ordering::Less => {
+                                    a.to_field::<F>() + b.diff_mul_field::<F>(a, r.into())
+                                }
+                                // a > b: Compute a - r * (a - b)
+                                Ordering::Greater => {
+                                    a.to_field::<F>() - a.diff_mul_field::<F>(b, r.into())
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

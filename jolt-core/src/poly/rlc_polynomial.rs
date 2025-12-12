@@ -168,7 +168,7 @@ impl<F: JoltField> RLCPolynomial<F> {
             return self.clone();
         }
 
-        tracing::info!("Hereeeeeeeeeee trusted_advice_info={:?}", self.trusted_advice_poly_coeffs);
+        // tracing::info!("Hereeeeeeeeeee trusted_advice_info={:?}", self.trusted_advice_poly_coeffs);
 
         let mut result = RLCPolynomial::<F>::new();
         let dense_indices: Vec<usize> = polynomials
@@ -345,7 +345,7 @@ impl<F: JoltField> RLCPolynomial<F> {
         let trusted_advice_poly_coeffs = self.trusted_advice_poly_coeffs.clone();
         let ta_columns = self.trusted_advice_poly_columns;
         let ta_rows = self.trusted_advice_poly_rows;
-        tracing::info!("Hereeeeee ta_columns={}, ta_rows={}", ta_columns, ta_rows);
+        // tracing::info!("Hereeeeee ta_columns={}, ta_rows={}", ta_columns, ta_rows);
         
         // Compute trusted advice contribution for each column
         // Vector-matrix product: result[col] = Σ_row left_vec[row] * TA[row, col]
@@ -356,7 +356,7 @@ impl<F: JoltField> RLCPolynomial<F> {
             for row_index in 0..ta_rows {
                 let flat_index = row_index * ta_columns + col_index;
                 ta_contribution[col_index] += trusted_advice_poly_coeffs[flat_index] * left_vec[row_index];
-                tracing::info!("flat_index={}, row_index={}, col_index={}, adding {} * {} = {}", flat_index, row_index, col_index, trusted_advice_poly_coeffs[flat_index], left_vec[row_index], trusted_advice_poly_coeffs[flat_index] * left_vec[row_index]);
+                // tracing::info!("flat_index={}, row_index={}, col_index={}, adding {} * {} = {}", flat_index, row_index, col_index, trusted_advice_poly_coeffs[flat_index], left_vec[row_index], trusted_advice_poly_coeffs[flat_index] * left_vec[row_index]);
             }
         }
         // let ta_contribution: Vec<F> = (0..result.len())
@@ -392,8 +392,6 @@ impl<F: JoltField> RLCPolynomial<F> {
                 _ => panic!("Expected OneHot polynomial in one_hot_rlc"),
             }
         }
-
-        tracing::info!("Result: {:?}, one_hot contribution: {:?}", result, result[0] - x);
 
         result
     }

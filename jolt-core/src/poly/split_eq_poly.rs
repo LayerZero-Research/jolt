@@ -88,6 +88,7 @@ impl<F: JoltField> GruenSplitEqPolynomial<F> {
                     binding_order,
                 }
             }
+            BindingOrder::Indexed(_) => panic!("Indexed binding order not supported for GruenSplitEqPolynomial"),
         }
     }
 
@@ -104,6 +105,7 @@ impl<F: JoltField> GruenSplitEqPolynomial<F> {
         match self.binding_order {
             BindingOrder::LowToHigh => 1 << self.current_index,
             BindingOrder::HighToLow => 1 << (self.w.len() - self.current_index),
+            BindingOrder::Indexed(_) => panic!("Indexed binding order not supported for GruenSplitEqPolynomial"),
         }
     }
 
@@ -164,6 +166,7 @@ impl<F: JoltField> GruenSplitEqPolynomial<F> {
                     self.E_out_vec.pop();
                 }
             }
+            BindingOrder::Indexed(_) => panic!("Indexed binding order not supported for GruenSplitEqPolynomial"),
         }
     }
 
@@ -217,6 +220,7 @@ impl<F: JoltField> GruenSplitEqPolynomial<F> {
             * match self.binding_order {
                 BindingOrder::LowToHigh => self.w[self.current_index - 1],
                 BindingOrder::HighToLow => self.w[self.current_index],
+                BindingOrder::Indexed(_) => panic!("Indexed binding order not supported for GruenSplitEqPolynomial"),
             };
         let eq_eval_0 = self.current_scalar - eq_eval_1;
         let eq_m = eq_eval_1 - eq_eval_0;
@@ -264,6 +268,7 @@ impl<F: JoltField> GruenSplitEqPolynomial<F> {
             * match self.binding_order {
                 BindingOrder::LowToHigh => self.w[self.current_index - 1],
                 BindingOrder::HighToLow => self.w[self.current_index],
+                BindingOrder::Indexed(_) => panic!("Indexed binding order not supported for GruenSplitEqPolynomial"),
             };
         let eq_eval_0 = self.current_scalar - eq_eval_1;
 
@@ -307,6 +312,7 @@ impl<F: JoltField> GruenSplitEqPolynomial<F> {
                     Some(self.current_scalar),
                 )
             }
+            BindingOrder::Indexed(_) => panic!("Indexed binding order not supported for GruenSplitEqPolynomial"),
         };
         DensePolynomial::new(evals)
     }
@@ -319,6 +325,7 @@ impl<F: JoltField> GruenSplitEqPolynomial<F> {
         match self.binding_order {
             BindingOrder::LowToHigh => self.w[self.current_index - 1],
             BindingOrder::HighToLow => self.w[self.current_index],
+            BindingOrder::Indexed(_) => panic!("Indexed binding order not supported for GruenSplitEqPolynomial"),
         }
     }
 

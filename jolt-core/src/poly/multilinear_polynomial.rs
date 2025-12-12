@@ -68,6 +68,7 @@ pub enum BindingOrder {
     #[default]
     LowToHigh,
     HighToLow,
+    Indexed(usize),
 }
 
 impl<F: JoltField> Default for MultilinearPolynomial<F> {
@@ -387,6 +388,9 @@ impl<F: JoltField> MultilinearPolynomial<F> {
                     eval += m;
                     evals[i] = eval;
                 }
+            }
+            BindingOrder::Indexed(i) => {
+                panic!("Indexed binding order not supported");
             }
         };
         evals
@@ -713,16 +717,16 @@ impl<F: JoltField> PolynomialEvaluation<F> for MultilinearPolynomial<F> {
                 poly.split_eq_evaluate(r.len(), &eq_one, &eq_two)
             }
             MultilinearPolynomial::U64Scalars(poly) => {
-                tracing::info!("generating eq_one and eq_two");
+                // tracing::info!("generating eq_one and eq_two");
                 let m = r.len() / 2;
                 let (r2, r1) = r.split_at(m);
-                tracing::info!("r2={:?}, r1={:?}", r2.iter().map(|x| (*x).into()).collect::<Vec<F>>(), r1.iter().map(|x| (*x).into()).collect::<Vec<F>>());
+                // tracing::info!("r2={:?}, r1={:?}", r2.iter().map(|x| (*x).into()).collect::<Vec<F>>(), r1.iter().map(|x| (*x).into()).collect::<Vec<F>>());
 
                 let eq_one = EqPolynomial::evals(r2);
-                tracing::info!("eq_one={:?}", eq_one);
+                // tracing::info!("eq_one={:?}", eq_one);
 
                 let eq_two = EqPolynomial::evals(r1);
-                tracing::info!("eq_two={:?}", eq_two);
+                // tracing::info!("eq_two={:?}", eq_two);
 
                 poly.split_eq_evaluate(r.len(), &eq_one, &eq_two)
             }
@@ -802,6 +806,7 @@ impl<F: JoltField> PolynomialEvaluation<F> for MultilinearPolynomial<F> {
                     evals[i] = eval;
                 }
             }
+            BindingOrder::Indexed(_) => panic!("Indexed binding order not supported for MultilinearPolynomial"),
         };
         evals
     }

@@ -1,8 +1,3 @@
-use crate::poly::opening_proof::{OpeningAccumulator, OpeningPoint, SumcheckId, BIG_ENDIAN};
-use crate::poly::split_eq_poly::GruenSplitEqPolynomial;
-use crate::poly::unipoly::UniPoly;
-use crate::subprotocols::sumcheck_prover::SumcheckInstanceProver;
-use crate::subprotocols::sumcheck_verifier::SumcheckInstanceVerifier;
 use crate::zkvm::bytecode::BytecodePreprocessing;
 use crate::zkvm::witness::VirtualPolynomial;
 use crate::{
@@ -10,7 +5,16 @@ use crate::{
     poly::{
         eq_poly::EqPolynomial,
         multilinear_polynomial::{BindingOrder, MultilinearPolynomial, PolynomialBinding},
-        opening_proof::{ProverOpeningAccumulator, VerifierOpeningAccumulator},
+        opening_proof::{
+            OpeningAccumulator, OpeningPoint, ProverOpeningAccumulator, SumcheckId,
+            VerifierOpeningAccumulator, BIG_ENDIAN,
+        },
+        split_eq_poly::GruenSplitEqPolynomial,
+        unipoly::UniPoly,
+    },
+    subprotocols::{
+        sumcheck_prover::SumcheckInstanceProver,
+        sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier},
     },
     transcripts::Transcript,
     utils::{math::Math, thread::unsafe_allocate_zero_vec},
@@ -119,22 +123,13 @@ pub struct RegistersReadWriteCheckingProver<F: JoltField> {
 }
 
 impl<F: JoltField> RegistersReadWriteCheckingProver<F> {
-    #[tracing::instrument(skip_all, name = "RegistersReadWriteCheckingProver::gen")]
-    pub fn gen(
+    #[tracing::instrument(skip_all, name = "RegistersReadWriteCheckingProver::initialize")]
+    pub fn initialize(
+        params: RegistersReadWriteCheckingParams<F>,
         trace: &[Cycle],
         bytecode_preprocessing: &BytecodePreprocessing,
         memory_layout: &MemoryLayout,
-        twist_sumcheck_switch_index: usize,
-        opening_accumulator: &ProverOpeningAccumulator<F>,
-        transcript: &mut impl Transcript,
     ) -> Self {
-        let params = RegistersReadWriteCheckingParams::new(
-            twist_sumcheck_switch_index,
-            trace.len().log_2(),
-            opening_accumulator,
-            transcript,
-        );
-
         let T = trace.len();
         let num_chunks = rayon::current_num_threads().next_power_of_two().min(T);
         let chunk_size = T / num_chunks;
@@ -238,26 +233,6 @@ impl<F: JoltField> RegistersReadWriteCheckingProver<F> {
             None,
         );
 
-        let (_, rs1_rv_claim_stage_1) = opening_accumulator
-            .get_virtual_polynomial_opening(VirtualPolynomial::Rs1Value, SumcheckId::SpartanOuter);
-        let (_, rd_wv_claim) = opening_accumulator.get_virtual_polynomial_opening(
-            VirtualPolynomial::RdWriteValue,
-            SumcheckId::SpartanOuter,
-        );
-        let (_, rs2_rv_claim_stage_1) = opening_accumulator
-            .get_virtual_polynomial_opening(VirtualPolynomial::Rs2Value, SumcheckId::SpartanOuter);
-        let (_, rs1_rv_claim_stage_3) = opening_accumulator.get_virtual_polynomial_opening(
-            VirtualPolynomial::Rs1Value,
-            SumcheckId::InstructionInputVirtualization,
-        );
-        let (_, rs2_rv_claim_stage_3) = opening_accumulator.get_virtual_polynomial_opening(
-            VirtualPolynomial::Rs2Value,
-            SumcheckId::InstructionInputVirtualization,
-        );
-        let claim_stage_1 = rd_wv_claim
-            + params.gamma * (rs1_rv_claim_stage_1 + params.gamma * rs2_rv_claim_stage_1);
-        let claim_stage_3 = rs1_rv_claim_stage_3 + params.gamma * rs2_rv_claim_stage_3;
-
         let data_buffers: Vec<DataBuffers<F>> = (0..num_chunks)
             .into_par_iter()
             .map(|_| DataBuffers {
@@ -285,8 +260,8 @@ impl<F: JoltField> RegistersReadWriteCheckingProver<F> {
             gruen_eq_r_cycle_stage_1,
             gruen_eq_r_cycle_stage_3,
             inc_cycle,
-            prev_claim_stage_1: claim_stage_1,
-            prev_claim_stage_3: claim_stage_3,
+            prev_claim_stage_1: params.claim_stage_1,
+            prev_claim_stage_3: params.claim_stage_3,
             eq_r_cycle_stage_1: None,
             eq_r_cycle_stage_3: None,
             rs1_ra: None,
@@ -825,119 +800,109 @@ impl<F: JoltField> RegistersReadWriteCheckingProver<F> {
         let eq_r_cycle_stage_1 = eq_r_cycle_stage_1.as_ref().unwrap();
         let eq_r_cycle_stage_3 = eq_r_cycle_stage_3.as_ref().unwrap();
 
-        let [
-            eval_at_0_for_stage_1,
-            eval_at_2_for_stage_1,
-            eval_at_3_for_stage_1,
-            eval_at_0_for_stage_3,
-            eval_at_2_for_stage_3,
-            eval_at_3_for_stage_3,
-        ] =  (0..eq_r_cycle_stage_1.len() / 2)
-            .into_par_iter()
-            .map(|j| {
-                let eq_r_cycle_stage_1_evals =
-                    eq_r_cycle_stage_1.sumcheck_evals_array::<DEGREE_BOUND>(j, BindingOrder::HighToLow);
-                let eq_r_cycle_stage_3_evals =
-                    eq_r_cycle_stage_3.sumcheck_evals_array::<DEGREE_BOUND>(j, BindingOrder::HighToLow);
-                let inc_evals =
-                       inc_cycle.sumcheck_evals_array::<DEGREE_BOUND>(j, BindingOrder::HighToLow);
+        // Phase 2 uses LowToHigh binding: cycle bits are in low positions, address bits in high positions
+        let n_cycle_pairs = eq_r_cycle_stage_1.len() / 2;
+        let [eval_at_0_for_stage_1, eval_at_2_for_stage_1, eval_at_3_for_stage_1, eval_at_0_for_stage_3, eval_at_2_for_stage_3, eval_at_3_for_stage_3] =
+            (0..K)
+                .into_par_iter()
+                .map(|k| {
+                    let base_index = k * n_cycle_pairs;
 
-                let [
-                    eval_at_0_for_stage_1,
-                    eval_at_2_for_stage_1,
-                    eval_at_3_for_stage_1,
-                    eval_at_0_for_stage_3,
-                    eval_at_2_for_stage_3,
-                    eval_at_3_for_stage_3,
-                ] = (0..K)
-                    .into_par_iter()
-                    .map(|k| {
-                        let index = j * K + k;
-                        let rs1_ra_evals =
-                            rs1_ra.sumcheck_evals_array::<DEGREE_BOUND>(index, BindingOrder::HighToLow);
-                        let rs2_ra_evals =
-                            rs2_ra.sumcheck_evals_array::<DEGREE_BOUND>(index, BindingOrder::HighToLow);
-                        let wa_evals =
-                            rd_wa.sumcheck_evals_array::<DEGREE_BOUND>(index, BindingOrder::HighToLow);
-                        let val_evals =
-                            val.sumcheck_evals_array::<DEGREE_BOUND>(index, BindingOrder::HighToLow);
+                    (0..n_cycle_pairs)
+                        .map(|j| {
+                            // index = k * n_cycle_pairs + j: address bits (k) high, cycle bits (j) low
+                            // With k fixed and j varying, this accesses contiguous memory
+                            let index = base_index + j;
 
-                        // Eval RdWriteValue(x) at (r', {0, 2, 3}, j, k).
-                        let rd_write_value_at_0_j_k =
-                            wa_evals[0].mul_0_optimized(inc_evals[0] + val_evals[0]);
-                        let rd_write_value_at_2_j_k =
-                            wa_evals[1].mul_0_optimized(inc_evals[1] + val_evals[1]);
-                        let rd_write_value_at_3_j_k =
-                            wa_evals[2].mul_0_optimized(inc_evals[2] + val_evals[2]);
+                            let eq_r_cycle_stage_1_evals = eq_r_cycle_stage_1
+                                .sumcheck_evals_array::<DEGREE_BOUND>(j, BindingOrder::LowToHigh);
+                            let eq_r_cycle_stage_3_evals = eq_r_cycle_stage_3
+                                .sumcheck_evals_array::<DEGREE_BOUND>(j, BindingOrder::LowToHigh);
+                            let inc_evals = inc_cycle
+                                .sumcheck_evals_array::<DEGREE_BOUND>(j, BindingOrder::LowToHigh);
 
-                        // Eval Rs1Value(x) at (r', {0, 2, 3}, j, k).
-                        let rs1_value_at_0_j_k = rs1_ra_evals[0].mul_0_optimized(val_evals[0]);
-                        let rs1_value_at_2_j_k = rs1_ra_evals[1].mul_0_optimized(val_evals[1]);
-                        let rs1_value_at_3_j_k = rs1_ra_evals[2].mul_0_optimized(val_evals[2]);
+                            let rs1_ra_evals = rs1_ra.sumcheck_evals_array::<DEGREE_BOUND>(
+                                index,
+                                BindingOrder::LowToHigh,
+                            );
+                            let rs2_ra_evals = rs2_ra.sumcheck_evals_array::<DEGREE_BOUND>(
+                                index,
+                                BindingOrder::LowToHigh,
+                            );
+                            let wa_evals = rd_wa.sumcheck_evals_array::<DEGREE_BOUND>(
+                                index,
+                                BindingOrder::LowToHigh,
+                            );
+                            let val_evals = val.sumcheck_evals_array::<DEGREE_BOUND>(
+                                index,
+                                BindingOrder::LowToHigh,
+                            );
 
-                        // Eval Rs2Value(x) at (r', {0, 2, 3}, j, k).
-                        let rs2_value_at_0_j_k = rs2_ra_evals[0].mul_0_optimized(val_evals[0]);
-                        let rs2_value_at_2_j_k = rs2_ra_evals[1].mul_0_optimized(val_evals[1]);
-                        let rs2_value_at_3_j_k = rs2_ra_evals[2].mul_0_optimized(val_evals[2]);
+                            // Eval RdWriteValue(x) at (r', {0, 2, 3}, j, k).
+                            let rd_write_value_at_0_j_k =
+                                wa_evals[0].mul_0_optimized(inc_evals[0] + val_evals[0]);
+                            let rd_write_value_at_2_j_k =
+                                wa_evals[1].mul_0_optimized(inc_evals[1] + val_evals[1]);
+                            let rd_write_value_at_3_j_k =
+                                wa_evals[2].mul_0_optimized(inc_evals[2] + val_evals[2]);
 
-                        // Eval ReadVals(x) = Rs1Value(x) + gamma * Rs2Value(x) at (r', {0, 2, 3}, j, k).
-                        let read_vals_at_0_j_k =
-                            rs1_value_at_0_j_k + params.gamma * rs2_value_at_0_j_k;
-                        let read_vals_at_2_j_k =
-                            rs1_value_at_2_j_k + params.gamma * rs2_value_at_2_j_k;
-                        let read_vals_at_3_j_k =
-                            rs1_value_at_3_j_k + params.gamma * rs2_value_at_3_j_k;
+                            // Eval Rs1Value(x) at (r', {0, 2, 3}, j, k).
+                            let rs1_value_at_0_j_k = rs1_ra_evals[0].mul_0_optimized(val_evals[0]);
+                            let rs1_value_at_2_j_k = rs1_ra_evals[1].mul_0_optimized(val_evals[1]);
+                            let rs1_value_at_3_j_k = rs1_ra_evals[2].mul_0_optimized(val_evals[2]);
 
-                        let eval_at_0_j_k_for_stage_1 =
-                            rd_write_value_at_0_j_k + params.gamma * read_vals_at_0_j_k;
-                        let eval_at_2_j_k_for_stage_1 =
-                            rd_write_value_at_2_j_k + params.gamma * read_vals_at_2_j_k;
-                        let eval_at_3_j_k_for_stage_1 =
-                            rd_write_value_at_3_j_k + params.gamma * read_vals_at_3_j_k;
+                            // Eval Rs2Value(x) at (r', {0, 2, 3}, j, k).
+                            let rs2_value_at_0_j_k = rs2_ra_evals[0].mul_0_optimized(val_evals[0]);
+                            let rs2_value_at_2_j_k = rs2_ra_evals[1].mul_0_optimized(val_evals[1]);
+                            let rs2_value_at_3_j_k = rs2_ra_evals[2].mul_0_optimized(val_evals[2]);
 
-                        let eval_at_0_j_k_for_stage_3 = read_vals_at_0_j_k;
-                        let eval_at_2_j_k_for_stage_3 = read_vals_at_2_j_k;
-                        let eval_at_3_j_k_for_stage_3 = read_vals_at_3_j_k;
+                            // Eval ReadVals(x) = Rs1Value(x) + gamma * Rs2Value(x) at (r', {0, 2, 3}, j, k).
+                            let read_vals_at_0_j_k =
+                                rs1_value_at_0_j_k + params.gamma * rs2_value_at_0_j_k;
+                            let read_vals_at_2_j_k =
+                                rs1_value_at_2_j_k + params.gamma * rs2_value_at_2_j_k;
+                            let read_vals_at_3_j_k =
+                                rs1_value_at_3_j_k + params.gamma * rs2_value_at_3_j_k;
 
-                        [
-                            eval_at_0_j_k_for_stage_1,
-                            eval_at_2_j_k_for_stage_1,
-                            eval_at_3_j_k_for_stage_1,
-                            eval_at_0_j_k_for_stage_3,
-                            eval_at_2_j_k_for_stage_3,
-                            eval_at_3_j_k_for_stage_3,
-                        ]
-                    })
-                    .fold_with([F::Unreduced::<5>::zero(); BATCH_SIZE * DEGREE_BOUND], |running, new| {
-                        array::from_fn(|i| running[i] + new[i].as_unreduced_ref())
-                    })
-                    .reduce(
-                        || [F::Unreduced::<5>::zero(); BATCH_SIZE * DEGREE_BOUND],
-                        |a, b| array::from_fn(|i| a[i] + b[i]),
-                    );
+                            let eval_at_0_j_k_for_stage_1 =
+                                rd_write_value_at_0_j_k + params.gamma * read_vals_at_0_j_k;
+                            let eval_at_2_j_k_for_stage_1 =
+                                rd_write_value_at_2_j_k + params.gamma * read_vals_at_2_j_k;
+                            let eval_at_3_j_k_for_stage_1 =
+                                rd_write_value_at_3_j_k + params.gamma * read_vals_at_3_j_k;
 
-                let eq_at_0_for_stage_1 = eq_r_cycle_stage_1_evals[0];
-                let eq_at_2_for_stage_1 = eq_r_cycle_stage_1_evals[1];
-                let eq_at_3_for_stage_1 = eq_r_cycle_stage_1_evals[2];
+                            let eval_at_0_j_k_for_stage_3 = read_vals_at_0_j_k;
+                            let eval_at_2_j_k_for_stage_3 = read_vals_at_2_j_k;
+                            let eval_at_3_j_k_for_stage_3 = read_vals_at_3_j_k;
 
-                let eq_at_0_for_stage_3 = eq_r_cycle_stage_3_evals[0];
-                let eq_at_2_for_stage_3 = eq_r_cycle_stage_3_evals[1];
-                let eq_at_3_for_stage_3 = eq_r_cycle_stage_3_evals[2];
+                            let eq_at_0_for_stage_1 = eq_r_cycle_stage_1_evals[0];
+                            let eq_at_2_for_stage_1 = eq_r_cycle_stage_1_evals[1];
+                            let eq_at_3_for_stage_1 = eq_r_cycle_stage_1_evals[2];
 
-                [
-                    eq_at_0_for_stage_1.mul_unreduced::<9>(F::from_barrett_reduce(eval_at_0_for_stage_1)),
-                    eq_at_2_for_stage_1.mul_unreduced::<9>(F::from_barrett_reduce(eval_at_2_for_stage_1)),
-                    eq_at_3_for_stage_1.mul_unreduced::<9>(F::from_barrett_reduce(eval_at_3_for_stage_1)),
-                    eq_at_0_for_stage_3.mul_unreduced::<9>(F::from_barrett_reduce(eval_at_0_for_stage_3)),
-                    eq_at_2_for_stage_3.mul_unreduced::<9>(F::from_barrett_reduce(eval_at_2_for_stage_3)),
-                    eq_at_3_for_stage_3.mul_unreduced::<9>(F::from_barrett_reduce(eval_at_3_for_stage_3)),
-                ]
-            })
-            .reduce(
-                || [F::Unreduced::<9>::zero(); BATCH_SIZE * DEGREE_BOUND],
-                |a, b| array::from_fn(|i| a[i] + b[i]),
-            )
-            .map(F::from_montgomery_reduce);
+                            let eq_at_0_for_stage_3 = eq_r_cycle_stage_3_evals[0];
+                            let eq_at_2_for_stage_3 = eq_r_cycle_stage_3_evals[1];
+                            let eq_at_3_for_stage_3 = eq_r_cycle_stage_3_evals[2];
+
+                            // Multiply by eq here (per j, k) to enable cache-friendly access pattern
+                            [
+                                eq_at_0_for_stage_1.mul_unreduced::<9>(eval_at_0_j_k_for_stage_1),
+                                eq_at_2_for_stage_1.mul_unreduced::<9>(eval_at_2_j_k_for_stage_1),
+                                eq_at_3_for_stage_1.mul_unreduced::<9>(eval_at_3_j_k_for_stage_1),
+                                eq_at_0_for_stage_3.mul_unreduced::<9>(eval_at_0_j_k_for_stage_3),
+                                eq_at_2_for_stage_3.mul_unreduced::<9>(eval_at_2_j_k_for_stage_3),
+                                eq_at_3_for_stage_3.mul_unreduced::<9>(eval_at_3_j_k_for_stage_3),
+                            ]
+                        })
+                        .fold(
+                            [F::Unreduced::<9>::zero(); BATCH_SIZE * DEGREE_BOUND],
+                            |a, b| array::from_fn(|i| a[i] + b[i]),
+                        )
+                })
+                .reduce(
+                    || [F::Unreduced::<9>::zero(); BATCH_SIZE * DEGREE_BOUND],
+                    |a, b| array::from_fn(|i| a[i] + b[i]),
+                )
+                .map(F::from_montgomery_reduce);
 
         let eval_at_0 = eval_at_0_for_stage_1 + params.gamma_cub * eval_at_0_for_stage_3;
         let eval_at_2 = eval_at_2_for_stage_1 + params.gamma_cub * eval_at_2_for_stage_3;
@@ -1135,20 +1100,31 @@ impl<F: JoltField> RegistersReadWriteCheckingProver<F> {
             let span = tracing::span!(tracing::Level::INFO, "Materialize rs1_ra polynomial");
             let _guard = span.enter();
 
+            // Polynomial indexing: index = k * num_chunks + chunk_index
+            //   - Address bits (k) in high-order positions
+            //   - Cycle bits (chunk_index) in low-order positions
+            // This layout enables LowToHigh binding to bind cycle variables first in Phase 2,
+            // which is required for compatibility with downstream sumchecks.
             let num_chunks = addresses.len() / *chunk_size;
-            let mut rs1_ra_evals: Vec<F> = unsafe_allocate_zero_vec(K * num_chunks);
-            rs1_ra_evals
-                .par_chunks_mut(K)
+            let rs1_ra_evals: Vec<F> = addresses
+                .par_chunks(*chunk_size)
                 .enumerate()
-                .for_each(|(chunk_index, ra_chunk)| {
-                    for (j_bound, (k, _, _)) in addresses
-                        [chunk_index * *chunk_size..(chunk_index + 1) * *chunk_size]
-                        .iter()
-                        .enumerate()
-                    {
-                        ra_chunk[*k as usize] += A[j_bound];
-                    }
-                });
+                .fold(
+                    || unsafe_allocate_zero_vec(K * num_chunks),
+                    |mut acc, (chunk_idx, chunk)| {
+                        for (j_bound, (k, _, _)) in chunk.iter().enumerate() {
+                            acc[(*k as usize) * num_chunks + chunk_idx] += A[j_bound];
+                        }
+                        acc
+                    },
+                )
+                .reduce(
+                    || unsafe_allocate_zero_vec(K * num_chunks),
+                    |mut a, b| {
+                        a.iter_mut().zip(b.iter()).for_each(|(a, b)| *a += *b);
+                        a
+                    },
+                );
             *rs1_ra = Some(MultilinearPolynomial::from(rs1_ra_evals));
 
             drop(_guard);
@@ -1158,19 +1134,25 @@ impl<F: JoltField> RegistersReadWriteCheckingProver<F> {
             let _guard = span.enter();
 
             let num_chunks = addresses.len() / *chunk_size;
-            let mut rs2_ra_evals: Vec<F> = unsafe_allocate_zero_vec(K * num_chunks);
-            rs2_ra_evals
-                .par_chunks_mut(K)
+            let rs2_ra_evals: Vec<F> = addresses
+                .par_chunks(*chunk_size)
                 .enumerate()
-                .for_each(|(chunk_index, ra_chunk)| {
-                    for (j_bound, (_, k, _)) in addresses
-                        [chunk_index * *chunk_size..(chunk_index + 1) * *chunk_size]
-                        .iter()
-                        .enumerate()
-                    {
-                        ra_chunk[*k as usize] += A[j_bound];
-                    }
-                });
+                .fold(
+                    || unsafe_allocate_zero_vec(K * num_chunks),
+                    |mut acc, (chunk_idx, chunk)| {
+                        for (j_bound, (_, k, _)) in chunk.iter().enumerate() {
+                            acc[(*k as usize) * num_chunks + chunk_idx] += A[j_bound];
+                        }
+                        acc
+                    },
+                )
+                .reduce(
+                    || unsafe_allocate_zero_vec(K * num_chunks),
+                    |mut a, b| {
+                        a.iter_mut().zip(b.iter()).for_each(|(a, b)| *a += *b);
+                        a
+                    },
+                );
             *rs2_ra = Some(MultilinearPolynomial::from(rs2_ra_evals));
 
             drop(_guard);
@@ -1180,19 +1162,25 @@ impl<F: JoltField> RegistersReadWriteCheckingProver<F> {
             let _guard = span.enter();
 
             let num_chunks = addresses.len() / *chunk_size;
-            let mut rd_wa_evals: Vec<F> = unsafe_allocate_zero_vec(K * num_chunks);
-            rd_wa_evals
-                .par_chunks_mut(K)
+            let rd_wa_evals: Vec<F> = addresses
+                .par_chunks(*chunk_size)
                 .enumerate()
-                .for_each(|(chunk_index, wa_chunk)| {
-                    for (j_bound, (_, _, k)) in addresses
-                        [chunk_index * *chunk_size..(chunk_index + 1) * *chunk_size]
-                        .iter()
-                        .enumerate()
-                    {
-                        wa_chunk[*k as usize] += A[j_bound];
-                    }
-                });
+                .fold(
+                    || unsafe_allocate_zero_vec(K * num_chunks),
+                    |mut acc, (chunk_idx, chunk)| {
+                        for (j_bound, (_, _, k)) in chunk.iter().enumerate() {
+                            acc[(*k as usize) * num_chunks + chunk_idx] += A[j_bound];
+                        }
+                        acc
+                    },
+                )
+                .reduce(
+                    || unsafe_allocate_zero_vec(K * num_chunks),
+                    |mut a, b| {
+                        a.iter_mut().zip(b.iter()).for_each(|(a, b)| *a += *b);
+                        a
+                    },
+                );
             *rd_wa = Some(MultilinearPolynomial::from(rd_wa_evals));
 
             drop(_guard);
@@ -1201,20 +1189,31 @@ impl<F: JoltField> RegistersReadWriteCheckingProver<F> {
             let span = tracing::span!(tracing::Level::INFO, "Materialize Val polynomial");
             let _guard = span.enter();
 
-            let mut val_evals: Vec<F> = val_checkpoints
-                .into_par_iter()
-                .map(|checkpoint| F::from_u64(*checkpoint))
-                .collect();
-            val_evals
-                .par_chunks_mut(K)
+            // val_checkpoints is stored row-major (cycle-major), convert to column-major (address-major)
+            let val_evals: Vec<F> = val_checkpoints
+                .par_chunks(K)
                 .zip(I.into_par_iter())
                 .enumerate()
-                .for_each(|(chunk_index, (val_chunk, I_chunk))| {
-                    for (j, k, inc_lt, _inc) in I_chunk.iter_mut() {
-                        debug_assert_eq!(*j, chunk_index);
-                        val_chunk[*k as usize] += *inc_lt;
-                    }
-                });
+                .fold(
+                    || unsafe_allocate_zero_vec(K * num_chunks),
+                    |mut acc, (chunk_idx, (checkpoint_chunk, I_chunk))| {
+                        for (k, &v) in checkpoint_chunk.iter().enumerate() {
+                            acc[k * num_chunks + chunk_idx] = F::from_u64(v);
+                        }
+                        for (j, k, inc_lt, _inc) in I_chunk.iter() {
+                            debug_assert_eq!(*j, chunk_idx);
+                            acc[(*k as usize) * num_chunks + chunk_idx] += *inc_lt;
+                        }
+                        acc
+                    },
+                )
+                .reduce(
+                    || unsafe_allocate_zero_vec(K * num_chunks),
+                    |mut a, b| {
+                        a.iter_mut().zip(b.iter()).for_each(|(a, b)| *a += *b);
+                        a
+                    },
+                );
             *val = Some(MultilinearPolynomial::from(val_evals));
 
             drop(_guard);
@@ -1259,13 +1258,14 @@ impl<F: JoltField> RegistersReadWriteCheckingProver<F> {
         let eq_r_cycle_stage_1 = eq_r_cycle_stage_1.as_mut().unwrap();
         let eq_r_cycle_stage_3 = eq_r_cycle_stage_3.as_mut().unwrap();
 
-        rs1_ra.bind_parallel(r_j, BindingOrder::HighToLow);
-        rs2_ra.bind_parallel(r_j, BindingOrder::HighToLow);
-        rd_wa.bind_parallel(r_j, BindingOrder::HighToLow);
-        val.bind_parallel(r_j, BindingOrder::HighToLow);
-        inc_cycle.bind_parallel(r_j, BindingOrder::HighToLow);
-        eq_r_cycle_stage_1.bind_parallel(r_j, BindingOrder::HighToLow);
-        eq_r_cycle_stage_3.bind_parallel(r_j, BindingOrder::HighToLow);
+        // Phase 2 uses LowToHigh: binds cycle variables (low positions) first
+        rs1_ra.bind_parallel(r_j, BindingOrder::LowToHigh);
+        rs2_ra.bind_parallel(r_j, BindingOrder::LowToHigh);
+        rd_wa.bind_parallel(r_j, BindingOrder::LowToHigh);
+        val.bind_parallel(r_j, BindingOrder::LowToHigh);
+        inc_cycle.bind_parallel(r_j, BindingOrder::LowToHigh);
+        eq_r_cycle_stage_1.bind_parallel(r_j, BindingOrder::LowToHigh);
+        eq_r_cycle_stage_3.bind_parallel(r_j, BindingOrder::LowToHigh);
     }
 
     fn phase3_bind(&mut self, r_j: F::Challenge) {
@@ -1292,16 +1292,8 @@ impl<F: JoltField> RegistersReadWriteCheckingProver<F> {
 impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
     for RegistersReadWriteCheckingProver<F>
 {
-    fn degree(&self) -> usize {
-        DEGREE_BOUND
-    }
-
-    fn num_rounds(&self) -> usize {
-        self.params.num_rounds()
-    }
-
-    fn input_claim(&self, accumulator: &ProverOpeningAccumulator<F>) -> F {
-        self.params.input_claim(accumulator)
+    fn get_params(&self) -> &dyn SumcheckInstanceParams<F> {
+        &self.params
     }
 
     #[tracing::instrument(skip_all, name = "RegistersReadWriteCheckingProver::compute_message")]
@@ -1338,7 +1330,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
         let rd_wa_claim = self.rd_wa.as_ref().unwrap().final_sumcheck_claim();
         let inc_claim = self.inc_cycle.final_sumcheck_claim();
 
-        let opening_point = self.params.get_opening_point(sumcheck_challenges);
+        let opening_point = self.params.normalize_opening_point(sumcheck_challenges);
         accumulator.append_virtual(
             transcript,
             VirtualPolynomial::RegistersVal,
@@ -1408,17 +1400,12 @@ pub struct RegistersReadWriteCheckingVerifier<F: JoltField> {
 
 impl<F: JoltField> RegistersReadWriteCheckingVerifier<F> {
     pub fn new(
-        twist_sumcheck_switch_index: usize,
         n_cycle_vars: usize,
         opening_accumulator: &VerifierOpeningAccumulator<F>,
         transcript: &mut impl Transcript,
     ) -> Self {
-        let params = RegistersReadWriteCheckingParams::new(
-            twist_sumcheck_switch_index,
-            n_cycle_vars,
-            opening_accumulator,
-            transcript,
-        );
+        let params =
+            RegistersReadWriteCheckingParams::new(n_cycle_vars, opening_accumulator, transcript);
         Self { params }
     }
 }
@@ -1426,16 +1413,8 @@ impl<F: JoltField> RegistersReadWriteCheckingVerifier<F> {
 impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
     for RegistersReadWriteCheckingVerifier<F>
 {
-    fn degree(&self) -> usize {
-        DEGREE_BOUND
-    }
-
-    fn num_rounds(&self) -> usize {
-        self.params.num_rounds()
-    }
-
-    fn input_claim(&self, accumulator: &VerifierOpeningAccumulator<F>) -> F {
-        self.params.input_claim(accumulator)
+    fn get_params(&self) -> &dyn SumcheckInstanceParams<F> {
+        &self.params
     }
 
     fn expected_output_claim(
@@ -1443,7 +1422,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         accumulator: &VerifierOpeningAccumulator<F>,
         sumcheck_challenges: &[F::Challenge],
     ) -> F {
-        let r = self.params.get_opening_point(sumcheck_challenges);
+        let r = self.params.normalize_opening_point(sumcheck_challenges);
         let (_, r_cycle) = r.split_at(LOG_K);
         let eq_eval_stage_1 = EqPolynomial::mle_endian(&r_cycle, &self.params.r_cycle_stage_1);
         let eq_eval_stage_3 = EqPolynomial::mle_endian(&r_cycle, &self.params.r_cycle_stage_3);
@@ -1487,7 +1466,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         transcript: &mut T,
         sumcheck_challenges: &[<F as JoltField>::Challenge],
     ) {
-        let opening_point = self.params.get_opening_point(sumcheck_challenges);
+        let opening_point = self.params.normalize_opening_point(sumcheck_challenges);
         accumulator.append_virtual(
             transcript,
             VirtualPolynomial::RegistersVal,
@@ -1523,39 +1502,63 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
     }
 }
 
-struct RegistersReadWriteCheckingParams<F: JoltField> {
-    gamma: F,
+pub struct RegistersReadWriteCheckingParams<F: JoltField> {
+    pub gamma: F,
     /// Equals `gamma^3`.
-    gamma_cub: F,
-    twist_sumcheck_switch_index: usize,
-    n_cycle_vars: usize, // = log(T)
-    r_cycle_stage_1: OpeningPoint<BIG_ENDIAN, F>,
-    r_cycle_stage_3: OpeningPoint<BIG_ENDIAN, F>,
+    pub gamma_cub: F,
+    pub n_cycle_vars: usize, // = log(T)
+    pub r_cycle_stage_1: OpeningPoint<BIG_ENDIAN, F>,
+    pub r_cycle_stage_3: OpeningPoint<BIG_ENDIAN, F>,
+    claim_stage_1: F,
+    claim_stage_3: F,
 }
 
 impl<F: JoltField> RegistersReadWriteCheckingParams<F> {
     pub fn new(
-        twist_sumcheck_switch_index: usize,
         n_cycle_vars: usize,
         opening_accumulator: &dyn OpeningAccumulator<F>,
         transcript: &mut impl Transcript,
     ) -> Self {
         let gamma = transcript.challenge_scalar::<F>();
         let gamma_cub = gamma.square() * gamma;
-        let (r_cycle_stage_1, _) = opening_accumulator
+
+        let (r_cycle_stage_1, rs1_rv_claim_stage_1) = opening_accumulator
             .get_virtual_polynomial_opening(VirtualPolynomial::Rs1Value, SumcheckId::SpartanOuter);
-        let (r_cycle_stage_3, _) = opening_accumulator.get_virtual_polynomial_opening(
-            VirtualPolynomial::Rs1Value,
+        let (_, rs2_rv_claim_stage_1) = opening_accumulator
+            .get_virtual_polynomial_opening(VirtualPolynomial::Rs2Value, SumcheckId::SpartanOuter);
+        let (_, rd_wv_claim) = opening_accumulator.get_virtual_polynomial_opening(
+            VirtualPolynomial::RdWriteValue,
+            SumcheckId::SpartanOuter,
+        );
+
+        let (r_cycle_stage_3, rs1_rv_claim_stage_3) = opening_accumulator
+            .get_virtual_polynomial_opening(
+                VirtualPolynomial::Rs1Value,
+                SumcheckId::InstructionInputVirtualization,
+            );
+        let (_, rs2_rv_claim_stage_3) = opening_accumulator.get_virtual_polynomial_opening(
+            VirtualPolynomial::Rs2Value,
             SumcheckId::InstructionInputVirtualization,
         );
+        let claim_stage_1 =
+            rd_wv_claim + gamma * (rs1_rv_claim_stage_1 + gamma * rs2_rv_claim_stage_1);
+        let claim_stage_3 = rs1_rv_claim_stage_3 + gamma * rs2_rv_claim_stage_3;
+
         Self {
             gamma,
             gamma_cub,
-            twist_sumcheck_switch_index,
             n_cycle_vars,
             r_cycle_stage_1,
             r_cycle_stage_3,
+            claim_stage_1,
+            claim_stage_3,
         }
+    }
+}
+
+impl<F: JoltField> SumcheckInstanceParams<F> for RegistersReadWriteCheckingParams<F> {
+    fn degree(&self) -> usize {
+        DEGREE_BOUND
     }
 
     fn num_rounds(&self) -> usize {
@@ -1587,22 +1590,23 @@ impl<F: JoltField> RegistersReadWriteCheckingParams<F> {
         claim_stage_1 + self.gamma_cub * claim_stage_3
     }
 
-    fn get_opening_point(
+    fn normalize_opening_point(
         &self,
         sumcheck_challenges: &[F::Challenge],
     ) -> OpeningPoint<BIG_ENDIAN, F> {
-        let sumcheck_switch_index = self.twist_sumcheck_switch_index;
+        // All phases use LowToHigh binding, so sumcheck challenges arrive in LITTLE_ENDIAN order.
+        // Reverse each part to convert to BIG_ENDIAN for the opening point.
         let n_cycle_vars = self.n_cycle_vars;
-        // The high-order cycle variables are bound after the switch
-        let mut r_cycle = sumcheck_challenges[sumcheck_switch_index..n_cycle_vars].to_vec();
-        // First sumcheck_switch_index rounds bind cycle variables from low to high
-        r_cycle.extend(sumcheck_challenges[..sumcheck_switch_index].iter().rev());
-        // Address variables are bound high-to-low
-        let r_address = sumcheck_challenges[n_cycle_vars..]
+        let r_cycle: Vec<_> = sumcheck_challenges[..n_cycle_vars]
             .iter()
             .rev()
             .cloned()
-            .collect::<Vec<_>>();
+            .collect();
+        let r_address: Vec<_> = sumcheck_challenges[n_cycle_vars..]
+            .iter()
+            .rev()
+            .cloned()
+            .collect();
         [r_address, r_cycle].concat().into()
     }
 }

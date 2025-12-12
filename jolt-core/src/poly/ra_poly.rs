@@ -136,6 +136,7 @@ impl<I: Into<usize> + Copy + Default + Send + Sync + 'static, F: JoltField> Poly
                     evals[i] = eval;
                 }
             }
+            BindingOrder::Indexed(_) => panic!("Indexed binding order not supported for RaPolynomial"),
         };
         evals
     }
@@ -251,6 +252,7 @@ impl<I: Into<usize> + Copy + Default + Send + Sync + 'static, F: JoltField>
                 //                          eq(1, r0) * ra_i(r, 1, j)
                 H_0 + H_1
             }
+            BindingOrder::Indexed(_) => panic!("Indexed binding order not supported for RaPolynomialRound2"),
         }
     }
 }
@@ -361,6 +363,7 @@ impl<I: Into<usize> + Copy + Default + Send + Sync + 'static, F: JoltField>
                     },
                 );
             }
+            BindingOrder::Indexed(_) => panic!("Indexed binding order not supported for RaPolynomialRound3"),
         }
 
         drop_in_background_thread(self.lookup_indices);
@@ -399,6 +402,7 @@ impl<I: Into<usize> + Copy + Default + Send + Sync + 'static, F: JoltField>
                     self.lookup_indices[4 * j + 3].map_or(F::zero(), |i| self.F_11[i.into()]);
                 H_00 + H_10 + H_01 + H_11
             }
+            BindingOrder::Indexed(_) => panic!("Indexed binding order not supported for RaPolynomialRound3"),
         }
     }
 }

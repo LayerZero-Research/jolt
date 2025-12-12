@@ -30,6 +30,7 @@ impl<F: JoltField> ExpandingTable<F> {
             || match binding_order {
                 BindingOrder::LowToHigh => Vec::with_capacity(0),
                 BindingOrder::HighToLow => unsafe_allocate_zero_vec(capacity),
+                BindingOrder::Indexed(_) => panic!("Indexed binding order not supported for ExpandingTable"),
             },
         );
         Self {
@@ -76,6 +77,7 @@ impl<F: JoltField> ExpandingTable<F> {
                     });
                 std::mem::swap(&mut self.values, &mut self.scratch_space);
             }
+            BindingOrder::Indexed(_) => panic!("Indexed binding order not supported for ExpandingTable"),
         }
         self.len *= 2;
     }

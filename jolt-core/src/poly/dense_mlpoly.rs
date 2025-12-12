@@ -72,6 +72,7 @@ impl<F: JoltField> DensePolynomial<F> {
         match order {
             BindingOrder::LowToHigh => self.bound_poly_var_bot(&r),
             BindingOrder::HighToLow => self.bound_poly_var_top(&r),
+            BindingOrder::Indexed(_) => panic!("Indexed binding order not supported for DensePolynomial"),
         }
     }
 
@@ -79,6 +80,7 @@ impl<F: JoltField> DensePolynomial<F> {
         match order {
             BindingOrder::LowToHigh => self.bound_poly_var_bot_01_optimized(&r),
             BindingOrder::HighToLow => self.bound_poly_var_top_zero_optimized(&r),
+            BindingOrder::Indexed(_) => panic!("Indexed binding order not supported for DensePolynomial"),
         }
     }
 
@@ -593,6 +595,7 @@ impl<F: JoltField> PolynomialEvaluation<F> for DensePolynomial<F> {
                     evals[i] = eval;
                 }
             }
+            BindingOrder::Indexed(_) => panic!("Indexed binding order not supported for DensePolynomial"),
         };
         evals
     }

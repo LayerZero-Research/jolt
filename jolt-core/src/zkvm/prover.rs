@@ -25,14 +25,46 @@ use crate::{
     },
     pprof_scope,
     subprotocols::{
-        sumcheck::{BatchedSumcheck, SumcheckInstanceProof, UniSkipFirstRoundProof},
+        sumcheck::{BatchedSumcheck, SumcheckInstanceProof},
         sumcheck_prover::SumcheckInstanceProver,
+        univariate_skip::{prove_uniskip_round, UniSkipFirstRoundProof},
     },
     transcripts::Transcript,
     utils::{math::Math, thread::drop_in_background_thread},
     zkvm::{
-        config::{OneHotParams, get_log_k_chunk},
-        ram::populate_memory_states,
+        bytecode::read_raf_checking::ReadRafSumcheckParams as BytecodeReadRafParams,
+        config::{get_log_k_chunk, OneHotParams},
+        instruction_lookups::{
+            ra_virtual::InstructionRaSumcheckParams,
+            read_raf_checking::ReadRafSumcheckParams as InstructionReadRafParams,
+        },
+        ram::{
+            hamming_booleanity::HammingBooleanityParams,
+            output_check::OutputSumcheckParams,
+            populate_memory_states,
+            ra_virtual::RamRaSumcheckParams,
+            raf_evaluation::RafEvaluationSumcheckParams,
+            read_write_checking::RamReadWriteCheckingParams,
+            val_evaluation::{
+                ValEvaluationSumcheckParams,
+                ValEvaluationSumcheckProver as RamValEvaluationSumcheckProver,
+            },
+            val_final::{ValFinalSumcheckParams, ValFinalSumcheckProver},
+        },
+        registers::{
+            read_write_checking::RegistersReadWriteCheckingParams,
+            val_evaluation::RegistersValEvaluationSumcheckParams,
+        },
+        spartan::{
+            claim_reductions::InstructionLookupsClaimReductionSumcheckParams,
+            instruction_input::InstructionInputParams,
+            outer::{OuterRemainingSumcheckParams, OuterUniSkipParams, OuterUniSkipProver},
+            product::{
+                ProductVirtualRemainderParams, ProductVirtualUniSkipParams,
+                ProductVirtualUniSkipProver,
+            },
+            shift::ShiftSumcheckParams,
+        },
         verifier::JoltVerifierPreprocessing,
     },
 };
@@ -45,30 +77,26 @@ use crate::{
         },
         fiat_shamir_preamble,
         instruction_lookups::{
-            self, ra_virtual::RaSumcheckProver as LookupsRaSumcheckProver,
+            self, ra_virtual::InstructionRaSumcheckProver as LookupsRaSumcheckProver,
             read_raf_checking::ReadRafSumcheckProver as LookupsReadRafSumcheckProver,
         },
         proof_serialization::{Claims, JoltProof},
         r1cs::key::UniformSpartanKey,
         ram::{
-            self, gen_ram_memory_states,
-            hamming_booleanity::HammingBooleanitySumcheckProver,
-            output_check::{OutputSumcheckProver, ValFinalSumcheckProver},
-            prover_accumulate_advice,
-            ra_virtual::RaSumcheckProver as RamRaSumcheckProver,
+            self, gen_ram_memory_states, hamming_booleanity::HammingBooleanitySumcheckProver,
+            output_check::OutputSumcheckProver, prover_accumulate_advice,
+            ra_virtual::RamRaSumcheckProver,
             raf_evaluation::RafEvaluationSumcheckProver as RamRafEvaluationSumcheckProver,
-            read_write_checking::RamReadWriteCheckingProver,
-            val_evaluation::ValEvaluationSumcheckProver as RamValEvaluationSumcheckProver,
-            RAMPreprocessing,
+            read_write_checking::RamReadWriteCheckingProver, RAMPreprocessing,
         },
         registers::{
             read_write_checking::RegistersReadWriteCheckingProver,
             val_evaluation::ValEvaluationSumcheckProver as RegistersValEvaluationSumcheckProver,
         },
         spartan::{
+            claim_reductions::InstructionLookupsClaimReductionSumcheckProver,
             instruction_input::InstructionInputSumcheckProver, outer::OuterRemainingSumcheckProver,
-            product::ProductVirtualRemainderProver, prove_stage1_uni_skip, prove_stage2_uni_skip,
-            shift::ShiftSumcheckProver,
+            product::ProductVirtualRemainderProver, shift::ShiftSumcheckProver,
         },
         witness::{AllCommittedPolynomials, CommittedPolynomial},
         ProverDebugInfo, Serializable,
@@ -98,7 +126,6 @@ pub struct JoltCpuProver<
     pub lazy_trace: LazyTraceIterator,
     pub trace: Arc<Vec<Cycle>>,
     pub advice: JoltAdvice<F, PCS>,
-    pub twist_sumcheck_switch_index: usize,
     pub unpadded_trace_len: usize,
     pub padded_trace_len: usize,
     pub transcript: ProofTranscript,
@@ -221,12 +248,6 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             )
             .next_power_of_two() as usize;
 
-        let num_chunks = rayon::current_num_threads()
-            .next_power_of_two()
-            .min(trace.len());
-        let chunk_size = trace.len() / num_chunks;
-        let twist_sumcheck_switch_index = chunk_size.log_2();
-
         let transcript = ProofTranscript::new(b"Jolt");
         let opening_accumulator = ProverOpeningAccumulator::new(trace.len().log_2());
 
@@ -245,7 +266,6 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 trusted_advice_commitment,
                 trusted_advice_polynomial: None,
             },
-            twist_sumcheck_switch_index,
             unpadded_trace_len,
             padded_trace_len,
             transcript,
@@ -262,6 +282,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
     }
 
     #[allow(clippy::type_complexity)]
+    #[tracing::instrument(skip_all)]
     pub fn prove(
         mut self,
     ) -> (
@@ -332,7 +353,6 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             ram_K: self.one_hot_params.ram_k,
             bytecode_K: self.one_hot_params.bytecode_k,
             log_k_chunk: self.one_hot_params.log_k_chunk,
-            twist_sumcheck_switch_index: self.twist_sumcheck_switch_index,
         };
 
         let prove_duration = start.elapsed();
@@ -490,7 +510,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
 
         let poly = MultilinearPolynomial::from(trusted_advice_vec);
         self.advice.trusted_advice_polynomial = Some(poly.clone());
-        tracing::info!("DEBUGG: trusted_advice_poly num_vars = {} and poly = {:?}", poly.clone().get_num_vars(), poly.clone());
+        // tracing::info!("DEBUGG: trusted_advice_poly num_vars = {} and poly = {:?}", poly.clone().get_num_vars(), poly.clone());
         self.transcript
             .append_serializable(self.advice.trusted_advice_commitment.as_ref().unwrap());
 
@@ -508,17 +528,27 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         print_current_memory_usage("Stage 1 baseline");
 
         tracing::info!("Stage 1 proving");
-        let (uni_skip_state, first_round_proof) = prove_stage1_uni_skip(
+        let uni_skip_params = OuterUniSkipParams::new(&self.spartan_key, &mut self.transcript);
+        let mut uni_skip = OuterUniSkipProver::initialize(
+            uni_skip_params.clone(),
             &self.trace,
             &self.preprocessing.bytecode,
-            &self.spartan_key,
+        );
+        let first_round_proof = prove_uniskip_round(
+            &mut uni_skip,
+            &mut self.opening_accumulator,
             &mut self.transcript,
         );
 
-        let mut spartan_outer_remaining = OuterRemainingSumcheckProver::gen(
+        let spartan_outer_remaining_params = OuterRemainingSumcheckParams::new(
+            self.trace.len(),
+            uni_skip_params,
+            &self.opening_accumulator,
+        );
+        let mut spartan_outer_remaining = OuterRemainingSumcheckProver::initialize(
+            spartan_outer_remaining_params,
             Arc::clone(&self.trace),
             &self.preprocessing.bytecode,
-            &uni_skip_state,
         );
 
         let (sumcheck_proof, _r_stage1) = BatchedSumcheck::prove(
@@ -541,37 +571,73 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         print_current_memory_usage("Stage 2 baseline");
 
         // Stage 2a: Prove univariate-skip first round for product virtualization
-        let (uni_skip_state, first_round_proof) = prove_stage2_uni_skip(
-            &self.trace,
-            &self.opening_accumulator,
-            &self.spartan_key,
+        let uni_skip_params =
+            ProductVirtualUniSkipParams::new(&self.opening_accumulator, &mut self.transcript);
+        let mut uni_skip =
+            ProductVirtualUniSkipProver::initialize(uni_skip_params.clone(), &self.trace);
+        let first_round_proof = prove_uniskip_round(
+            &mut uni_skip,
+            &mut self.opening_accumulator,
             &mut self.transcript,
         );
 
-        let spartan_product_virtual_remainder =
-            ProductVirtualRemainderProver::gen(Arc::clone(&self.trace), &uni_skip_state);
-        let ram_raf_evaluation = RamRafEvaluationSumcheckProver::gen(
-            &self.trace,
-            &self.one_hot_params,
-            &self.program_io.memory_layout,
+        // Initialization params
+        let spartan_product_virtual_remainder_params = ProductVirtualRemainderParams::new(
+            self.trace.len(),
+            uni_skip_params,
             &self.opening_accumulator,
         );
-        let ram_read_write_checking = RamReadWriteCheckingProver::gen(
-            &self.initial_ram_state,
+        let ram_raf_evaluation_params = RafEvaluationSumcheckParams::new(
+            &self.program_io.memory_layout,
+            &self.one_hot_params,
+            &self.opening_accumulator,
+        );
+        let ram_read_write_checking_params = RamReadWriteCheckingParams::new(
+            &self.opening_accumulator,
+            &mut self.transcript,
+            &self.one_hot_params,
+            self.trace.len(),
+        );
+        let ram_output_check_params = OutputSumcheckParams::new(
+            self.one_hot_params.ram_k,
+            &self.program_io,
+            &mut self.transcript,
+        );
+        let instruction_claim_reduction_params =
+            InstructionLookupsClaimReductionSumcheckParams::new(
+                self.trace.len(),
+                &self.opening_accumulator,
+                &mut self.transcript,
+            );
+
+        // Initialization
+        let spartan_product_virtual_remainder = ProductVirtualRemainderProver::initialize(
+            spartan_product_virtual_remainder_params,
+            Arc::clone(&self.trace),
+        );
+        let ram_raf_evaluation = RamRafEvaluationSumcheckProver::initialize(
+            ram_raf_evaluation_params,
+            &self.trace,
+            &self.program_io.memory_layout,
+        );
+        let ram_read_write_checking = RamReadWriteCheckingProver::initialize(
+            ram_read_write_checking_params,
+            &self.trace,
             &self.preprocessing.bytecode,
             &self.program_io.memory_layout,
-            &self.trace,
-            &self.one_hot_params,
-            &self.opening_accumulator,
-            &mut self.transcript,
+            &self.initial_ram_state,
         );
-        let ram_output_check = OutputSumcheckProver::gen(
+        let ram_output_check = OutputSumcheckProver::initialize(
+            ram_output_check_params,
             &self.initial_ram_state,
             &self.final_ram_state,
-            &self.program_io,
-            &self.one_hot_params,
-            &mut self.transcript,
+            &self.program_io.memory_layout,
         );
+        let instruction_claim_reduction =
+            InstructionLookupsClaimReductionSumcheckProver::initialize(
+                instruction_claim_reduction_params,
+                Arc::clone(&self.trace),
+            );
 
         #[cfg(feature = "allocative")]
         {
@@ -582,6 +648,10 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             print_data_structure_heap_usage("RamRafEvaluationSumcheckProver", &ram_raf_evaluation);
             print_data_structure_heap_usage("RamReadWriteCheckingProver", &ram_read_write_checking);
             print_data_structure_heap_usage("OutputSumcheckProver", &ram_output_check);
+            print_data_structure_heap_usage(
+                "InstructionLookupsClaimReductionSumcheckProver",
+                &instruction_claim_reduction,
+            );
         }
 
         let mut instances: Vec<Box<dyn SumcheckInstanceProver<_, _>>> = vec![
@@ -589,6 +659,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             Box::new(ram_raf_evaluation),
             Box::new(ram_read_write_checking),
             Box::new(ram_output_check),
+            Box::new(instruction_claim_reduction),
         ];
 
         #[cfg(feature = "allocative")]
@@ -611,16 +682,25 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         #[cfg(not(target_arch = "wasm32"))]
         print_current_memory_usage("Stage 3 baseline");
 
-        let spartan_shift = ShiftSumcheckProver::gen(
-            Arc::clone(&self.trace),
-            &self.preprocessing.bytecode,
+        // Initialization params
+        let spartan_shift_params = ShiftSumcheckParams::new(
+            self.trace.len().log_2(),
             &self.opening_accumulator,
             &mut self.transcript,
         );
-        let spartan_instruction_input = InstructionInputSumcheckProver::gen(
+        let spartan_instruction_input_params =
+            InstructionInputParams::new(&self.opening_accumulator, &mut self.transcript);
+
+        // Initialize
+        let spartan_shift = ShiftSumcheckProver::initialize(
+            spartan_shift_params,
+            Arc::clone(&self.trace),
+            &self.preprocessing.bytecode,
+        );
+        let spartan_instruction_input = InstructionInputSumcheckProver::initialize(
+            spartan_instruction_input_params,
             &self.trace,
             &self.opening_accumulator,
-            &mut self.transcript,
         );
 
         #[cfg(feature = "allocative")]
@@ -655,11 +735,8 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         #[cfg(not(target_arch = "wasm32"))]
         print_current_memory_usage("Stage 4 baseline");
 
-        let registers_read_write_checking = RegistersReadWriteCheckingProver::gen(
-            &self.trace,
-            &self.preprocessing.bytecode,
-            &self.program_io.memory_layout,
-            self.twist_sumcheck_switch_index,
+        let registers_read_write_checking_params = RegistersReadWriteCheckingParams::new(
+            self.trace.len().log_2(),
             &self.opening_accumulator,
             &mut self.transcript,
         );
@@ -671,25 +748,40 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             &mut self.opening_accumulator,
             &mut self.transcript,
         );
-        let ram_ra_booleanity = ram::gen_ra_booleanity_prover(
-            &self.trace,
-            &self.program_io.memory_layout,
+        let ram_ra_booleanity_params =
+            ram::ra_booleanity_params(self.trace.len(), &self.one_hot_params, &mut self.transcript);
+        let ram_val_evaluation_params = ValEvaluationSumcheckParams::new_from_prover(
             &self.one_hot_params,
-            &mut self.transcript,
-        );
-        let ram_val_evaluation = RamValEvaluationSumcheckProver::gen(
-            &self.trace,
-            &self.preprocessing.bytecode,
-            &self.program_io.memory_layout,
+            &self.opening_accumulator,
             &self.initial_ram_state,
-            &self.one_hot_params,
-            &self.opening_accumulator,
+            self.trace.len(),
         );
-        let ram_val_final = ValFinalSumcheckProver::gen(
+        let ram_val_final_params =
+            ValFinalSumcheckParams::new_from_prover(self.trace.len(), &self.opening_accumulator);
+
+        let registers_read_write_checking = RegistersReadWriteCheckingProver::initialize(
+            registers_read_write_checking_params,
             &self.trace,
             &self.preprocessing.bytecode,
             &self.program_io.memory_layout,
-            &self.opening_accumulator,
+        );
+        let ram_ra_booleanity = ram::gen_ra_booleanity_prover(
+            ram_ra_booleanity_params,
+            &self.trace,
+            &self.program_io.memory_layout,
+            &self.one_hot_params,
+        );
+        let ram_val_evaluation = RamValEvaluationSumcheckProver::initialize(
+            ram_val_evaluation_params,
+            &self.trace,
+            &self.preprocessing.bytecode,
+            &self.program_io.memory_layout,
+        );
+        let ram_val_final = ValFinalSumcheckProver::initialize(
+            ram_val_final_params,
+            &self.trace,
+            &self.preprocessing.bytecode,
+            &self.program_io.memory_layout,
         );
 
         #[cfg(feature = "allocative")]
@@ -729,27 +821,37 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
     fn prove_stage5(&mut self) -> SumcheckInstanceProof<F, ProofTranscript> {
         #[cfg(not(target_arch = "wasm32"))]
         print_current_memory_usage("Stage 5 baseline");
-
-        let registers_val_evaluation = RegistersValEvaluationSumcheckProver::gen(
-            &self.trace,
-            &self.preprocessing.bytecode,
-            &self.program_io.memory_layout,
-            &self.opening_accumulator,
-        );
-        let ram_hamming_booleanity =
-            HammingBooleanitySumcheckProver::gen(&self.trace, &self.opening_accumulator);
-        let ram_ra_virtual = RamRaSumcheckProver::gen(
-            &self.trace,
-            &self.program_io.memory_layout,
+        let registers_val_evaluation_params =
+            RegistersValEvaluationSumcheckParams::new(&self.opening_accumulator);
+        let ram_hamming_booleanity_params = HammingBooleanityParams::new(&self.opening_accumulator);
+        let ram_ra_virtual_params = RamRaSumcheckParams::new(
+            self.trace.len(),
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
         );
-        let lookups_read_raf = LookupsReadRafSumcheckProver::gen(
-            &self.trace,
+        let lookups_read_raf_params = InstructionReadRafParams::new(
+            self.trace.len().log_2(),
             &self.opening_accumulator,
             &mut self.transcript,
         );
+
+        let registers_val_evaluation = RegistersValEvaluationSumcheckProver::initialize(
+            registers_val_evaluation_params,
+            &self.trace,
+            &self.preprocessing.bytecode,
+            &self.program_io.memory_layout,
+        );
+        let ram_hamming_booleanity =
+            HammingBooleanitySumcheckProver::initialize(ram_hamming_booleanity_params, &self.trace);
+        let ram_ra_virtual = RamRaSumcheckProver::initialize(
+            ram_ra_virtual_params,
+            &self.trace,
+            &self.program_io.memory_layout,
+            &self.one_hot_params,
+        );
+        let lookups_read_raf =
+            LookupsReadRafSumcheckProver::initialize(lookups_read_raf_params, &self.trace);
 
         #[cfg(feature = "allocative")]
         {
@@ -792,38 +894,69 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         #[cfg(not(target_arch = "wasm32"))]
         print_current_memory_usage("Stage 6 baseline");
 
-        let bytecode_read_raf = BytecodeReadRafSumcheckProver::gen(
-            &self.trace,
+        let bytecode_read_raf_params = BytecodeReadRafParams::gen(
             &self.preprocessing.bytecode,
+            self.trace.len().log_2(),
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
+        );
+        let bytecode_hamming_weight_params = bytecode::ra_hamming_weight_params(
+            &self.one_hot_params,
+            &self.opening_accumulator,
+            &mut self.transcript,
+        );
+        let bytecode_booleanity_params = bytecode::ra_booleanity_params(
+            self.trace.len(),
+            &self.one_hot_params,
+            &self.opening_accumulator,
+            &mut self.transcript,
+        );
+        let ram_hamming_weight_params = ram::ra_hamming_weight_params(
+            &self.one_hot_params,
+            &self.opening_accumulator,
+            &mut self.transcript,
+        );
+        let lookups_ra_virtual_params =
+            InstructionRaSumcheckParams::new(&self.one_hot_params, &self.opening_accumulator);
+        let lookups_hamming_weight_params = instruction_lookups::ra_hamming_weight_params(
+            &self.one_hot_params,
+            &self.opening_accumulator,
+            &mut self.transcript,
+        );
+        let lookups_booleanity_params = instruction_lookups::ra_booleanity_params(
+            self.trace.len(),
+            &self.one_hot_params,
+            &self.opening_accumulator,
+            &mut self.transcript,
+        );
+
+        let bytecode_read_raf = BytecodeReadRafSumcheckProver::initialize(
+            bytecode_read_raf_params,
+            &self.trace,
+            &self.preprocessing.bytecode,
         );
         let (bytecode_hamming_weight, bytecode_booleanity) = bytecode::gen_ra_one_hot_provers(
+            bytecode_hamming_weight_params,
+            bytecode_booleanity_params,
             &self.trace,
             &self.preprocessing.bytecode,
             &self.one_hot_params,
-            &self.opening_accumulator,
-            &mut self.transcript,
         );
         let ram_hamming_weight = ram::gen_ra_hamming_weight_prover(
+            ram_hamming_weight_params,
             &self.trace,
             &self.program_io.memory_layout,
             &self.one_hot_params,
-            &self.opening_accumulator,
-            &mut self.transcript,
         );
-        let lookups_ra_virtual = LookupsRaSumcheckProver::gen(
-            &self.trace,
-            &self.one_hot_params,
-            &self.opening_accumulator,
-        );
+        let lookups_ra_virtual =
+            LookupsRaSumcheckProver::initialize(lookups_ra_virtual_params, &self.trace);
         let (lookups_ra_booleanity, lookups_ra_hamming_weight) =
             instruction_lookups::gen_ra_one_hot_provers(
+                lookups_hamming_weight_params,
+                lookups_booleanity_params,
                 &self.trace,
                 &self.one_hot_params,
-                &self.opening_accumulator,
-                &mut self.transcript,
             );
 
         #[cfg(feature = "allocative")]

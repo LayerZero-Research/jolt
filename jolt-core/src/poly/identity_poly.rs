@@ -48,6 +48,7 @@ impl<F: JoltField> PolynomialBinding<F> for IdentityPolynomial<F> {
                 self.bound_value += self.bound_value;
                 self.bound_value = self.bound_value + r;
             }
+            BindingOrder::Indexed(_) => panic!("Indexed binding order not supported for IdentityPolynomial"),
         }
         self.num_bound_vars += 1;
     }
@@ -97,6 +98,7 @@ impl<F: JoltField> PolynomialEvaluation<F> for IdentityPolynomial<F> {
                 evals[0] = self.bound_value * (m + m) + F::from_u64(index as u64);
                 m
             }
+            BindingOrder::Indexed(_) => panic!("Indexed binding order not supported for IdentityPolynomial"),
         };
 
         let mut eval = evals[0] + m;
