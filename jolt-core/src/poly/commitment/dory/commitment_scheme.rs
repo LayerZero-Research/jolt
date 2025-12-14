@@ -123,7 +123,6 @@ impl CommitmentScheme for DoryCommitmentScheme {
             })
             .collect();
 
-        tracing::info!("ark_point: {:?}", ark_point);
 
         let mut dory_transcript = JoltToDoryTranscript::<ProofTranscript>::new(transcript);
 

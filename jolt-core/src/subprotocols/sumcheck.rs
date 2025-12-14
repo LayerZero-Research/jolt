@@ -56,11 +56,11 @@ impl BatchedSumcheck {
                 transcript.append_scalar(&input_claim);
                 let scaling_factor = max_num_rounds - num_rounds;
                 let x = input_claim.mul_pow_2(scaling_factor);
-                tracing::info!("DARIVARI first individual claim: {:?}", x);
+                // tracing::info!("DARIVARI first individual claim: {:?}", x);
 
                 if sumcheck.trusted_advice_dimensions().is_some() {
                     trusted_advice_poly_claim = sumcheck.input_claim(opening_accumulator);
-                    tracing::info!("DARIVARI first individual claim: {:?}, scaling factor: {}", x, scaling_factor);
+                    // tracing::info!("DARIVARI first individual claim: {:?}, scaling factor: {}", x, scaling_factor);
                 }
                 x
             })
@@ -68,29 +68,27 @@ impl BatchedSumcheck {
 
 
 
-        // #[cfg(test)]
+        #[cfg(test)]
         let mut batched_claim: F = individual_claims
             .iter()
             .zip(batching_coeffs.iter())
             .map(|(claim, coeff)| *claim * coeff)
             .sum();
 
-        // tracing::info!("THIIISSSSSSS in the prover batched_claim: {:?}", batched_claim);
 
         let mut r_sumcheck: Vec<F::Challenge> = Vec::with_capacity(max_num_rounds);
         let mut compressed_polys: Vec<CompressedUniPoly<F>> = Vec::with_capacity(max_num_rounds);
+
+        // During Dory verification these are the order of r_sumcheck values that are used:
+        // [x_5, x4, x_3, x_2, x_1, x_0, x_13, -> rows
+        // x_12, x_11, x_10, x_9, x_8, x_7, x_6] -> columns
+        // Trusted advice polynomial length is 4 rows and 4 columns, which means the following are indexes of r_sumcheck that 
+        // trusted advice polynomial is later being evaluated on:
+        // [x_2, x_1, x_0, x_13 -> rows
+        // x_9, x_8, x_7, x_6] -> columns
+        // These are the rounds in which we must bind the trusted advice polynomial.
+
         let binding_rounds = vec![2, 1, 0, 13, 9, 8, 7, 6];
-
-        let row_bind_start = 6;
-        let row_bind_end = 10;
-        let col_bind_start = 18;
-        let col_bind_end = 22;
-
-        // Get main dimensions for trusted advice binding logic
-        let _ctx = DoryGlobals::with_context(DoryContext::Main);
-        let log_main_rows = log2(DoryGlobals::get_max_num_rows()) as usize;
-        let _log_main_columns = log2(DoryGlobals::get_num_columns()) as usize;
-        drop(_ctx);
 
         for round in 0..max_num_rounds {
             #[cfg(not(target_arch = "wasm32"))]
@@ -102,8 +100,6 @@ impl BatchedSumcheck {
             let remaining_rounds = max_num_rounds - round;
 
 
-            let in_row_phase = round >= row_bind_start && round < row_bind_end;
-            let in_col_phase = round >= col_bind_start && round < col_bind_end;
 
             let univariate_polys: Vec<UniPoly<F>> = sumcheck_instances
                 .iter_mut()
@@ -111,10 +107,10 @@ impl BatchedSumcheck {
                 .map(|(sumcheck, previous_claim)| {
 
                     if sumcheck.trusted_advice_dimensions().is_some() {
-
                         if binding_rounds.contains(&round) {
                             let scaling_factor = (max_num_rounds - 8) - (round - trusted_advice_round);
                             let x = sumcheck.compute_message(trusted_advice_round, trusted_advice_poly_claim);
+                            trusted_advice_poly_binded = x.clone();
                             trusted_advice_round += 1;
                             UniPoly::from_coeff(x.coeffs.iter().map(|coeff| coeff.mul_pow_2(scaling_factor)).collect())
                         } else {
@@ -123,56 +119,6 @@ impl BatchedSumcheck {
                             UniPoly::from_coeff(vec![scaled_claim])
                         }
                     }
-
-                    // Check if this is a trusted advice polynomial
-                    // if let Some((ta_rows, _ta_columns)) = sumcheck.trusted_advice_dimensions() {
-                    //     // For trusted advice, we bind in two separate phases with hardcoded ranges:
-                    //     // Phase 1 (rows): rounds [6, 10)
-                    //     // Phase 2 (columns): rounds [18, 22)
-
-                    //     let poly = if round < row_bind_start {
-                    //         let scaling_factor = (row_bind_start - round) + (col_bind_start - row_bind_end) + (max_num_rounds - col_bind_end) - 1;
-                    //         tracing::info!("DARIVARI in round {} before row bind start, scaling factor: {}", round, scaling_factor);
-                    //         let scaled_claim = sumcheck
-                    //         .input_claim(opening_accumulator)
-                    //         .mul_pow_2(scaling_factor);
-                    //         UniPoly::from_coeff(vec![scaled_claim])
-
-                    //     } else if in_row_phase {
-                    //         // Binding row variable
-                    //         let ta_round = round - row_bind_start;
-                    //         let scaling_factor = (col_bind_start - row_bind_end) + (max_num_rounds - col_bind_end);
-                    //         tracing::info!("DARIVARI in round {} in row bind, previous claim: {} scaling factor: {}", round, trusted_advice_poly_claim, scaling_factor);
-                    //         let x = sumcheck.compute_message(ta_round, trusted_advice_poly_claim);
-                    //         trusted_advice_poly_binded = x.clone();
-                    //         UniPoly::from_coeff(x.coeffs.iter().map(|coeff| coeff.mul_pow_2(scaling_factor)).collect())
-                    //     } else if round >= row_bind_end && round < col_bind_start {
-                    //         let scaling_factor = (col_bind_start - round) + (max_num_rounds - col_bind_end) - 1;
-                    //         tracing::info!("DARIVARI in round {} in gap, previous claim: {} scaling factor: {}", round, trusted_advice_poly_claim, scaling_factor);
-                    //         let scaled_input_claim = trusted_advice_poly_claim
-                    //             .mul_pow_2(scaling_factor);
-
-                    //         UniPoly::from_coeff(vec![scaled_input_claim])
-                    //     } else if in_col_phase {
-                    //         let ta_round = ta_rows + (round - col_bind_start);
-                    //         let scaling_factor = (max_num_rounds - col_bind_end);
-
-                    //         tracing::info!("DARIVARI in round {} in col bind, previous claim: {}, ta_round: {}, scaling factor: {}", round, trusted_advice_poly_claim, ta_round, scaling_factor);
-
-                    //         let x = sumcheck.compute_message(ta_round, trusted_advice_poly_claim);
-                    //         trusted_advice_poly_binded = x.clone();
-                    //         UniPoly::from_coeff(x.coeffs.iter().map(|coeff| coeff.mul_pow_2(scaling_factor)).collect())
-                    //     } else  {
-                    //         let scaling_factor = max_num_rounds - round - 1;
-                    //         tracing::info!("DARIVARI in round {} in final gap, previous claim: {} scaling factor: {}", round, trusted_advice_poly_claim, scaling_factor);
-                    //         let scaled_input_claim = trusted_advice_poly_claim
-                    //             .mul_pow_2(scaling_factor);
-                    //         UniPoly::from_coeff(vec![scaled_input_claim])
-                    //     };
-                    //     tracing::info!("DARIVARI in round {} individual claim: {:?}", round, poly);
-
-                    //     poly
-                    // } 
                     else {
                         // Standard logic for non-trusted-advice polynomials
                         let num_rounds = sumcheck.num_rounds();
@@ -210,7 +156,7 @@ impl BatchedSumcheck {
             compressed_poly.append_to_transcript(transcript);
             let r_j = transcript.challenge_scalar_optimized::<F>();
             r_sumcheck.push(r_j);
-            tracing::info!("DARIVARI r_j: {:?}", r_j);
+            // tracing::info!("DARIVARI r_j: {:?}", r_j);
 
             // Cache individual claims for this round
             individual_claims
@@ -218,9 +164,9 @@ impl BatchedSumcheck {
                 .zip(univariate_polys.into_iter())
                 .for_each(|(claim, poly)| *claim = poly.evaluate(&r_j));
 
-            // if in_row_phase || in_col_phase {
-            //     trusted_advice_poly_claim = trusted_advice_poly_binded.evaluate(&r_j);
-            // }
+            if binding_rounds.contains(&round) {
+                trusted_advice_poly_claim = trusted_advice_poly_binded.evaluate(&r_j);
+            }
 
             #[cfg(test)]
             {
@@ -240,44 +186,11 @@ impl BatchedSumcheck {
                 let num_rounds = sumcheck.num_rounds();
                 
                 // Check if this is a trusted advice polynomial
-                // if let Some((ta_rows, _ta_columns)) = sumcheck.trusted_advice_dimensions() {
-                //     // For trusted advice, binding happens in two separate phases with hardcoded ranges:
-                //     // Phase 1 (rows): Bind during rounds [6, 10)
-                //     // Phase 2 (columns): Bind during rounds [18, 22)
-                //     let row_bind_start = 6;
-                //     let row_bind_end = 10;
-                //     let col_bind_start = 18;
-                //     let col_bind_end = 22;
-                //     tracing::info!("row_bind_start: {}, row_bind_end: {}, col_bind_start: {}, col_bind_end: {}, log_main_rows: {}, max_num_rounds: {}", row_bind_start, row_bind_end, col_bind_start, col_bind_end, log_main_rows, max_num_rounds);
-
-                //     let should_bind_rows = round >= row_bind_start && round < row_bind_end;
-                //     let should_bind_cols = round >= col_bind_start && round < col_bind_end;
-                //     tracing::info!("should_bind_rows: {}, should_bind_cols: {}", should_bind_rows, should_bind_cols);
-
-
-                //     if should_bind_rows {
-                //         // Binding row variable
-                //         let ta_round = round - row_bind_start;
-                //         tracing::info!(
-                //             "DARIVARI BIND [TA rows]: poly={}, global_round={}, ta_round={}, num_rounds={}, r_j={:?}",
-                //             poly_name, round, ta_round, num_rounds, r_j
-                //         );
-                //         sumcheck.ingest_challenge(r_j, ta_round);
-                //     } else if should_bind_cols {
-                //         // Binding column variable
-                //         let ta_round = ta_rows + (round - col_bind_start);
-                //         tracing::info!(
-                //             "DARIVARI BIND [TA cols]: poly={}, global_round={}, ta_round={}, num_rounds={}, r_j={:?}",
-                //             poly_name, round, ta_round, num_rounds, r_j
-                //         );
-                //         sumcheck.ingest_challenge(r_j, ta_round);
-                //     } else {
-                //         tracing::info!(
-                //             "SKIP [TA gap]: poly={}, global_round={}, num_rounds={} (row_bind=[{},{}), col_bind=[{},{}])",
-                //             poly_name, round, num_rounds, row_bind_start, row_bind_end, col_bind_start, col_bind_end
-                //         );
-                //     }
-                // } else {
+                if sumcheck.trusted_advice_dimensions().is_some() {
+                    if binding_rounds.contains(&round) {
+                        sumcheck.ingest_challenge(r_j, trusted_advice_round - 1);
+                    }
+                } else {
                     // Standard binding logic for non-trusted-advice polynomials
                     // If a sumcheck instance has fewer than `max_num_rounds`,
                     // we wait until there are <= `sumcheck.num_rounds()` left
@@ -290,14 +203,13 @@ impl BatchedSumcheck {
                         //     poly_name, round, local_round, num_rounds, r_j
                         // );
                         sumcheck.ingest_challenge(r_j, local_round);
-                    } 
-                    // else {
+                    } else {
                         // tracing::info!(
                         //     "SKIP [not started]: poly={}, global_round={}, num_rounds={}, remaining_rounds={}",
                         //     poly_name, round, num_rounds, remaining_rounds
                         // );
-                    // }
-                // }
+                    }
+                }
             }
 
             compressed_polys.push(compressed_poly);
@@ -311,39 +223,28 @@ impl BatchedSumcheck {
 
         for sumcheck in sumcheck_instances.iter() {
             // Check if this is a trusted advice polynomial
-            let r_slice: Vec<F::Challenge> = 
-            // if let Some((ta_rows, _ta_columns)) = sumcheck.trusted_advice_dimensions() {
-            //     // For trusted advice, we use hardcoded ranges [6, 10) and [18, 22)
-            //     let row_bind_start = 6;
-            //     let row_bind_end = 10;
-            //     let col_bind_start = 18;
-            //     let col_bind_end = 22;
-                
-            //     // Construct r_slice from the row rounds and column rounds
-            //     let mut r_vec = Vec::with_capacity(ta_rows + (col_bind_end - col_bind_start));
-            //     r_vec.extend_from_slice(&r_sumcheck[row_bind_start..row_bind_end]);
-            //     r_vec.extend_from_slice(&r_sumcheck[col_bind_start..col_bind_end]);
-                
-            //     tracing::info!(
-            //         "PROVER cache_openings [TA]: constructing r_slice from [{}..{}) and [{}..{}), len={}",
-            //         row_bind_start, row_bind_end, col_bind_start, col_bind_end, r_vec.len()
-            //     );
-            //     r_vec
-            // } else {
+            let r_slice: Vec<F::Challenge> = if sumcheck.trusted_advice_dimensions().is_some() {
+                vec![
+                    r_sumcheck[2], 
+                    r_sumcheck[1], 
+                    r_sumcheck[0], 
+                    r_sumcheck[13], 
+                    r_sumcheck[9], 
+                    r_sumcheck[8], 
+                    r_sumcheck[7], 
+                    r_sumcheck[6]
+                    ]
+            } else {
                 // If a sumcheck instance has fewer than `max_num_rounds`,
                 // we wait until there are <= `sumcheck.num_rounds()` left
                 // before binding its variables.
                 // So, the sumcheck *actually* uses just the last `sumcheck.num_rounds()`
                 // values of `r_sumcheck`.
                 r_sumcheck[max_num_rounds - sumcheck.num_rounds()..].to_vec()
-            // }
-            ;
-
-            // Cache polynomial opening claims, to be proven using either an
-            // opening proof or sumcheck (in the case of virtual polynomials).
+                
+            };
             sumcheck.cache_openings(opening_accumulator, transcript, &r_slice);
         }
-        // tracing::info!("THIIISSSSSSS in the prover compressed_polys: {:?}", compressed_polys);
 
         (SumcheckInstanceProof::new(compressed_polys), r_sumcheck)
     }
@@ -382,80 +283,65 @@ impl BatchedSumcheck {
             .map(|(sumcheck, coeff)| {
                 let num_rounds = sumcheck.num_rounds();
                 let input_claim = sumcheck.input_claim(opening_accumulator);
-                // tracing::info!("THIIISSSSSSS in the verifier input_claim: {:?}", input_claim);
                 transcript.append_scalar(&input_claim);
                 input_claim.mul_pow_2(max_num_rounds - num_rounds) * coeff
             })
             .sum();
 
-        // tracing::info!("THIIISSSSSSS in the verifier claim: {:?}", claim);
-
         let (output_claim, r_sumcheck) =
             proof.verify(claim, max_num_rounds, max_degree, transcript)?;
-
-        // tracing::info!("=== SUMCHECK VERIFY: Computing expected_output_claim ===");
-        // tracing::info!("  max_num_rounds={}, r_sumcheck.len()={}", max_num_rounds, r_sumcheck.len());
-        // tracing::info!("  num_sumcheck_instances={}", sumcheck_instances.len());
         
         let expected_output_claim: F = sumcheck_instances
             .iter()
             .zip(batching_coeffs.iter())
             .enumerate()
             .map(|(idx, (sumcheck, coeff))| {
-                // tracing::info!("--- Instance {} ---", idx);
-                // tracing::info!("  num_rounds={}, trusted_advice_dims={:?}", 
-                //     sumcheck.num_rounds(), 
-                //     sumcheck.trusted_advice_dimensions()
-                // );
-                
                 // Check if this is a trusted advice polynomial
                 let r_slice: Vec<F::Challenge> = 
-                // if let Some((ta_rows, _ta_columns)) = sumcheck.trusted_advice_dimensions() {
-                //     // For trusted advice, we use hardcoded ranges [6, 10) and [18, 22)
-                //     let row_bind_start = 6;
-                //     let row_bind_end = 10;
-                //     let col_bind_start = 18;
-                //     let col_bind_end = 22;
-                    
-                //     // Construct r_slice from the row rounds and column rounds
-                //     let mut r_vec = Vec::with_capacity(ta_rows + (col_bind_end - col_bind_start));
-                //     r_vec.extend_from_slice(&r_sumcheck[row_bind_start..row_bind_end]);
-                //     r_vec.extend_from_slice(&r_sumcheck[col_bind_start..col_bind_end]);
-                    
-                //     tracing::info!(
-                //         "VERIFY [TA]: constructing r_slice from [{}..{}) and [{}..{}), len={}",
-                //         row_bind_start, row_bind_end, col_bind_start, col_bind_end, r_vec.len()
-                //     );
-                //     tracing::info!("r_vec: {:?}", r_vec);
-                //     r_vec
-                // } else {
+                if sumcheck.trusted_advice_dimensions().is_some() {
+                    let r_vec = 
+                        vec![
+                            r_sumcheck[0],
+                            r_sumcheck[1],
+                            r_sumcheck[2],
+                            r_sumcheck[6],
+                            r_sumcheck[7],
+                            r_sumcheck[8],
+                            r_sumcheck[9],
+                            r_sumcheck[13]
+                            // r_sumcheck[2], 
+                            // r_sumcheck[1], 
+                            // r_sumcheck[0], 
+                            // r_sumcheck[13], 
+                            // r_sumcheck[9], 
+                            // r_sumcheck[8], 
+                            // r_sumcheck[7], 
+                            // r_sumcheck[6]
+                            ];
+                    r_vec
+                } else {
                     // If a sumcheck instance has fewer than `max_num_rounds`,
                     // we wait until there are <= `sumcheck.num_rounds()` left
                     // before binding its variables.
                     // So, the sumcheck *actually* uses just the last `sumcheck.num_rounds()`
                     // values of `r_sumcheck`.
                     r_sumcheck[max_num_rounds - sumcheck.num_rounds()..].to_vec()
-                // }
-                ;
-
-                // tracing::info!("  r_slice.len()={}", r_slice.len());
+                };
 
                 // Cache polynomial opening claims, to be proven using either an
                 // opening proof or sumcheck (in the case of virtual polynomials).
                 sumcheck.cache_openings(opening_accumulator, transcript, &r_slice);
                 let claim = sumcheck.expected_output_claim(opening_accumulator, &r_slice);
-
-                // tracing::info!("  expected_output_claim={:?}, coeff={:?}", claim, coeff);
-                // tracing::info!("  contribution (claim * coeff)={:?}", claim * coeff);
                 
                 claim * coeff
             })
             .sum();
 
-        // tracing::info!("THIIISSSSSSS output_claim: {:?}", output_claim);
-        // tracing::info!("THIIISSSSSSS expected_output_claim: {:?}", expected_output_claim);
 
         if output_claim != expected_output_claim {
+
+            tracing::info!("THIIISSSSSSS output_claim: {:?}", output_claim);
+            tracing::info!("THIIISSSSSSS expected_output_claim: {:?}", expected_output_claim);
             return Err(ProofVerifyError::SumcheckVerificationError);
         }
 

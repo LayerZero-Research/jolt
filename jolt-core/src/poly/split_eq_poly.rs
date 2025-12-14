@@ -368,7 +368,6 @@ impl<F: JoltField> GruenSplitEqPolynomial<F> {
         let in_len = e_in.len();
 
         (0..out_len)
-            .into_par_iter()
             .map(|x_out| {
                 let mut inner_acc = make_inner();
 
@@ -385,7 +384,7 @@ impl<F: JoltField> GruenSplitEqPolynomial<F> {
 
                 outer_step(x_out, e_out[x_out], inner_acc)
             })
-            .reduce_with(merge)
+            .reduce(merge)
             .expect("par_fold_out_in: empty E_out; invariant violation")
     }
 

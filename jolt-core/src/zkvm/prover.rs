@@ -443,8 +443,6 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             .zip(polys)
             .map(|(tier1_commitments, poly)| {
                 let onehot_k = poly.get_onehot_k(&self.one_hot_params);
-                tracing::info!("tier1_commitments.len()={}, poly_idx={}", tier1_commitments.len(), poly.to_index());
-
                 PCS::aggregate_chunks(&self.preprocessing.generators, onehot_k, &tier1_commitments)
             })
             .unzip();

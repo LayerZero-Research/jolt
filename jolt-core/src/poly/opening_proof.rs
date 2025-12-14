@@ -268,7 +268,7 @@ impl<F: JoltField> DensePolynomialProverOpening<F> {
         let shared_poly_ref = self.polynomial.as_mut().unwrap();
         let mut shared_poly = shared_poly_ref.write().unwrap();
         if shared_poly.num_variables_bound <= round {
-            shared_poly.poly.bind_parallel(r_j, BindingOrder::LowToHigh);
+            shared_poly.poly.bind_parallel(r_j, BindingOrder::Indexed(0));
             shared_poly.num_variables_bound += 1;
         }
     }
@@ -288,25 +288,71 @@ pub struct AdvicePolynomialProverOpening<F: JoltField> {
 
 impl<F: JoltField> AdvicePolynomialProverOpening<F> {
     #[tracing::instrument(skip_all, name = "AdvicePolynomialProverOpening::compute_message")]
-    fn compute_message(&mut self, _round: usize, previous_claim: F) -> UniPoly<F> {
+    fn compute_message(&mut self, round: usize, previous_claim: F) -> UniPoly<F> {
         let shared_eq = self.eq_poly.read().unwrap();
         let polynomial_ref = self.polynomial.as_ref().unwrap();
         let polynomial = &polynomial_ref.read().unwrap().poly;
         let gruen_eq = &shared_eq.D;
+        // These basis are coming from pre-ordering of the EQ polynomial basis for the advice polynomial:
+        // vec![
+        //         self.opening.0.r[3],
+        //         self.opening.0.r[4],
+        //         self.opening.0.r[5],
+        //         self.opening.0.r[6],
+        //         self.opening.0.r[7],
+        //         self.opening.0.r[0],
+        //         self.opening.0.r[1],
+        //         self.opening.0.r[2],
+        //     ];
+        // => the right most variable was the third variable in original poly, thus it adds 2^(8-3) to the transformed_g if the corresponding bit is 1
+        // rest of basis are computed the same way.
+        let mut basis = vec![4,3,2,1,0,7,6,5];
+        let num_vars = 8;
+
+        basis.reverse();
+        for i in 0..round {
+            let this = basis[num_vars - 1 - i];
+            basis
+                .iter_mut()
+                .for_each(
+                    |b| *b = if *b > this { *b - 1 } else { *b }
+                );
+            basis[num_vars - 1 - i] = 0;
+        }
 
         // Compute q(0) = sum of polynomial(i) * eq(r, i) for i in [0, mle_half)
         let [q_0] = gruen_eq.par_fold_out_in_unreduced::<9, 1>(&|g| {
             // TODO(Quang): can special case on polynomial type
             // (if not bound, can have faster multiplication + avoid conversion to field)
-            [polynomial.get_bound_coeff(2 * g)]
-        });
+            
+            // Split g into its binary bit decomposition (LSB at rightmost position)
+            let g_bits: Vec<bool> = (0..(num_vars - round))
+                .rev()
+                .map(|i| ((2 * g) >> i) & 1 == 1)
+                .collect();
 
+            let transformed_g = basis[0..(num_vars - round)]
+                .iter()
+                .zip(g_bits.iter())
+                .map(|(b, g_bit)| if *g_bit { 1 << b } else { 0 })
+                .sum::<usize>();
+
+            // tracing::info!("round: {:?}, 2*g: {:?}, gbits: {:?}, basis: {:?}, transformed_g: {:?}, polynomial len: {:?}", round, 2 * g, 
+            // g_bits.iter().map(|b| if *b { 1 } else { 0 }).collect::<Vec<_>>(), 
+            // basis, transformed_g, polynomial.len());
+            [polynomial.get_bound_coeff(transformed_g)]
+        });
         gruen_eq.gruen_poly_deg_2(q_0, previous_claim)
     }
 
     #[tracing::instrument(skip_all, name = "AdvicePolynomialProverOpening::bind")]
     fn bind(&mut self, r_j: F::Challenge, round: usize) {
-        let bind_index = 0;
+        // every time we bind we must consider the index assotiated with the current round's polynomial.
+        // In first round we bind third variable, therefore the index for the first round is 5.
+        // In second round we bind second variable of the original polynomial, which is the second variable of the binded polynomial after first round
+        // it means still the binding index is 5. And so on.
+        let binding_rounds = vec![5, 5, 5, 0, 0, 0, 0, 0];
+
         // TODO
         let mut shared_eq = self.eq_poly.write().unwrap();
         if shared_eq.num_variables_bound <= round {
@@ -317,7 +363,7 @@ impl<F: JoltField> AdvicePolynomialProverOpening<F> {
         let shared_poly_ref = self.polynomial.as_mut().unwrap();
         let mut shared_poly = shared_poly_ref.write().unwrap();
         if shared_poly.num_variables_bound <= round {
-            shared_poly.poly.bind_parallel(r_j, BindingOrder::Indexed(bind_index));
+            shared_poly.poly.bind_parallel(r_j, BindingOrder::Indexed(binding_rounds[round]));
             shared_poly.num_variables_bound += 1;
         }
     }
@@ -603,12 +649,27 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         sumcheck_challenges: &[F::Challenge],
     ) -> F {
         let mut r = sumcheck_challenges.to_vec();
+        let mut ordered_opening_point = self.opening.0.r.clone();
         
         match self.polynomial {
             CommittedPolynomial::RdInc
-            | CommittedPolynomial::RamInc
-            | CommittedPolynomial::TrustedAdvice
-            | CommittedPolynomial::UntrustedAdvice => r.reverse(),
+            | CommittedPolynomial::RamInc => r.reverse(),
+            CommittedPolynomial::TrustedAdvice
+            | CommittedPolynomial::UntrustedAdvice => {
+
+            ordered_opening_point = vec![
+                self.opening.0.r[3],
+                self.opening.0.r[4],
+                self.opening.0.r[5],
+                self.opening.0.r[6],
+                self.opening.0.r[7],
+                self.opening.0.r[0],
+                self.opening.0.r[1],
+                self.opening.0.r[2],
+            ];
+            tracing::info!("r: {:?}", r);
+                r.reverse();
+            }
             CommittedPolynomial::InstructionRa(_)
             | CommittedPolynomial::BytecodeRa(_)
             | CommittedPolynomial::RamRa(_) => {
@@ -627,8 +688,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
                 r.len()
             );
         }
-        
-        let eq_eval = EqPolynomial::<F>::mle(&self.opening.0.r, &r);
+        let eq_eval = EqPolynomial::<F>::mle(&ordered_opening_point, &r);
         // tracing::info!("  eq_eval: {:?}", eq_eval);
         // tracing::info!("  result: {:?}", eq_eval * self.sumcheck_claim.unwrap());
         eq_eval * self.sumcheck_claim.unwrap()
@@ -808,12 +868,21 @@ where
         claim: F,
     ) {
         transcript.append_scalar(&claim);
-        tracing::info!("Appending dense polynomial to accumulator, poly: {:?}", polynomial);
+        tracing::info!("Appending trusted advice polynomial to accumulator");
+        let ordred_opening_point = vec![
+            opening_point[3],
+            opening_point[4],
+            opening_point[5],
+            opening_point[6],
+            opening_point[7],
+            opening_point[0],
+            opening_point[1],
+            opening_point[2],
+        ];
         let shared_eq = self
             .eq_cycle_map
-            .entry(opening_point.clone())
+            .entry(ordred_opening_point)
             .or_insert_with(|| { 
-                tracing::info!("EQ were not found"); 
             Arc::new(RwLock::new(EqCycleState::new(&opening_point))) 
         });
 
@@ -851,7 +920,6 @@ where
         claim: F,
     ) {
         transcript.append_scalar(&claim);
-        tracing::info!("Appending dense polynomial to accumulator, poly: {:?}", polynomial);
         let shared_eq = self
             .eq_cycle_map
             .entry(opening_point.clone())
@@ -1042,10 +1110,6 @@ where
             ram_inc.get_num_vars(),
             ram_inc.len()
         );
-        let ram_inc_commitment = PCS::commit(&ram_inc, pcs_setup);
-        // tracing::info!("RamInc commitment: {:?}", ram_inc_commitment);
-        
-        // tracing::info!("real commitment: {:?}", opening_hints.get(&CommittedPolynomial::RamInc).unwrap());
 
         self.sumchecks.par_iter_mut().for_each(|sumcheck| {
             sumcheck.prepare_sumcheck(&polynomials, &x);
@@ -1253,6 +1317,8 @@ where
                     // eval_point.reverse();
                     tracing::info!("Evaluating trusted advice: poly_num_vars={}, eval_point={:?}, log_K={}", 
                         poly_num_vars, eval_point, log_K);
+
+                    tracing::info!("advice eval points: {:?}", eval_point);
                     
                     // tracing::info!("trusted advice poly coefficients: {:?}", (0..256).map(|i| poly.get_coeff(i)).collect::<Vec<_>>());
                     tracing::info!("claim before: {:?}", claim);
@@ -1260,6 +1326,23 @@ where
 
                     // tracing::info!("eval0={:?}, eval1={:?}, eval2={:?}, eval3={:?}, eval4={:?}, eval5={:?}, eval6={:?}, eval7={:?}, eval8={:?}", 
                         // eval0, eval1, eval2, eval3, eval4, eval5, eval6, eval7, eval8);
+// [2109163046977362184490478057024710797671907224230094466787001482921652518912, 
+// 9604931313854396384316985490870186749888954376030306905568769383695135014912, 
+// 7547023990971511484176487554576777532198670506119714052464687944144668065792, 
+// 451053810917207256090689489311861298019929059697515725324042032041911386112, 
+// 5478913310038604708033658593260079233377329056960198155630782191179340447744, 
+// 12030422264219411851762966781115677065247274934447211205152021624520578170880, 
+// 514639183625034889283973198278007804620443387749845363300138709066383884288, 
+// 5645816976553198012701247040674452261585939958005283172271712710743780491264]
+
+// [7547023990971511484176487554576777532198670506119714052464687944144668065792, 
+// 9604931313854396384316985490870186749888954376030306905568769383695135014912, 
+// 2109163046977362184490478057024710797671907224230094466787001482921652518912, 
+// 5645816976553198012701247040674452261585939958005283172271712710743780491264, 
+// 514639183625034889283973198278007804620443387749845363300138709066383884288, 
+// 12030422264219411851762966781115677065247274934447211205152021624520578170880, 
+// 5478913310038604708033658593260079233377329056960198155630782191179340447744, 
+// 451053810917207256090689489311861298019929059697515725324042032041911386112]
 
                     // DEBUG: Compare what value we're actually using
                     // If Challenge::from(1u128) correctly represents 1, then one_as_field should equal actual_one
@@ -1296,7 +1379,6 @@ where
         }
         let mut transcript_copy = transcript.clone();
 
-        tracing::info!("Starting from here");
         // Reduced opening proof
         let joint_opening_proof =
             PCS::prove(pcs_setup, &joint_poly, &r_sumcheck, Some(hint), transcript);
@@ -1335,7 +1417,7 @@ where
             PCS::combine_commitments(&commitments, &coeffs)
         };
 
-        tracing::info!("DEBUGG:joint_commitment={:?}", joint_commitment);
+        // tracing::info!("DEBUGG:joint_commitment={:?}", joint_commitment);
         tracing::info!("DEBUGG: joint_eval={:?}", joint_eval);
 
         // Verify the proof we just generated
