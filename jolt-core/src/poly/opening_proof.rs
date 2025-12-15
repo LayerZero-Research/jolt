@@ -287,12 +287,53 @@ pub struct AdvicePolynomialProverOpening<F: JoltField> {
 
 
 impl<F: JoltField> AdvicePolynomialProverOpening<F> {
+
+    pub fn number_of_variables() -> usize {
+        let _ctx = DoryGlobals::with_context(DoryContext::TrustedAdvice);
+        let trusted_advice_rows_len = log2(DoryGlobals::get_max_num_rows()) as usize;
+        let trusted_advice_columns_len = log2(DoryGlobals::get_num_columns()) as usize;
+        let num_vars = trusted_advice_columns_len + trusted_advice_rows_len;
+        drop(_ctx);
+        num_vars
+    }
+
+    pub fn calculate_binding_rounds() -> Vec<usize> {
+        let _ctx = DoryGlobals::with_context(DoryContext::Main);
+        let main_rows_len = log2(DoryGlobals::get_max_num_rows()) as usize;
+        let main_columns_len = log2(DoryGlobals::get_num_columns()) as usize;
+        let log_T = main_rows_len + main_columns_len - log2(DoryGlobals::get_T()) as usize;
+        drop(_ctx);
+        let _ctx = DoryGlobals::with_context(DoryContext::TrustedAdvice);
+        let trusted_advice_rows_len = log2(DoryGlobals::get_max_num_rows()) as usize;
+        let trusted_advice_columns_len = log2(DoryGlobals::get_num_columns()) as usize;
+        drop(_ctx);
+        
+        let mut indexes = (0..(main_rows_len + main_columns_len)).collect::<Vec<usize>>();
+        indexes[0..log_T].reverse();
+        indexes[log_T..].reverse();
+
+        [
+            &indexes[main_rows_len - trusted_advice_rows_len..main_rows_len],
+            &indexes[main_rows_len + main_columns_len - trusted_advice_columns_len..main_rows_len + main_columns_len]
+        ].concat()
+    }
+
     #[tracing::instrument(skip_all, name = "AdvicePolynomialProverOpening::compute_message")]
     fn compute_message(&mut self, round: usize, previous_claim: F) -> UniPoly<F> {
         let shared_eq = self.eq_poly.read().unwrap();
         let polynomial_ref = self.polynomial.as_ref().unwrap();
         let polynomial = &polynomial_ref.read().unwrap().poly;
         let gruen_eq = &shared_eq.D;
+        let num_vars = Self::number_of_variables();
+
+        
+        let mut basis = 
+            Self::calculate_binding_rounds()
+            .iter()
+            .enumerate()
+            .sorted_by_key(|(_, elem)| - (**elem as i64))
+            .map(|(idx, _)| num_vars - 1 - idx)
+            .collect::<Vec<usize>>();
         // These basis are coming from pre-ordering of the EQ polynomial basis for the advice polynomial:
         // vec![
         //         self.opening.0.r[3],
@@ -306,8 +347,7 @@ impl<F: JoltField> AdvicePolynomialProverOpening<F> {
         //     ];
         // => the right most variable was the third variable in original poly, thus it adds 2^(8-3) to the transformed_g if the corresponding bit is 1
         // rest of basis are computed the same way.
-        let mut basis = vec![4,3,2,1,0,7,6,5];
-        let num_vars = 8;
+        // assert_eq!(vec![4,3,2,1,0,7,6,5], basis);
 
         basis.reverse();
         for i in 0..round {
@@ -334,12 +374,13 @@ impl<F: JoltField> AdvicePolynomialProverOpening<F> {
             let transformed_g = basis[0..(num_vars - round)]
                 .iter()
                 .zip(g_bits.iter())
-                .map(|(b, g_bit)| if *g_bit { 1 << b } else { 0 })
+                .map(|(b, g_bit)| if *g_bit { 1 << (num_vars - round - 1 - b) } else { 0 })
                 .sum::<usize>();
 
-            // tracing::info!("round: {:?}, 2*g: {:?}, gbits: {:?}, basis: {:?}, transformed_g: {:?}, polynomial len: {:?}", round, 2 * g, 
+            // tracing::info!("round: {:?}, 2*g: {:?}, 2gbits: {:?}, basis: {:?}, transformed_g: {:?}, polynomial len: {:?}", round, 2 * g, 
             // g_bits.iter().map(|b| if *b { 1 } else { 0 }).collect::<Vec<_>>(), 
             // basis, transformed_g, polynomial.len());
+            // assert_eq!(transformed_g, 2 * g);
             [polynomial.get_bound_coeff(transformed_g)]
         });
         gruen_eq.gruen_poly_deg_2(q_0, previous_claim)
@@ -351,21 +392,38 @@ impl<F: JoltField> AdvicePolynomialProverOpening<F> {
         // In first round we bind third variable, therefore the index for the first round is 5.
         // In second round we bind second variable of the original polynomial, which is the second variable of the binded polynomial after first round
         // it means still the binding index is 5. And so on.
-        let binding_rounds = vec![5, 5, 5, 0, 0, 0, 0, 0];
+        // let binding_rounds1 = vec![5, 5, 5, 0, 0, 0, 0, 0];
+        let num_vars = Self::number_of_variables();
 
+        let binding_rounds_for_original_poly = 
+            Self::calculate_binding_rounds()
+            .iter()
+            .enumerate()
+            .sorted_by_key(|(_, elem)| *elem)
+            .map(|e| num_vars - 1 - e.0)
+            .collect::<Vec<usize>>();
+
+        let binding_index = 
+            binding_rounds_for_original_poly[round] -
+            binding_rounds_for_original_poly[0..round]
+            .iter()
+            .filter(|e| **e < binding_rounds_for_original_poly[round])
+            .count();
+        tracing::info!("binding_index: {:?}, round: {:?}", binding_index, round);
+        // assert_eq!(binding_index, binding_rounds1[round]);
         // TODO
         let mut shared_eq = self.eq_poly.write().unwrap();
-        if shared_eq.num_variables_bound <= round {
+        // if shared_eq.num_variables_bound <= round {
             shared_eq.D.bind(r_j);
             shared_eq.num_variables_bound += 1;
-        }
+        // }
 
         let shared_poly_ref = self.polynomial.as_mut().unwrap();
         let mut shared_poly = shared_poly_ref.write().unwrap();
-        if shared_poly.num_variables_bound <= round {
-            shared_poly.poly.bind_parallel(r_j, BindingOrder::Indexed(binding_rounds[round]));
+        // if shared_poly.num_variables_bound <= round {
+            shared_poly.poly.bind_parallel(r_j, BindingOrder::Indexed(binding_index));
             shared_poly.num_variables_bound += 1;
-        }
+        // }
     }
 
     fn final_sumcheck_claim(&self) -> F {
@@ -657,18 +715,31 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
             CommittedPolynomial::TrustedAdvice
             | CommittedPolynomial::UntrustedAdvice => {
 
-            ordered_opening_point = vec![
-                self.opening.0.r[3],
-                self.opening.0.r[4],
-                self.opening.0.r[5],
-                self.opening.0.r[6],
-                self.opening.0.r[7],
-                self.opening.0.r[0],
-                self.opening.0.r[1],
-                self.opening.0.r[2],
-            ];
-            tracing::info!("r: {:?}", r);
+                // let binding_rounds = AdvicePolynomialProverOpening::<F>::calculate_binding_rounds();
+                // ordered_opening_point = 
+                //     binding_rounds
+                //     .iter()
+                //     .enumerate()
+                //     .sorted_by_key(|(_, elem)| - (**elem as i64))
+                //     .map(|(idx, _)| self.opening.0.r[idx])
+                //     .collect::<Vec<F::Challenge>>();
+
+                tracing::info!("opening claim: {:?}", self.sumcheck_claim.unwrap());
+                // let x =vec![
+                //     self.opening.0.r[3],
+                //     self.opening.0.r[4],
+                //     self.opening.0.r[5],
+                //     self.opening.0.r[6],
+                //     self.opening.0.r[7],
+                //     self.opening.0.r[0],
+                //     self.opening.0.r[1],
+                //     self.opening.0.r[2],
+                // ];
+                // assert_eq!(x, ordered_opening_point);
+                ordered_opening_point = self.opening.0.r.clone();
+                tracing::info!("ordered_opening_point: {:?}, self.opening.0.r: {:?}", ordered_opening_point, self.opening.0.r);
                 r.reverse();
+                tracing::info!("r: {:?}", r);
             }
             CommittedPolynomial::InstructionRa(_)
             | CommittedPolynomial::BytecodeRa(_)
@@ -679,8 +750,6 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
             }
         }
         
-        // tracing::info!("  r (after reorder): {:?}", r);
-        
         if self.opening.0.len() != r.len() {
             tracing::error!(
                 "LENGTH MISMATCH! opening_point.len()={} != r.len()={}",
@@ -689,8 +758,6 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
             );
         }
         let eq_eval = EqPolynomial::<F>::mle(&ordered_opening_point, &r);
-        // tracing::info!("  eq_eval: {:?}", eq_eval);
-        // tracing::info!("  result: {:?}", eq_eval * self.sumcheck_claim.unwrap());
         eq_eval * self.sumcheck_claim.unwrap()
     }
 
@@ -869,21 +936,33 @@ where
     ) {
         transcript.append_scalar(&claim);
         tracing::info!("Appending trusted advice polynomial to accumulator");
-        let ordred_opening_point = vec![
-            opening_point[3],
-            opening_point[4],
-            opening_point[5],
-            opening_point[6],
-            opening_point[7],
-            opening_point[0],
-            opening_point[1],
-            opening_point[2],
-        ];
+
+
+        let binding_rounds = AdvicePolynomialProverOpening::<F>::calculate_binding_rounds();
+
+        let ordered_opening_point = 
+            binding_rounds
+            .iter()
+            .enumerate()
+            .sorted_by_key(|(_, elem)| - (**elem as i64))
+            .map(|(idx, _)| opening_point[idx])
+            .collect::<Vec<F::Challenge>>();
+
+        // assert_eq!(ordered_opening_point, vec![
+        //     opening_point[3],
+        //     opening_point[4],
+        //     opening_point[5],
+        //     opening_point[6],
+        //     opening_point[7],
+        //     opening_point[0],
+        //     opening_point[1],
+        //     opening_point[2],
+        // ]);
         let shared_eq = self
             .eq_cycle_map
-            .entry(ordred_opening_point)
+            .entry(ordered_opening_point.clone())
             .or_insert_with(|| { 
-            Arc::new(RwLock::new(EqCycleState::new(&opening_point))) 
+            Arc::new(RwLock::new(EqCycleState::new(&ordered_opening_point))) 
         });
 
         // Add opening to map
@@ -891,7 +970,7 @@ where
         self.openings.insert(
             key,
             (
-                OpeningPoint::<BIG_ENDIAN, F>::new(opening_point.clone()),
+                OpeningPoint::<BIG_ENDIAN, F>::new(ordered_opening_point.clone()),
                 claim,
             ),
         );
@@ -900,7 +979,7 @@ where
             polynomial,
             sumcheck,
             shared_eq.clone(),
-            opening_point,
+            ordered_opening_point,
             claim,
             self.log_T,
         );
@@ -1322,7 +1401,7 @@ where
                     
                     // tracing::info!("trusted advice poly coefficients: {:?}", (0..256).map(|i| poly.get_coeff(i)).collect::<Vec<_>>());
                     tracing::info!("claim before: {:?}", claim);
-                    let claim = poly.evaluate(&eval_point);
+                    assert_eq!(*claim, poly.evaluate(&eval_point));
 
                     // tracing::info!("eval0={:?}, eval1={:?}, eval2={:?}, eval3={:?}, eval4={:?}, eval5={:?}, eval6={:?}, eval7={:?}, eval8={:?}", 
                         // eval0, eval1, eval2, eval3, eval4, eval5, eval6, eval7, eval8);
@@ -1349,7 +1428,7 @@ where
                     // If they differ, Challenge has a bug in its representation
 
                     // tracing::info!("eval0={:?}, eval1={:?}, eval1_point={:?}", eval0, eval1, eval1_point);
-                    let trusted_advice_contribution = claim * r_eval;
+                    let trusted_advice_contribution = *claim * r_eval;
                     tracing::info!("Trusted advice contribution={:?}, gamma={:?}, r_eval={:?}, claim={:?}", 
                         trusted_advice_contribution, trusted_advice_gamma, r_eval, claim);   
                     tracing::info!("r_sumcheck: {:?}", r_sumcheck);
@@ -1725,11 +1804,22 @@ where
                 tracing::info!("  point.len={}", point.len());
                 tracing::info!("  point.r={:?}", point.r);
                 tracing::info!("  claim={:?}", claim);
+
+
+                let binding_rounds = AdvicePolynomialProverOpening::<F>::calculate_binding_rounds();
+                let ordered_opening_point = 
+                    binding_rounds
+                    .iter()
+                    .enumerate()
+                    .sorted_by_key(|(_, elem)| - (**elem as i64))
+                    .map(|(idx, _)| point.r[idx])
+                    .collect::<Vec<F::Challenge>>();
+
                 self.append_dense(
                     transcript,
                     CommittedPolynomial::TrustedAdvice,
                     SumcheckId::OpeningReduction,
-                    point.r.clone(),
+                    ordered_opening_point,
                 );
             }
         }
@@ -1835,6 +1925,7 @@ where
                     tracing::info!("then it means, from {} to {} and from {} to {}", trusted_advice_rows + main_columns, r_sumcheck.len(), trusted_advice_columns, columns.len());
                     tracing::info!("Verifier: coeff={:?}, claim={:?}, r_eval={:?}", *coeff, claim, r_eval);
                     tracing::info!("Verifier: Trusted advice contribution after multiplication={:?}", *coeff * claim * r_eval);
+                    tracing::info!("Main columns={}, Main rows={}, Trusted advice columns={}, Trusted advice rows={}", main_columns, main_rows, trusted_advice_columns, trusted_advice_rows);
                     *coeff * claim * r_eval
                 } else {
                     let r_slice = &r_sumcheck
@@ -1864,7 +1955,7 @@ where
         //     &joint_commitment,
         // )
     }
-
+    // claim=2698496112211379235820581440589046960065310807105891212743890147953095806504
     /// Verifies the sumcheck proven in `ProverOpeningAccumulator::prove_batch_opening_reduction`.
     fn verify_batch_opening_reduction<T: Transcript>(
         &self,
