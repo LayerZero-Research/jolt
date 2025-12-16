@@ -9,7 +9,7 @@
 use crate::utils::profiling::write_flamegraph_svg;
 use crate::{
     poly::{commitment::dory::{ArkFr, DoryContext, DoryGlobals}, multilinear_polynomial::PolynomialEvaluation, rlc_polynomial::{RLCPolynomial, RLCStreamingData}},
-    subprotocols::sumcheck_verifier::SumcheckInstanceParams,
+    subprotocols::{sumcheck_verifier::SumcheckInstanceParams, sumchecks2::BatchedSumcheck2},
     zkvm::{config::OneHotParams, witness::AllCommittedPolynomials},
 };
 use allocative::Allocative;
@@ -349,7 +349,7 @@ impl<F: JoltField> AdvicePolynomialProverOpening<F> {
         // rest of basis are computed the same way.
         // assert_eq!(vec![4,3,2,1,0,7,6,5], basis);
 
-        basis.reverse();
+        // basis.reverse();
         for i in 0..round {
             let this = basis[num_vars - 1 - i];
             basis
@@ -359,6 +359,7 @@ impl<F: JoltField> AdvicePolynomialProverOpening<F> {
                 );
             basis[num_vars - 1 - i] = 0;
         }
+        tracing::info!("basis: {:?}, round: {:?}", basis, round);
 
         // Compute q(0) = sum of polynomial(i) * eq(r, i) for i in [0, mle_half)
         let [q_0] = gruen_eq.par_fold_out_in_unreduced::<9, 1>(&|g| {
@@ -374,7 +375,7 @@ impl<F: JoltField> AdvicePolynomialProverOpening<F> {
             let transformed_g = basis[0..(num_vars - round)]
                 .iter()
                 .zip(g_bits.iter())
-                .map(|(b, g_bit)| if *g_bit { 1 << (num_vars - round - 1 - b) } else { 0 })
+                .map(|(b, g_bit)| if *g_bit { 1 << b } else { 0 })
                 .sum::<usize>();
 
             // tracing::info!("round: {:?}, 2*g: {:?}, 2gbits: {:?}, basis: {:?}, transformed_g: {:?}, polynomial len: {:?}", round, 2 * g, 
@@ -392,7 +393,7 @@ impl<F: JoltField> AdvicePolynomialProverOpening<F> {
         // In first round we bind third variable, therefore the index for the first round is 5.
         // In second round we bind second variable of the original polynomial, which is the second variable of the binded polynomial after first round
         // it means still the binding index is 5. And so on.
-        // let binding_rounds1 = vec![5, 5, 5, 0, 0, 0, 0, 0];
+        let binding_rounds1 = vec![5, 5, 5, 0, 0, 0, 0, 0];
         let num_vars = Self::number_of_variables();
 
         let binding_rounds_for_original_poly = 
@@ -667,6 +668,7 @@ where
     }
 }
 
+#[derive(Clone)]
 struct OpeningProofReductionSumcheckVerifier<F>
 where
     F: JoltField,
@@ -725,17 +727,6 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
                 //     .collect::<Vec<F::Challenge>>();
 
                 tracing::info!("opening claim: {:?}", self.sumcheck_claim.unwrap());
-                // let x =vec![
-                //     self.opening.0.r[3],
-                //     self.opening.0.r[4],
-                //     self.opening.0.r[5],
-                //     self.opening.0.r[6],
-                //     self.opening.0.r[7],
-                //     self.opening.0.r[0],
-                //     self.opening.0.r[1],
-                //     self.opening.0.r[2],
-                // ];
-                // assert_eq!(x, ordered_opening_point);
                 ordered_opening_point = self.opening.0.r.clone();
                 tracing::info!("ordered_opening_point: {:?}, self.opening.0.r: {:?}", ordered_opening_point, self.opening.0.r);
                 r.reverse();
@@ -1522,11 +1513,24 @@ where
             write_flamegraph_svg(flamegraph, "stage7_start_flamechart.svg");
         }
 
+        // let mut trusted_advice_copy = self
+        //     .sumchecks
+        //     .iter()
+        //     .find(|opening| opening.polynomial == CommittedPolynomial::TrustedAdvice)
+        //     .cloned()
+        //     .unwrap();
+
         let instances = self
             .sumchecks
             .iter_mut()
             .map(|opening| opening as &mut _)
             .collect();
+
+        // let (sumcheck_proof2, r_sumcheck2) = BatchedSumcheck2::prove(
+        //     vec![&mut trusted_advice_copy],
+        //     &mut ProverOpeningAccumulator::new(self.log_T),
+        //     transcript,
+        // );
 
         let (sumcheck_proof, r_sumcheck) = BatchedSumcheck::prove(
             instances,
@@ -1798,6 +1802,18 @@ where
                     .map(|(idx, _)| point.r[idx])
                     .collect::<Vec<F::Challenge>>();
 
+                // let x =vec![
+                //     point.r[3],
+                //     point.r[4],
+                //     point.r[5],
+                //     point.r[6],
+                //     point.r[7],
+                //     point.r[0],
+                //     point.r[1],
+                //     point.r[2],
+                // ];
+                // assert_eq!(x, ordered_opening_point);
+
                 self.append_dense(
                     transcript,
                     CommittedPolynomial::TrustedAdvice,
@@ -1945,6 +1961,23 @@ where
         sumcheck_proof: &SumcheckInstanceProof<F, T>,
         transcript: &mut T,
     ) -> Result<Vec<F::Challenge>, ProofVerifyError> {
+
+
+        // Clone the trusted advice instances (originals remain in self.sumchecks)
+        // let trusted_advice_clones: Vec<&dyn SumcheckInstanceVerifier<F, T>> = self
+        //     .sumchecks
+        //     .iter()
+        //     .filter(|opening| opening.polynomial == CommittedPolynomial::TrustedAdvice)
+        //     .map(|opening| opening as &dyn SumcheckInstanceVerifier<F, T>)
+        //     .collect();
+
+        // BatchedSumcheck2::verify(
+        //     sumcheck_proof,
+        //     trusted_advice_clones,
+        //     &mut VerifierOpeningAccumulator::new(self.log_T),
+        //     transcript,
+        // )?;
+
         let instances: Vec<&dyn SumcheckInstanceVerifier<F, T>> = self
             .sumchecks
             .iter()

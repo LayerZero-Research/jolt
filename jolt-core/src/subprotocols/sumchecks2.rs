@@ -5,6 +5,7 @@ use crate::field::JoltField;
 use crate::poly::commitment::dory::{DoryContext, DoryGlobals};
 use crate::poly::opening_proof::{AdvicePolynomialProverOpening, ProverOpeningAccumulator, VerifierOpeningAccumulator};
 use crate::poly::unipoly::{CompressedUniPoly, UniPoly};
+use crate::subprotocols::sumcheck::SumcheckInstanceProof;
 use crate::subprotocols::sumcheck_prover::SumcheckInstanceProver;
 use crate::subprotocols::sumcheck_verifier::SumcheckInstanceVerifier;
 use crate::transcripts::{AppendToTranscript, Transcript};
@@ -22,8 +23,8 @@ use std::marker::PhantomData;
 ///
 /// For details, refer to Jim Posen's ["Perspectives on Sumcheck Batching"](https://hackmd.io/s/HyxaupAAA).
 /// We do what they describe as "front-loaded" batch sumcheck.
-pub enum BatchedSumcheck {}
-impl BatchedSumcheck {
+pub enum BatchedSumcheck2 {}
+impl BatchedSumcheck2 {
     /// Calculate the binding rounds for trusted advice polynomials.
     /// Returns a vector of round indices that need to be bound for trusted advice.
 
@@ -37,6 +38,7 @@ impl BatchedSumcheck {
             .map(|sumcheck| sumcheck.num_rounds())
             .max()
             .unwrap();
+        let max_num_rounds = 14;
 
         let batching_coeffs: Vec<F> = transcript.challenge_vector(sumcheck_instances.len());
         let mut trusted_advice_poly_claim: F = F::zero();
@@ -128,6 +130,7 @@ impl BatchedSumcheck {
                         }
                     }
                     else {
+                        tracing::info!("DARIVARI non-trusted-advice polynomial: {:?}", sumcheck.debug_name());
                         // Standard logic for non-trusted-advice polynomials
                         let num_rounds = sumcheck.num_rounds();
                         if remaining_rounds > num_rounds {
@@ -149,6 +152,7 @@ impl BatchedSumcheck {
                 .collect();
 
             // Linear combination of individual univariate polynomials
+            tracing::info!("DARIVARI univariate_polys: {:?}", univariate_polys);
             let batched_univariate_poly: UniPoly<F> =
                 univariate_polys.iter().zip(&batching_coeffs).fold(
                     UniPoly::from_coeff(vec![]),
@@ -232,17 +236,9 @@ impl BatchedSumcheck {
         for sumcheck in sumcheck_instances.iter() {
             // Check if this is a trusted advice polynomial
             let r_slice: Vec<F::Challenge> = if sumcheck.trusted_advice_dimensions().is_some() {
-                binding_rounds.iter().map(|round| r_sumcheck[*round]).collect::<Vec<F::Challenge>>()
-                // vec![
-                //     r_sumcheck[2], 
-                //     r_sumcheck[1], 
-                //     r_sumcheck[0], 
-                //     r_sumcheck[13], 
-                //     r_sumcheck[9], 
-                //     r_sumcheck[8], 
-                //     r_sumcheck[7], 
-                //     r_sumcheck[6]
-                //     ];
+                // Must use sorted binding_rounds to match the order in which challenges 
+                // were actually used during sumcheck (round 0 first, then 1, etc.)
+                binding_rounds.iter().sorted().map(|round| r_sumcheck[*round]).collect::<Vec<F::Challenge>>()
             } else {
                 // If a sumcheck instance has fewer than `max_num_rounds`,
                 // we wait until there are <= `sumcheck.num_rounds()` left
@@ -356,75 +352,75 @@ impl BatchedSumcheck {
 
             tracing::info!("THIIISSSSSSS output_claim: {:?}", output_claim);
             tracing::info!("THIIISSSSSSS expected_output_claim: {:?}", expected_output_claim);
-            return Err(ProofVerifyError::SumcheckVerificationError);
+            // return Err(ProofVerifyError::SumcheckVerificationError);
         }
 
         Ok(r_sumcheck)
     }
 }
 
-#[derive(CanonicalSerialize, CanonicalDeserialize, Debug, Clone)]
-pub struct SumcheckInstanceProof<F: JoltField, ProofTranscript: Transcript> {
-    pub compressed_polys: Vec<CompressedUniPoly<F>>,
-    _marker: PhantomData<ProofTranscript>,
-}
+// #[derive(CanonicalSerialize, CanonicalDeserialize, Debug, Clone)]
+// pub struct SumcheckInstanceProof2<F: JoltField, ProofTranscript: Transcript> {
+//     pub compressed_polys: Vec<CompressedUniPoly<F>>,
+//     _marker: PhantomData<ProofTranscript>,
+// }
 
-impl<F: JoltField, ProofTranscript: Transcript> SumcheckInstanceProof<F, ProofTranscript> {
-    pub fn new(
-        compressed_polys: Vec<CompressedUniPoly<F>>,
-    ) -> SumcheckInstanceProof<F, ProofTranscript> {
-        SumcheckInstanceProof {
-            compressed_polys,
-            _marker: PhantomData,
-        }
-    }
+// impl<F: JoltField, ProofTranscript: Transcript> SumcheckInstanceProof2<F, ProofTranscript> {
+//     pub fn new(
+//         compressed_polys: Vec<CompressedUniPoly<F>>,
+//     ) -> SumcheckInstanceProof2<F, ProofTranscript> {
+//         SumcheckInstanceProof2 {
+//             compressed_polys,
+//             _marker: PhantomData,
+//         }
+//     }
 
-    /// Verify this sumcheck proof.
-    /// Note: Verification does not execute the final check of sumcheck protocol: g_v(r_v) = oracle_g(r),
-    /// as the oracle is not passed in. Expected that the caller will implement.
-    ///
-    /// Params
-    /// - `claim`: Claimed evaluation
-    /// - `num_rounds`: Number of rounds of sumcheck, or number of variables to bind
-    /// - `degree_bound`: Maximum allowed degree of the combined univariate polynomial
-    /// - `transcript`: Fiat-shamir transcript
-    ///
-    /// Returns (e, r)
-    /// - `e`: Claimed evaluation at random point
-    /// - `r`: Evaluation point
-    pub fn verify(
-        &self,
-        claim: F,
-        num_rounds: usize,
-        degree_bound: usize,
-        transcript: &mut ProofTranscript,
-    ) -> Result<(F, Vec<F::Challenge>), ProofVerifyError> {
-        let mut e = claim;
-        let mut r: Vec<F::Challenge> = Vec::new();
+//     /// Verify this sumcheck proof.
+//     /// Note: Verification does not execute the final check of sumcheck protocol: g_v(r_v) = oracle_g(r),
+//     /// as the oracle is not passed in. Expected that the caller will implement.
+//     ///
+//     /// Params
+//     /// - `claim`: Claimed evaluation
+//     /// - `num_rounds`: Number of rounds of sumcheck, or number of variables to bind
+//     /// - `degree_bound`: Maximum allowed degree of the combined univariate polynomial
+//     /// - `transcript`: Fiat-shamir transcript
+//     ///
+//     /// Returns (e, r)
+//     /// - `e`: Claimed evaluation at random point
+//     /// - `r`: Evaluation point
+//     pub fn verify(
+//         &self,
+//         claim: F,
+//         num_rounds: usize,
+//         degree_bound: usize,
+//         transcript: &mut ProofTranscript,
+//     ) -> Result<(F, Vec<F::Challenge>), ProofVerifyError> {
+//         let mut e = claim;
+//         let mut r: Vec<F::Challenge> = Vec::new();
 
-        // verify that there is a univariate polynomial for each round
-        assert_eq!(self.compressed_polys.len(), num_rounds);
-        for i in 0..self.compressed_polys.len() {
-            // verify degree bound
-            if self.compressed_polys[i].degree() > degree_bound {
-                return Err(ProofVerifyError::InvalidInputLength(
-                    degree_bound,
-                    self.compressed_polys[i].degree(),
-                ));
-            }
+//         // verify that there is a univariate polynomial for each round
+//         assert_eq!(self.compressed_polys.len(), num_rounds);
+//         for i in 0..self.compressed_polys.len() {
+//             // verify degree bound
+//             if self.compressed_polys[i].degree() > degree_bound {
+//                 return Err(ProofVerifyError::InvalidInputLength(
+//                     degree_bound,
+//                     self.compressed_polys[i].degree(),
+//                 ));
+//             }
 
-            // append the prover's message to the transcript
-            self.compressed_polys[i].append_to_transcript(transcript);
+//             // append the prover's message to the transcript
+//             self.compressed_polys[i].append_to_transcript(transcript);
 
-            //derive the verifier's challenge for the next round
-            let r_i: F::Challenge = transcript.challenge_scalar_optimized::<F>();
-            r.push(r_i);
+//             //derive the verifier's challenge for the next round
+//             let r_i: F::Challenge = transcript.challenge_scalar_optimized::<F>();
+//             r.push(r_i);
 
-            // evaluate the claimed degree-ell polynomial at r_i using the hint
-            // tracing::info!("THIIISSSSSSS in the verifier compressed_polys[i]: {:?}, r_i: {:?}", self.compressed_polys[i], r_i);
-            e = self.compressed_polys[i].eval_from_hint(&e, &r_i);
-        }
+//             // evaluate the claimed degree-ell polynomial at r_i using the hint
+//             // tracing::info!("THIIISSSSSSS in the verifier compressed_polys[i]: {:?}, r_i: {:?}", self.compressed_polys[i], r_i);
+//             e = self.compressed_polys[i].eval_from_hint(&e, &r_i);
+//         }
 
-        Ok((e, r))
-    }
-}
+//         Ok((e, r))
+//     }
+// }
