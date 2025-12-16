@@ -150,17 +150,19 @@ fn dummy(
     _127: jolt::TrustedAdvice<[u8; 16]>,
     _128: jolt::TrustedAdvice<[u8; 16]>,
 ) -> u128 {
-    // n * 2
-    let mut a: u128 = 0;
-    let mut b: u128 = 1;
-    let mut sum: u128;
-    start_cycle_tracking("fib_loop"); // Use `start_cycle_tracking("{name}")` to start a cycle span
+    // a bad matrix dimension
+    n * 2
+    // uncomment fibonacci to see a working example
+    // let mut a: u128 = 0;
+    // let mut b: u128 = 1;
+    // let mut sum: u128;
+    // start_cycle_tracking("fib_loop"); // Use `start_cycle_tracking("{name}")` to start a cycle span
 
-    for _ in 1..1000 {
-        sum = a + b;
-        a = b;
-        b = sum;
-    }
-    end_cycle_tracking("fib_loop"); // Use `end_cycle_tracking("{name}")` to end a cycle span
-    b
+    // for _ in 1..1000 {
+    //     sum = a + b;
+    //     a = b;
+    //     b = sum;
+    // }
+    // end_cycle_tracking("fib_loop"); // Use `end_cycle_tracking("{name}")` to end a cycle span
+    // b
 }
