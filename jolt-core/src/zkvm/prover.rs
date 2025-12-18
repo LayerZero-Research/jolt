@@ -996,88 +996,112 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
 
     #[tracing::instrument(skip_all)]
     fn prove_trusted_advice(&mut self) -> (Option<PCS::Proof>, Option<PCS::Proof>) {
-        use crate::poly::opening_proof::SumcheckId;
-        let poly = match &self.advice.trusted_advice_polynomial {
-            Some(p) => p,
-            None => return (None, None),
-        };
-        let _ctx = DoryGlobals::with_context(DoryContext::TrustedAdvice);
-
-        // Prove at RamValEvaluation point
-        let (point_val, _) = self
-            .opening_accumulator
-            .get_trusted_advice_opening(SumcheckId::RamValEvaluation)
-            .unwrap();
-        let proof_val = PCS::prove(
-            &self.preprocessing.generators,
-            poly,
-            &point_val.r,
-            None,
-            &mut self.transcript,
-        );
-
-        // Prove at RamValFinalEvaluation point - only if different from ValEvaluation
-        let proof_val_final =
-            if ram::read_write_checking::needs_single_advice_opening(self.trace.len()) {
-                None
-            } else {
-                let (point_val_final, _) = self
-                    .opening_accumulator
-                    .get_trusted_advice_opening(SumcheckId::RamValFinalEvaluation)
-                    .unwrap();
-                Some(PCS::prove(
-                    &self.preprocessing.generators,
-                    poly,
-                    &point_val_final.r,
-                    None,
-                    &mut self.transcript,
-                ))
+        #[cfg(feature = "skip-dory-check")]
+        {
+            if self.advice.trusted_advice_polynomial.is_some() {
+                tracing::warn!(
+                    "Skipping trusted advice Dory proving (skip-dory-check feature enabled)"
+                );
+            }
+            return (None, None);
+        }
+        #[cfg(not(feature = "skip-dory-check"))]
+        {
+            use crate::poly::opening_proof::SumcheckId;
+            let poly = match &self.advice.trusted_advice_polynomial {
+                Some(p) => p,
+                None => return (None, None),
             };
+            let _ctx = DoryGlobals::with_context(DoryContext::TrustedAdvice);
 
-        (Some(proof_val), proof_val_final)
+            // Prove at RamValEvaluation point
+            let (point_val, _) = self
+                .opening_accumulator
+                .get_trusted_advice_opening(SumcheckId::RamValEvaluation)
+                .unwrap();
+            let proof_val = PCS::prove(
+                &self.preprocessing.generators,
+                poly,
+                &point_val.r,
+                None,
+                &mut self.transcript,
+            );
+
+            // Prove at RamValFinalEvaluation point - only if different from ValEvaluation
+            let proof_val_final =
+                if ram::read_write_checking::needs_single_advice_opening(self.trace.len()) {
+                    None
+                } else {
+                    let (point_val_final, _) = self
+                        .opening_accumulator
+                        .get_trusted_advice_opening(SumcheckId::RamValFinalEvaluation)
+                        .unwrap();
+                    Some(PCS::prove(
+                        &self.preprocessing.generators,
+                        poly,
+                        &point_val_final.r,
+                        None,
+                        &mut self.transcript,
+                    ))
+                };
+
+            (Some(proof_val), proof_val_final)
+        }
     }
 
     #[tracing::instrument(skip_all)]
     fn prove_untrusted_advice(&mut self) -> (Option<PCS::Proof>, Option<PCS::Proof>) {
-        use crate::poly::opening_proof::SumcheckId;
-        let poly = match &self.advice.untrusted_advice_polynomial {
-            Some(p) => p,
-            None => return (None, None),
-        };
-        let _ctx = DoryGlobals::with_context(DoryContext::UntrustedAdvice);
-
-        // Prove at RamValEvaluation point
-        let (point_val, _) = self
-            .opening_accumulator
-            .get_untrusted_advice_opening(SumcheckId::RamValEvaluation)
-            .unwrap();
-        let proof_val = PCS::prove(
-            &self.preprocessing.generators,
-            poly,
-            &point_val.r,
-            None,
-            &mut self.transcript,
-        );
-
-        // Prove at RamValFinalEvaluation point - only if different from ValEvaluation
-        let proof_val_final =
-            if ram::read_write_checking::needs_single_advice_opening(self.trace.len()) {
-                None
-            } else {
-                let (point_val_final, _) = self
-                    .opening_accumulator
-                    .get_untrusted_advice_opening(SumcheckId::RamValFinalEvaluation)
-                    .unwrap();
-                Some(PCS::prove(
-                    &self.preprocessing.generators,
-                    poly,
-                    &point_val_final.r,
-                    None,
-                    &mut self.transcript,
-                ))
+        #[cfg(feature = "skip-dory-check")]
+        {
+            if self.advice.untrusted_advice_polynomial.is_some() {
+                tracing::warn!(
+                    "Skipping untrusted advice Dory proving (skip-dory-check feature enabled)"
+                );
+            }
+            return (None, None);
+        }
+        #[cfg(not(feature = "skip-dory-check"))]
+        {
+            use crate::poly::opening_proof::SumcheckId;
+            let poly = match &self.advice.untrusted_advice_polynomial {
+                Some(p) => p,
+                None => return (None, None),
             };
+            let _ctx = DoryGlobals::with_context(DoryContext::UntrustedAdvice);
 
-        (Some(proof_val), proof_val_final)
+            // Prove at RamValEvaluation point
+            let (point_val, _) = self
+                .opening_accumulator
+                .get_untrusted_advice_opening(SumcheckId::RamValEvaluation)
+                .unwrap();
+            let proof_val = PCS::prove(
+                &self.preprocessing.generators,
+                poly,
+                &point_val.r,
+                None,
+                &mut self.transcript,
+            );
+
+            // Prove at RamValFinalEvaluation point - only if different from ValEvaluation
+            let proof_val_final =
+                if ram::read_write_checking::needs_single_advice_opening(self.trace.len()) {
+                    None
+                } else {
+                    let (point_val_final, _) = self
+                        .opening_accumulator
+                        .get_untrusted_advice_opening(SumcheckId::RamValFinalEvaluation)
+                        .unwrap();
+                    Some(PCS::prove(
+                        &self.preprocessing.generators,
+                        poly,
+                        &point_val_final.r,
+                        None,
+                        &mut self.transcript,
+                    ))
+                };
+
+            (Some(proof_val), proof_val_final)
+        }
     }
 
     /// Stage 7: HammingWeight + ClaimReduction sumcheck (only log_k_chunk rounds).
