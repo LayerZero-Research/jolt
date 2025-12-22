@@ -1,4 +1,4 @@
-use crate::subprotocols::streaming_schedule::LinearOnlySchedule;
+use crate::subprotocols::{split_sumcheck_prover::SplitSumcheckInstance, streaming_schedule::LinearOnlySchedule};
 use std::{
     collections::HashMap,
     fs::File,
@@ -26,7 +26,7 @@ use crate::{
             commitment_scheme::StreamingCommitmentScheme,
             dory::{DoryContext, DoryGlobals},
         },
-        multilinear_polynomial::MultilinearPolynomial,
+        multilinear_polynomial::{MultilinearPolynomial},
         opening_proof::{
             DoryOpeningState, OpeningAccumulator, ProverOpeningAccumulator, SumcheckId,
         },
@@ -943,7 +943,8 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             &self.preprocessing.shared.bytecode,
         );
         let ram_hamming_booleanity =
-            HammingBooleanitySumcheckProver::initialize(ram_hamming_booleanity_params, &self.trace);
+            HammingBooleanitySumcheckProver::initialize(ram_hamming_booleanity_params, &self.trace)
+            .to_split_sumcheck_instance();
 
         let booleanity = BooleanitySumcheckProver::initialize(
             booleanity_params,

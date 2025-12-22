@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 use crate::field::JoltField;
 use crate::poly::eq_poly::EqPolynomial;
 use crate::poly::multilinear_polynomial::{BindingOrder, MultilinearPolynomial, PolynomialBinding};
@@ -7,6 +9,7 @@ use crate::poly::opening_proof::{
 };
 use crate::poly::split_eq_poly::GruenSplitEqPolynomial;
 use crate::poly::unipoly::UniPoly;
+use crate::subprotocols::split_sumcheck_prover::{SplitSumcheckInstance, SplitSumcheckInstanceInner};
 use crate::subprotocols::sumcheck_prover::SumcheckInstanceProver;
 use crate::subprotocols::sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier};
 use crate::transcripts::Transcript;
@@ -16,6 +19,11 @@ use allocative::Allocative;
 use allocative::FlameGraphBuilder;
 use rayon::prelude::*;
 use tracer::instruction::Cycle;
+
+/// Helper to extract evaluations from a MultilinearPolynomial as a Vec<F>
+fn multilinear_to_evals<F: JoltField>(poly: &MultilinearPolynomial<F>) -> Vec<F> {
+    (0..poly.len()).map(|i| poly.get_bound_coeff(i)).collect()
+}
 
 // RAM Hamming booleanity sumcheck
 //
@@ -66,13 +74,14 @@ impl<F: JoltField> SumcheckInstanceParams<F> for HammingBooleanitySumcheckParams
 }
 
 #[derive(Allocative)]
-pub struct HammingBooleanitySumcheckProver<F: JoltField> {
+pub struct HammingBooleanitySumcheckProver<F: JoltField, T: Transcript> {
     eq_r_cycle: GruenSplitEqPolynomial<F>,
     H: MultilinearPolynomial<F>,
     pub params: HammingBooleanitySumcheckParams<F>,
+    _phantom: PhantomData<T>,
 }
 
-impl<F: JoltField> HammingBooleanitySumcheckProver<F> {
+impl<F: JoltField, T: Transcript> HammingBooleanitySumcheckProver<F, T> {
     #[tracing::instrument(skip_all, name = "RamHammingBooleanitySumcheckProver::initialize")]
     pub fn initialize(params: HammingBooleanitySumcheckParams<F>, trace: &[Cycle]) -> Self {
         let H = trace
@@ -87,12 +96,25 @@ impl<F: JoltField> HammingBooleanitySumcheckProver<F> {
             eq_r_cycle,
             H,
             params,
+            _phantom: PhantomData,
         }
     }
+
+    pub fn to_split_sumcheck_instance(self) -> SplitSumcheckInstance<F, T> {
+        // Wrap ram_hamming_booleanity in SplitSumcheckInstance to use partially-bound sumcheck
+        // for the final `lower_rounds` rounds
+        const SPLIT_LOWER_ROUNDS: usize = 8;
+        SplitSumcheckInstance::new(
+            Box::new(self),
+            SPLIT_LOWER_ROUNDS,
+            BindingOrder::LowToHigh,
+        )
+    }
+
 }
 
 impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
-    for HammingBooleanitySumcheckProver<F>
+    for HammingBooleanitySumcheckProver<F, T>
 {
     fn get_params(&self) -> &dyn SumcheckInstanceParams<F> {
         &self.params
@@ -128,18 +150,60 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
         transcript: &mut T,
         sumcheck_challenges: &[F::Challenge],
     ) {
+        // Delegate to cache_openings_with_claims with the claim from self.H
+        let h_claim = self.H.final_sumcheck_claim();
+        self.cache_openings_impl(accumulator, transcript, sumcheck_challenges, h_claim);
+    }
+}
+
+impl<F: JoltField, T: Transcript> HammingBooleanitySumcheckProver<F, T> {
+    /// Shared implementation for cache_openings that takes the H claim as a parameter.
+    fn cache_openings_impl(
+        &self,
+        accumulator: &mut ProverOpeningAccumulator<F>,
+        transcript: &mut T,
+        sumcheck_challenges: &[F::Challenge],
+        h_claim: F,
+    ) {
         accumulator.append_virtual(
             transcript,
             VirtualPolynomial::RamHammingWeight,
             SumcheckId::RamHammingBooleanity,
             self.params.normalize_opening_point(sumcheck_challenges),
-            self.H.final_sumcheck_claim(),
+            h_claim,
         );
     }
+}
 
-    #[cfg(feature = "allocative")]
-    fn update_flamegraph(&self, flamegraph: &mut FlameGraphBuilder) {
-        flamegraph.visit_root(self);
+impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
+    for HammingBooleanitySumcheckProver<F, T>
+{
+    fn create_remainder(&self) -> Vec<Vec<F>> {
+        vec![
+            self.eq_r_cycle.merge().Z,
+            multilinear_to_evals(&self.H),
+        ]
+    }
+
+    fn create_expr(&self) -> Box<dyn Fn(&[F]) -> F + Send + Sync> {
+        Box::new(|vals: &[F]| {
+            let eq = vals[0];
+            let h = vals[1];
+            eq * (h.square() - h)
+        })
+    }
+
+    fn cache_openings_with_claims(
+        &self,
+        accumulator: &mut ProverOpeningAccumulator<F>,
+        transcript: &mut T,
+        sumcheck_challenges: &[F::Challenge],
+        poly_claims: &[F],
+    ) {
+        // poly_claims[0] is eq claim (not needed for openings)
+        // poly_claims[1] is H claim
+        let h_claim = poly_claims[1];
+        self.cache_openings_impl(accumulator, transcript, sumcheck_challenges, h_claim);
     }
 }
 
