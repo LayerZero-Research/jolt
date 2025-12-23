@@ -1,4 +1,4 @@
-use crate::subprotocols::{split_sumcheck_prover::SplitSumcheckInstance, streaming_schedule::LinearOnlySchedule};
+use crate::subprotocols::streaming_schedule::LinearOnlySchedule;
 use std::{
     collections::HashMap,
     fs::File,
@@ -941,7 +941,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             bytecode_read_raf_params,
             &self.trace,
             &self.preprocessing.shared.bytecode,
-        );
+        ).to_split_sumcheck_instance();
         let ram_hamming_booleanity =
             HammingBooleanitySumcheckProver::initialize(ram_hamming_booleanity_params, &self.trace)
             .to_split_sumcheck_instance();

@@ -40,31 +40,31 @@ impl<F: JoltField, T: Transcript> SplitSumcheckInstance<F, T> {
             pb: None,
         }
     }
+
+    fn initialize_partially_pb(&mut self) {
+        let remainder = self.inner.create_remainder();
+        let expr = self.inner.create_expr();
+        self.pb = Some(PartiallyBoundSumcheck::new(
+            remainder,
+            self.degree(),
+            expr,
+        ));
+    }
 }
 
 impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for SplitSumcheckInstance<F, T> {
+
     fn compute_message(&mut self, round: usize, previous_claim: F) -> UniPoly<F> {
         if self.inner.num_rounds() - round == self.lower_rounds {
-        tracing::info!("compute_message {round}, degree: {}", self.degree());
-
-            let remainder = self.inner.create_remainder();
-            let expr = self.inner.create_expr();
-            self.pb = Some(PartiallyBoundSumcheck::new(
-                remainder,
-                // self.lower_rounds,
-                // self.inner.num_rounds() - round,
-                self.degree(),
-                expr,
-            ));
+            self.initialize_partially_pb();
         }
 
-        // assert_eq!(
-        //     self.pb.as_ref().unwrap().compute_message(previous_claim), 
-        //     self.inner.compute_message(round, previous_claim), 
-        //     "compute_message mismatch {round}");
-
         if let Some(ref pb) = self.pb {
-            tracing::info!("here");
+            assert_eq!(
+                self.pb.as_ref().unwrap().compute_message(previous_claim), 
+                self.inner.compute_message(round, previous_claim), 
+                "compute_message mismatch {round}");
+
             pb.compute_message(previous_claim)
         } else {
             self.inner.compute_message(round, previous_claim)
