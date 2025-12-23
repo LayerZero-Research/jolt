@@ -22,7 +22,7 @@ use allocative::Allocative;
 use allocative::FlameGraphBuilder;
 use ark_std::Zero;
 use rayon::prelude::*;
-use std::iter::zip;
+use std::{iter::zip, marker::PhantomData};
 
 use common::jolt_device::MemoryLayout;
 use tracer::instruction::Cycle;
@@ -41,6 +41,7 @@ use crate::{
         unipoly::UniPoly,
     },
     subprotocols::{
+        split_sumcheck_prover::{SplitSumcheckInstance, SplitSumcheckInstanceInner},
         sumcheck_prover::SumcheckInstanceProver,
         sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier},
     },
@@ -184,7 +185,7 @@ impl<F: JoltField> BooleanitySumcheckParams<F> {
 
 /// Booleanity Sumcheck Prover.
 #[derive(Allocative)]
-pub struct BooleanitySumcheckProver<F: JoltField> {
+pub struct BooleanitySumcheckProver<F: JoltField, T: Transcript> {
     /// B: split-eq over address-chunk variables (phase 1, LowToHigh).
     B: GruenSplitEqPolynomial<F>,
     /// D: split-eq over time/cycle variables (phase 2, LowToHigh).
@@ -204,9 +205,11 @@ pub struct BooleanitySumcheckProver<F: JoltField> {
     one_hot_params: OneHotParams,
     #[allocative(skip)]
     pub params: BooleanitySumcheckParams<F>,
+    #[allocative(skip)]
+    _phantom: PhantomData<T>,
 }
 
-impl<F: JoltField> BooleanitySumcheckProver<F> {
+impl<F: JoltField, T: Transcript> BooleanitySumcheckProver<F, T> {
     /// Initialize a BooleanitySumcheckProver with all three families.
     ///
     /// All heavy computation is done here:
@@ -249,7 +252,18 @@ impl<F: JoltField> BooleanitySumcheckProver<F> {
             F: F_table,
             eq_r_r: F::zero(),
             params,
+            _phantom: PhantomData,
         }
+    }
+
+    /// Wrap this prover in a SplitSumcheckInstance for the final rounds.
+    pub fn to_split_sumcheck_instance(self) -> SplitSumcheckInstance<F, T> {
+        const SPLIT_LOWER_ROUNDS: usize = 8;
+        SplitSumcheckInstance::new(
+            Box::new(self),
+            SPLIT_LOWER_ROUNDS,
+            BindingOrder::LowToHigh,
+        )
     }
 
     fn compute_phase1_message(&self, round: usize, previous_claim: F) -> UniPoly<F> {
@@ -351,7 +365,7 @@ impl<F: JoltField> BooleanitySumcheckProver<F> {
     }
 }
 
-impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for BooleanitySumcheckProver<F> {
+impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for BooleanitySumcheckProver<F, T> {
     fn get_params(&self) -> &dyn SumcheckInstanceParams<F> {
         &self.params
     }
@@ -405,11 +419,30 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for BooleanitySum
         transcript: &mut T,
         sumcheck_challenges: &[F::Challenge],
     ) {
-        let opening_point = self.params.normalize_opening_point(sumcheck_challenges);
+        // Get claims from H polynomials
         let H = self.H.as_ref().expect("H should be initialized");
         let claims: Vec<F> = (0..H.num_polys())
             .map(|i| H.final_sumcheck_claim(i))
             .collect();
+        self.cache_openings_impl(accumulator, transcript, sumcheck_challenges, &claims);
+    }
+
+    #[cfg(feature = "allocative")]
+    fn update_flamegraph(&self, flamegraph: &mut FlameGraphBuilder) {
+        flamegraph.visit_root(self);
+    }
+}
+
+impl<F: JoltField, T: Transcript> BooleanitySumcheckProver<F, T> {
+    /// Shared implementation for cache_openings that takes H claims as parameters.
+    fn cache_openings_impl(
+        &self,
+        accumulator: &mut ProverOpeningAccumulator<F>,
+        transcript: &mut T,
+        sumcheck_challenges: &[F::Challenge],
+        h_claims: &[F],
+    ) {
+        let opening_point = self.params.normalize_opening_point(sumcheck_challenges);
 
         // All polynomials share the same opening point (r_address, r_cycle)
         // Use a single SumcheckId for all
@@ -419,13 +452,70 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for BooleanitySum
             SumcheckId::Booleanity,
             opening_point.r[..self.params.log_k_chunk].to_vec(),
             opening_point.r[self.params.log_k_chunk..].to_vec(),
-            claims,
+            h_claims.to_vec(),
         );
     }
+}
 
-    #[cfg(feature = "allocative")]
-    fn update_flamegraph(&self, flamegraph: &mut FlameGraphBuilder) {
-        flamegraph.visit_root(self);
+impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
+    for BooleanitySumcheckProver<F, T>
+{
+    fn create_remainder(&self) -> Vec<Vec<F>> {
+        // Return the polynomials involved in phase 2:
+        // - 1 eq polynomial (D)
+        // - num_polys H polynomials
+        let H = self.H.as_ref().expect("H should be initialized in phase 2");
+        let num_polys = H.num_polys();
+        let len = H.len();
+        
+        let mut polys = Vec::with_capacity(1 + num_polys);
+        
+        // Add D eq polynomial
+        polys.push(self.D.merge().Z);
+        
+        // Add H polynomials
+        for i in 0..num_polys {
+            let evals: Vec<F> = (0..len).map(|j| H.get_bound_coeff(i, j)).collect();
+            polys.push(evals);
+        }
+        
+        polys
+    }
+
+    fn create_expr(&self) -> Box<dyn Fn(&[F]) -> F + Send + Sync> {
+        // Capture the necessary parameters
+        let gammas = self.params.gammas.clone();
+        let eq_r_r = self.eq_r_r;
+        let num_polys = self.H.as_ref().expect("H should be initialized").num_polys();
+        
+        Box::new(move |vals: &[F]| {
+            // vals[0] is eq_D eval
+            // vals[1..1+num_polys] are H polynomial evals
+            let eq_d = vals[0];
+            let h_evals = &vals[1..1 + num_polys];
+            
+            // Expression: eq_r_r * eq_D * sum_i(gamma_i * (h_i^2 - h_i))
+            let inner_sum: F = h_evals
+                .iter()
+                .enumerate()
+                .map(|(i, &h)| gammas[i] * (h.square() - h))
+                .sum();
+            
+            eq_r_r * eq_d * inner_sum
+        })
+    }
+
+    fn cache_openings_with_claims(
+        &self,
+        accumulator: &mut ProverOpeningAccumulator<F>,
+        transcript: &mut T,
+        sumcheck_challenges: &[F::Challenge],
+        poly_claims: &[F],
+    ) {
+        // poly_claims[0] is eq_D claim (not needed for openings)
+        // poly_claims[1..] are H claims
+        let h_claims = &poly_claims[1..];
+        self.cache_openings_impl(accumulator, transcript, sumcheck_challenges, h_claims);
     }
 }
 

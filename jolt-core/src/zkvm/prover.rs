@@ -959,7 +959,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             &self.trace,
             &self.program_io.memory_layout,
             &self.one_hot_params,
-        );
+        );//.to_split_sumcheck_instance();
         let lookups_ra_virtual =
             LookupsRaSumcheckProver::initialize(lookups_ra_virtual_params, &self.trace);
         let inc_reduction =

@@ -41,8 +41,8 @@ impl<F: JoltField, T: Transcript> SplitSumcheckInstance<F, T> {
         }
     }
 
-    fn initialize_partially_pb(&mut self) {
-        let remainder = self.inner.create_remainder();
+    // remainder can be provided from outside
+    pub fn initialize_partially_bound_sumcheck(&mut self, remainder: Vec<Vec<F>>) {
         let expr = self.inner.create_expr();
         self.pb = Some(PartiallyBoundSumcheck::new(
             remainder,
@@ -53,10 +53,9 @@ impl<F: JoltField, T: Transcript> SplitSumcheckInstance<F, T> {
 }
 
 impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for SplitSumcheckInstance<F, T> {
-
     fn compute_message(&mut self, round: usize, previous_claim: F) -> UniPoly<F> {
-        if self.inner.num_rounds() - round == self.lower_rounds {
-            self.initialize_partially_pb();
+        if self.inner.num_rounds() - round <= self.lower_rounds && self.pb.is_none() {
+            self.initialize_partially_bound_sumcheck(self.inner.create_remainder());
         }
 
         if let Some(ref pb) = self.pb {
