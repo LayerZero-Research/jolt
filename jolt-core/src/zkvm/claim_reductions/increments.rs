@@ -62,6 +62,7 @@ use crate::poly::opening_proof::{
     VerifierOpeningAccumulator, BIG_ENDIAN, LITTLE_ENDIAN,
 };
 use crate::poly::unipoly::UniPoly;
+use crate::subprotocols::split_sumcheck_prover::SplitSumcheckInstanceInner;
 use crate::subprotocols::sumcheck_prover::SumcheckInstanceProver;
 use crate::subprotocols::sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier};
 use crate::transcripts::Transcript;
@@ -200,6 +201,11 @@ impl<F: JoltField> IncClaimReductionSumcheckProver<F> {
     }
 }
 
+/// Helper to extract evaluations from a MultilinearPolynomial as a Vec<F>
+fn mlpoly_to_evals<F: JoltField>(poly: &MultilinearPolynomial<F>) -> Vec<F> {
+    (0..poly.len()).map(|i| poly.get_bound_coeff(i)).collect()
+}
+
 impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
     for IncClaimReductionSumcheckProver<F>
 {
@@ -277,6 +283,128 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
             Self::Phase1(prover) => flamegraph.visit_root(prover),
             Self::Phase2(prover) => flamegraph.visit_root(prover),
         }
+    }
+}
+
+impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
+    for IncClaimReductionSumcheckProver<F>
+{
+    /// Inverse of `create_remainder`: reconstructs the Phase2 prover state
+    /// from the remainder polynomials so we can continue the sumcheck from `round_number`.
+    ///
+    /// `create_remainder` produces:
+    ///   - `remainder[0]` = `mlpoly_to_evals(&prover.ram_inc)`
+    ///   - `remainder[1]` = `mlpoly_to_evals(&prover.rd_inc)`
+    ///   - `remainder[2]` = `mlpoly_to_evals(&prover.eq_ram)`
+    ///   - `remainder[3]` = `mlpoly_to_evals(&prover.eq_rd)`
+    ///
+    /// This function reconstructs the internal state from those evaluations.
+    fn initialize_lower_rounds(&mut self, remainder: Vec<Vec<F>>, _round_number: usize) {
+        assert_eq!(
+            remainder.len(),
+            4,
+            "Expected 4 polynomials: ram_inc, rd_inc, eq_ram, eq_rd"
+        );
+
+        // Get params from current state (works for both Phase1 and Phase2)
+        let params = match self {
+            Self::Phase1(prover) => prover.params.clone(),
+            Self::Phase2(prover) => prover.params.clone(),
+        };
+
+        // Take ownership of remainder vectors without cloning
+        let mut iter = remainder.into_iter();
+        let ram_inc_evals = iter.next().unwrap();
+        let rd_inc_evals = iter.next().unwrap();
+        let eq_ram_evals = iter.next().unwrap();
+        let eq_rd_evals = iter.next().unwrap();
+
+        // Reconstruct Phase2 prover from remainder polynomials
+        *self = Self::Phase2(IncClaimReductionPhase2Prover {
+            ram_inc: MultilinearPolynomial::from(ram_inc_evals),
+            rd_inc: MultilinearPolynomial::from(rd_inc_evals),
+            eq_ram: MultilinearPolynomial::from(eq_ram_evals),
+            eq_rd: MultilinearPolynomial::from(eq_rd_evals),
+            params,
+        });
+    }
+
+    /// Returns the number of final rounds to use for the partially-bound sumcheck phase.
+    ///
+    /// For IncClaimReductionSumcheckProver, we want the split to happen in the second half
+    /// of Phase2 to ensure Phase2 is fully established before the split.
+    ///
+    /// Phase1 runs for `prefix_n_vars - 1` rounds (transition when len.log_2() == 1).
+    /// Phase2 runs for the remaining `n_vars - (prefix_n_vars - 1) = suffix_n_vars + 1` rounds.
+    /// We split at the midpoint of Phase2, so `split_lower_rounds = (suffix_n_vars + 1) / 2`.
+    fn split_lower_rounds(&self) -> usize {
+        let n_vars = match self {
+            Self::Phase1(prover) => prover.params.n_cycle_vars,
+            Self::Phase2(prover) => prover.params.n_cycle_vars,
+        };
+        let prefix_n_vars = n_vars / 2;
+        let suffix_n_vars = n_vars - prefix_n_vars;
+        // Phase2 has (suffix_n_vars + 1) rounds, split at midpoint
+        (suffix_n_vars + 1) / 2
+    }
+
+    fn create_remainder(&self) -> Vec<Vec<F>> {
+        let Self::Phase2(prover) = self else {
+            panic!("create_remainder should only be called during Phase 2");
+        };
+
+        // Return the polynomials: ram_inc, rd_inc, eq_ram, eq_rd
+        vec![
+            mlpoly_to_evals(&prover.ram_inc),
+            mlpoly_to_evals(&prover.rd_inc),
+            mlpoly_to_evals(&prover.eq_ram),
+            mlpoly_to_evals(&prover.eq_rd),
+        ]
+    }
+
+    fn create_expr(&self) -> Box<dyn Fn(&[F]) -> F + Send + Sync> {
+        let Self::Phase2(prover) = self else {
+            panic!("create_expr should only be called during Phase 2");
+        };
+
+        let gamma_sqr = prover.params.gamma_powers[1];
+
+        // Expression: ram_inc * eq_ram + gamma_sqr * rd_inc * eq_rd
+        Box::new(move |vals: &[F]| {
+            // vals[0] = ram_inc, vals[1] = rd_inc, vals[2] = eq_ram, vals[3] = eq_rd
+            vals[0] * vals[2] + gamma_sqr * vals[1] * vals[3]
+        })
+    }
+
+    fn cache_openings_with_claims(
+        &self,
+        accumulator: &mut ProverOpeningAccumulator<F>,
+        transcript: &mut T,
+        sumcheck_challenges: &[F::Challenge],
+        poly_claims: &[F],
+    ) {
+        let opening_point = SumcheckInstanceProver::<F, T>::get_params(self)
+            .normalize_opening_point(sumcheck_challenges);
+
+        // poly_claims[0] = ram_inc, poly_claims[1] = rd_inc
+        // poly_claims[2] = eq_ram, poly_claims[3] = eq_rd (not needed for openings)
+        let ram_inc_claim = poly_claims[0];
+        let rd_inc_claim = poly_claims[1];
+
+        accumulator.append_dense(
+            transcript,
+            CommittedPolynomial::RamInc,
+            SumcheckId::IncClaimReduction,
+            opening_point.r.clone(),
+            ram_inc_claim,
+        );
+        accumulator.append_dense(
+            transcript,
+            CommittedPolynomial::RdInc,
+            SumcheckId::IncClaimReduction,
+            opening_point.r,
+            rd_inc_claim,
+        );
     }
 }
 

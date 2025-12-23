@@ -162,7 +162,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
         &self,
         accumulator: &mut ProverOpeningAccumulator<F>,
         transcript: &mut T,
-        sumcheck_challenges: &[F::Challenge],
+        sumcheck_challenges: &[F::Challenge]
     ) {
         let Self::PhaseCycle2(prover) = self else {
             panic!("cache_openings should only be called in PhaseCycle2");

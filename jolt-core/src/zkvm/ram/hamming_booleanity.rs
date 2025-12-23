@@ -178,6 +178,49 @@ impl<F: JoltField, T: Transcript> HammingBooleanitySumcheckProver<F, T> {
 impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
     for HammingBooleanitySumcheckProver<F, T>
 {
+
+    /// Inverse of `create_remainder`: reconstructs `self.eq_r_cycle` and `self.H`
+    /// from the remainder polynomials so we can continue the sumcheck from `round_number`.
+    ///
+    /// `create_remainder` produces:
+    ///   - `remainder[0]` = `self.eq_r_cycle.merge().Z`
+    ///   - `remainder[1]` = `multilinear_to_evals(&self.H)`
+    ///
+    /// This function reconstructs the internal state from those evaluations.
+    fn initialize_lower_rounds(&mut self, remainder: Vec<Vec<F>>, round_number: usize) {
+        assert_eq!(remainder.len(), 2, "Expected 2 polynomials: eq and H");
+
+        // Take ownership of remainder vectors without cloning
+        let mut iter = remainder.into_iter();
+        let eq_evals = iter.next().unwrap();
+        let h_evals = iter.next().unwrap();
+
+        assert_eq!(
+            eq_evals.len(),
+            h_evals.len(),
+            "eq and H must have same length"
+        );
+
+        let remaining_vars = self.params.r_cycle.len() - round_number;
+
+        // Inverse of `self.eq_r_cycle.merge().Z`:
+        // The sum of eq evaluations equals current_scalar (since unscaled eq sums to 1)
+        let current_scalar: F = eq_evals.iter().sum();
+
+        // Recreate GruenSplitEqPolynomial using only the first `remaining_vars` challenges
+        // from params.r_cycle.r (which correspond to the remaining unbound variables)
+        let w = &self.params.r_cycle.r[..remaining_vars];
+        self.eq_r_cycle = GruenSplitEqPolynomial::new_with_scaling(
+            w,
+            BindingOrder::LowToHigh,
+            Some(current_scalar),
+        );
+
+        // Inverse of `multilinear_to_evals(&self.H)`:
+        // Create a DensePolynomial (LargeScalars variant) from the evaluations
+        self.H = MultilinearPolynomial::from(h_evals);
+    }
+
     fn create_remainder(&self) -> Vec<Vec<F>> {
         vec![
             self.eq_r_cycle.merge().Z,

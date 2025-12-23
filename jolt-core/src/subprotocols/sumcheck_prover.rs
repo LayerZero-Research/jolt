@@ -35,6 +35,9 @@ pub trait SumcheckInstanceProver<F: JoltField, T: Transcript>:
     /// Computes the prover's message for a specific round of the sumcheck protocol.
     fn compute_message(&mut self, round: usize, previous_claim: F) -> UniPoly<F>;
 
+
+    // fn initialize_low_to_high(&mut self, remainder: Vec<Vec<F>>);
+
     /// Ingest the verifier's challenge for a sumcheck round.
     fn ingest_challenge(&mut self, r_j: F::Challenge, round: usize);
 

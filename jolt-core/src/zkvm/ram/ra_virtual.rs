@@ -57,7 +57,7 @@ use crate::poly::ra_poly::RaPolynomial;
 use crate::poly::split_eq_poly::GruenSplitEqPolynomial;
 use crate::poly::unipoly::UniPoly;
 use crate::subprotocols::mles_product_sum::compute_mles_product_sum;
-use crate::subprotocols::split_sumcheck_prover::{SplitSumcheckInstance, SplitSumcheckInstanceInner};
+use crate::subprotocols::split_sumcheck_prover::SplitSumcheckInstanceInner;
 use crate::subprotocols::sumcheck_prover::SumcheckInstanceProver;
 use crate::subprotocols::sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier};
 use crate::zkvm::config::OneHotParams;
@@ -67,7 +67,7 @@ use crate::{
     field::JoltField,
     poly::{
         eq_poly::EqPolynomial,
-        multilinear_polynomial::{BindingOrder, PolynomialBinding},
+        multilinear_polynomial::{BindingOrder, MultilinearPolynomial, PolynomialBinding},
     },
     transcripts::Transcript,
     utils::math::Math,
@@ -202,15 +202,6 @@ impl<F: JoltField, T: Transcript> RamRaVirtualSumcheckProver<F, T> {
         }
     }
 
-    /// Wrap this prover in a SplitSumcheckInstance for the final rounds.
-    pub fn to_split_sumcheck_instance(self) -> SplitSumcheckInstance<F, T> {
-        const SPLIT_LOWER_ROUNDS: usize = 8;
-        SplitSumcheckInstance::new(
-            Box::new(self),
-            SPLIT_LOWER_ROUNDS,
-            BindingOrder::LowToHigh,
-        )
-    }
 }
 
 impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for RamRaVirtualSumcheckProver<F, T> {
@@ -282,6 +273,47 @@ fn ra_poly_to_evals<F: JoltField>(poly: &RaPolynomial<u8, F>) -> Vec<F> {
 impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
     for RamRaVirtualSumcheckProver<F, T>
 {
+    /// Inverse of `create_remainder`: reconstructs `self.eq_poly` and `self.ra_i_polys`
+    /// from the remainder polynomials so we can continue the sumcheck from `round_number`.
+    ///
+    /// `create_remainder` produces:
+    ///   - `remainder[0]` = `self.eq_poly.merge().Z`
+    ///   - `remainder[1..1+d]` = `ra_poly_to_evals(&self.ra_i_polys[i])` for each i
+    ///
+    /// This function reconstructs the internal state from those evaluations.
+    fn initialize_lower_rounds(&mut self, remainder: Vec<Vec<F>>, round_number: usize) {
+        assert_eq!(
+            remainder.len(),
+            1 + self.params.d,
+            "Expected 1 eq + {} ra_i polynomials",
+            self.params.d
+        );
+
+        // Take ownership of remainder vectors without cloning
+        let mut iter = remainder.into_iter();
+        let eq_evals = iter.next().unwrap();
+
+        let remaining_vars = self.params.log_T - round_number;
+
+        // Inverse of `self.eq_poly.merge().Z`:
+        // The sum of eq evaluations equals current_scalar (since unscaled eq sums to 1)
+        let current_scalar: F = eq_evals.iter().sum();
+
+        // Recreate GruenSplitEqPolynomial using only the first `remaining_vars` challenges
+        let w = &self.params.r_cycle.r[..remaining_vars];
+        self.eq_poly = GruenSplitEqPolynomial::new_with_scaling(
+            w,
+            BindingOrder::LowToHigh,
+            Some(current_scalar),
+        );
+
+        // Inverse of `ra_poly_to_evals(&self.ra_i_polys[i])`:
+        // Create RaPolynomial::RoundN from the evaluations for each ra_i (take ownership)
+        self.ra_i_polys = iter
+            .map(|evals| RaPolynomial::RoundN(MultilinearPolynomial::from(evals)))
+            .collect();
+    }
+
     fn create_remainder(&self) -> Vec<Vec<F>> {
         // Return the polynomials:
         // - 1 eq polynomial
@@ -325,6 +357,11 @@ impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
         // poly_claims[1..1+d] are RA claims
         let ra_claims = &poly_claims[1..1 + self.params.d];
         self.cache_openings_impl(accumulator, transcript, sumcheck_challenges, ra_claims);
+    }
+
+    #[cfg(feature = "allocative")]
+    fn update_flamegraph(&self, flamegraph: &mut FlameGraphBuilder) {
+        flamegraph.visit_root(self);
     }
 }
 

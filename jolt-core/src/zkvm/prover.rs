@@ -1,3 +1,4 @@
+use crate::subprotocols::split_sumcheck_prover::SplitSumcheckInstanceInner;
 use crate::subprotocols::streaming_schedule::LinearOnlySchedule;
 use std::{
     collections::HashMap,
@@ -942,10 +943,10 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             &self.trace,
             &self.preprocessing.shared.bytecode,
         )
-        .to_split_sumcheck_instance();
+        .into_split();
         let ram_hamming_booleanity =
             HammingBooleanitySumcheckProver::initialize(ram_hamming_booleanity_params, &self.trace)
-            .to_split_sumcheck_instance();
+            .into_split();
 
         let booleanity = BooleanitySumcheckProver::initialize(
             booleanity_params,
@@ -954,7 +955,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             &self.program_io.memory_layout,
             &self.one_hot_params,
         )
-        .to_split_sumcheck_instance();
+        .into_split();
 
         let ram_ra_virtual = RamRaVirtualSumcheckProver::initialize(
             ram_ra_virtual_params,
@@ -962,11 +963,12 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             &self.program_io.memory_layout,
             &self.one_hot_params,
         )
-        .to_split_sumcheck_instance();
+        .into_split();
         let lookups_ra_virtual =
             LookupsRaSumcheckProver::initialize(lookups_ra_virtual_params, &self.trace);
         let inc_reduction =
-            IncClaimReductionSumcheckProver::initialize(inc_reduction_params, self.trace.clone());
+            IncClaimReductionSumcheckProver::initialize(inc_reduction_params, self.trace.clone())
+                .into_split();
 
         #[cfg(feature = "allocative")]
         {

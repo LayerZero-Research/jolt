@@ -20,7 +20,7 @@ use crate::{
     },
     subprotocols::{
         mles_product_sum::eval_linear_prod_assign,
-        split_sumcheck_prover::{SplitSumcheckInstance, SplitSumcheckInstanceInner},
+        split_sumcheck_prover::SplitSumcheckInstanceInner,
         sumcheck_prover::SumcheckInstanceProver,
         sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier},
     },
@@ -231,16 +231,6 @@ impl<F: JoltField, T: Transcript> ReadRafSumcheckProver<F, T> {
             params,
             _phantom: PhantomData,
         }
-    }
-
-    /// Wrap this prover in a SplitSumcheckInstance for the final rounds.
-    pub fn to_split_sumcheck_instance(self) -> SplitSumcheckInstance<F, T> {
-        const SPLIT_LOWER_ROUNDS: usize = 8;
-        SplitSumcheckInstance::new(
-            Box::new(self),
-            SPLIT_LOWER_ROUNDS,
-            BindingOrder::LowToHigh,
-        )
     }
 
     fn init_log_t_rounds(&mut self) {
@@ -530,6 +520,58 @@ fn ra_poly_to_evals<F: JoltField>(poly: &RaPolynomial<u8, F>) -> Vec<F> {
 impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
     for ReadRafSumcheckProver<F, T>
 {
+    /// Inverse of `create_remainder`: reconstructs `self.gruen_eq_polys` and `self.ra`
+    /// from the remainder polynomials so we can continue the sumcheck from `round_number`.
+    ///
+    /// `create_remainder` produces:
+    ///   - `remainder[0..N_STAGES]` = eq polynomials for each stage
+    ///   - `remainder[N_STAGES..N_STAGES+d]` = RA polynomials
+    ///
+    /// This function reconstructs the internal state from those evaluations.
+    fn initialize_lower_rounds(&mut self, remainder: Vec<Vec<F>>, round_number: usize) {
+        assert_eq!(
+            remainder.len(),
+            N_STAGES + self.params.d,
+            "Expected {} eq + {} RA polynomials",
+            N_STAGES,
+            self.params.d
+        );
+
+        // Calculate remaining cycle variables
+        let remaining_vars = self.params.log_T - (round_number - self.params.log_K);
+
+        // Reconstruct gruen_eq_polys for each stage
+        for stage in 0..N_STAGES {
+            // The sum of eq evaluations equals current_scalar (since unscaled eq sums to 1)
+            let current_scalar: F = remainder[stage].iter().sum();
+
+            // Use the remaining challenges from params.r_cycles[stage]
+            let w = &self.params.r_cycles[stage][..remaining_vars];
+            self.gruen_eq_polys[stage] = GruenSplitEqPolynomial::new_with_scaling(
+                w,
+                BindingOrder::LowToHigh,
+                Some(current_scalar),
+            );
+        }
+
+        // Reconstruct RA polynomials as RoundN
+        self.ra = (0..self.params.d)
+            .map(|i| {
+                RaPolynomial::RoundN(MultilinearPolynomial::from(
+                    remainder[N_STAGES + i].clone(),
+                ))
+            })
+            .collect();
+    }
+
+    /// Returns the number of final rounds to use for the partially-bound sumcheck phase.
+    ///
+    /// For ReadRafSumcheckProver, we want the split to happen in the second half
+    /// of the cycle-binding phase (after address binding is complete).
+    fn split_lower_rounds(&self) -> usize {
+        self.params.log_T / 2
+    }
+
     fn create_remainder(&self) -> Vec<Vec<F>> {
         // Return the polynomials involved in the cycle-binding phase:
         // - 5 eq polynomials (one per stage) from gruen_eq_polys
