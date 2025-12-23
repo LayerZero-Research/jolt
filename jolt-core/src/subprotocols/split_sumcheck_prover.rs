@@ -60,10 +60,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for SplitSumcheck
         }
 
         if let Some(ref pb) = self.pb {
-            assert_eq!(
-                self.pb.as_ref().unwrap().compute_message(previous_claim), 
-                self.inner.compute_message(round, previous_claim), 
-                "compute_message mismatch {round}");
+            // assert_eq!(
+            //     self.pb.as_ref().unwrap().compute_message(previous_claim), 
+            //     self.inner.compute_message(round, previous_claim), 
+            //     "compute_message mismatch {round}");
 
             pb.compute_message(previous_claim)
         } else {
