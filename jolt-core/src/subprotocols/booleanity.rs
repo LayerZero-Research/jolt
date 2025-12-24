@@ -22,7 +22,7 @@ use allocative::Allocative;
 use allocative::FlameGraphBuilder;
 use ark_std::Zero;
 use rayon::prelude::*;
-use std::{iter::zip, marker::PhantomData};
+use std::iter::zip;
 
 use common::jolt_device::MemoryLayout;
 use tracer::instruction::Cycle;
@@ -33,17 +33,14 @@ use crate::{
         eq_poly::EqPolynomial,
         multilinear_polynomial::{BindingOrder, MultilinearPolynomial},
         opening_proof::{
-            OpeningAccumulator, OpeningPoint, ProverOpeningAccumulator, SumcheckId,
-            VerifierOpeningAccumulator, BIG_ENDIAN,
+            BIG_ENDIAN, OpeningAccumulator, OpeningPoint, ProverOpeningAccumulator, SumcheckId, VerifierOpeningAccumulator
         },
-        shared_ra_polys::{compute_all_G_and_ra_indices, RaIndices, SharedRaPolynomials},
+        shared_ra_polys::{RaIndices, SharedRaPolynomials, compute_all_G_and_ra_indices},
         split_eq_poly::GruenSplitEqPolynomial,
         unipoly::UniPoly,
     },
     subprotocols::{
-        split_sumcheck_prover::{SplitSumcheckInstance, SplitSumcheckInstanceInner},
-        sumcheck_prover::SumcheckInstanceProver,
-        sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier},
+        split_sumcheck_prover::SplitSumcheckInstanceInner, sumcheck_prover::SumcheckInstanceProver, sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier}
     },
     transcripts::Transcript,
     utils::{expanding_table::ExpandingTable, thread::drop_in_background_thread},
@@ -58,7 +55,6 @@ use crate::{
 const DEGREE_BOUND: usize = 3;
 
 /// Parameters for the booleanity sumcheck.
-#[derive(Clone)]
 pub struct BooleanitySumcheckParams<F: JoltField> {
     /// Log of chunk size (shared across all families)
     pub log_k_chunk: usize,
@@ -186,7 +182,7 @@ impl<F: JoltField> BooleanitySumcheckParams<F> {
 
 /// Booleanity Sumcheck Prover.
 #[derive(Allocative)]
-pub struct BooleanitySumcheckProver<F: JoltField, T: Transcript> {
+pub struct BooleanitySumcheckProver<F: JoltField> {
     /// B: split-eq over address-chunk variables (phase 1, LowToHigh).
     B: GruenSplitEqPolynomial<F>,
     /// D: split-eq over time/cycle variables (phase 2, LowToHigh).
@@ -206,11 +202,9 @@ pub struct BooleanitySumcheckProver<F: JoltField, T: Transcript> {
     one_hot_params: OneHotParams,
     #[allocative(skip)]
     pub params: BooleanitySumcheckParams<F>,
-    #[allocative(skip)]
-    _phantom: PhantomData<T>,
 }
 
-impl<F: JoltField, T: Transcript> BooleanitySumcheckProver<F, T> {
+impl<F: JoltField> BooleanitySumcheckProver<F> {
     /// Initialize a BooleanitySumcheckProver with all three families.
     ///
     /// All heavy computation is done here:
@@ -253,20 +247,7 @@ impl<F: JoltField, T: Transcript> BooleanitySumcheckProver<F, T> {
             F: F_table,
             eq_r_r: F::zero(),
             params,
-            _phantom: PhantomData,
         }
-    }
-
-    pub fn to_split_sumcheck_instance(self, params: BooleanitySumcheckParams<F>) -> SplitSumcheckInstance<F, T, BooleanitySumcheckParams<F>, Self> {
-        // Wrap booleanity in SplitSumcheckInstance to use partially-bound sumcheck
-        // for the final `lower_rounds` rounds in phase 2
-        let lower_rounds = self.params.log_t / 2;
-        SplitSumcheckInstance::new(
-            self,
-            params,
-            lower_rounds,
-            BindingOrder::LowToHigh,
-        )
     }
 
     fn compute_phase1_message(&self, round: usize, previous_claim: F) -> UniPoly<F> {
@@ -368,7 +349,7 @@ impl<F: JoltField, T: Transcript> BooleanitySumcheckProver<F, T> {
     }
 }
 
-impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for BooleanitySumcheckProver<F, T> {
+impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for BooleanitySumcheckProver<F> {
     fn get_params(&self) -> &dyn SumcheckInstanceParams<F> {
         &self.params
     }
@@ -422,30 +403,11 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for BooleanitySum
         transcript: &mut T,
         sumcheck_challenges: &[F::Challenge],
     ) {
-        // Get claims from H polynomials
+        let opening_point = self.params.normalize_opening_point(sumcheck_challenges);
         let H = self.H.as_ref().expect("H should be initialized");
         let claims: Vec<F> = (0..H.num_polys())
             .map(|i| H.final_sumcheck_claim(i))
             .collect();
-        self.cache_openings_impl(accumulator, transcript, sumcheck_challenges, &claims);
-    }
-
-    #[cfg(feature = "allocative")]
-    fn update_flamegraph(&self, flamegraph: &mut FlameGraphBuilder) {
-        flamegraph.visit_root(self);
-    }
-}
-
-impl<F: JoltField, T: Transcript> BooleanitySumcheckProver<F, T> {
-    /// Shared implementation for cache_openings that takes H claims as parameters.
-    fn cache_openings_impl(
-        &self,
-        accumulator: &mut ProverOpeningAccumulator<F>,
-        transcript: &mut T,
-        sumcheck_challenges: &[F::Challenge],
-        h_claims: &[F],
-    ) {
-        let opening_point = self.params.normalize_opening_point(sumcheck_challenges);
 
         // All polynomials share the same opening point (r_address, r_cycle)
         // Use a single SumcheckId for all
@@ -455,150 +417,13 @@ impl<F: JoltField, T: Transcript> BooleanitySumcheckProver<F, T> {
             SumcheckId::Booleanity,
             opening_point.r[..self.params.log_k_chunk].to_vec(),
             opening_point.r[self.params.log_k_chunk..].to_vec(),
-            h_claims.to_vec(),
+            claims,
         );
     }
-}
 
-impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T, BooleanitySumcheckParams<F>>
-    for BooleanitySumcheckProver<F, T>
-{
-    ///
-    /// # Remainder Format
-    ///
-    /// The `remainder` vector must contain `2 + num_polys` polynomials in the following order:
-    ///
-    /// | Index          | Polynomial | Description                                                 |
-    /// |----------------|------------|-------------------------------------------------------------|
-    /// | 0              | eq_r_r     | Constant polynomial (all elements equal to `eq_r_r` scalar) |
-    /// | 1              | D          | Eq polynomial for cycle binding (`self.D.merge().Z`)        |
-    /// | 2..2+num_polys | H[i]       | RA polynomials for booleanity checking                      |
-    ///
-    /// Each inner `Vec<F>` has length `2^remaining_vars` where `remaining_vars = log_t - (round_number - log_k_chunk)`.
-    fn initialize_lower_rounds(params: BooleanitySumcheckParams<F>, remainder: Vec<Vec<F>>, round_number: usize) -> Self {
-        let num_polys = params.polynomial_types.len();
-        assert_eq!(
-            remainder.len(),
-            2 + num_polys,
-            "Expected 1 eq_r_r + 1 D eq + {} H polynomials",
-            num_polys
-        );
-
-        let remaining_vars = params.log_t - (round_number - params.log_k_chunk);
-
-        // remainder[0] contains constant eq_r_r values
-        let eq_r_r = remainder[0][0];
-
-        // Inverse of `self.D.merge().Z`:
-        // The sum of eq evaluations equals current_scalar (since unscaled eq sums to 1)
-        let current_scalar: F = remainder[1].iter().copied().sum();
-
-        // Recreate GruenSplitEqPolynomial for remaining cycle variables
-        let w = &params.r_cycle[..remaining_vars];
-        let D = GruenSplitEqPolynomial::new_with_scaling(
-            w,
-            BindingOrder::LowToHigh,
-            Some(current_scalar),
-        );
-
-        // Inverse of H polynomial evaluations:
-        // Create SharedRaPolynomials::RoundN from the evaluations
-        let h_polys: Vec<MultilinearPolynomial<F>> = remainder[2..]
-            .iter()
-            .map(|evals| MultilinearPolynomial::from(evals.clone()))
-            .collect();
-        let H = Some(SharedRaPolynomials::RoundN(h_polys));
-
-        // Create a dummy B polynomial (not used in phase 2)
-        let B = GruenSplitEqPolynomial::new(&[], BindingOrder::LowToHigh);
-
-        BooleanitySumcheckProver {
-            B,
-            D,
-            G: Vec::new(),
-            H,
-            F: ExpandingTable::new(1, BindingOrder::LowToHigh),
-            eq_r_r,
-            ra_indices: Vec::new(),
-            one_hot_params: OneHotParams::default(),
-            params,
-            _phantom: PhantomData,
-        }
-    }
-
-    /// Returns the number of final rounds to use for the partially-bound sumcheck phase.
-    ///
-    /// For BooleanitySumcheckProver, we want the split to happen in the second half
-    /// of Phase 2 (cycle binding phase) to ensure Phase 2 is fully established.
-    ///
-    /// Phase 1 runs for `log_k_chunk` rounds (address binding).
-    /// Phase 2 runs for `log_t` rounds (cycle binding).
-    /// We split at the midpoint of Phase 2.
-    fn split_lower_rounds(&self) -> usize {
-        self.params.log_t / 2
-    }
-
-    fn create_remainder(&self) -> Vec<Vec<F>> {
-        // Return the polynomials involved in phase 2:
-        // - 1 eq polynomial (D)
-        // - num_polys H polynomials
-        let H = self.H.as_ref().expect("H should be initialized in phase 2");
-        let num_polys = H.num_polys();
-        let len = H.len();
-        
-        let mut polys = Vec::with_capacity(1 + num_polys);
-
-        // Add eq_r_r polynomial
-        polys.push(vec![self.eq_r_r; len]);
-        
-        // Add D eq polynomial
-        polys.push(self.D.merge().Z);
-        
-        // Add H polynomials
-        for i in 0..num_polys {
-            let evals: Vec<F> = (0..len).map(|j| H.get_bound_coeff(i, j)).collect();
-            polys.push(evals);
-        }
-        
-        polys
-    }
-
-    fn create_expr(&self) -> Box<dyn Fn(&[F]) -> F + Send + Sync> {
-        // Capture the necessary parameters
-        let gammas = self.params.gammas.clone();
-        // let eq_r_r = self.eq_r_r;
-        let num_polys = self.H.as_ref().expect("H should be initialized").num_polys();
-        
-        Box::new(move |vals: &[F]| {
-            // vals[0] is eq_D eval
-            // vals[1..1+num_polys] are H polynomial evals
-            let eq_r_r = vals[0];
-            let eq_d = vals[1];
-            let h_evals = &vals[2..2 + num_polys];
-            
-            // Expression: eq_r_r * eq_D * sum_i(gamma_i * (h_i^2 - h_i))
-            let inner_sum: F = h_evals
-                .iter()
-                .enumerate()
-                .map(|(i, &h)| gammas[i] * (h.square() - h))
-                .sum();
-            
-            eq_r_r * eq_d * inner_sum
-        })
-    }
-
-    fn cache_openings_with_claims(
-        &self,
-        accumulator: &mut ProverOpeningAccumulator<F>,
-        transcript: &mut T,
-        sumcheck_challenges: &[F::Challenge],
-        poly_claims: &[F],
-    ) {
-        // poly_claims[0] is eq_D claim (not needed for openings)
-        // poly_claims[1] is eq_r_r claim (not needed for openings)
-        // poly_claims[2..] are H claims
-        let h_claims = &poly_claims[2..];
-        self.cache_openings_impl(accumulator, transcript, sumcheck_challenges, h_claims);
+    #[cfg(feature = "allocative")]
+    fn update_flamegraph(&self, flamegraph: &mut FlameGraphBuilder) {
+        flamegraph.visit_root(self);
     }
 }
 
@@ -662,5 +487,86 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T> for BooleanityS
             SumcheckId::Booleanity,
             opening_point.r,
         );
+    }
+}
+
+
+
+
+impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T, BooleanitySumcheckParams<F>>
+    for BooleanitySumcheckProver<F>
+{
+    ///
+    /// # Remainder Format
+    ///
+    /// The `remainder` vector must contain `2 + num_polys` polynomials in the following order:
+    ///
+    /// | Index          | Polynomial | Description                                                 |
+    /// |----------------|------------|-------------------------------------------------------------|
+    /// | 0              | eq_r_r     | Constant polynomial (all elements equal to `eq_r_r` scalar) |
+    /// | 1              | D          | Eq polynomial for cycle binding (`self.D.merge().Z`)        |
+    /// | 2..2+num_polys | H[i]       | RA polynomials for booleanity checking                      |
+    ///
+    /// Each inner `Vec<F>` has length `2^remaining_vars` where `remaining_vars = log_t - (round_number - log_k_chunk)`.
+    fn initialize_lower_rounds(params: BooleanitySumcheckParams<F>, remainder: Vec<Vec<F>>, round_number: usize) -> Self {
+        let num_polys = params.polynomial_types.len();
+        assert_eq!(
+            remainder.len(),
+            2 + num_polys,
+            "Expected 1 eq_r_r + 1 D eq + {} H polynomials",
+            num_polys
+        );
+
+        let remaining_vars = params.log_t - (round_number - params.log_k_chunk);
+
+        // remainder[0] contains constant eq_r_r values
+        let eq_r_r = remainder[0][0];
+
+        // Inverse of `self.D.merge().Z`:
+        // The sum of eq evaluations equals current_scalar (since unscaled eq sums to 1)
+        let current_scalar: F = remainder[1].iter().copied().sum();
+
+        // Recreate GruenSplitEqPolynomial for remaining cycle variables
+        let w = &params.r_cycle[..remaining_vars];
+        let D = GruenSplitEqPolynomial::new_with_scaling(
+            w,
+            BindingOrder::LowToHigh,
+            Some(current_scalar),
+        );
+
+        // Inverse of H polynomial evaluations:
+        // Create SharedRaPolynomials::RoundN from the evaluations
+        let h_polys: Vec<MultilinearPolynomial<F>> = remainder[2..]
+            .iter()
+            .map(|evals| MultilinearPolynomial::from(evals.clone()))
+            .collect();
+        let H = Some(SharedRaPolynomials::RoundN(h_polys));
+
+        // Create a dummy B polynomial (not used in phase 2)
+        let B = GruenSplitEqPolynomial::new(&[], BindingOrder::LowToHigh);
+
+        BooleanitySumcheckProver {
+            B,
+            D,
+            G: Vec::new(),
+            H,
+            F: ExpandingTable::new(1, BindingOrder::LowToHigh),
+            eq_r_r,
+            ra_indices: Vec::new(),
+            one_hot_params: OneHotParams::default(),
+            params,
+        }
+    }
+
+    /// Returns the number of final rounds to use for the partially-bound sumcheck phase.
+    ///
+    /// For BooleanitySumcheckProver, we want the split to happen in the second half
+    /// of Phase 2 (cycle binding phase) to ensure Phase 2 is fully established.
+    ///
+    /// Phase 1 runs for `log_k_chunk` rounds (address binding).
+    /// Phase 2 runs for `log_t` rounds (cycle binding).
+    /// We split at the midpoint of Phase 2.
+    fn split_lower_rounds(&self) -> usize {
+        self.params.log_t / 2
     }
 }
