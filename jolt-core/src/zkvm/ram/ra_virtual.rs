@@ -273,14 +273,17 @@ fn ra_poly_to_evals<F: JoltField>(poly: &RaPolynomial<u8, F>) -> Vec<F> {
 impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T, RamRaVirtualParams<F>>
     for RamRaVirtualSumcheckProver<F, T>
 {
-    /// Inverse of `create_remainder`: reconstructs `self.eq_poly` and `self.ra_i_polys`
-    /// from the remainder polynomials so we can continue the sumcheck from `round_number`.
     ///
-    /// `create_remainder` produces:
-    ///   - `remainder[0]` = `self.eq_poly.merge().Z`
-    ///   - `remainder[1..1+d]` = `ra_poly_to_evals(&self.ra_i_polys[i])` for each i
+    /// # Remainder Format
     ///
-    /// This function reconstructs the internal state from those evaluations.
+    /// The `remainder` vector must contain `1 + d` polynomials in the following order:
+    ///
+    /// | Index  | Polynomial | Description                                            |
+    /// |--------|------------|--------------------------------------------------------|
+    /// | 0      | eq         | Eq polynomial for cycle binding (`eq_poly.merge().Z`) |
+    /// | 1..1+d | ra_i[i]    | RA polynomials for each dimension                      |
+    ///
+    /// Each inner `Vec<F>` has length `2^remaining_vars` where `remaining_vars = log_T - round_number`.
     fn initialize_lower_rounds(params: RamRaVirtualParams<F>, remainder: Vec<Vec<F>>, round_number: usize) -> Self {
         assert_eq!(
             remainder.len(),

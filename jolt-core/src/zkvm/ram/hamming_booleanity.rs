@@ -175,6 +175,17 @@ impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T, HammingBoolea
     ///   - `remainder[1]` = `multilinear_to_evals(&self.H)`
     ///
     /// This function reconstructs the internal state from those evaluations.
+    ///
+    /// # Remainder Format
+    ///
+    /// The `remainder` vector must contain exactly 2 polynomials in the following order:
+    ///
+    /// | Index | Polynomial | Description                                               |
+    /// |-------|------------|-----------------------------------------------------------|
+    /// | 0     | eq         | Eq polynomial for cycle binding (`eq_r_cycle.merge().Z`) |
+    /// | 1     | H          | Hamming polynomial for booleanity checking                |
+    ///
+    /// Each inner `Vec<F>` has length `2^remaining_vars` where `remaining_vars = r_cycle.len() - round_number`.
     fn initialize_lower_rounds(params: HammingBooleanitySumcheckParams<F>, remainder: Vec<Vec<F>>, round_number: usize) -> Self {
         assert_eq!(remainder.len(), 2, "Expected 2 polynomials: eq and H");
 

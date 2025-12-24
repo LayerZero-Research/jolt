@@ -463,14 +463,18 @@ impl<F: JoltField, T: Transcript> BooleanitySumcheckProver<F, T> {
 impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T, BooleanitySumcheckParams<F>>
     for BooleanitySumcheckProver<F, T>
 {
-    /// Inverse of `create_remainder`: reconstructs `D` and `H`
-    /// from the remainder polynomials so we can continue the sumcheck from `round_number`.
     ///
-    /// `create_remainder` produces:
-    ///   - `remainder[0]` = `self.D.merge().Z`
-    ///   - `remainder[1..1+num_polys]` = H polynomial evaluations for each RA polynomial
+    /// # Remainder Format
     ///
-    /// This function reconstructs the internal state from those evaluations.
+    /// The `remainder` vector must contain `2 + num_polys` polynomials in the following order:
+    ///
+    /// | Index          | Polynomial | Description                                                 |
+    /// |----------------|------------|-------------------------------------------------------------|
+    /// | 0              | eq_r_r     | Constant polynomial (all elements equal to `eq_r_r` scalar) |
+    /// | 1              | D          | Eq polynomial for cycle binding (`self.D.merge().Z`)        |
+    /// | 2..2+num_polys | H[i]       | RA polynomials for booleanity checking                      |
+    ///
+    /// Each inner `Vec<F>` has length `2^remaining_vars` where `remaining_vars = log_t - (round_number - log_k_chunk)`.
     fn initialize_lower_rounds(params: BooleanitySumcheckParams<F>, remainder: Vec<Vec<F>>, round_number: usize) -> Self {
         let num_polys = params.polynomial_types.len();
         assert_eq!(

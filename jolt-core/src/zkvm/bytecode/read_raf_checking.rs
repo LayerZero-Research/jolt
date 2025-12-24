@@ -520,14 +520,18 @@ fn ra_poly_to_evals<F: JoltField>(poly: &RaPolynomial<u8, F>) -> Vec<F> {
 impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T, ReadRafSumcheckParams<F>>
     for ReadRafSumcheckProver<F, T>
 {
-    /// Inverse of `create_remainder`: reconstructs `self.gruen_eq_polys` and `self.ra`
-    /// from the remainder polynomials so we can continue the sumcheck from `round_number`.
     ///
-    /// `create_remainder` produces:
-    ///   - `remainder[0..N_STAGES]` = eq polynomials for each stage
-    ///   - `remainder[N_STAGES..N_STAGES+d]` = RA polynomials
+    /// # Remainder Format
     ///
-    /// This function reconstructs the internal state from those evaluations.
+    /// The `remainder` vector must contain `2 * N_STAGES + d` polynomials in the following order:
+    ///
+    /// | Index                    | Polynomial             | Description                                                           |
+    /// |--------------------------|------------------------|-----------------------------------------------------------------------|
+    /// | 0..N_STAGES              | eq[stage]              | Eq polynomials for each stage (`gruen_eq_polys[stage].merge().Z`)     |
+    /// | N_STAGES..2*N_STAGES     | bound_val_evals[stage] | Constant polynomials (all elements equal to `bound_val_evals[stage]`) |
+    /// | 2*N_STAGES..2*N_STAGES+d | ra[i]                  | RA polynomials for each dimension                                     |
+    ///
+    /// Each inner `Vec<F>` has length `2^remaining_vars` where `remaining_vars = log_T - (round_number - log_K)`.
     fn initialize_lower_rounds(params: ReadRafSumcheckParams<F>, remainder: Vec<Vec<F>>, round_number: usize) -> Self {
         assert_eq!(
             remainder.len(),

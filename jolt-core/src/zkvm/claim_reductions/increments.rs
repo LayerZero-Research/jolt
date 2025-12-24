@@ -289,16 +289,20 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
 impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T, IncClaimReductionSumcheckParams<F>>
     for IncClaimReductionSumcheckProver<F>
 {
-    /// Inverse of `create_remainder`: reconstructs the Phase2 prover state
-    /// from the remainder polynomials so we can continue the sumcheck from `round_number`.
     ///
-    /// `create_remainder` produces:
-    ///   - `remainder[0]` = `mlpoly_to_evals(&prover.ram_inc)`
-    ///   - `remainder[1]` = `mlpoly_to_evals(&prover.rd_inc)`
-    ///   - `remainder[2]` = `mlpoly_to_evals(&prover.eq_ram)`
-    ///   - `remainder[3]` = `mlpoly_to_evals(&prover.eq_rd)`
+    /// # Remainder Format
     ///
-    /// This function reconstructs the internal state from those evaluations.
+    /// The `remainder` vector must contain exactly 4 polynomials in the following order:
+    ///
+    /// | Index | Polynomial | Description                    |
+    /// |-------|------------|--------------------------------|
+    /// | 0     | ram_inc    | RAM increment polynomial       |
+    /// | 1     | rd_inc     | RD increment polynomial        |
+    /// | 2     | eq_ram     | Eq polynomial for RAM binding  |
+    /// | 3     | eq_rd      | Eq polynomial for RD binding   |
+    ///
+    /// Each inner `Vec<F>` has length `2^remaining_vars`.
+    /// This is only called during Phase 2 of the sumcheck.
     fn initialize_lower_rounds(params: IncClaimReductionSumcheckParams<F>, remainder: Vec<Vec<F>>, _round_number: usize) -> Self {
         assert_eq!(
             remainder.len(),

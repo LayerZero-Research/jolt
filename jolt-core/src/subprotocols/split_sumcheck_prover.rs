@@ -73,8 +73,8 @@ where
     fn compute_message(&mut self, round: usize, previous_claim: F) -> UniPoly<F> {
         if self.inner.num_rounds() - round <= self.lower_rounds && self.pb.is_none() {
             let x = self.inner.create_remainder();
-            // let params = self.params.take().expect("params already consumed");
-            // self.inner = I::initialize_lower_rounds(params, x.clone(), round);
+            let params = self.params.take().expect("params already consumed");
+            self.inner = I::initialize_lower_rounds(params, x.clone(), round);
             self.initialize_partially_bound_sumcheck(x);
         }
 
@@ -104,8 +104,6 @@ where
         let poly_claims = self.pb.as_ref()
             .expect("cache_openings called before PartiallyBoundSumcheck was created")
             .final_poly_claims();
-        // assert_eq!(self.inner.cache_openings_with_claims(accumulator, transcript, sumcheck_challenges, &poly_claims), 
-        // self.inner.cache_openings(accumulator, transcript, sumcheck_challenges));
         
         self.inner.cache_openings_with_claims(accumulator, transcript, sumcheck_challenges, &poly_claims)
         // self.inner.cache_openings(accumulator, transcript, sumcheck_challenges)
