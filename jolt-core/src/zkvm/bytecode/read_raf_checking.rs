@@ -517,7 +517,7 @@ fn ra_poly_to_evals<F: JoltField>(poly: &RaPolynomial<u8, F>) -> Vec<F> {
     (0..poly.len()).map(|i| poly.get_bound_coeff(i)).collect()
 }
 
-impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
+impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T, ReadRafSumcheckParams<F>>
     for ReadRafSumcheckProver<F, T>
 {
     /// Inverse of `create_remainder`: reconstructs `self.gruen_eq_polys` and `self.ra`
@@ -528,40 +528,57 @@ impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
     ///   - `remainder[N_STAGES..N_STAGES+d]` = RA polynomials
     ///
     /// This function reconstructs the internal state from those evaluations.
-    fn initialize_lower_rounds(&mut self, remainder: Vec<Vec<F>>, round_number: usize) {
+    fn initialize_lower_rounds(params: ReadRafSumcheckParams<F>, remainder: Vec<Vec<F>>, round_number: usize) -> Self {
         assert_eq!(
             remainder.len(),
-            N_STAGES + self.params.d,
-            "Expected {} eq + {} RA polynomials",
+            2 * N_STAGES + params.d,
+            "Expected {} eq + {} bound_val_evals + {} RA polynomials",
             N_STAGES,
-            self.params.d
+            N_STAGES,
+            params.d
         );
 
         // Calculate remaining cycle variables
-        let remaining_vars = self.params.log_T - (round_number - self.params.log_K);
+        let remaining_vars = params.log_T - (round_number - params.log_K);
 
         // Reconstruct gruen_eq_polys for each stage
-        for stage in 0..N_STAGES {
+        let gruen_eq_polys: [GruenSplitEqPolynomial<F>; N_STAGES] = array::from_fn(|stage| {
             // The sum of eq evaluations equals current_scalar (since unscaled eq sums to 1)
             let current_scalar: F = remainder[stage].iter().sum();
 
             // Use the remaining challenges from params.r_cycles[stage]
-            let w = &self.params.r_cycles[stage][..remaining_vars];
-            self.gruen_eq_polys[stage] = GruenSplitEqPolynomial::new_with_scaling(
+            let w = &params.r_cycles[stage][..remaining_vars];
+            GruenSplitEqPolynomial::new_with_scaling(
                 w,
                 BindingOrder::LowToHigh,
                 Some(current_scalar),
-            );
-        }
+            )
+        });
+
+        // Extract bound_val_evals from remainder (constant polynomials, take first element)
+        let bound_val_evals: [F; N_STAGES] = array::from_fn(|stage| remainder[N_STAGES + stage][0]);
 
         // Reconstruct RA polynomials as RoundN
-        self.ra = (0..self.params.d)
+        let ra = (0..params.d)
             .map(|i| {
                 RaPolynomial::RoundN(MultilinearPolynomial::from(
-                    remainder[N_STAGES + i].clone(),
+                    remainder[2 * N_STAGES + i].clone(),
                 ))
             })
             .collect();
+
+        Self {
+            F: array::from_fn(|_| MultilinearPolynomial::from(vec![F::zero()])),
+            ra,
+            r_address_prime: Vec::new(),
+            gruen_eq_polys,
+            prev_round_claims: [F::zero(); N_STAGES],
+            prev_round_polys: None,
+            bound_val_evals: Some(bound_val_evals),
+            pc: Vec::new(),
+            params,
+            _phantom: PhantomData,
+        }
     }
 
     /// Returns the number of final rounds to use for the partially-bound sumcheck phase.
@@ -574,13 +591,21 @@ impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
 
     fn create_remainder(&self) -> Vec<Vec<F>> {
         // Return the polynomials involved in the cycle-binding phase:
-        // - 5 eq polynomials (one per stage) from gruen_eq_polys
+        // - N_STAGES eq polynomials (one per stage) from gruen_eq_polys
+        // - N_STAGES bound_val_evals constants (one per stage)
         // - d RA polynomials
-        let mut polys = Vec::with_capacity(N_STAGES + self.params.d);
+        let len = self.gruen_eq_polys[0].len();
+        let mut polys = Vec::with_capacity(2 * N_STAGES + self.params.d);
         
         // Add eq polynomials for each stage
         for stage in 0..N_STAGES {
             polys.push(self.gruen_eq_polys[stage].merge().Z);
+        }
+        
+        // Add bound_val_evals as constant polynomials
+        let bound_val_evals = self.bound_val_evals.expect("bound_val_evals should be set in cycle-binding phase");
+        for stage in 0..N_STAGES {
+            polys.push(vec![bound_val_evals[stage]; len]);
         }
         
         // Add RA polynomials
@@ -594,14 +619,15 @@ impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
     fn create_expr(&self) -> Box<dyn Fn(&[F]) -> F + Send + Sync> {
         // Capture the necessary parameters (clone since we're moving into a closure)
         let gamma_powers = self.params.gamma_powers.clone();
-        let bound_val_evals = self.bound_val_evals.expect("bound_val_evals should be set in cycle-binding phase");
         let d = self.params.d;
         
         Box::new(move |vals: &[F]| {
             // vals[0..N_STAGES] are eq evals for each stage
-            // vals[N_STAGES..N_STAGES+d] are ra evals for each dimension
+            // vals[N_STAGES..2*N_STAGES] are bound_val_evals for each stage
+            // vals[2*N_STAGES..2*N_STAGES+d] are ra evals for each dimension
             let eq_evals = &vals[0..N_STAGES];
-            let ra_evals = &vals[N_STAGES..N_STAGES + d];
+            let bound_val_evals = &vals[N_STAGES..2 * N_STAGES];
+            let ra_evals = &vals[2 * N_STAGES..2 * N_STAGES + d];
             
             // Compute product of all RA polynomials
             let ra_prod: F = ra_evals.iter().copied().product();
@@ -623,8 +649,9 @@ impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
         poly_claims: &[F],
     ) {
         // poly_claims[0..N_STAGES] are eq claims (not needed for openings)
-        // poly_claims[N_STAGES..N_STAGES+d] are RA claims
-        let ra_claims = &poly_claims[N_STAGES..N_STAGES + self.params.d];
+        // poly_claims[N_STAGES..2*N_STAGES] are bound_val_evals claims (constants, not needed for openings)
+        // poly_claims[2*N_STAGES..2*N_STAGES+d] are RA claims
+        let ra_claims = &poly_claims[2 * N_STAGES..2 * N_STAGES + self.params.d];
         self.cache_openings_impl(accumulator, transcript, sumcheck_challenges, ra_claims);
     }
 }
@@ -738,6 +765,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T> for ReadRafSumc
     }
 }
 
+#[derive(Clone)]
 pub struct ReadRafSumcheckParams<F: JoltField> {
     /// Index `i` stores `gamma^i`.
     pub gamma_powers: Vec<F>,

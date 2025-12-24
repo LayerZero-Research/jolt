@@ -99,18 +99,6 @@ impl<F: JoltField, T: Transcript> HammingBooleanitySumcheckProver<F, T> {
             _phantom: PhantomData,
         }
     }
-
-    pub fn to_split_sumcheck_instance(self) -> SplitSumcheckInstance<F, T> {
-        // Wrap ram_hamming_booleanity in SplitSumcheckInstance to use partially-bound sumcheck
-        // for the final `lower_rounds` rounds
-        const SPLIT_LOWER_ROUNDS: usize = 8;
-        SplitSumcheckInstance::new(
-            Box::new(self),
-            SPLIT_LOWER_ROUNDS,
-            BindingOrder::LowToHigh,
-        )
-    }
-
 }
 
 impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
@@ -175,7 +163,7 @@ impl<F: JoltField, T: Transcript> HammingBooleanitySumcheckProver<F, T> {
     }
 }
 
-impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
+impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T, HammingBooleanitySumcheckParams<F>>
     for HammingBooleanitySumcheckProver<F, T>
 {
 
@@ -187,7 +175,7 @@ impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
     ///   - `remainder[1]` = `multilinear_to_evals(&self.H)`
     ///
     /// This function reconstructs the internal state from those evaluations.
-    fn initialize_lower_rounds(&mut self, remainder: Vec<Vec<F>>, round_number: usize) {
+    fn initialize_lower_rounds(params: HammingBooleanitySumcheckParams<F>, remainder: Vec<Vec<F>>, round_number: usize) -> Self {
         assert_eq!(remainder.len(), 2, "Expected 2 polynomials: eq and H");
 
         // Take ownership of remainder vectors without cloning
@@ -201,7 +189,7 @@ impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
             "eq and H must have same length"
         );
 
-        let remaining_vars = self.params.r_cycle.len() - round_number;
+        let remaining_vars = params.r_cycle.len() - round_number;
 
         // Inverse of `self.eq_r_cycle.merge().Z`:
         // The sum of eq evaluations equals current_scalar (since unscaled eq sums to 1)
@@ -209,8 +197,8 @@ impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
 
         // Recreate GruenSplitEqPolynomial using only the first `remaining_vars` challenges
         // from params.r_cycle.r (which correspond to the remaining unbound variables)
-        let w = &self.params.r_cycle.r[..remaining_vars];
-        self.eq_r_cycle = GruenSplitEqPolynomial::new_with_scaling(
+        let w = &params.r_cycle.r[..remaining_vars];
+        let eq_r_cycle = GruenSplitEqPolynomial::new_with_scaling(
             w,
             BindingOrder::LowToHigh,
             Some(current_scalar),
@@ -218,7 +206,14 @@ impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
 
         // Inverse of `multilinear_to_evals(&self.H)`:
         // Create a DensePolynomial (LargeScalars variant) from the evaluations
-        self.H = MultilinearPolynomial::from(h_evals);
+        let H = MultilinearPolynomial::from(h_evals);
+
+        HammingBooleanitySumcheckProver {
+            eq_r_cycle,
+            H,
+            params,
+            _phantom: PhantomData,
+        }
     }
 
     fn create_remainder(&self) -> Vec<Vec<F>> {

@@ -286,7 +286,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
     }
 }
 
-impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
+impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T, IncClaimReductionSumcheckParams<F>>
     for IncClaimReductionSumcheckProver<F>
 {
     /// Inverse of `create_remainder`: reconstructs the Phase2 prover state
@@ -299,18 +299,12 @@ impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
     ///   - `remainder[3]` = `mlpoly_to_evals(&prover.eq_rd)`
     ///
     /// This function reconstructs the internal state from those evaluations.
-    fn initialize_lower_rounds(&mut self, remainder: Vec<Vec<F>>, _round_number: usize) {
+    fn initialize_lower_rounds(params: IncClaimReductionSumcheckParams<F>, remainder: Vec<Vec<F>>, _round_number: usize) -> Self {
         assert_eq!(
             remainder.len(),
             4,
             "Expected 4 polynomials: ram_inc, rd_inc, eq_ram, eq_rd"
         );
-
-        // Get params from current state (works for both Phase1 and Phase2)
-        let params = match self {
-            Self::Phase1(prover) => prover.params.clone(),
-            Self::Phase2(prover) => prover.params.clone(),
-        };
 
         // Take ownership of remainder vectors without cloning
         let mut iter = remainder.into_iter();
@@ -320,13 +314,13 @@ impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
         let eq_rd_evals = iter.next().unwrap();
 
         // Reconstruct Phase2 prover from remainder polynomials
-        *self = Self::Phase2(IncClaimReductionPhase2Prover {
+        Self::Phase2(IncClaimReductionPhase2Prover {
             ram_inc: MultilinearPolynomial::from(ram_inc_evals),
             rd_inc: MultilinearPolynomial::from(rd_inc_evals),
             eq_ram: MultilinearPolynomial::from(eq_ram_evals),
             eq_rd: MultilinearPolynomial::from(eq_rd_evals),
             params,
-        });
+        })
     }
 
     /// Returns the number of final rounds to use for the partially-bound sumcheck phase.

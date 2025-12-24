@@ -57,7 +57,7 @@ use crate::poly::ra_poly::RaPolynomial;
 use crate::poly::split_eq_poly::GruenSplitEqPolynomial;
 use crate::poly::unipoly::UniPoly;
 use crate::subprotocols::mles_product_sum::compute_mles_product_sum;
-use crate::subprotocols::split_sumcheck_prover::SplitSumcheckInstanceInner;
+use crate::subprotocols::split_sumcheck_prover::{SplitSumcheckInstance, SplitSumcheckInstanceInner};
 use crate::subprotocols::sumcheck_prover::SumcheckInstanceProver;
 use crate::subprotocols::sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier};
 use crate::zkvm::config::OneHotParams;
@@ -270,7 +270,7 @@ fn ra_poly_to_evals<F: JoltField>(poly: &RaPolynomial<u8, F>) -> Vec<F> {
     (0..poly.len()).map(|i| poly.get_bound_coeff(i)).collect()
 }
 
-impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
+impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T, RamRaVirtualParams<F>>
     for RamRaVirtualSumcheckProver<F, T>
 {
     /// Inverse of `create_remainder`: reconstructs `self.eq_poly` and `self.ra_i_polys`
@@ -281,27 +281,27 @@ impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
     ///   - `remainder[1..1+d]` = `ra_poly_to_evals(&self.ra_i_polys[i])` for each i
     ///
     /// This function reconstructs the internal state from those evaluations.
-    fn initialize_lower_rounds(&mut self, remainder: Vec<Vec<F>>, round_number: usize) {
+    fn initialize_lower_rounds(params: RamRaVirtualParams<F>, remainder: Vec<Vec<F>>, round_number: usize) -> Self {
         assert_eq!(
             remainder.len(),
-            1 + self.params.d,
+            1 + params.d,
             "Expected 1 eq + {} ra_i polynomials",
-            self.params.d
+            params.d
         );
 
         // Take ownership of remainder vectors without cloning
         let mut iter = remainder.into_iter();
         let eq_evals = iter.next().unwrap();
 
-        let remaining_vars = self.params.log_T - round_number;
+        let remaining_vars = params.log_T - round_number;
 
         // Inverse of `self.eq_poly.merge().Z`:
         // The sum of eq evaluations equals current_scalar (since unscaled eq sums to 1)
         let current_scalar: F = eq_evals.iter().sum();
 
         // Recreate GruenSplitEqPolynomial using only the first `remaining_vars` challenges
-        let w = &self.params.r_cycle.r[..remaining_vars];
-        self.eq_poly = GruenSplitEqPolynomial::new_with_scaling(
+        let w = &params.r_cycle.r[..remaining_vars];
+        let eq_poly = GruenSplitEqPolynomial::new_with_scaling(
             w,
             BindingOrder::LowToHigh,
             Some(current_scalar),
@@ -309,9 +309,16 @@ impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
 
         // Inverse of `ra_poly_to_evals(&self.ra_i_polys[i])`:
         // Create RaPolynomial::RoundN from the evaluations for each ra_i (take ownership)
-        self.ra_i_polys = iter
+        let ra_i_polys = iter
             .map(|evals| RaPolynomial::RoundN(MultilinearPolynomial::from(evals)))
             .collect();
+
+        RamRaVirtualSumcheckProver {
+            ra_i_polys,
+            eq_poly,
+            params,
+            _phantom: PhantomData,
+        }
     }
 
     fn create_remainder(&self) -> Vec<Vec<F>> {

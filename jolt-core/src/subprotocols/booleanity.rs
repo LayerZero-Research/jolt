@@ -41,7 +41,7 @@ use crate::{
         unipoly::UniPoly,
     },
     subprotocols::{
-        split_sumcheck_prover::SplitSumcheckInstanceInner,
+        split_sumcheck_prover::{SplitSumcheckInstance, SplitSumcheckInstanceInner},
         sumcheck_prover::SumcheckInstanceProver,
         sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier},
     },
@@ -58,6 +58,7 @@ use crate::{
 const DEGREE_BOUND: usize = 3;
 
 /// Parameters for the booleanity sumcheck.
+#[derive(Clone)]
 pub struct BooleanitySumcheckParams<F: JoltField> {
     /// Log of chunk size (shared across all families)
     pub log_k_chunk: usize,
@@ -256,6 +257,17 @@ impl<F: JoltField, T: Transcript> BooleanitySumcheckProver<F, T> {
         }
     }
 
+    pub fn to_split_sumcheck_instance(self, params: BooleanitySumcheckParams<F>) -> SplitSumcheckInstance<F, T, BooleanitySumcheckParams<F>, Self> {
+        // Wrap booleanity in SplitSumcheckInstance to use partially-bound sumcheck
+        // for the final `lower_rounds` rounds in phase 2
+        let lower_rounds = self.params.log_t / 2;
+        SplitSumcheckInstance::new(
+            self,
+            params,
+            lower_rounds,
+            BindingOrder::LowToHigh,
+        )
+    }
 
     fn compute_phase1_message(&self, round: usize, previous_claim: F) -> UniPoly<F> {
         let m = round + 1;
@@ -448,10 +460,10 @@ impl<F: JoltField, T: Transcript> BooleanitySumcheckProver<F, T> {
     }
 }
 
-impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
+impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T, BooleanitySumcheckParams<F>>
     for BooleanitySumcheckProver<F, T>
 {
-    /// Inverse of `create_remainder`: reconstructs `self.D` and `self.H`
+    /// Inverse of `create_remainder`: reconstructs `D` and `H`
     /// from the remainder polynomials so we can continue the sumcheck from `round_number`.
     ///
     /// `create_remainder` produces:
@@ -459,24 +471,27 @@ impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
     ///   - `remainder[1..1+num_polys]` = H polynomial evaluations for each RA polynomial
     ///
     /// This function reconstructs the internal state from those evaluations.
-    fn initialize_lower_rounds(&mut self, remainder: Vec<Vec<F>>, round_number: usize) {
-        let num_polys = self.params.polynomial_types.len();
+    fn initialize_lower_rounds(params: BooleanitySumcheckParams<F>, remainder: Vec<Vec<F>>, round_number: usize) -> Self {
+        let num_polys = params.polynomial_types.len();
         assert_eq!(
             remainder.len(),
-            1 + num_polys,
-            "Expected 1 eq + {} H polynomials",
+            2 + num_polys,
+            "Expected 1 eq_r_r + 1 D eq + {} H polynomials",
             num_polys
         );
 
-        let remaining_vars = self.params.log_t - (round_number - self.params.log_k_chunk);
+        let remaining_vars = params.log_t - (round_number - params.log_k_chunk);
+
+        // remainder[0] contains constant eq_r_r values
+        let eq_r_r = remainder[0][0];
 
         // Inverse of `self.D.merge().Z`:
         // The sum of eq evaluations equals current_scalar (since unscaled eq sums to 1)
-        let current_scalar: F = remainder[0].iter().copied().sum();
+        let current_scalar: F = remainder[1].iter().copied().sum();
 
         // Recreate GruenSplitEqPolynomial for remaining cycle variables
-        let w = &self.params.r_cycle[..remaining_vars];
-        self.D = GruenSplitEqPolynomial::new_with_scaling(
+        let w = &params.r_cycle[..remaining_vars];
+        let D = GruenSplitEqPolynomial::new_with_scaling(
             w,
             BindingOrder::LowToHigh,
             Some(current_scalar),
@@ -484,11 +499,27 @@ impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
 
         // Inverse of H polynomial evaluations:
         // Create SharedRaPolynomials::RoundN from the evaluations
-        let h_polys: Vec<MultilinearPolynomial<F>> = remainder[1..]
+        let h_polys: Vec<MultilinearPolynomial<F>> = remainder[2..]
             .iter()
             .map(|evals| MultilinearPolynomial::from(evals.clone()))
             .collect();
-        self.H = Some(SharedRaPolynomials::RoundN(h_polys));
+        let H = Some(SharedRaPolynomials::RoundN(h_polys));
+
+        // Create a dummy B polynomial (not used in phase 2)
+        let B = GruenSplitEqPolynomial::new(&[], BindingOrder::LowToHigh);
+
+        BooleanitySumcheckProver {
+            B,
+            D,
+            G: Vec::new(),
+            H,
+            F: ExpandingTable::new(1, BindingOrder::LowToHigh),
+            eq_r_r,
+            ra_indices: Vec::new(),
+            one_hot_params: OneHotParams::default(),
+            params,
+            _phantom: PhantomData,
+        }
     }
 
     /// Returns the number of final rounds to use for the partially-bound sumcheck phase.
@@ -512,6 +543,9 @@ impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
         let len = H.len();
         
         let mut polys = Vec::with_capacity(1 + num_polys);
+
+        // Add eq_r_r polynomial
+        polys.push(vec![self.eq_r_r; len]);
         
         // Add D eq polynomial
         polys.push(self.D.merge().Z);
@@ -528,14 +562,15 @@ impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
     fn create_expr(&self) -> Box<dyn Fn(&[F]) -> F + Send + Sync> {
         // Capture the necessary parameters
         let gammas = self.params.gammas.clone();
-        let eq_r_r = self.eq_r_r;
+        // let eq_r_r = self.eq_r_r;
         let num_polys = self.H.as_ref().expect("H should be initialized").num_polys();
         
         Box::new(move |vals: &[F]| {
             // vals[0] is eq_D eval
             // vals[1..1+num_polys] are H polynomial evals
-            let eq_d = vals[0];
-            let h_evals = &vals[1..1 + num_polys];
+            let eq_r_r = vals[0];
+            let eq_d = vals[1];
+            let h_evals = &vals[2..2 + num_polys];
             
             // Expression: eq_r_r * eq_D * sum_i(gamma_i * (h_i^2 - h_i))
             let inner_sum: F = h_evals
@@ -556,8 +591,9 @@ impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
         poly_claims: &[F],
     ) {
         // poly_claims[0] is eq_D claim (not needed for openings)
-        // poly_claims[1..] are H claims
-        let h_claims = &poly_claims[1..];
+        // poly_claims[1] is eq_r_r claim (not needed for openings)
+        // poly_claims[2..] are H claims
+        let h_claims = &poly_claims[2..];
         self.cache_openings_impl(accumulator, transcript, sumcheck_challenges, h_claims);
     }
 }

@@ -17,27 +17,40 @@ use crate::{
 
 
 #[derive(Allocative)]
-pub struct SplitSumcheckInstance<F: JoltField, T: Transcript> {
+pub struct SplitSumcheckInstance<F: JoltField, T: Transcript, P, I>
+where
+    I: SplitSumcheckInstanceInner<F, T, P>,
+{
     #[allocative(skip)]
-    inner: Box<dyn SplitSumcheckInstanceInner<F, T>>,
+    inner: I,
+    #[allocative(skip)]
+    params: Option<P>,
     lower_rounds: usize,
     #[allow(dead_code)]
     binding_order: BindingOrder,
     #[allocative(skip)]
     pb: Option<PartiallyBoundSumcheck<F>>,
+    #[allocative(skip)]
+    _marker: std::marker::PhantomData<fn(P) -> T>,
 }
 
-impl<F: JoltField, T: Transcript> SplitSumcheckInstance<F, T> {
+impl<F: JoltField, T: Transcript, P, I> SplitSumcheckInstance<F, T, P, I>
+where
+    I: SplitSumcheckInstanceInner<F, T, P>,
+{
     pub fn new(
-        inner: Box<dyn SplitSumcheckInstanceInner<F, T>>,
+        inner: I,
+        params: P,
         lower_rounds: usize,
         binding_order: BindingOrder,
     ) -> Self {
         Self {
             inner,
+            params: Some(params),
             lower_rounds,
             binding_order,
             pb: None,
+            _marker: std::marker::PhantomData,
         }
     }
 
@@ -46,23 +59,28 @@ impl<F: JoltField, T: Transcript> SplitSumcheckInstance<F, T> {
         let expr = self.inner.create_expr();
         self.pb = Some(PartiallyBoundSumcheck::new(
             remainder,
-            self.degree(),
+            self.inner.degree(),
             expr,
         ));
     }
 }
 
-impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for SplitSumcheckInstance<F, T> {
+impl<F: JoltField, T: Transcript, P, I> SumcheckInstanceProver<F, T> for SplitSumcheckInstance<F, T, P, I>
+where
+    P: Send + Sync,
+    I: SplitSumcheckInstanceInner<F, T, P>,
+{
     fn compute_message(&mut self, round: usize, previous_claim: F) -> UniPoly<F> {
         if self.inner.num_rounds() - round <= self.lower_rounds && self.pb.is_none() {
             let x = self.inner.create_remainder();
-            self.inner.initialize_lower_rounds(x.clone(), round);
+            // let params = self.params.take().expect("params already consumed");
+            // self.inner = I::initialize_lower_rounds(params, x.clone(), round);
             self.initialize_partially_bound_sumcheck(x);
         }
 
-        if let Some(ref pb) = self.pb {
-            assert_eq!(
-                self.pb.as_ref().unwrap().compute_message(previous_claim), 
+        if let Some(ref mut pb) = self.pb {
+            debug_assert_eq!(
+                pb.compute_message(previous_claim), 
                 self.inner.compute_message(round, previous_claim), 
                 "compute_message mismatch {round}");
 
@@ -86,8 +104,11 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for SplitSumcheck
         let poly_claims = self.pb.as_ref()
             .expect("cache_openings called before PartiallyBoundSumcheck was created")
             .final_poly_claims();
+        // assert_eq!(self.inner.cache_openings_with_claims(accumulator, transcript, sumcheck_challenges, &poly_claims), 
+        // self.inner.cache_openings(accumulator, transcript, sumcheck_challenges));
         
         self.inner.cache_openings_with_claims(accumulator, transcript, sumcheck_challenges, &poly_claims)
+        // self.inner.cache_openings(accumulator, transcript, sumcheck_challenges)
     }
 
     fn get_params(&self) -> &dyn SumcheckInstanceParams<F> {
@@ -110,11 +131,13 @@ const DEFAULT_SPLIT_LOWER_ROUNDS: usize = 8;
 /// Extension of `SumcheckInstanceProver` for instances that can be used with `SplitSumcheckInstance`.
 /// Adds methods to extract the remainder polynomials and expression closure needed for the
 /// partially-bound sumcheck phase.
-pub trait SplitSumcheckInstanceInner<F: JoltField, T: Transcript>:
+pub trait SplitSumcheckInstanceInner<F: JoltField, T: Transcript, P>:
     SumcheckInstanceProver<F, T>
 {
-
-    fn initialize_lower_rounds(&mut self, remainder: Vec<Vec<F>>, round_number: usize);
+    /// Creates a new instance for the lower rounds of the split sumcheck.
+    /// Called when transitioning to the partially-bound sumcheck phase.
+    /// This is a static constructor that takes params, remainder polynomials, and round number.
+    fn initialize_lower_rounds(params: P, remainder: Vec<Vec<F>>, round_number: usize) -> Self;
 
     /// Creates the remainder polynomials for the partially-bound sumcheck phase.
     /// Each inner `Vec<F>` represents the evaluations of a polynomial over the remaining variables.
@@ -142,13 +165,14 @@ pub trait SplitSumcheckInstanceInner<F: JoltField, T: Transcript>:
     }
 
     /// Wraps this prover in a `SplitSumcheckInstance` for the final rounds.
-    fn into_split(self) -> SplitSumcheckInstance<F, T>
+    fn into_split(self, params: P) -> SplitSumcheckInstance<F, T, P, Self>
     where
-        Self: Sized + 'static,
+        Self: Sized,
     {
         let lower_rounds = self.split_lower_rounds();
         SplitSumcheckInstance::new(
-            Box::new(self),
+            self,
+            params,
             lower_rounds,
             BindingOrder::LowToHigh,
         )

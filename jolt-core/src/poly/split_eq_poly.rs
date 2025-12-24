@@ -86,6 +86,18 @@ impl<F: JoltField> GruenSplitEqPolynomial<F> {
         binding_order: BindingOrder,
         scaling_factor: Option<F>,
     ) -> Self {
+        // Handle empty case: the eq polynomial is just a constant
+        if w.is_empty() {
+            return Self {
+                current_index: 0,
+                current_scalar: scaling_factor.unwrap_or(F::one()),
+                w: Vec::new(),
+                E_in_vec: vec![vec![F::one()]],
+                E_out_vec: vec![vec![F::one()]],
+                binding_order,
+            };
+        }
+
         match binding_order {
             BindingOrder::LowToHigh => {
                 let m = w.len() / 2;

@@ -911,8 +911,11 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             &self.opening_accumulator,
             &mut self.transcript,
         );
-
+        let bytecode_read_raf_params2 = bytecode_read_raf_params.clone();
+        
         let ram_hamming_booleanity_params =
+            HammingBooleanitySumcheckParams::new(&self.opening_accumulator);
+        let ram_hamming_booleanity_params2 = 
             HammingBooleanitySumcheckParams::new(&self.opening_accumulator);
 
         let booleanity_params = BooleanitySumcheckParams::new(
@@ -921,8 +924,13 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             &self.opening_accumulator,
             &mut self.transcript,
         );
-
+        let booleanity_params2 = booleanity_params.clone();
         let ram_ra_virtual_params = RamRaVirtualParams::new(
+            self.trace.len(),
+            &self.one_hot_params,
+            &self.opening_accumulator,
+        );
+        let ram_ra_virtual_params2 = RamRaVirtualParams::new(
             self.trace.len(),
             &self.one_hot_params,
             &self.opening_accumulator,
@@ -937,16 +945,17 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             &self.opening_accumulator,
             &mut self.transcript,
         );
+        let inc_reduction_params2 = inc_reduction_params.clone();
 
         let bytecode_read_raf = BytecodeReadRafSumcheckProver::initialize(
             bytecode_read_raf_params,
             &self.trace,
             &self.preprocessing.shared.bytecode,
         )
-        .into_split();
+        .into_split(bytecode_read_raf_params2);
         let ram_hamming_booleanity =
             HammingBooleanitySumcheckProver::initialize(ram_hamming_booleanity_params, &self.trace)
-            .into_split();
+            .into_split(ram_hamming_booleanity_params2);
 
         let booleanity = BooleanitySumcheckProver::initialize(
             booleanity_params,
@@ -955,7 +964,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             &self.program_io.memory_layout,
             &self.one_hot_params,
         )
-        .into_split();
+        .into_split(booleanity_params2);
 
         let ram_ra_virtual = RamRaVirtualSumcheckProver::initialize(
             ram_ra_virtual_params,
@@ -963,12 +972,13 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             &self.program_io.memory_layout,
             &self.one_hot_params,
         )
-        .into_split();
+        .into_split(ram_ra_virtual_params2);
+        // .into_split(ram_ra_virtual_params2);
         let lookups_ra_virtual =
             LookupsRaSumcheckProver::initialize(lookups_ra_virtual_params, &self.trace);
         let inc_reduction =
             IncClaimReductionSumcheckProver::initialize(inc_reduction_params, self.trace.clone())
-                .into_split();
+                .into_split(inc_reduction_params2);
 
         #[cfg(feature = "allocative")]
         {
