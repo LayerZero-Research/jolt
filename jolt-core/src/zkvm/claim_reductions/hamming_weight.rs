@@ -93,6 +93,7 @@ use crate::poly::{
     unipoly::UniPoly,
 };
 use crate::subprotocols::{
+    split_sumcheck_prover::{SplitSumcheckInstance, SplitSumcheckInstanceInner},
     sumcheck_prover::SumcheckInstanceProver,
     sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier},
 };
@@ -350,6 +351,20 @@ impl<F: JoltField> HammingWeightClaimReductionProver<F> {
             params,
         }
     }
+
+    pub fn to_split_sumcheck_instance<T: Transcript>(self) -> SplitSumcheckInstance<F, T> {
+        const SPLIT_LOWER_ROUNDS: usize = 8;
+        SplitSumcheckInstance::new(
+            Box::new(self),
+            SPLIT_LOWER_ROUNDS,
+            BindingOrder::LowToHigh,
+        )
+    }
+}
+
+/// Helper to extract evaluations from a MultilinearPolynomial as a Vec<F>
+fn multilinear_to_evals<F: JoltField>(poly: &MultilinearPolynomial<F>) -> Vec<F> {
+    (0..poly.len()).map(|i| poly.get_bound_coeff(i)).collect()
 }
 
 impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
@@ -450,6 +465,97 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
     #[cfg(feature = "allocative")]
     fn update_flamegraph(&self, flamegraph: &mut allocative::FlameGraphBuilder) {
         flamegraph.visit_root(self);
+    }
+}
+
+impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
+    for HammingWeightClaimReductionProver<F>
+{
+    fn create_remainder(&self) -> Vec<Vec<F>> {
+        let N = self.params.polynomial_types.len();
+
+        // Return polynomials in order:
+        // - G[0], G[1], ..., G[N-1]
+        // - eq_bool
+        // - eq_virt[0], eq_virt[1], ..., eq_virt[N-1]
+        let mut polys = Vec::with_capacity(2 * N + 1);
+
+        // G polynomials
+        for i in 0..N {
+            polys.push(multilinear_to_evals(&self.G[i]));
+        }
+
+        // eq_bool (shared)
+        polys.push(multilinear_to_evals(&self.eq_bool));
+
+        // eq_virt polynomials
+        for i in 0..N {
+            polys.push(multilinear_to_evals(&self.eq_virt[i]));
+        }
+
+        polys
+    }
+
+    fn create_expr(&self) -> Box<dyn Fn(&[F]) -> F + Send + Sync> {
+        let N = self.params.polynomial_types.len();
+        let gamma_powers = self.params.gamma_powers.clone();
+
+        // vals layout:
+        // - vals[0..N] = G[0..N]
+        // - vals[N] = eq_bool
+        // - vals[N+1..2N+1] = eq_virt[0..N]
+        Box::new(move |vals: &[F]| {
+            let eq_bool = vals[N];
+            let mut result = F::zero();
+
+            for i in 0..N {
+                let g_i = vals[i];
+                let eq_virt_i = vals[N + 1 + i];
+
+                // γ^{3i} · G_i + γ^{3i+1} · eq_bool · G_i + γ^{3i+2} · eq_virt_i · G_i
+                let gamma_hw = gamma_powers[3 * i];
+                let gamma_bool = gamma_powers[3 * i + 1];
+                let gamma_virt = gamma_powers[3 * i + 2];
+
+                result += g_i * (gamma_hw + gamma_bool * eq_bool + gamma_virt * eq_virt_i);
+            }
+
+            result
+        })
+    }
+
+    fn cache_openings_with_claims(
+        &self,
+        accumulator: &mut ProverOpeningAccumulator<F>,
+        transcript: &mut T,
+        sumcheck_challenges: &[F::Challenge],
+        poly_claims: &[F],
+    ) {
+        let N = self.params.polynomial_types.len();
+
+        // poly_claims layout:
+        // - poly_claims[0..N] = G[0..N] claims
+        // - poly_claims[N] = eq_bool claim (not needed for openings)
+        // - poly_claims[N+1..2N+1] = eq_virt[0..N] claims (not needed for openings)
+
+        // Extract r_address portion (just the sumcheck challenges, converted to big-endian)
+        let r_address: OpeningPoint<BIG_ENDIAN, F> =
+            OpeningPoint::<LITTLE_ENDIAN, F>::new(sumcheck_challenges.to_vec()).match_endianness();
+        let r_address = r_address.r;
+
+        for i in 0..N {
+            let claim = poly_claims[i];
+
+            // All three claim types (HW, Bool, Virt) collapse to this single opening
+            accumulator.append_sparse(
+                transcript,
+                vec![self.params.polynomial_types[i]],
+                SumcheckId::HammingWeightClaimReduction,
+                r_address.clone(),
+                self.params.r_cycle.clone(),
+                vec![claim],
+            );
+        }
     }
 }
 

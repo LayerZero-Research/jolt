@@ -1116,7 +1116,8 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             &self.trace,
             &self.preprocessing.shared,
             &self.one_hot_params,
-        );
+        )
+        .to_split_sumcheck_instance();
 
         #[cfg(feature = "allocative")]
         print_data_structure_heap_usage("HammingWeightClaimReductionProver", &hw_prover);
