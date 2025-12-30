@@ -20,6 +20,7 @@ use crate::{
         unipoly::UniPoly,
     },
     subprotocols::{
+        split_sumcheck_prover::{SplitSumcheckInstance, SplitSumcheckInstanceInner},
         sumcheck_prover::SumcheckInstanceProver,
         sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier},
     },
@@ -36,6 +37,11 @@ use num::Integer;
 use num_traits::Zero;
 use rayon::prelude::*;
 use tracer::instruction::Cycle;
+
+/// Helper to extract evaluations from a MultilinearPolynomial as a Vec<F>
+fn multilinear_to_evals<F: JoltField>(poly: &MultilinearPolynomial<F>) -> Vec<F> {
+    (0..poly.len()).map(|i| poly.get_bound_coeff(i)).collect()
+}
 
 // Register read-write checking sumcheck
 //
@@ -595,6 +601,32 @@ impl<F: JoltField> RegistersReadWriteCheckingProver<F> {
             merged_eq.bind_parallel(r_j, BindingOrder::LowToHigh);
         }
     }
+
+    /// Convert to a split sumcheck instance.
+    ///
+    /// Note: This sumcheck has 3 phases. The split sumcheck can only work in phase 3
+    /// when cycle variables are fully bound (inc.len() == 1). In the current default
+    /// configuration where phase1 binds all cycle vars and phase2 binds all address vars,
+    /// phase 3 has 0 rounds and the split sumcheck will not activate.
+    pub fn to_split_sumcheck_instance<T: Transcript>(self) -> SplitSumcheckInstance<F, T> {
+        // Calculate lower_rounds: we want to switch to PB sumcheck only in phase 3
+        // when inc.len() == 1 (cycle vars fully bound)
+        let phase1_rounds = phase1_num_rounds(self.params.T);
+        let phase2_rounds = phase2_num_rounds(self.params.T);
+        let total_rounds = LOG_K + self.params.T.log_2();
+        let phase3_rounds = total_rounds.saturating_sub(phase1_rounds + phase2_rounds);
+
+        // Use at most 8 rounds for PB, but only if we're actually in phase 3.
+        // If phase3_rounds == 0, lower_rounds == 0 means split sumcheck won't activate.
+        let lower_rounds = 8.min(phase3_rounds);
+        debug_assert!(lower_rounds > 0, "split sumcheck should not activate in phase 3 {phase3_rounds}");
+
+        SplitSumcheckInstance::new(
+            Box::new(self),
+            lower_rounds,
+            BindingOrder::LowToHigh,
+        )
+    }
 }
 
 impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
@@ -711,6 +743,137 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
     #[cfg(feature = "allocative")]
     fn update_flamegraph(&self, flamegraph: &mut FlameGraphBuilder) {
         flamegraph.visit_root(self);
+    }
+}
+
+impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
+    for RegistersReadWriteCheckingProver<F>
+{
+    fn create_remainder(&self) -> Vec<Vec<F>> {
+        // This should only be called in phase 3 when ra, wa, val are available
+        // and inc.len() == 1 (cycle variables fully bound)
+        let ra = self
+            .ra
+            .as_ref()
+            .expect("create_remainder called before phase 3");
+        let wa = self
+            .wa
+            .as_ref()
+            .expect("create_remainder called before phase 3");
+        let val = self
+            .val
+            .as_ref()
+            .expect("create_remainder called before phase 3");
+
+        // Return polynomials in order: ra, wa, val
+        vec![
+            multilinear_to_evals(ra),
+            multilinear_to_evals(wa),
+            multilinear_to_evals(val),
+        ]
+    }
+
+    fn create_expr(&self) -> Box<dyn Fn(&[F]) -> F + Send + Sync> {
+        // This should only be called when inc.len() == 1 (cycle variables fully bound)
+        // In this case, inc and merged_eq are scalars
+        let inc_eval = self.inc.final_sumcheck_claim();
+        let eq_eval = self
+            .merged_eq
+            .as_ref()
+            .expect("create_expr called before phase 3")
+            .final_sumcheck_claim();
+
+        // Expression: eq_eval * (ra * val + wa * (val + inc_eval))
+        // where ra = gamma * rs1_ra + gamma^2 * rs2_ra (combined)
+        Box::new(move |vals: &[F]| {
+            let ra = vals[0]; // combined ra = gamma * rs1_ra + gamma^2 * rs2_ra
+            let wa = vals[1];
+            let val = vals[2];
+
+            // rd_write_value = wa * (val + inc_eval)
+            // read_vals = ra * val (already scaled by gamma, gamma^2)
+            eq_eval * (wa * (val + inc_eval) + ra * val)
+        })
+    }
+
+    fn cache_openings_with_claims(
+        &self,
+        accumulator: &mut ProverOpeningAccumulator<F>,
+        transcript: &mut T,
+        sumcheck_challenges: &[F::Challenge],
+        poly_claims: &[F],
+    ) {
+        // poly_claims[0] = combined_ra (gamma * rs1_ra + gamma^2 * rs2_ra)
+        // poly_claims[1] = rd_wa
+        // poly_claims[2] = val
+        let combined_ra_claim = poly_claims[0];
+        let rd_wa_claim = poly_claims[1];
+        let val_claim = poly_claims[2];
+
+        let opening_point = self.params.normalize_opening_point(sumcheck_challenges);
+        let (r_address, r_cycle) = opening_point.split_at(LOG_K);
+
+        let inc_claim = self.inc.final_sumcheck_claim();
+
+        // Compute individual rs1_ra and rs2_ra claims from combined
+        let eq_r_address = EqPolynomial::evals(&r_address.r);
+        let (r_cycle_hi, r_cycle_lo) = r_cycle.split_at(r_cycle.len() / 2);
+        let (eq_r_cycle_hi, eq_r_cycle_lo) = rayon::join(
+            || EqPolynomial::evals(&r_cycle_hi.r),
+            || EqPolynomial::evals(&r_cycle_lo.r),
+        );
+        let cycle_lo_mask = (1 << r_cycle_lo.len()) - 1;
+        let rs1_ra_claim: F = self
+            .trace
+            .par_iter()
+            .enumerate()
+            .filter_map(|(j, cycle)| {
+                cycle.rs1_read().map(|(rs1, _)| {
+                    let j_hi = j >> r_cycle_lo.len();
+                    let j_lo = j & cycle_lo_mask;
+                    eq_r_address[rs1 as usize] * eq_r_cycle_hi[j_hi] * eq_r_cycle_lo[j_lo]
+                })
+            })
+            .sum();
+        let gamma_inverse = self.params.gamma.inverse().unwrap();
+        let rs2_ra_claim = (combined_ra_claim * gamma_inverse - rs1_ra_claim) * gamma_inverse;
+
+        accumulator.append_virtual(
+            transcript,
+            VirtualPolynomial::RegistersVal,
+            SumcheckId::RegistersReadWriteChecking,
+            opening_point.clone(),
+            val_claim,
+        );
+        accumulator.append_virtual(
+            transcript,
+            VirtualPolynomial::Rs1Ra,
+            SumcheckId::RegistersReadWriteChecking,
+            opening_point.clone(),
+            rs1_ra_claim,
+        );
+        accumulator.append_virtual(
+            transcript,
+            VirtualPolynomial::Rs2Ra,
+            SumcheckId::RegistersReadWriteChecking,
+            opening_point.clone(),
+            rs2_ra_claim,
+        );
+        accumulator.append_virtual(
+            transcript,
+            VirtualPolynomial::RdWa,
+            SumcheckId::RegistersReadWriteChecking,
+            opening_point.clone(),
+            rd_wa_claim,
+        );
+
+        accumulator.append_dense(
+            transcript,
+            CommittedPolynomial::RdInc,
+            SumcheckId::RegistersReadWriteChecking,
+            r_cycle.r,
+            inc_claim,
+        );
     }
 }
 

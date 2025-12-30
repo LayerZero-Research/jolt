@@ -62,6 +62,7 @@ use crate::poly::opening_proof::{
     VerifierOpeningAccumulator, BIG_ENDIAN, LITTLE_ENDIAN,
 };
 use crate::poly::unipoly::UniPoly;
+use crate::subprotocols::split_sumcheck_prover::{SplitSumcheckInstance, SplitSumcheckInstanceInner};
 use crate::subprotocols::sumcheck_prover::SumcheckInstanceProver;
 use crate::subprotocols::sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier};
 use crate::transcripts::Transcript;
@@ -71,6 +72,11 @@ use crate::utils::thread::unsafe_allocate_zero_vec;
 use crate::zkvm::witness::CommittedPolynomial;
 
 const DEGREE_BOUND: usize = 2;
+
+/// Helper to extract evaluations from a MultilinearPolynomial as a Vec<F>
+fn multilinear_to_evals<F: JoltField>(poly: &MultilinearPolynomial<F>) -> Vec<F> {
+    (0..poly.len()).map(|i| poly.get_bound_coeff(i)).collect()
+}
 
 // ============================================================================
 // PARAMS
@@ -198,6 +204,26 @@ impl<F: JoltField> IncClaimReductionSumcheckProver<F> {
     pub fn initialize(params: IncClaimReductionSumcheckParams<F>, trace: Arc<Vec<Cycle>>) -> Self {
         Self::Phase1(IncClaimReductionPhase1Prover::initialize(trace, params))
     }
+
+    pub fn to_split_sumcheck_instance<T: Transcript>(self) -> SplitSumcheckInstance<F, T> {
+        // Compute lower_rounds to ensure we're in Phase 2 when PB sumcheck starts.
+        // Phase 1 handles prefix_n_vars rounds, Phase 2 handles (n_vars - prefix_n_vars) rounds.
+        // prefix_n_vars = n_vars / 2
+        let n_vars = match &self {
+            Self::Phase1(prover) => prover.params.n_cycle_vars,
+            Self::Phase2(prover) => prover.params.n_cycle_vars,
+        };
+        let prefix_n_vars = n_vars / 2;
+        let phase_2_rounds = n_vars - prefix_n_vars;
+        // Use at most (phase_2_rounds - 1) to ensure PB sumcheck starts after Phase 2 begins
+        let lower_rounds = 8.min(phase_2_rounds.saturating_sub(1)).max(1);
+
+        SplitSumcheckInstance::new(
+            Box::new(self),
+            lower_rounds,
+            BindingOrder::LowToHigh,
+        )
+    }
 }
 
 impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
@@ -277,6 +303,75 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
             Self::Phase1(prover) => flamegraph.visit_root(prover),
             Self::Phase2(prover) => flamegraph.visit_root(prover),
         }
+    }
+}
+
+impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
+    for IncClaimReductionSumcheckProver<F>
+{
+    fn create_remainder(&self) -> Vec<Vec<F>> {
+        let Self::Phase2(prover) = self else {
+            panic!("create_remainder should only be called in Phase 2");
+        };
+
+        // Return polynomials in order: eq_ram, eq_rd, ram_inc, rd_inc
+        vec![
+            multilinear_to_evals(&prover.eq_ram),
+            multilinear_to_evals(&prover.eq_rd),
+            multilinear_to_evals(&prover.ram_inc),
+            multilinear_to_evals(&prover.rd_inc),
+        ]
+    }
+
+    fn create_expr(&self) -> Box<dyn Fn(&[F]) -> F + Send + Sync> {
+        let Self::Phase2(prover) = self else {
+            panic!("create_expr should only be called in Phase 2");
+        };
+
+        let gamma_sqr = prover.params.gamma_powers[1];
+
+        // Expression: ram_inc * eq_ram + gamma_sqr * rd_inc * eq_rd
+        Box::new(move |vals: &[F]| {
+            let eq_ram = vals[0];
+            let eq_rd = vals[1];
+            let ram_inc = vals[2];
+            let rd_inc = vals[3];
+
+            ram_inc * eq_ram + gamma_sqr * rd_inc * eq_rd
+        })
+    }
+
+    fn cache_openings_with_claims(
+        &self,
+        accumulator: &mut ProverOpeningAccumulator<F>,
+        transcript: &mut T,
+        sumcheck_challenges: &[F::Challenge],
+        poly_claims: &[F],
+    ) {
+        let opening_point = SumcheckInstanceProver::<F, T>::get_params(self)
+            .normalize_opening_point(sumcheck_challenges);
+
+        // poly_claims[0] = eq_ram (not needed for openings)
+        // poly_claims[1] = eq_rd (not needed for openings)
+        // poly_claims[2] = ram_inc
+        // poly_claims[3] = rd_inc
+        let ram_inc_claim = poly_claims[2];
+        let rd_inc_claim = poly_claims[3];
+
+        accumulator.append_dense(
+            transcript,
+            CommittedPolynomial::RamInc,
+            SumcheckId::IncClaimReduction,
+            opening_point.r.clone(),
+            ram_inc_claim,
+        );
+        accumulator.append_dense(
+            transcript,
+            CommittedPolynomial::RdInc,
+            SumcheckId::IncClaimReduction,
+            opening_point.r,
+            rd_inc_claim,
+        );
     }
 }
 

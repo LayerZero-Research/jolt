@@ -14,6 +14,7 @@ use crate::poly::opening_proof::{
     VerifierOpeningAccumulator, BIG_ENDIAN, LITTLE_ENDIAN,
 };
 use crate::poly::unipoly::UniPoly;
+use crate::subprotocols::split_sumcheck_prover::{SplitSumcheckInstance, SplitSumcheckInstanceInner};
 use crate::subprotocols::sumcheck_prover::SumcheckInstanceProver;
 use crate::subprotocols::sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier};
 use crate::transcripts::Transcript;
@@ -26,6 +27,11 @@ use tracer::instruction::Cycle;
 
 /// Degree bound of the sumcheck round polynomials in [`InstructionLookupsClaimReductionSumcheckVerifier`].
 const DEGREE_BOUND: usize = 2;
+
+/// Helper to extract evaluations from a MultilinearPolynomial as a Vec<F>
+fn multilinear_to_evals<F: JoltField>(poly: &MultilinearPolynomial<F>) -> Vec<F> {
+    (0..poly.len()).map(|i| poly.get_bound_coeff(i)).collect()
+}
 
 #[derive(Allocative, Clone)]
 pub struct InstructionLookupsClaimReductionSumcheckParams<F: JoltField> {
@@ -104,6 +110,25 @@ impl<F: JoltField> InstructionLookupsClaimReductionSumcheckProver<F> {
         trace: Arc<Vec<Cycle>>,
     ) -> Self {
         Self::Phase1(InstructionLookupsPhase1Prover::initialize(trace, params))
+    }
+
+    pub fn to_split_sumcheck_instance<T: Transcript>(self) -> SplitSumcheckInstance<F, T> {
+        // Phase 1 handles prefix_n_vars rounds, Phase 2 handles suffix_n_vars rounds.
+        // prefix_n_vars = n_cycle_vars / 2, suffix_n_vars = n_cycle_vars - prefix_n_vars
+        let n_vars = match &self {
+            Self::Phase1(prover) => prover.params.n_cycle_vars,
+            Self::Phase2(prover) => prover.params.n_cycle_vars,
+        };
+        let prefix_n_vars = n_vars / 2;
+        let phase_2_rounds = n_vars - prefix_n_vars;
+        // Use at most (phase_2_rounds - 1) to ensure PB sumcheck starts after Phase 2 begins
+        let lower_rounds = 8.min(phase_2_rounds.saturating_sub(1)).max(1);
+
+        SplitSumcheckInstance::new(
+            Box::new(self),
+            lower_rounds,
+            BindingOrder::LowToHigh,
+        )
     }
 }
 
@@ -198,6 +223,85 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
             Self::Phase1(prover) => flamegraph.visit_root(prover),
             Self::Phase2(prover) => flamegraph.visit_root(prover),
         }
+    }
+}
+
+impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
+    for InstructionLookupsClaimReductionSumcheckProver<F>
+{
+    fn create_remainder(&self) -> Vec<Vec<F>> {
+        // This should only be called in Phase 2 when the dense polynomials are available
+        let Self::Phase2(prover) = self else {
+            panic!("create_remainder called before Phase 2");
+        };
+
+        // Return polynomials in order: lookup_output, left_lookup_operand, right_lookup_operand, eq
+        vec![
+            multilinear_to_evals(&prover.lookup_output_poly),
+            multilinear_to_evals(&prover.left_lookup_operand_poly),
+            multilinear_to_evals(&prover.right_lookup_operand_poly),
+            multilinear_to_evals(&prover.eq_poly),
+        ]
+    }
+
+    fn create_expr(&self) -> Box<dyn Fn(&[F]) -> F + Send + Sync> {
+        let Self::Phase2(prover) = self else {
+            panic!("create_expr called before Phase 2");
+        };
+
+        let gamma = prover.params.gamma;
+        let gamma_sqr = prover.params.gamma_sqr;
+
+        // Expression: eq * (lookup_output + gamma * left_lookup_operand + gamma^2 * right_lookup_operand)
+        Box::new(move |vals: &[F]| {
+            let lookup_output = vals[0];
+            let left_lookup_operand = vals[1];
+            let right_lookup_operand = vals[2];
+            let eq = vals[3];
+
+            eq * (lookup_output + gamma * left_lookup_operand + gamma_sqr * right_lookup_operand)
+        })
+    }
+
+    fn cache_openings_with_claims(
+        &self,
+        accumulator: &mut ProverOpeningAccumulator<F>,
+        transcript: &mut T,
+        sumcheck_challenges: &[F::Challenge],
+        poly_claims: &[F],
+    ) {
+        // poly_claims[0] = lookup_output
+        // poly_claims[1] = left_lookup_operand
+        // poly_claims[2] = right_lookup_operand
+        // poly_claims[3] = eq (not needed for openings)
+        let lookup_output_claim = poly_claims[0];
+        let left_lookup_operand_claim = poly_claims[1];
+        let right_lookup_operand_claim = poly_claims[2];
+
+        let opening_point = SumcheckInstanceProver::<F, T>::get_params(self)
+            .normalize_opening_point(sumcheck_challenges);
+
+        accumulator.append_virtual(
+            transcript,
+            VirtualPolynomial::LookupOutput,
+            SumcheckId::InstructionClaimReduction,
+            opening_point.clone(),
+            lookup_output_claim,
+        );
+        accumulator.append_virtual(
+            transcript,
+            VirtualPolynomial::LeftLookupOperand,
+            SumcheckId::InstructionClaimReduction,
+            opening_point.clone(),
+            left_lookup_operand_claim,
+        );
+        accumulator.append_virtual(
+            transcript,
+            VirtualPolynomial::RightLookupOperand,
+            SumcheckId::InstructionClaimReduction,
+            opening_point,
+            right_lookup_operand_claim,
+        );
     }
 }
 

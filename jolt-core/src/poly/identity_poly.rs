@@ -30,6 +30,18 @@ impl<F: JoltField> IdentityPolynomial<F> {
             bound_value: F::zero(),
         }
     }
+
+    /// Returns the number of remaining evaluations (2^(num_vars - num_bound_vars))
+    pub fn len(&self) -> usize {
+        1 << (self.num_vars - self.num_bound_vars)
+    }
+
+    /// Returns the evaluation at index i in the remaining hypercube (LowToHigh binding order).
+    /// For IdentityPolynomial, after binding b variables: identity(i) = bound_value + i * 2^b
+    pub fn get_bound_coeff(&self, i: usize) -> F {
+        let scale = F::from_u128(1u128 << self.num_bound_vars);
+        self.bound_value + scale.mul_u64(i as u64)
+    }
 }
 
 impl<F: JoltField> PolynomialBinding<F> for IdentityPolynomial<F> {
@@ -410,6 +422,17 @@ impl<F: JoltField> UnmapRamAddressPolynomial<F> {
             start_address,
             int_poly: IdentityPolynomial::new(num_vars),
         }
+    }
+
+    /// Returns the number of remaining evaluations
+    pub fn len(&self) -> usize {
+        self.int_poly.len()
+    }
+
+    /// Returns the evaluation at index i in the remaining hypercube.
+    /// For UnmapRamAddressPolynomial: unmap(i) = identity(i) * 8 + start_address
+    pub fn get_bound_coeff(&self, i: usize) -> F {
+        self.int_poly.get_bound_coeff(i).mul_u64(8) + F::from_u64(self.start_address)
     }
 }
 

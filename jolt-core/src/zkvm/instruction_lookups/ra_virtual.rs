@@ -19,6 +19,7 @@ use crate::{
             compute_mles_product_sum_evals_sum_of_products_d4,
             compute_mles_product_sum_evals_sum_of_products_d8, finish_mles_product_sum_from_evals,
         },
+        split_sumcheck_prover::{SplitSumcheckInstance, SplitSumcheckInstanceInner},
         sumcheck_prover::SumcheckInstanceProver,
         sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier},
     },
@@ -35,6 +36,7 @@ use common::constants::XLEN;
 use rayon::prelude::*;
 use tracer::instruction::Cycle;
 
+#[derive(Clone)]
 pub struct InstructionRaSumcheckParams<F: JoltField> {
     pub r_cycle: OpeningPoint<BIG_ENDIAN, F>,
     pub r_address: OpeningPoint<BIG_ENDIAN, F>,
@@ -186,6 +188,17 @@ impl<F: JoltField> InstructionRaSumcheckProver<F> {
             params,
         }
     }
+
+    pub fn to_split_sumcheck_instance<T: Transcript>(self) -> SplitSumcheckInstance<F, T> {
+        // Wrap in SplitSumcheckInstance to use partially-bound sumcheck
+        // for the final `lower_rounds` rounds
+        const SPLIT_LOWER_ROUNDS: usize = 8;
+        SplitSumcheckInstance::new(
+            Box::new(self),
+            SPLIT_LOWER_ROUNDS,
+            BindingOrder::LowToHigh,
+        )
+    }
 }
 
 impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for InstructionRaSumcheckProver<F> {
@@ -269,6 +282,99 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for InstructionRa
     #[cfg(feature = "allocative")]
     fn update_flamegraph(&self, flamegraph: &mut allocative::FlameGraphBuilder) {
         flamegraph.visit_root(self);
+    }
+}
+
+/// Helper to extract evaluations from an RaPolynomial as a Vec<F>
+fn ra_poly_to_evals<F: JoltField>(poly: &RaPolynomial<u8, F>) -> Vec<F> {
+    (0..poly.len()).map(|i| poly.get_bound_coeff(i)).collect()
+}
+
+impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
+    for InstructionRaSumcheckProver<F>
+{
+    fn create_remainder(&self) -> Vec<Vec<F>> {
+        // Return the polynomials:
+        // - 1 eq polynomial
+        // - d ra_i polynomials
+        let d = self.params.n_committed_ra_polys;
+        let mut polys = Vec::with_capacity(1 + d);
+        
+        // Add eq polynomial
+        polys.push(self.eq_poly.merge().Z);
+        
+        // Add ra_i polynomials
+        for ra in &self.ra_i_polys {
+            polys.push(ra_poly_to_evals(ra));
+        }
+        
+        polys
+    }
+
+    fn create_expr(&self) -> Box<dyn Fn(&[F]) -> F + Send + Sync> {
+        let n_committed_per_virtual = self.params.n_committed_per_virtual;
+        let n_virtual_ra_polys = self.params.n_virtual_ra_polys;
+        // Note: gamma powers are already baked into the first polynomial of each batch
+        // during initialize, so we just need to compute eq * sum_i(prod_j(ra_{i,j}))
+        
+        Box::new(move |vals: &[F]| {
+            // vals[0] is eq eval
+            // vals[1..1+d] are ra_i evals
+            let eq = vals[0];
+            let ra_evals = &vals[1..];
+            
+            // Expression: eq * sum_i(prod_j(ra_{batch_i,j}))
+            // The gamma weights are already in the polynomials
+            let mut acc = F::zero();
+            for batch in 0..n_virtual_ra_polys {
+                let start = batch * n_committed_per_virtual;
+                let end = start + n_committed_per_virtual;
+                let prod: F = ra_evals[start..end].iter().copied().product();
+                acc += prod;
+            }
+            eq * acc
+        })
+    }
+
+    fn cache_openings_with_claims(
+        &self,
+        accumulator: &mut ProverOpeningAccumulator<F>,
+        transcript: &mut T,
+        sumcheck_challenges: &[F::Challenge],
+        poly_claims: &[F],
+    ) {
+        let r_cycle = self.params.normalize_opening_point(sumcheck_challenges);
+
+        // Compute r_address_chunks with proper padding
+        let r_address_chunks = self
+            .params
+            .one_hot_params
+            .compute_r_address_chunks::<F>(&self.params.r_address.r);
+
+        // poly_claims[0] is eq claim (not needed for openings)
+        // poly_claims[1..1+d] are RA claims
+        let ra_claims = &poly_claims[1..];
+
+        for (i, r_address) in r_address_chunks.into_iter().enumerate() {
+            // Undo the per-batch γ scaling applied in `initialize` before caching openings,
+            // so the claimed openings match the *actual* committed polynomials.
+            let mut claim = ra_claims[i];
+            if i % self.params.n_committed_per_virtual == 0 {
+                let batch = i / self.params.n_committed_per_virtual;
+                let gamma = self.params.gamma_powers[batch];
+                if gamma != F::one() {
+                    claim = claim / gamma;
+                }
+            }
+            accumulator.append_sparse(
+                transcript,
+                vec![CommittedPolynomial::InstructionRa(i)],
+                SumcheckId::InstructionRaVirtualization,
+                r_address,
+                r_cycle.r.clone(),
+                vec![claim],
+            );
+        }
     }
 }
 

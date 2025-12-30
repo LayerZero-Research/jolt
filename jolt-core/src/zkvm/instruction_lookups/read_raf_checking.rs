@@ -30,6 +30,7 @@ use crate::{
     },
     subprotocols::{
         mles_product_sum::{eval_linear_prod_accumulate, finish_mles_product_sum_from_evals},
+        split_sumcheck_prover::{SplitSumcheckInstance, SplitSumcheckInstanceInner},
         sumcheck_prover::SumcheckInstanceProver,
         sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier},
     },
@@ -637,6 +638,18 @@ impl<F: JoltField> ReadRafSumcheckProver<F> {
         self.combined_raf_val_polynomial = Some(MultilinearPolynomial::from(combined_raf_val_poly));
         self.ra_polys = Some(ra_polys);
     }
+
+    pub fn to_split_sumcheck_instance<T: Transcript>(self) -> SplitSumcheckInstance<F, T> {
+        // Split sumcheck should only be used during cycle rounds (last log_T rounds).
+        // Use at most (log_T - 1) to ensure we're at least 1 round into cycle rounds.
+        let lower_rounds = 8.min(self.params.log_T.saturating_sub(1)).max(1);
+        SplitSumcheckInstance::new(Box::new(self), lower_rounds, BindingOrder::LowToHigh)
+    }
+}
+
+/// Helper to extract evaluations from a MultilinearPolynomial as a Vec<F>
+fn multilinear_to_evals<F: JoltField>(poly: &MultilinearPolynomial<F>) -> Vec<F> {
+    (0..poly.len()).map(|i| poly.get_bound_coeff(i)).collect()
 }
 
 impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for ReadRafSumcheckProver<F> {
@@ -850,6 +863,128 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for ReadRafSumche
     #[cfg(feature = "allocative")]
     fn update_flamegraph(&self, flamegraph: &mut FlameGraphBuilder) {
         flamegraph.visit_root(self);
+    }
+}
+
+impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T> for ReadRafSumcheckProver<F> {
+    fn create_remainder(&self) -> Vec<Vec<F>> {
+        // Should only be called during cycle rounds (after LOG_K rounds)
+        let ra_polys = self
+            .ra_polys
+            .as_ref()
+            .expect("create_remainder should only be called during cycle rounds");
+        let val = self
+            .combined_val_polynomial
+            .as_ref()
+            .expect("create_remainder should only be called during cycle rounds");
+        let raf_val = self
+            .combined_raf_val_polynomial
+            .as_ref()
+            .expect("create_remainder should only be called during cycle rounds");
+
+        // Return polynomials in order: eq, val, raf_val, ra_polys[0], ra_polys[1], ...
+        let mut polys = Vec::with_capacity(3 + ra_polys.len());
+
+        // Add merged eq polynomial
+        polys.push(self.eq_r_reduction.merge().Z);
+
+        // Add val and raf_val
+        polys.push(multilinear_to_evals(val));
+        polys.push(multilinear_to_evals(raf_val));
+
+        // Add all ra polynomials
+        for ra in ra_polys {
+            polys.push(multilinear_to_evals(ra));
+        }
+
+        polys
+    }
+
+    fn create_expr(&self) -> Box<dyn Fn(&[F]) -> F + Send + Sync> {
+        let n_ra_polys = self.ra_polys.as_ref().map(|v| v.len()).unwrap_or(0);
+
+        // Expression: eq * (val + raf_val) * prod(ra_polys)
+        Box::new(move |vals: &[F]| {
+            let eq = vals[0];
+            let val = vals[1];
+            let raf_val = vals[2];
+
+            // Product of all ra polynomials
+            let mut ra_prod = F::one();
+            for i in 0..n_ra_polys {
+                ra_prod *= vals[3 + i];
+            }
+
+            eq * (val + raf_val) * ra_prod
+        })
+    }
+
+    fn cache_openings_with_claims(
+        &self,
+        accumulator: &mut ProverOpeningAccumulator<F>,
+        transcript: &mut T,
+        sumcheck_challenges: &[F::Challenge],
+        poly_claims: &[F],
+    ) {
+        let r_sumcheck = self.params.normalize_opening_point(sumcheck_challenges);
+        let (r_address, r_cycle) = r_sumcheck.clone().split_at(LOG_K);
+        let eq_r_cycle_prime = EqPolynomial::<F>::evals(&r_cycle.r);
+
+        // flag_claims and raf_flag_claim are fully calculated during phase 1. So no need to move them to partially bound sumcheck.
+
+        // Cache lookup table flag claims
+        let flag_claims = self
+            .lookup_indices_by_table
+            .par_iter()
+            .map(|table_lookups| {
+                table_lookups
+                    .par_iter()
+                    .map(|j| eq_r_cycle_prime[*j])
+                    .sum::<F>()
+            })
+            .collect::<Vec<F>>();
+        flag_claims.into_iter().enumerate().for_each(|(i, claim)| {
+            accumulator.append_virtual(
+                transcript,
+                VirtualPolynomial::LookupTableFlag(i),
+                SumcheckId::InstructionReadRaf,
+                r_cycle.clone(),
+                claim,
+            );
+        });
+
+        // poly_claims[0] = eq (not needed for openings)
+        // poly_claims[1] = val (not needed for openings)
+        // poly_claims[2] = raf_val (not needed for openings)
+        // poly_claims[3..] = ra_polys claims
+        let ra_claims = &poly_claims[3..];
+        let mut r_address_chunks = r_address.r.chunks(LOG_K / ra_claims.len());
+        for (i, ra_claim) in ra_claims.iter().enumerate() {
+            let r_address_chunk = r_address_chunks.next().unwrap();
+            let opening_point =
+                OpeningPoint::<BIG_ENDIAN, F>::new([r_address_chunk, &*r_cycle.r].concat());
+            accumulator.append_virtual(
+                transcript,
+                VirtualPolynomial::InstructionRa(i),
+                SumcheckId::InstructionReadRaf,
+                opening_point,
+                *ra_claim,
+            );
+        }
+
+        // Cache RAF flag claim
+        let raf_flag_claim = self
+            .lookup_indices_identity
+            .par_iter()
+            .map(|j| eq_r_cycle_prime[*j])
+            .sum::<F>();
+        accumulator.append_virtual(
+            transcript,
+            VirtualPolynomial::InstructionRafFlag,
+            SumcheckId::InstructionReadRaf,
+            r_cycle.clone(),
+            raf_flag_claim,
+        );
     }
 }
 

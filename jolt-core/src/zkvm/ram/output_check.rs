@@ -13,6 +13,7 @@ use crate::{
         unipoly::UniPoly,
     },
     subprotocols::{
+        split_sumcheck_prover::{SplitSumcheckInstance, SplitSumcheckInstanceInner},
         sumcheck_prover::SumcheckInstanceProver,
         sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier},
     },
@@ -26,6 +27,11 @@ use allocative::FlameGraphBuilder;
 use common::{constants::RAM_START_ADDRESS, jolt_device::MemoryLayout};
 use rayon::prelude::*;
 use tracer::JoltDevice;
+
+/// Helper to extract evaluations from a MultilinearPolynomial as a Vec<F>
+fn multilinear_to_evals<F: JoltField>(poly: &MultilinearPolynomial<F>) -> Vec<F> {
+    (0..poly.len()).map(|i| poly.get_bound_coeff(i)).collect()
+}
 
 // RAM output sumchecks
 //
@@ -149,6 +155,15 @@ impl<F: JoltField> OutputSumcheckProver<F> {
             params,
         }
     }
+
+    pub fn to_split_sumcheck_instance<T: Transcript>(self) -> SplitSumcheckInstance<F, T> {
+        const SPLIT_LOWER_ROUNDS: usize = 8;
+        SplitSumcheckInstance::new(
+            Box::new(self),
+            SPLIT_LOWER_ROUNDS,
+            BindingOrder::LowToHigh,
+        )
+    }
 }
 
 impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for OutputSumcheckProver<F> {
@@ -240,6 +255,64 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for OutputSumchec
     #[cfg(feature = "allocative")]
     fn update_flamegraph(&self, flamegraph: &mut FlameGraphBuilder) {
         flamegraph.visit_root(self);
+    }
+}
+
+impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T> for OutputSumcheckProver<F> {
+    fn create_remainder(&self) -> Vec<Vec<F>> {
+        // Return polynomials in order: eq, io_mask, val_final, val_io, val_init
+        vec![
+            self.eq_r_address.merge().Z,
+            multilinear_to_evals(&self.io_mask),
+            multilinear_to_evals(&self.val_final),
+            multilinear_to_evals(&self.val_io),
+            multilinear_to_evals(&self.val_init),
+        ]
+    }
+
+    fn create_expr(&self) -> Box<dyn Fn(&[F]) -> F + Send + Sync> {
+        // Expression: eq * io_mask * (val_final - val_io)
+        Box::new(move |vals: &[F]| {
+            let eq = vals[0];
+            let io_mask = vals[1];
+            let val_final = vals[2];
+            let val_io = vals[3];
+            // val_init (vals[4]) not used in the expression, but bound for later use
+
+            eq * io_mask * (val_final - val_io)
+        })
+    }
+
+    fn cache_openings_with_claims(
+        &self,
+        accumulator: &mut ProverOpeningAccumulator<F>,
+        transcript: &mut T,
+        sumcheck_challenges: &[F::Challenge],
+        poly_claims: &[F],
+    ) {
+        // poly_claims[0] = eq (not needed for openings)
+        // poly_claims[1] = io_mask (not needed for openings)
+        // poly_claims[2] = val_final
+        // poly_claims[3] = val_io (not needed for openings)
+        // poly_claims[4] = val_init
+        let val_final_claim = poly_claims[2];
+        let val_init_claim = poly_claims[4];
+
+        let opening_point = self.params.normalize_opening_point(sumcheck_challenges);
+        accumulator.append_virtual(
+            transcript,
+            VirtualPolynomial::RamValFinal,
+            SumcheckId::RamOutputCheck,
+            opening_point.clone(),
+            val_final_claim,
+        );
+        accumulator.append_virtual(
+            transcript,
+            VirtualPolynomial::RamValInit,
+            SumcheckId::RamOutputCheck,
+            opening_point,
+            val_init_claim,
+        );
     }
 }
 

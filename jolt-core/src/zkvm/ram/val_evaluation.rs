@@ -19,6 +19,7 @@ use crate::{
         unipoly::UniPoly,
     },
     subprotocols::{
+        split_sumcheck_prover::{SplitSumcheckInstance, SplitSumcheckInstanceInner},
         sumcheck_prover::SumcheckInstanceProver,
         sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier},
     },
@@ -35,6 +36,23 @@ use allocative::Allocative;
 #[cfg(feature = "allocative")]
 use allocative::FlameGraphBuilder;
 use rayon::prelude::*;
+
+/// Helper to extract evaluations from a MultilinearPolynomial as a Vec<F>
+fn multilinear_to_evals<F: JoltField>(poly: &MultilinearPolynomial<F>) -> Vec<F> {
+    (0..poly.len()).map(|i| poly.get_bound_coeff(i)).collect()
+}
+
+/// Helper to extract evaluations from an RaPolynomial as a Vec<F>
+fn ra_poly_to_evals<I: Into<usize> + Copy + Default + Send + Sync + 'static, F: JoltField>(
+    poly: &RaPolynomial<I, F>,
+) -> Vec<F> {
+    (0..poly.len()).map(|i| poly.get_bound_coeff(i)).collect()
+}
+
+/// Helper to extract evaluations from an LtPolynomial as a Vec<F>
+fn lt_poly_to_evals<F: JoltField>(poly: &LtPolynomial<F>) -> Vec<F> {
+    (0..poly.len()).map(|i| poly.get_bound_coeff(i)).collect()
+}
 
 // RAM value evaluation sumcheck
 //
@@ -226,6 +244,15 @@ impl<F: JoltField> ValEvaluationSumcheckProver<F> {
             params,
         }
     }
+
+    pub fn to_split_sumcheck_instance<T: Transcript>(self) -> SplitSumcheckInstance<F, T> {
+        const SPLIT_LOWER_ROUNDS: usize = 8;
+        SplitSumcheckInstance::new(
+            Box::new(self),
+            SPLIT_LOWER_ROUNDS,
+            BindingOrder::LowToHigh,
+        )
+    }
 }
 
 impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for ValEvaluationSumcheckProver<F> {
@@ -311,6 +338,70 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for ValEvaluation
     #[cfg(feature = "allocative")]
     fn update_flamegraph(&self, flamegraph: &mut FlameGraphBuilder) {
         flamegraph.visit_root(self);
+    }
+}
+
+impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
+    for ValEvaluationSumcheckProver<F>
+{
+    fn create_remainder(&self) -> Vec<Vec<F>> {
+        // Return polynomials in order: inc, wa, lt
+        vec![
+            multilinear_to_evals(&self.inc),
+            ra_poly_to_evals(&self.wa),
+            lt_poly_to_evals(&self.lt),
+        ]
+    }
+
+    fn create_expr(&self) -> Box<dyn Fn(&[F]) -> F + Send + Sync> {
+        // Expression: inc * wa * lt
+        Box::new(move |vals: &[F]| {
+            let inc = vals[0];
+            let wa = vals[1];
+            let lt = vals[2];
+            inc * wa * lt
+        })
+    }
+
+    fn cache_openings_with_claims(
+        &self,
+        accumulator: &mut ProverOpeningAccumulator<F>,
+        transcript: &mut T,
+        sumcheck_challenges: &[F::Challenge],
+        poly_claims: &[F],
+    ) {
+        // poly_claims[0] = inc
+        // poly_claims[1] = wa
+        // poly_claims[2] = lt (not needed for openings)
+        let inc_claim = poly_claims[0];
+        let wa_claim = poly_claims[1];
+
+        let r_cycle_prime = self.params.normalize_opening_point(sumcheck_challenges);
+        let r = accumulator
+            .get_virtual_polynomial_opening(
+                VirtualPolynomial::RamVal,
+                SumcheckId::RamReadWriteChecking,
+            )
+            .0;
+        let (r_address, _) = r.split_at(r.len() - r_cycle_prime.len());
+        let wa_opening_point =
+            OpeningPoint::new([r_address.r.as_slice(), r_cycle_prime.r.as_slice()].concat());
+
+        accumulator.append_virtual(
+            transcript,
+            VirtualPolynomial::RamRa,
+            SumcheckId::RamValEvaluation,
+            wa_opening_point,
+            wa_claim,
+        );
+
+        accumulator.append_dense(
+            transcript,
+            CommittedPolynomial::RamInc,
+            SumcheckId::RamValEvaluation,
+            r_cycle_prime.r,
+            inc_claim,
+        );
     }
 }
 

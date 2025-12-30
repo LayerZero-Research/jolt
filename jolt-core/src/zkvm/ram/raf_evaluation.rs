@@ -7,6 +7,16 @@ use allocative::FlameGraphBuilder;
 use rayon::prelude::*;
 use tracer::instruction::Cycle;
 
+/// Helper to extract evaluations from a MultilinearPolynomial as a Vec<F>
+fn multilinear_to_evals<F: JoltField>(poly: &MultilinearPolynomial<F>) -> Vec<F> {
+    (0..poly.len()).map(|i| poly.get_bound_coeff(i)).collect()
+}
+
+/// Helper to extract evaluations from an UnmapRamAddressPolynomial as a Vec<F>
+fn unmap_to_evals<F: JoltField>(poly: &UnmapRamAddressPolynomial<F>) -> Vec<F> {
+    (0..poly.len()).map(|i| poly.get_bound_coeff(i)).collect()
+}
+
 use crate::{
     field::JoltField,
     poly::{
@@ -22,6 +32,7 @@ use crate::{
         unipoly::UniPoly,
     },
     subprotocols::{
+        split_sumcheck_prover::{SplitSumcheckInstance, SplitSumcheckInstanceInner},
         sumcheck_prover::SumcheckInstanceProver,
         sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier},
     },
@@ -181,6 +192,15 @@ impl<F: JoltField> RafEvaluationSumcheckProver<F> {
 
         Self { ra, unmap, params }
     }
+
+    pub fn to_split_sumcheck_instance<T: Transcript>(self) -> SplitSumcheckInstance<F, T> {
+        const SPLIT_LOWER_ROUNDS: usize = 8;
+        SplitSumcheckInstance::new(
+            Box::new(self),
+            SPLIT_LOWER_ROUNDS,
+            BindingOrder::LowToHigh,
+        )
+    }
 }
 
 impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for RafEvaluationSumcheckProver<F> {
@@ -242,6 +262,47 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for RafEvaluation
     #[cfg(feature = "allocative")]
     fn update_flamegraph(&self, flamegraph: &mut FlameGraphBuilder) {
         flamegraph.visit_root(self);
+    }
+}
+
+impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
+    for RafEvaluationSumcheckProver<F>
+{
+    fn create_remainder(&self) -> Vec<Vec<F>> {
+        // Return polynomials in order: ra, unmap
+        vec![multilinear_to_evals(&self.ra), unmap_to_evals(&self.unmap)]
+    }
+
+    fn create_expr(&self) -> Box<dyn Fn(&[F]) -> F + Send + Sync> {
+        // Expression: ra * unmap
+        Box::new(move |vals: &[F]| {
+            let ra = vals[0];
+            let unmap = vals[1];
+            ra * unmap
+        })
+    }
+
+    fn cache_openings_with_claims(
+        &self,
+        accumulator: &mut ProverOpeningAccumulator<F>,
+        transcript: &mut T,
+        sumcheck_challenges: &[F::Challenge],
+        poly_claims: &[F],
+    ) {
+        // poly_claims[0] = ra
+        // poly_claims[1] = unmap (not needed for openings, computed by verifier)
+        let ra_claim = poly_claims[0];
+
+        let r_address = self.params.normalize_opening_point(sumcheck_challenges);
+        let r_cycle = &self.params.r_cycle;
+        let ra_opening_point = OpeningPoint::new([&*r_address.r, &*r_cycle.r].concat());
+        accumulator.append_virtual(
+            transcript,
+            VirtualPolynomial::RamRa,
+            SumcheckId::RamRafEvaluation,
+            ra_opening_point,
+            ra_claim,
+        );
     }
 }
 

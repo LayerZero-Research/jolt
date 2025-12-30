@@ -17,6 +17,7 @@ use crate::poly::opening_proof::{
 };
 use crate::poly::split_eq_poly::GruenSplitEqPolynomial;
 use crate::poly::unipoly::UniPoly;
+use crate::subprotocols::split_sumcheck_prover::{SplitSumcheckInstance, SplitSumcheckInstanceInner};
 use crate::subprotocols::sumcheck_prover::SumcheckInstanceProver;
 use crate::subprotocols::sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier};
 use crate::subprotocols::univariate_skip::build_uniskip_first_round_poly;
@@ -584,6 +585,15 @@ impl<F: JoltField> ProductVirtualRemainderProver<F> {
         });
         (t0, tinf)
     }
+
+    pub fn to_split_sumcheck_instance<T: Transcript>(self) -> SplitSumcheckInstance<F, T> {
+        const SPLIT_LOWER_ROUNDS: usize = 8;
+        SplitSumcheckInstance::new(
+            Box::new(self),
+            SPLIT_LOWER_ROUNDS,
+            BindingOrder::LowToHigh,
+        )
+    }
 }
 
 impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
@@ -637,6 +647,50 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
     #[cfg(feature = "allocative")]
     fn update_flamegraph(&self, flamegraph: &mut allocative::FlameGraphBuilder) {
         flamegraph.visit_root(self);
+    }
+}
+
+impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
+    for ProductVirtualRemainderProver<F>
+{
+    fn create_remainder(&self) -> Vec<Vec<F>> {
+        // Return polynomials in order: left, right, eq
+        vec![
+            self.left.evals_ref().to_vec(),
+            self.right.evals_ref().to_vec(),
+            self.split_eq_poly.merge().Z,
+        ]
+    }
+
+    fn create_expr(&self) -> Box<dyn Fn(&[F]) -> F + Send + Sync> {
+        // Expression: eq * left * right
+        Box::new(move |vals: &[F]| {
+            let left = vals[0];
+            let right = vals[1];
+            let eq = vals[2];
+            eq * left * right
+        })
+    }
+
+    fn cache_openings_with_claims(
+        &self,
+        accumulator: &mut ProverOpeningAccumulator<F>,
+        transcript: &mut T,
+        sumcheck_challenges: &[F::Challenge],
+        _poly_claims: &[F],
+    ) {
+        // The factor claims are computed from the trace, not from the bound polynomials
+        let r_cycle = self.params.normalize_opening_point(sumcheck_challenges);
+        let claims = ProductVirtualEval::compute_claimed_factors::<F>(&self.trace, &r_cycle);
+        for (poly, claim) in zip(PRODUCT_UNIQUE_FACTOR_VIRTUALS, claims) {
+            accumulator.append_virtual(
+                transcript,
+                poly,
+                SumcheckId::SpartanProductVirtualization,
+                r_cycle.clone(),
+                claim,
+            );
+        }
     }
 }
 

@@ -11,6 +11,7 @@ use crate::subprotocols::read_write_matrix::{
     AddressMajorMatrixEntry, RamAddressMajorEntry, RamCycleMajorEntry, ReadWriteMatrixAddressMajor,
     ReadWriteMatrixCycleMajor,
 };
+use crate::subprotocols::split_sumcheck_prover::{SplitSumcheckInstance, SplitSumcheckInstanceInner};
 use crate::subprotocols::sumcheck_prover::SumcheckInstanceProver;
 use crate::subprotocols::sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier};
 use crate::zkvm::bytecode::BytecodePreprocessing;
@@ -34,6 +35,11 @@ use allocative::Allocative;
 use allocative::FlameGraphBuilder;
 use rayon::prelude::*;
 use tracer::instruction::Cycle;
+
+/// Helper to extract evaluations from a MultilinearPolynomial as a Vec<F>
+fn multilinear_to_evals<F: JoltField>(poly: &MultilinearPolynomial<F>) -> Vec<F> {
+    (0..poly.len()).map(|i| poly.get_bound_coeff(i)).collect()
+}
 
 // RAM read-write checking sumcheck
 //
@@ -580,6 +586,26 @@ impl<F: JoltField> RamReadWriteCheckingProver<F> {
         ra.bind_parallel(r_j, BindingOrder::LowToHigh);
         val.bind_parallel(r_j, BindingOrder::LowToHigh);
     }
+
+    /// Convert to a split sumcheck instance.
+    ///
+    /// Note: This sumcheck has 3 phases. The split sumcheck can only work in phase 3
+    /// when cycle variables are fully bound (inc.len() == 1).
+    pub fn to_split_sumcheck_instance<T: Transcript>(self) -> SplitSumcheckInstance<F, T> {
+        let phase1_rounds = phase1_num_rounds(self.params.K, self.params.T);
+        let phase2_rounds = phase2_num_rounds(self.params.K, self.params.T);
+        let total_rounds = self.params.K.log_2() + self.params.T.log_2();
+        let phase3_rounds = total_rounds.saturating_sub(phase1_rounds + phase2_rounds);
+
+        // Use at most 8 rounds for PB
+        let lower_rounds = 8.min(phase3_rounds);
+
+        SplitSumcheckInstance::new(
+            Box::new(self),
+            lower_rounds,
+            BindingOrder::LowToHigh,
+        )
+    }
 }
 
 impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for RamReadWriteCheckingProver<F> {
@@ -647,6 +673,82 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for RamReadWriteC
     #[cfg(feature = "allocative")]
     fn update_flamegraph(&self, flamegraph: &mut FlameGraphBuilder) {
         flamegraph.visit_root(self);
+    }
+}
+
+impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
+    for RamReadWriteCheckingProver<F>
+{
+    fn create_remainder(&self) -> Vec<Vec<F>> {
+        // This should only be called in phase 3 when ra, val are available
+        // and inc.len() == 1 (cycle variables fully bound)
+        let ra = self
+            .ra
+            .as_ref()
+            .expect("create_remainder called before phase 3");
+        let val = self
+            .val
+            .as_ref()
+            .expect("create_remainder called before phase 3");
+
+        // Return polynomials in order: ra, val
+        vec![multilinear_to_evals(ra), multilinear_to_evals(val)]
+    }
+
+    fn create_expr(&self) -> Box<dyn Fn(&[F]) -> F + Send + Sync> {
+        // This should only be called when inc.len() == 1 (cycle variables fully bound)
+        // In this case, inc and merged_eq are scalars
+        let inc_eval = self.inc.final_sumcheck_claim();
+        let eq_eval = self
+            .merged_eq
+            .as_ref()
+            .expect("create_expr called before phase 3")
+            .final_sumcheck_claim();
+        let gamma = self.params.gamma;
+
+        // Expression: eq_eval * ra * (val + gamma * (val + inc_eval))
+        Box::new(move |vals: &[F]| {
+            let ra = vals[0];
+            let val = vals[1];
+            eq_eval * ra * (val + gamma * (val + inc_eval))
+        })
+    }
+
+    fn cache_openings_with_claims(
+        &self,
+        accumulator: &mut ProverOpeningAccumulator<F>,
+        transcript: &mut T,
+        sumcheck_challenges: &[F::Challenge],
+        poly_claims: &[F],
+    ) {
+        // poly_claims[0] = ra
+        // poly_claims[1] = val
+        let ra_claim = poly_claims[0];
+        let val_claim = poly_claims[1];
+
+        let opening_point = self.params.normalize_opening_point(sumcheck_challenges);
+        accumulator.append_virtual(
+            transcript,
+            VirtualPolynomial::RamVal,
+            SumcheckId::RamReadWriteChecking,
+            opening_point.clone(),
+            val_claim,
+        );
+        accumulator.append_virtual(
+            transcript,
+            VirtualPolynomial::RamRa,
+            SumcheckId::RamReadWriteChecking,
+            opening_point.clone(),
+            ra_claim,
+        );
+        let (_, r_cycle) = opening_point.split_at(self.params.K.log_2());
+        accumulator.append_dense(
+            transcript,
+            CommittedPolynomial::RamInc,
+            SumcheckId::RamReadWriteChecking,
+            r_cycle.r,
+            self.inc.final_sumcheck_claim(),
+        );
     }
 }
 

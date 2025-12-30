@@ -65,6 +65,10 @@ impl<F: JoltField> LtPolynomial<F> {
         self.lt_hi.get_bound_coeff(i_hi)
             + self.eq_hi.get_bound_coeff(i_hi) * self.lt_lo.get_bound_coeff(i_lo)
     }
+
+    pub fn len(&self) -> usize {
+        self.lt_hi.len() * (1 << self.n_lo_vars)
+    }
 }
 
 /// Returns the MLE of `LT(j, r)` evaluated at all Boolean `j ∈ {0,1}^n`.

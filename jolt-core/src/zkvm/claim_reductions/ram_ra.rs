@@ -49,7 +49,9 @@ use crate::{
         unipoly::UniPoly,
     },
     subprotocols::{
-        sumcheck_prover::SumcheckInstanceProver, sumcheck_verifier::SumcheckInstanceVerifier,
+        split_sumcheck_prover::{SplitSumcheckInstance, SplitSumcheckInstanceInner},
+        sumcheck_prover::SumcheckInstanceProver,
+        sumcheck_verifier::SumcheckInstanceVerifier,
     },
     transcripts::Transcript,
     utils::{expanding_table::ExpandingTable, math::Math, thread::unsafe_allocate_zero_vec},
@@ -59,6 +61,11 @@ use crate::{
 /// Degree bound of the sumcheck round polynomials.
 /// Degree 2: one from eq polynomial, one from ra (which is 0 or 1).
 const DEGREE_BOUND: usize = 2;
+
+/// Helper to extract evaluations from a MultilinearPolynomial as a Vec<F>
+fn multilinear_to_evals<F: JoltField>(poly: &MultilinearPolynomial<F>) -> Vec<F> {
+    (0..poly.len()).map(|i| poly.get_bound_coeff(i)).collect()
+}
 
 // ============================================================================
 // Main Prover Enum
@@ -96,6 +103,25 @@ impl<F: JoltField> RamRaClaimReductionSumcheckProver<F> {
             memory_layout,
             one_hot_params,
         ))
+    }
+
+    pub fn to_split_sumcheck_instance<T: Transcript>(self) -> SplitSumcheckInstance<F, T> {
+        // Compute lower_rounds to ensure we're in PhaseCycle2 when PB sumcheck starts.
+        // PhaseAddress handles log_K rounds
+        // PhaseCycle1 handles prefix_n_vars = log_T/2 rounds
+        // PhaseCycle2 handles suffix_n_vars = log_T - log_T/2 rounds
+        let log_T = match &self {
+            Self::PhaseAddress(p) => p.params.log_T,
+            Self::PhaseCycle1(p) => p.params.log_T,
+            Self::PhaseCycle2(p) => p.params.log_T,
+        };
+        let prefix_n_vars = log_T / 2;
+        let suffix_n_vars = log_T - prefix_n_vars;
+        // PhaseCycle2 starts at round (log_K + prefix_n_vars)
+        // Use at most (suffix_n_vars - 1) to ensure PB sumcheck starts after PhaseCycle2 begins
+        let lower_rounds = 8.min(suffix_n_vars.saturating_sub(1)).max(1);
+
+        SplitSumcheckInstance::new(Box::new(self), lower_rounds, BindingOrder::LowToHigh)
     }
 }
 
@@ -199,6 +225,80 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
             Self::PhaseCycle1(p) => flamegraph.visit_root(p),
             Self::PhaseCycle2(p) => flamegraph.visit_root(p),
         }
+    }
+}
+
+impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T>
+    for RamRaClaimReductionSumcheckProver<F>
+{
+    fn create_remainder(&self) -> Vec<Vec<F>> {
+        let Self::PhaseCycle2(prover) = self else {
+            panic!("create_remainder should only be called in PhaseCycle2");
+        };
+
+        // Return polynomials in order: H_prime, eq_raf_hi, eq_rw_hi, eq_val_hi
+        vec![
+            multilinear_to_evals(&prover.H_prime),
+            multilinear_to_evals(&prover.eq_raf_hi),
+            multilinear_to_evals(&prover.eq_rw_hi),
+            multilinear_to_evals(&prover.eq_val_hi),
+        ]
+    }
+
+    fn create_expr(&self) -> Box<dyn Fn(&[F]) -> F + Send + Sync> {
+        let Self::PhaseCycle2(prover) = self else {
+            panic!("create_expr should only be called in PhaseCycle2");
+        };
+
+        let coeff_raf = prover.coeff_raf;
+        let coeff_rw = prover.coeff_rw;
+        let coeff_val = prover.coeff_val;
+
+        // Expression: H_prime * (coeff_raf * eq_raf + coeff_rw * eq_rw + coeff_val * eq_val)
+        Box::new(move |vals: &[F]| {
+            let h_prime = vals[0];
+            let eq_raf = vals[1];
+            let eq_rw = vals[2];
+            let eq_val = vals[3];
+
+            h_prime * (coeff_raf * eq_raf + coeff_rw * eq_rw + coeff_val * eq_val)
+        })
+    }
+
+    fn cache_openings_with_claims(
+        &self,
+        accumulator: &mut ProverOpeningAccumulator<F>,
+        transcript: &mut T,
+        sumcheck_challenges: &[F::Challenge],
+        poly_claims: &[F],
+    ) {
+        let Self::PhaseCycle2(prover) = self else {
+            panic!("cache_openings_with_claims should only be called in PhaseCycle2");
+        };
+
+        let log_K = prover.params.log_K;
+        let r_address_reduced = &sumcheck_challenges[..log_K];
+        let r_cycle_reduced = &sumcheck_challenges[log_K..];
+
+        let opening_point = OpeningPoint::<BIG_ENDIAN, F>::new(
+            [
+                r_address_reduced.iter().rev().copied().collect::<Vec<_>>(),
+                r_cycle_reduced.iter().rev().copied().collect::<Vec<_>>(),
+            ]
+            .concat(),
+        );
+
+        // poly_claims[0] = H_prime (this is the ra claim)
+        // poly_claims[1..] are eq polynomials (not needed for openings)
+        let ra_claim_reduced = poly_claims[0];
+
+        accumulator.append_virtual(
+            transcript,
+            VirtualPolynomial::RamRa,
+            SumcheckId::RamRaClaimReduction,
+            opening_point,
+            ra_claim_reduced,
+        );
     }
 }
 

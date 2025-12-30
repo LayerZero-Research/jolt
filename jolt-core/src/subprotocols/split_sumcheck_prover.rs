@@ -10,7 +10,6 @@ use crate::{
     subprotocols::{
         partially_bound_sumcheck::PartiallyBoundSumcheck,
         sumcheck_prover::SumcheckInstanceProver,
-        sumcheck_verifier::SumcheckInstanceParams,
     },
     transcripts::Transcript,
 };
@@ -87,9 +86,9 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for SplitSumcheck
         self.inner.cache_openings_with_claims(accumulator, transcript, sumcheck_challenges, &poly_claims)
     }
 
-    fn get_params(&self) -> &dyn SumcheckInstanceParams<F> {
-        self.inner.get_params()
-    }
+    // Note: We intentionally don't implement get_params() here.
+    // If the inner prover implements get_params(), callers can use it via inner.
+    // We implement degree() and num_rounds() directly to avoid requiring inner to have get_params().
 
     fn degree(&self) -> usize {
         self.inner.degree()
@@ -97,6 +96,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for SplitSumcheck
 
     fn num_rounds(&self) -> usize {
         self.inner.num_rounds()
+    }
+
+    fn input_claim(&self, accumulator: &ProverOpeningAccumulator<F>) -> F {
+        self.inner.input_claim(accumulator)
     }
 }
 

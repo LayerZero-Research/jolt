@@ -14,6 +14,7 @@ use crate::{
         unipoly::UniPoly,
     },
     subprotocols::{
+        split_sumcheck_prover::{SplitSumcheckInstance, SplitSumcheckInstanceInner},
         sumcheck_prover::SumcheckInstanceProver,
         sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier},
     },
@@ -34,6 +35,11 @@ use tracer::{instruction::Cycle, JoltDevice};
 
 /// Degree bound of the sumcheck round polynomials in [`ValFinalSumcheckVerifier`].
 const VAL_FINAL_SUMCHECK_DEGREE_BOUND: usize = 2;
+
+/// Helper to extract evaluations from a MultilinearPolynomial as a Vec<F>
+fn multilinear_to_evals<F: JoltField>(poly: &MultilinearPolynomial<F>) -> Vec<F> {
+    (0..poly.len()).map(|i| poly.get_bound_coeff(i)).collect()
+}
 
 pub struct ValFinalSumcheckParams<F: JoltField> {
     pub T: usize,
@@ -216,6 +222,15 @@ impl<F: JoltField> ValFinalSumcheckProver<F> {
 
         Self { wa, inc, params }
     }
+
+    pub fn to_split_sumcheck_instance<T: Transcript>(self) -> SplitSumcheckInstance<F, T> {
+        const SPLIT_LOWER_ROUNDS: usize = 8;
+        SplitSumcheckInstance::new(
+            Box::new(self),
+            SPLIT_LOWER_ROUNDS,
+            BindingOrder::LowToHigh,
+        )
+    }
 }
 
 impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for ValFinalSumcheckProver<F> {
@@ -294,6 +309,62 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for ValFinalSumch
     #[cfg(feature = "allocative")]
     fn update_flamegraph(&self, flamegraph: &mut FlameGraphBuilder) {
         flamegraph.visit_root(self);
+    }
+}
+
+impl<F: JoltField, T: Transcript> SplitSumcheckInstanceInner<F, T> for ValFinalSumcheckProver<F> {
+    fn create_remainder(&self) -> Vec<Vec<F>> {
+        // Return polynomials in order: inc, wa
+        vec![
+            multilinear_to_evals(&self.inc),
+            multilinear_to_evals(&self.wa),
+        ]
+    }
+
+    fn create_expr(&self) -> Box<dyn Fn(&[F]) -> F + Send + Sync> {
+        // Expression: inc * wa
+        Box::new(move |vals: &[F]| {
+            let inc = vals[0];
+            let wa = vals[1];
+            inc * wa
+        })
+    }
+
+    fn cache_openings_with_claims(
+        &self,
+        accumulator: &mut ProverOpeningAccumulator<F>,
+        transcript: &mut T,
+        sumcheck_challenges: &[F::Challenge],
+        poly_claims: &[F],
+    ) {
+        // poly_claims[0] = inc
+        // poly_claims[1] = wa
+        let inc_claim = poly_claims[0];
+        let wa_claim = poly_claims[1];
+
+        let r_cycle_prime = self.params.normalize_opening_point(sumcheck_challenges);
+        let r_address = accumulator
+            .get_virtual_polynomial_opening(
+                VirtualPolynomial::RamValFinal,
+                SumcheckId::RamOutputCheck,
+            )
+            .0;
+        let wa_opening_point = OpeningPoint::new([&*r_address.r, &*r_cycle_prime.r].concat());
+
+        accumulator.append_dense(
+            transcript,
+            CommittedPolynomial::RamInc,
+            SumcheckId::RamValFinalEvaluation,
+            r_cycle_prime.r,
+            inc_claim,
+        );
+        accumulator.append_virtual(
+            transcript,
+            VirtualPolynomial::RamRa,
+            SumcheckId::RamValFinalEvaluation,
+            wa_opening_point,
+            wa_claim,
+        );
     }
 }
 

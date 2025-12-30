@@ -623,12 +623,14 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         let spartan_product_virtual_remainder = ProductVirtualRemainderProver::initialize(
             spartan_product_virtual_remainder_params,
             Arc::clone(&self.trace),
-        );
+        )
+        .to_split_sumcheck_instance();
         let ram_raf_evaluation = RamRafEvaluationSumcheckProver::initialize(
             ram_raf_evaluation_params,
             &self.trace,
             &self.program_io.memory_layout,
-        );
+        )
+        .to_split_sumcheck_instance();
         let ram_read_write_checking = RamReadWriteCheckingProver::initialize(
             ram_read_write_checking_params,
             &self.trace,
@@ -641,12 +643,14 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             &self.initial_ram_state,
             &self.final_ram_state,
             &self.program_io.memory_layout,
-        );
+        )
+        .to_split_sumcheck_instance();
         let instruction_claim_reduction =
             InstructionLookupsClaimReductionSumcheckProver::initialize(
                 instruction_claim_reduction_params,
                 Arc::clone(&self.trace),
-            );
+            )
+            .to_split_sumcheck_instance();
 
         #[cfg(feature = "allocative")]
         {
@@ -789,18 +793,21 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             &self.preprocessing.shared.bytecode,
             &self.program_io.memory_layout,
         );
+        // .to_split_sumcheck_instance();
         let ram_val_evaluation = RamValEvaluationSumcheckProver::initialize(
             ram_val_evaluation_params,
             &self.trace,
             &self.preprocessing.shared.bytecode,
             &self.program_io.memory_layout,
-        );
+        )
+        .to_split_sumcheck_instance();
         let ram_val_final = ValFinalSumcheckProver::initialize(
             ram_val_final_params,
             &self.trace,
             &self.preprocessing.shared.bytecode,
             &self.program_io.memory_layout,
-        );
+        )
+        .to_split_sumcheck_instance();
 
         #[cfg(feature = "allocative")]
         {
@@ -857,15 +864,16 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             &self.trace,
             &self.preprocessing.shared.bytecode,
             &self.program_io.memory_layout,
-        );
+        ).to_split_sumcheck_instance();
         let ram_ra_reduction = RamRaClaimReductionSumcheckProver::initialize(
             ram_ra_reduction_params,
             &self.trace,
             &self.program_io.memory_layout,
             &self.one_hot_params,
-        );
+        ).to_split_sumcheck_instance();
         let lookups_read_raf =
-            LookupsReadRafSumcheckProver::initialize(lookups_read_raf_params, &self.trace);
+            LookupsReadRafSumcheckProver::initialize(lookups_read_raf_params, &self.trace)
+            .to_split_sumcheck_instance();
 
         #[cfg(feature = "allocative")]
         {
@@ -964,9 +972,11 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         )
         .to_split_sumcheck_instance();
         let lookups_ra_virtual =
-            LookupsRaSumcheckProver::initialize(lookups_ra_virtual_params, &self.trace);
+            LookupsRaSumcheckProver::initialize(lookups_ra_virtual_params, &self.trace)
+            .to_split_sumcheck_instance();
         let inc_reduction =
-            IncClaimReductionSumcheckProver::initialize(inc_reduction_params, self.trace.clone());
+            IncClaimReductionSumcheckProver::initialize(inc_reduction_params, self.trace.clone())
+            .to_split_sumcheck_instance();
 
         #[cfg(feature = "allocative")]
         {
