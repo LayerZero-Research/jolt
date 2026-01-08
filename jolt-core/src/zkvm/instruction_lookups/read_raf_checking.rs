@@ -229,7 +229,7 @@ pub struct InstructionReadRafSumcheckProver<F: JoltField> {
     combined_val_polynomial: Option<MultilinearPolynomial<F>>,
 
     #[allocative(skip)]
-    params: InstructionReadRafSumcheckParams<F>,
+    pub params: InstructionReadRafSumcheckParams<F>,
 }
 
 impl<F: JoltField> InstructionReadRafSumcheckProver<F> {
