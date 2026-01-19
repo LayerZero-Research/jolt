@@ -17,6 +17,9 @@ include!("./provable_macro.rs");
 
 provable_with_config! {
 fn verify(bytes: &[u8]) -> u32 {
+    start_cycle_tracking("MARKER_guest_start");
+    end_cycle_tracking("MARKER_guest_start");
+
     let use_embedded = !embedded_bytes::EMBEDDED_BYTES.is_empty();
     let data_bytes = if use_embedded {
         embedded_bytes::EMBEDDED_BYTES
@@ -24,34 +27,61 @@ fn verify(bytes: &[u8]) -> u32 {
         bytes
     };
 
+    start_cycle_tracking("MARKER_before_cursor");
     let mut cursor = std::io::Cursor::new(data_bytes);
+    end_cycle_tracking("MARKER_before_cursor");
+
+    start_cycle_tracking("MARKER_before_preprocessing_deser");
+    end_cycle_tracking("MARKER_before_preprocessing_deser");
 
     start_cycle_tracking("deserialize preprocessing");
     let verifier_preprocessing: JoltVerifierPreprocessing<F, PCS> =
         JoltVerifierPreprocessing::<F, PCS>::deserialize_with_mode(&mut cursor, Compress::Yes, Validate::No).unwrap();
     end_cycle_tracking("deserialize preprocessing");
 
+    start_cycle_tracking("MARKER_after_preprocessing_deser");
+    end_cycle_tracking("MARKER_after_preprocessing_deser");
+
     start_cycle_tracking("deserialize count of proofs");
     // Deserialize number of proofs to verify
     let n: u32 = u32::deserialize_with_mode(&mut cursor, Compress::Yes, Validate::No).unwrap();
     end_cycle_tracking("deserialize count of proofs");
 
+    start_cycle_tracking("MARKER_before_loop");
+    end_cycle_tracking("MARKER_before_loop");
+
     let mut all_valid = true;
-    for _ in 0..n {
+    for _i in 0..n {
+        start_cycle_tracking("MARKER_loop_iteration");
+        end_cycle_tracking("MARKER_loop_iteration");
+
         start_cycle_tracking("deserialize proof");
         let proof = RV64IMACProof::deserialize_with_mode(&mut cursor, Compress::Yes, Validate::No).unwrap();
         end_cycle_tracking("deserialize proof");
+
+        start_cycle_tracking("MARKER_after_proof_deser");
+        end_cycle_tracking("MARKER_after_proof_deser");
 
         start_cycle_tracking("deserialize device");
         let device = JoltDevice::deserialize_with_mode(&mut cursor, Compress::Yes, Validate::No).unwrap();
         end_cycle_tracking("deserialize device");
 
+        start_cycle_tracking("MARKER_before_verification");
+        end_cycle_tracking("MARKER_before_verification");
+
         start_cycle_tracking("verification");
         let verifier = RV64IMACVerifier::new(&verifier_preprocessing, proof, device, None, None);
         let is_valid = verifier.is_ok_and(|verifier| verifier.verify().is_ok());
         end_cycle_tracking("verification");
+
+        start_cycle_tracking("MARKER_after_verification");
+        end_cycle_tracking("MARKER_after_verification");
+
         all_valid = all_valid && is_valid;
     }
+
+    start_cycle_tracking("MARKER_guest_end");
+    end_cycle_tracking("MARKER_guest_end");
 
     all_valid as u32
 }

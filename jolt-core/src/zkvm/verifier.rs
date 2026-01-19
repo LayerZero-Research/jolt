@@ -4,6 +4,8 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Arc;
 
+use jolt_platform::{end_cycle_tracking, start_cycle_tracking};
+
 use crate::poly::commitment::commitment_scheme::CommitmentScheme;
 use crate::subprotocols::sumcheck::BatchedSumcheck;
 use crate::zkvm::bytecode::BytecodePreprocessing;
@@ -198,14 +200,37 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
                 .append_serializable(trusted_advice_commitment);
         }
 
+        start_cycle_tracking("verify_stage1");
         self.verify_stage1()?;
+        end_cycle_tracking("verify_stage1");
+
+        start_cycle_tracking("verify_stage2");
         self.verify_stage2()?;
+        end_cycle_tracking("verify_stage2");
+
+        start_cycle_tracking("verify_stage3");
         self.verify_stage3()?;
+        end_cycle_tracking("verify_stage3");
+
+        start_cycle_tracking("verify_stage4");
         self.verify_stage4()?;
+        end_cycle_tracking("verify_stage4");
+
+        start_cycle_tracking("verify_stage5");
         self.verify_stage5()?;
+        end_cycle_tracking("verify_stage5");
+
+        start_cycle_tracking("verify_stage6");
         self.verify_stage6()?;
+        end_cycle_tracking("verify_stage6");
+
+        start_cycle_tracking("verify_stage7");
         self.verify_stage7()?;
+        end_cycle_tracking("verify_stage7");
+
+        start_cycle_tracking("verify_stage8");
         self.verify_stage8()?;
+        end_cycle_tracking("verify_stage8");
 
         Ok(())
     }
@@ -404,6 +429,8 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
 
     fn verify_stage6(&mut self) -> Result<(), anyhow::Error> {
         let n_cycle_vars = self.proof.trace_length.log_2();
+
+        start_cycle_tracking("stage6_bytecode_read_raf");
         let bytecode_read_raf = BytecodeReadRafSumcheckVerifier::gen(
             &self.preprocessing.shared.bytecode,
             n_cycle_vars,
@@ -411,35 +438,50 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
             &self.opening_accumulator,
             &mut self.transcript,
         );
+        end_cycle_tracking("stage6_bytecode_read_raf");
 
+        start_cycle_tracking("stage6_ram_hamming_booleanity");
         let ram_hamming_booleanity =
             HammingBooleanitySumcheckVerifier::new(&self.opening_accumulator);
+        end_cycle_tracking("stage6_ram_hamming_booleanity");
+
+        start_cycle_tracking("stage6_booleanity_params");
         let booleanity_params = BooleanitySumcheckParams::new(
             n_cycle_vars,
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
         );
-
         let booleanity = BooleanitySumcheckVerifier::new(booleanity_params);
+        end_cycle_tracking("stage6_booleanity_params");
+
+        start_cycle_tracking("stage6_ram_ra_virtual");
         let ram_ra_virtual = RamRaVirtualSumcheckVerifier::new(
             self.proof.trace_length,
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
         );
+        end_cycle_tracking("stage6_ram_ra_virtual");
+
+        start_cycle_tracking("stage6_lookups_ra_virtual");
         let lookups_ra_virtual = LookupsRaSumcheckVerifier::new(
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
         );
+        end_cycle_tracking("stage6_lookups_ra_virtual");
+
+        start_cycle_tracking("stage6_inc_reduction");
         let inc_reduction = IncClaimReductionSumcheckVerifier::new(
             self.proof.trace_length,
             &self.opening_accumulator,
             &mut self.transcript,
         );
+        end_cycle_tracking("stage6_inc_reduction");
 
         // Advice claim reduction (Phase 1 in Stage 6): trusted and untrusted are separate instances.
+        start_cycle_tracking("stage6_advice_reduction_phase1");
         let trusted_advice_phase1 = AdviceClaimReductionPhase1Verifier::new(
             AdviceKind::Trusted,
             &self.program_io.memory_layout,
@@ -466,6 +508,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
         if let Some(ref v) = untrusted_advice_phase1 {
             self.advice_reduction_gamma_untrusted = Some(v.gamma());
         }
+        end_cycle_tracking("stage6_advice_reduction_phase1");
 
         let mut instances: Vec<&dyn SumcheckInstanceVerifier<F, ProofTranscript>> = vec![
             &bytecode_read_raf,
@@ -482,6 +525,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
             instances.push(advice);
         }
 
+        start_cycle_tracking("stage6_batched_sumcheck_verify");
         let _r_stage6 = BatchedSumcheck::verify(
             &self.proof.stage6_sumcheck_proof,
             instances,
@@ -489,6 +533,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
             &mut self.transcript,
         )
         .context("Stage 6")?;
+        end_cycle_tracking("stage6_batched_sumcheck_verify");
 
         Ok(())
     }
