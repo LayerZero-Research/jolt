@@ -81,9 +81,19 @@ impl RISCVTrace for CSRRW {
             preserve.trace(cpu, trace.as_deref_mut());
         }
 
-        // Execute the CSR operation (updates emulation state)
-        let mut ram_access = ();
-        self.execute(cpu, &mut ram_access);
+        // IMPORTANT:
+        // Do NOT call execute() here.
+        // execute() writes old CSR value into cpu.x[rd], but that write would be
+        // untraced because we only trace the inline sequence below.
+        // That creates a "ghost write" and breaks the RegistersReadWriteChecking
+        // sumcheck (Stage 4).
+        //
+        // We still need to update the emulator's CSR backing state for parts of the
+        // CPU that still consult cpu.csr (e.g. trap delivery / legacy paths).
+        // The inline sequence is the *only* source of truth for register writes.
+        let csr_addr = self.csr_address();
+        let rs1_val = cpu.x[self.operands.rs1 as usize] as u64;
+        cpu.write_csr_raw(csr_addr, rs1_val);
 
         // Execute remaining inline sequence
         for instr in inline_sequence {

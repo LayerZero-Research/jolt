@@ -72,9 +72,15 @@ impl RISCVTrace for CSRRS {
             );
         }
 
-        // Execute the CSR operation (updates emulation state)
-        let mut ram_access = ();
-        self.execute(cpu, &mut ram_access);
+        // IMPORTANT:
+        // Do NOT call execute() here.
+        // execute() writes old CSR value into cpu.x[rd], but this write would be
+        // untraced because we only trace the inline sequence below.
+        // That creates a "ghost write" and breaks the RegistersReadWriteChecking
+        // sumcheck (Stage 4) because rd_pre suddenly changes without a traced write.
+        //
+        // For csrr (CSRRS with rs1 = x0), there is no CSR mutation; the inline
+        // sequence (ADDI(rd, vr, 0)) accounts for the architectural rd write.
 
         // Generate and execute inline sequence
         // The inline sequence reads from the virtual register (source of truth for proofs)
@@ -137,7 +143,6 @@ impl RISCVTrace for CSRRS {
 
 #[cfg(test)]
 mod tests {
-    use super::CSRRS;
     use crate::instruction::Instruction;
 
     /// Test decoding of `csrr t0, mtvec` (csrrs t0, mtvec, x0)
