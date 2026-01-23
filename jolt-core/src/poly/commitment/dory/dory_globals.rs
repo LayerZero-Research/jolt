@@ -292,6 +292,51 @@ impl DoryGlobals {
         num_cols / k
     }
 
+    fn get_context_params(context: DoryContext) -> Option<(usize, usize, usize)> {
+        #[allow(static_mut_refs)]
+        unsafe {
+            let t = match context {
+                DoryContext::Main => GLOBAL_T.get().copied(),
+                DoryContext::TrustedAdvice => TRUSTED_ADVICE_T.get().copied(),
+                DoryContext::UntrustedAdvice => UNTRUSTED_ADVICE_T.get().copied(),
+            }?;
+            let num_rows = match context {
+                DoryContext::Main => MAX_NUM_ROWS.get().copied(),
+                DoryContext::TrustedAdvice => TRUSTED_ADVICE_MAX_NUM_ROWS.get().copied(),
+                DoryContext::UntrustedAdvice => UNTRUSTED_ADVICE_MAX_NUM_ROWS.get().copied(),
+            }?;
+            let num_cols = match context {
+                DoryContext::Main => NUM_COLUMNS.get().copied(),
+                DoryContext::TrustedAdvice => TRUSTED_ADVICE_NUM_COLUMNS.get().copied(),
+                DoryContext::UntrustedAdvice => UNTRUSTED_ADVICE_NUM_COLUMNS.get().copied(),
+            }?;
+            Some((t, num_rows, num_cols))
+        }
+    }
+
+    fn reset_context(context: DoryContext) {
+        #[allow(static_mut_refs)]
+        unsafe {
+            match context {
+                DoryContext::Main => {
+                    let _ = GLOBAL_T.take();
+                    let _ = MAX_NUM_ROWS.take();
+                    let _ = NUM_COLUMNS.take();
+                }
+                DoryContext::TrustedAdvice => {
+                    let _ = TRUSTED_ADVICE_T.take();
+                    let _ = TRUSTED_ADVICE_MAX_NUM_ROWS.take();
+                    let _ = TRUSTED_ADVICE_NUM_COLUMNS.take();
+                }
+                DoryContext::UntrustedAdvice => {
+                    let _ = UNTRUSTED_ADVICE_T.take();
+                    let _ = UNTRUSTED_ADVICE_MAX_NUM_ROWS.take();
+                    let _ = UNTRUSTED_ADVICE_NUM_COLUMNS.take();
+                }
+            }
+        }
+    }
+
     fn set_max_num_rows_for_context(max_num_rows: usize, context: DoryContext) {
         #[allow(static_mut_refs)]
         unsafe {
@@ -428,6 +473,28 @@ impl DoryGlobals {
         context: DoryContext,
         layout: Option<DoryLayout>,
     ) -> Option<()> {
+        if let Some((t, num_rows, num_cols)) = Self::get_context_params(context) {
+            let existing_k = (num_rows * num_cols) / t;
+            let layout_matches = if context == DoryContext::Main {
+                match layout {
+                    Some(l) => l == Self::get_layout(),
+                    None => true,
+                }
+            } else {
+                true
+            };
+            if t == T && existing_k == K && layout_matches {
+                if context == DoryContext::Main {
+                    if let Some(l) = layout {
+                        CURRENT_LAYOUT.store(l as u8, Ordering::SeqCst);
+                    }
+                    CURRENT_CONTEXT.store(DoryContext::Main as u8, Ordering::SeqCst);
+                }
+                return Some(());
+            }
+            Self::reset_context(context);
+        }
+
         let (num_columns, num_rows, t) = Self::calculate_dimensions(K, T);
         Self::set_num_columns_for_context(num_columns, context);
         Self::set_T_for_context(t, context);
