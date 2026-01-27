@@ -155,6 +155,26 @@ jobs:
             cargo nextest run --features host -p "$pkg"
           done
 
+  check-guest-inlines:
+    name: Check guest no_std inlines
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install riscv64imac target
+        run: rustup target add riscv64imac-unknown-none-elf
+      - name: Build inline crates for bare-metal target (no link script)
+        run: |
+          set -euo pipefail
+          cargo build -p jolt-inlines-field-arith --target riscv64imac-unknown-none-elf
+          cargo build -p jolt-inlines-grumpkin --no-default-features --target riscv64imac-unknown-none-elf
+          cargo build -p jolt-inlines-secp256k1 --no-default-features --target riscv64imac-unknown-none-elf
+      - name: Check guest examples (compile-only; no link script)
+        run: |
+          set -euo pipefail
+          cargo check --manifest-path examples/msm/guest/Cargo.toml --features guest --target riscv64imac-unknown-none-elf
+          cargo check --manifest-path examples/secp256k1-ecdsa-verify/guest/Cargo.toml --features guest --target riscv64imac-unknown-none-elf
+
   test-sdk-verifier:
     name: Jolt SDK Verifier Tests
     runs-on: ubuntu-latest

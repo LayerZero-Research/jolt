@@ -403,3 +403,88 @@ mod sequence_tests {
         assert_eq!(det, n, "GLV lattice determinant must equal curve order");
     }
 }
+
+mod mont_equiv_tests {
+    use crate::backend_mont as mont;
+    use crate::constants;
+    use ark_ec::{CurveGroup, PrimeGroup};
+    use ark_ff::{AdditiveGroup, BigInt, Field, PrimeField};
+    use jolt_inlines_field_arith as fa;
+
+    #[test]
+    fn mont_grumpkin_fq_matches_arkworks_for_basic_ops() {
+        type AFq = ark_grumpkin::Fq;
+
+        let m = &constants::GRUMPKIN_FQ_MODULUS;
+        let m_minus_1 = fa::sub_u256(m, &[1u64, 0, 0, 0]).0;
+
+        let a_can = [0u64, 0, 0, 0];
+        let b_can = [1u64, 0, 0, 0];
+        let c_can = [2u64, 0, 0, 0];
+        let d_can = m_minus_1;
+
+        let a_m = mont::GrumpkinFq::from_u64_arr(&a_can).unwrap();
+        let b_m = mont::GrumpkinFq::from_u64_arr(&b_can).unwrap();
+        let c_m = mont::GrumpkinFq::from_u64_arr(&c_can).unwrap();
+        let d_m = mont::GrumpkinFq::from_u64_arr(&d_can).unwrap();
+
+        let a_a = AFq::from_bigint(BigInt(a_can)).unwrap();
+        let b_a = AFq::from_bigint(BigInt(b_can)).unwrap();
+        let c_a = AFq::from_bigint(BigInt(c_can)).unwrap();
+        let d_a = AFq::from_bigint(BigInt(d_can)).unwrap();
+
+        // to/from montgomery conversion
+        assert_eq!(a_m.to_u64_arr_mont(), a_a.0 .0);
+        assert_eq!(b_m.to_u64_arr_mont(), b_a.0 .0);
+        assert_eq!(c_m.to_u64_arr_mont(), c_a.0 .0);
+        assert_eq!(d_m.to_u64_arr_mont(), d_a.0 .0);
+
+        assert_eq!(a_m.to_u64_arr_canonical(), a_can);
+        assert_eq!(b_m.to_u64_arr_canonical(), b_can);
+        assert_eq!(c_m.to_u64_arr_canonical(), c_can);
+        assert_eq!(d_m.to_u64_arr_canonical(), d_can);
+
+        // add/sub/mul/square/div
+        let add_m = b_m.add(&c_m);
+        let add_a = b_a + c_a;
+        assert_eq!(add_m.to_u64_arr_mont(), add_a.0 .0);
+
+        let sub_m = b_m.sub(&c_m); // 1-2 = -1
+        let sub_a = b_a - c_a;
+        assert_eq!(sub_m.to_u64_arr_mont(), sub_a.0 .0);
+
+        let mul_m = d_m.mul(&c_m);
+        let mul_a = d_a * c_a;
+        assert_eq!(mul_m.to_u64_arr_mont(), mul_a.0 .0);
+
+        let sq_m = d_m.square();
+        let sq_a = d_a.square();
+        assert_eq!(sq_m.to_u64_arr_mont(), sq_a.0 .0);
+
+        let div_m = d_m.div(&c_m);
+        let div_a = d_a / c_a;
+        assert_eq!(div_m.to_u64_arr_mont(), div_a.0 .0);
+    }
+
+    #[test]
+    fn mont_grumpkin_point_ops_match_arkworks() {
+        let g_m = mont::GrumpkinPoint::generator();
+        let g_a = ark_grumpkin::Projective::generator();
+
+        // 2G
+        let g2_m = g_m.double();
+        let g2_a = g_a.double().into_affine();
+        assert_eq!(g2_m.x().to_u64_arr_mont(), g2_a.x.0 .0);
+        assert_eq!(g2_m.y().to_u64_arr_mont(), g2_a.y.0 .0);
+
+        // 3G = 2G + G
+        let g3_m = g2_m.add(&g_m);
+        let g3_a = (g_a.double() + g_a).into_affine();
+        assert_eq!(g3_m.x().to_u64_arr_mont(), g3_a.x.0 .0);
+        assert_eq!(g3_m.y().to_u64_arr_mont(), g3_a.y.0 .0);
+
+        // (2G + G) via double_and_add
+        let g3b_m = g_m.double_and_add(&g_m);
+        assert_eq!(g3b_m.to_u64_arr(), g3_m.to_u64_arr());
+    }
+}

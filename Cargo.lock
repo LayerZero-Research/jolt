@@ -2036,6 +2036,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "jolt-inlines-field-arith"
+version = "0.1.0"
+
+[[package]]
 name = "jolt-inlines-grumpkin"
 version = "0.1.0"
 dependencies = [
@@ -2045,6 +2049,7 @@ dependencies = [
  "ark-serialize",
  "ctor 0.2.9",
  "hex-literal",
+ "jolt-inlines-field-arith",
  "jolt-inlines-msm",
  "num-bigint",
  "num-integer",
@@ -2078,6 +2083,7 @@ dependencies = [
  "ark-serialize",
  "ctor 0.2.9",
  "hex-literal",
+ "jolt-inlines-field-arith",
  "num-bigint",
  "num-integer",
  "serde",

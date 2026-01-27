@@ -9,20 +9,29 @@ repository = "https://github.com/a16z/jolt"
 
 [features]
 default = []
-host = ["dep:ctor", "dep:tracer", "dep:tracing"]
+arkworks = ["dep:ark-grumpkin", "dep:ark-serialize", "dep:ark-ff", "dep:ark-ec"]
+host = [
+    "dep:ctor",
+    "dep:tracer",
+    "dep:tracing",
+    "dep:num-bigint",
+    "dep:num-integer",
+    "arkworks",
+]
 
 [dependencies]
 ctor = { workspace = true, optional = true }
 tracer = { workspace = true, optional = true, features = ["std"] }
 tracing = { workspace = true, optional = true }
 serde.workspace = true
-ark-grumpkin.workspace = true
-ark-serialize.workspace = true
-ark-ff.workspace = true
-ark-ec.workspace = true
-num-bigint.workspace = true
-num-integer.workspace = true
+ark-grumpkin = { workspace = true, optional = true }
+ark-serialize = { workspace = true, optional = true }
+ark-ff = { workspace = true, optional = true }
+ark-ec = { workspace = true, optional = true }
+num-bigint = { workspace = true, optional = true }
+num-integer = { workspace = true, optional = true }
 jolt-inlines-msm.workspace = true
+jolt-inlines-field-arith.workspace = true
 
 [dev-dependencies]
 hex-literal.workspace = true

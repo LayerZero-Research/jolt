@@ -29,6 +29,11 @@ pub const SECP256K1_DIVR_ADV_NAME: &str = "SECP256K1_DIVR_ADV";
 pub const SECP256K1_GLVR_ADV_FUNCT3: u32 = 0x02;
 pub const SECP256K1_GLVR_ADV_NAME: &str = "SECP256K1_GLVR_ADV";
 
+mod constants;
+mod backend_mont;
+#[cfg(feature = "arkworks")]
+mod backend_arkworks;
+
 pub mod sdk;
 pub use sdk::*;
 
