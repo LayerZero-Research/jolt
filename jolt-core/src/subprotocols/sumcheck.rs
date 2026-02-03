@@ -241,6 +241,30 @@ impl BatchedSumcheck {
             .sum();
 
         if output_claim != expected_output_claim {
+            // Debug aid: print per-instance contribution when a batched sumcheck fails.
+            // Enable with: JOLT_DEBUG_SUMCHECK_MISMATCH=1
+            if std::env::var("JOLT_DEBUG_SUMCHECK_MISMATCH")
+                .ok()
+                .as_deref()
+                == Some("1")
+            {
+                eprintln!("Batched sumcheck mismatch:");
+                eprintln!("  max_num_rounds={max_num_rounds} max_degree={max_degree}");
+                eprintln!("  output_claim={output_claim:?}");
+                eprintln!("  expected_output_claim={expected_output_claim:?}");
+                for (i, (sumcheck, coeff)) in sumcheck_instances.iter().zip(batching_coeffs.iter()).enumerate() {
+                    let offset = sumcheck.round_offset(max_num_rounds);
+                    let r_slice = &r_sumcheck[offset..offset + sumcheck.num_rounds()];
+                    let claim_i = sumcheck.expected_output_claim(opening_accumulator, r_slice);
+                    eprintln!(
+                        "  instance[{i}] type={} num_rounds={} offset={} coeff={coeff:?} claim={claim_i:?} contrib={:?}",
+                        std::any::type_name_of_val(sumcheck),
+                        sumcheck.num_rounds(),
+                        offset,
+                        claim_i * (*coeff),
+                    );
+                }
+            }
             return Err(ProofVerifyError::SumcheckVerificationError);
         }
 

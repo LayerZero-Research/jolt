@@ -17,11 +17,14 @@ use common::constants::{
 /// For shorter traces (log_T < threshold), uses 16 phases for better parallelism.
 /// For longer traces, uses 8 phases to reduce overhead.
 pub fn get_instruction_sumcheck_phases(log_t: usize) -> usize {
-    if log_t < INSTRUCTION_PHASES_THRESHOLD_LOG_T {
-        16
-    } else {
-        8
-    }
+    // NOTE (jolt-cpp): The C++/CUDA backend currently assumes PHASES=16 for
+    // instruction read-RAF checking. Keep Rust in lockstep so GPU-only proxy
+    // proofs verify across the Rust prover/verifier.
+    //
+    // If we ever add a PHASES=8-capable C++ backend, we can reintroduce
+    // INSTRUCTION_PHASES_THRESHOLD_LOG_T gating here (or make it configurable).
+    let _ = (log_t, INSTRUCTION_PHASES_THRESHOLD_LOG_T);
+    16
 }
 
 /// Controls whether the prover/verifier use the **full** program path (verifier may do O(K))
