@@ -263,6 +263,55 @@ impl<F: JoltField> BytecodeClaimReductionProver<F> {
         }
     }
 
+    /// Initialize a lane-phase prover from the GPU cycle-phase export payload.
+    ///
+    /// This avoids recomputing the cycle-weighted polynomial and lane summaries on CPU.
+    #[tracing::instrument(skip_all, name = "BytecodeClaimReductionProver::initialize_from_cycle_phase")]
+    pub fn initialize_from_cycle_phase(
+        mut params: BytecodeClaimReductionParams<F>,
+        program: Arc<ProgramPreprocessing>,
+        cycle_export: &[F],
+    ) -> Self {
+        let lane_total = params.num_chunks * (1usize << params.log_k_chunk);
+        if cycle_export.len() != 1 + lane_total {
+            panic!(
+                "initialize_from_cycle_phase expected export len {} (1 + lane_total), got {}",
+                1 + lane_total,
+                cycle_export.len()
+            );
+        }
+        // Compute eq_eval = eq(r_bc, r_cycle) in O(log_k), which is cheap.
+        let cycle_point: OpeningPoint<LITTLE_ENDIAN, F> =
+            OpeningPoint::<LITTLE_ENDIAN, F>::new(params.cycle_var_challenges.clone());
+        let eq_eval =
+            EqPolynomial::<F>::mle_endian::<BIG_ENDIAN, LITTLE_ENDIAN>(&params.r_bc, &cycle_point);
+        // Store eq_eval as a constant polynomial for lane-phase evaluation.
+        let eq_r_bc = MultilinearPolynomial::from(vec![eq_eval]);
+
+        // Lane-weight polynomials (lane vars only) used in the lane phase.
+        let lane_weight_polys: Vec<MultilinearPolynomial<F>> = params
+            .chunk_lane_weights
+            .iter()
+            .map(|w| MultilinearPolynomial::from(w.clone()))
+            .collect();
+
+        // Lane-phase only.
+        params.phase = BytecodeReductionPhase::LaneVariables;
+
+        let mut prover = Self {
+            params,
+            program,
+            cycle_weighted_sum: MultilinearPolynomial::default(),
+            lane_chunks_at_r_cycle: vec![],
+            eq_r_bc,
+            lane_weight_polys,
+            batch_dummy_rounds: AtomicUsize::new(0),
+        };
+
+        prover.prepare_lane_phase_from_cycle_export(cycle_export);
+        prover
+    }
+
     /// Prepare the lane-phase witness polynomials \(B_i(\cdot, r_{cycle})\).
     ///
     /// This is intended to be called once after the cycle-phase sumcheck has finished
@@ -331,6 +380,50 @@ impl<F: JoltField> BytecodeClaimReductionProver<F> {
                 for lane in 0..k_chunk {
                     let global_lane = chunk_idx * k_chunk + lane;
                     if global_lane < total {
+                        coeffs[lane] = b_vals[global_lane];
+                    }
+                }
+                MultilinearPolynomial::from(coeffs)
+            })
+            .collect();
+    }
+
+    /// Prepare lane-phase witness polynomials from the GPU cycle-phase export payload.
+    ///
+    /// Export payload format: `[intermediate, b_vals...]`, where `b_vals` are the
+    /// lane-weighted sums for each global lane. This skips recomputing `b_vals` from the program.
+    fn prepare_lane_phase_from_cycle_export(&mut self, cycle_export: &[F]) {
+        if !self.lane_chunks_at_r_cycle.is_empty() {
+            return;
+        }
+
+        let log_k = self.params.log_k;
+        let k_chunk = 1usize << self.params.log_k_chunk;
+        let num_chunks = self.params.num_chunks;
+        let lane_total = num_chunks * k_chunk;
+
+        assert_eq!(
+            self.params.cycle_var_challenges.len(),
+            log_k,
+            "prepare_lane_phase_from_cycle_export called before cycle challenges are complete (have {}, expected {})",
+            self.params.cycle_var_challenges.len(),
+            log_k
+        );
+        if cycle_export.len() != 1 + lane_total {
+            panic!(
+                "prepare_lane_phase_from_cycle_export expected export len {} (1 + lane_total), got {}",
+                1 + lane_total,
+                cycle_export.len()
+            );
+        }
+
+        let b_vals = &cycle_export[1..];
+        self.lane_chunks_at_r_cycle = (0..num_chunks)
+            .map(|chunk_idx| {
+                let mut coeffs = vec![F::zero(); k_chunk];
+                for lane in 0..k_chunk {
+                    let global_lane = chunk_idx * k_chunk + lane;
+                    if global_lane < lane_total {
                         coeffs[lane] = b_vals[global_lane];
                     }
                 }
