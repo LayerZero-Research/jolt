@@ -205,7 +205,39 @@ impl Drop for DoryContextGuard {
 pub struct DoryGlobals;
 
 impl DoryGlobals {
+    /// Compute the effective bytecode `T` when using Main's sigma.
+    ///
+    /// For AddressMajor, keep `T = bytecode_len` (no padding).
+    /// For CycleMajor, if the bytecode is too small to fill a full Main-matrix row, pad `T`
+    /// so that `k_chunk * T >= num_columns` (i.e. at least one row).
+    #[inline]
+    pub fn bytecode_t_for_main_sigma(
+        k_chunk: usize,
+        bytecode_len: usize,
+        log_k_chunk: usize,
+        log_t: usize,
+    ) -> usize {
+        if DoryGlobals::get_layout() == DoryLayout::AddressMajor {
+            return bytecode_len;
+        }
+        let (sigma_main, _) = Self::main_sigma_nu(log_k_chunk, log_t);
+        let num_columns = 1usize << sigma_main;
+        let total_size = k_chunk * bytecode_len;
+        if total_size >= num_columns {
+            bytecode_len
+        } else {
+            debug_assert!(num_columns.is_power_of_two());
+            debug_assert!(k_chunk.is_power_of_two());
+            let padded_t = num_columns / k_chunk;
+            debug_assert!(padded_t >= bytecode_len);
+            padded_t
+        }
+    }
+
     /// Initialize Bytecode context so its `num_columns` matches Main's `sigma_main`.
+    ///
+    /// For AddressMajor, if `k_chunk * bytecode_len` is smaller than Main's column count,
+    /// we clamp `num_columns` to `k_chunk * bytecode_len` to avoid padding T.
     ///
     /// This is required for committed-bytecode Stage 8 folding when `sigma_main > sigma_bytecode`:
     /// we commit bytecode chunk polynomials using the Main matrix width (more columns, fewer rows),
@@ -217,8 +249,14 @@ impl DoryGlobals {
         log_t: usize,
     ) -> Option<()> {
         let (sigma_main, _) = Self::main_sigma_nu(log_k_chunk, log_t);
-        let num_columns = 1usize << sigma_main;
-        let total_size = k_chunk * bytecode_len;
+        let mut num_columns = 1usize << sigma_main;
+        let bytecode_t = Self::bytecode_t_for_main_sigma(k_chunk, bytecode_len, log_k_chunk, log_t);
+        let total_size = k_chunk * bytecode_t;
+
+        if DoryGlobals::get_layout() == DoryLayout::AddressMajor && total_size < num_columns {
+            // In AddressMajor, we keep T = bytecode_len; clamp columns to fit K*T.
+            num_columns = total_size;
+        }
 
         assert!(
             total_size % num_columns == 0,
@@ -226,26 +264,22 @@ impl DoryGlobals {
         );
         let num_rows = total_size / num_columns;
 
-        // If already initialized, ensure it matches (avoid silently ignoring OnceCell::set failures).
-        #[allow(static_mut_refs)]
-        unsafe {
-            if let (Some(existing_cols), Some(existing_rows), Some(existing_t)) = (
-                BYTECODE_NUM_COLUMNS.get(),
-                BYTECODE_MAX_NUM_ROWS.get(),
-                BYTECODE_T.get(),
-            ) {
-                assert_eq!(*existing_cols, num_columns);
-                assert_eq!(*existing_rows, num_rows);
-                assert_eq!(*existing_t, bytecode_len);
+        // If already initialized, reuse if it matches; otherwise reset to allow re-init.
+        if let Some((t, existing_rows, existing_cols)) =
+            Self::get_context_params(DoryContext::Bytecode)
+        {
+            if t == bytecode_t && existing_rows == num_rows && existing_cols == num_columns {
                 return Some(());
             }
+            Self::reset_context(DoryContext::Bytecode);
         }
 
         Self::set_num_columns_for_context(num_columns, DoryContext::Bytecode);
-        Self::set_T_for_context(bytecode_len, DoryContext::Bytecode);
+        Self::set_T_for_context(bytecode_t, DoryContext::Bytecode);
         Self::set_max_num_rows_for_context(num_rows, DoryContext::Bytecode);
         Some(())
     }
+
 
     /// Initialize Bytecode context with MAIN-matrix dimensions for CycleMajor Stage 8 embedding.
     ///
@@ -598,6 +632,68 @@ impl DoryGlobals {
             "Expected T to be divisible by num_rows"
         );
         num_cols / k
+    }
+
+    fn get_context_params(context: DoryContext) -> Option<(usize, usize, usize)> {
+        #[allow(static_mut_refs)]
+        unsafe {
+            let t = match context {
+                DoryContext::Main => GLOBAL_T.get().copied(),
+                DoryContext::TrustedAdvice => TRUSTED_ADVICE_T.get().copied(),
+                DoryContext::UntrustedAdvice => UNTRUSTED_ADVICE_T.get().copied(),
+                DoryContext::Bytecode => BYTECODE_T.get().copied(),
+                DoryContext::ProgramImage => PROGRAM_IMAGE_T.get().copied(),
+            }?;
+            let num_rows = match context {
+                DoryContext::Main => MAX_NUM_ROWS.get().copied(),
+                DoryContext::TrustedAdvice => TRUSTED_ADVICE_MAX_NUM_ROWS.get().copied(),
+                DoryContext::UntrustedAdvice => UNTRUSTED_ADVICE_MAX_NUM_ROWS.get().copied(),
+                DoryContext::Bytecode => BYTECODE_MAX_NUM_ROWS.get().copied(),
+                DoryContext::ProgramImage => PROGRAM_IMAGE_MAX_NUM_ROWS.get().copied(),
+            }?;
+            let num_cols = match context {
+                DoryContext::Main => NUM_COLUMNS.get().copied(),
+                DoryContext::TrustedAdvice => TRUSTED_ADVICE_NUM_COLUMNS.get().copied(),
+                DoryContext::UntrustedAdvice => UNTRUSTED_ADVICE_NUM_COLUMNS.get().copied(),
+                DoryContext::Bytecode => BYTECODE_NUM_COLUMNS.get().copied(),
+                DoryContext::ProgramImage => PROGRAM_IMAGE_NUM_COLUMNS.get().copied(),
+            }?;
+            Some((t, num_rows, num_cols))
+        }
+    }
+
+    fn reset_context(context: DoryContext) {
+        #[allow(static_mut_refs)]
+        unsafe {
+            match context {
+                DoryContext::Main => {
+                    let _ = GLOBAL_T.take();
+                    let _ = MAX_NUM_ROWS.take();
+                    let _ = NUM_COLUMNS.take();
+                }
+                DoryContext::TrustedAdvice => {
+                    let _ = TRUSTED_ADVICE_T.take();
+                    let _ = TRUSTED_ADVICE_MAX_NUM_ROWS.take();
+                    let _ = TRUSTED_ADVICE_NUM_COLUMNS.take();
+                }
+                DoryContext::UntrustedAdvice => {
+                    let _ = UNTRUSTED_ADVICE_T.take();
+                    let _ = UNTRUSTED_ADVICE_MAX_NUM_ROWS.take();
+                    let _ = UNTRUSTED_ADVICE_NUM_COLUMNS.take();
+                }
+                DoryContext::Bytecode => {
+                    let _ = BYTECODE_T.take();
+                    let _ = BYTECODE_MAX_NUM_ROWS.take();
+                    let _ = BYTECODE_NUM_COLUMNS.take();
+                }
+                DoryContext::ProgramImage => {
+                    let _ = PROGRAM_IMAGE_T.take();
+                    let _ = PROGRAM_IMAGE_MAX_NUM_ROWS.take();
+                    let _ = PROGRAM_IMAGE_NUM_COLUMNS.take();
+                    let _ = PROGRAM_IMAGE_K_CHUNK.take();
+                }
+            }
+        }
     }
 
     fn set_max_num_rows_for_context(max_num_rows: usize, context: DoryContext) {

@@ -72,9 +72,9 @@ pub fn compute_bytecode_vmp_contribution<F: JoltField>(
     let index_T = bytecode_T;
 
     debug_assert!(
-        k_chunk * bytecode_len >= bytecode_cols,
-        "bytecode_len*k_chunk must cover at least one full row: (k_chunk*bytecode_len)={} < num_columns={}",
-        k_chunk * bytecode_len,
+        k_chunk * bytecode_T >= bytecode_cols,
+        "bytecode_T*k_chunk must cover at least one full row: (k_chunk*bytecode_T)={} < num_columns={}",
+        k_chunk * bytecode_T,
         bytecode_cols
     );
 

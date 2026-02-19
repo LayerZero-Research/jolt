@@ -11,7 +11,9 @@ use crate::poly::commitment::commitment_scheme::CommitmentScheme;
 use crate::poly::commitment::dory::{DoryContext, DoryGlobals};
 use crate::utils::errors::ProofVerifyError;
 use crate::utils::math::Math;
-use crate::zkvm::bytecode::chunks::{build_bytecode_chunks, total_lanes};
+use crate::zkvm::bytecode::chunks::{
+    build_bytecode_chunks, build_bytecode_chunks_for_main_matrix, total_lanes,
+};
 use rayon::prelude::*;
 
 pub(crate) mod chunks;
@@ -65,6 +67,8 @@ impl<PCS: CommitmentScheme> TrustedBytecodeCommitments<PCS> {
         let num_chunks = total_lanes().div_ceil(k_chunk);
 
         let log_t = max_trace_len.log_2();
+        let bytecode_T =
+            DoryGlobals::bytecode_t_for_main_sigma(k_chunk, bytecode_len, log_k_chunk, log_t);
         let _guard = DoryGlobals::initialize_bytecode_context_for_main_sigma(
             k_chunk,
             bytecode_len,
@@ -73,8 +77,18 @@ impl<PCS: CommitmentScheme> TrustedBytecodeCommitments<PCS> {
         );
         let _ctx = DoryGlobals::with_context(DoryContext::Bytecode);
         let num_columns = DoryGlobals::get_num_columns();
+        let layout = DoryGlobals::get_layout();
 
-        let bytecode_chunks = build_bytecode_chunks::<PCS::Field>(bytecode, log_k_chunk);
+        let bytecode_chunks = if bytecode_T == bytecode_len {
+            build_bytecode_chunks::<PCS::Field>(bytecode, log_k_chunk)
+        } else {
+            build_bytecode_chunks_for_main_matrix::<PCS::Field>(
+                bytecode,
+                log_k_chunk,
+                bytecode_T,
+                layout,
+            )
+        };
         debug_assert_eq!(bytecode_chunks.len(), num_chunks);
 
         let (commitments, hints): (Vec<_>, Vec<_>) = bytecode_chunks
