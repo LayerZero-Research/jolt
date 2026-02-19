@@ -131,6 +131,9 @@ impl ProgramPreprocessing {
 
         let num_words = max_bytecode_address.next_multiple_of(8) / 8 - min_bytecode_address / 8 + 1;
         let mut program_image_words = vec![0u64; num_words as usize];
+        tracing::info!("num_words: {}", num_words);
+        tracing::info!("max_bytecode_address: {}", max_bytecode_address);
+        tracing::info!("min_bytecode_address: {}", min_bytecode_address);
         // Convert bytes into words and populate `program_image_words`
         for chunk in
             memory_init.chunk_by(|(address_a, _), (address_b, _)| address_a / 8 == address_b / 8)
@@ -443,16 +446,14 @@ impl<PCS: CommitmentScheme> TrustedProgramCommitments<PCS> {
         let (sigma_main, _nu_main) = DoryGlobals::main_sigma_nu(log_k_chunk, log_t);
         let main_num_columns = 1usize << sigma_main;
 
-        // Pad to power-of-two, but ensure at least `main_num_columns` so we have ≥1 row.
-        // This is required for the ProgramImage matrix to be non-degenerate when using
-        // Main's column width.
+        // Pad to a power-of-two length (minimum 1).
         let program_image_num_words = program
             .program_image_len_words()
             .next_power_of_two()
-            .max(1)
-            .max(main_num_columns);
+            .max(1);
 
         // Initialize ProgramImage context with Main's column width for hint compatibility.
+        // This supports partial rows when program_image_num_words is smaller than a full row.
         DoryGlobals::initialize_program_image_context_with_num_columns(
             k_chunk,
             program_image_num_words,

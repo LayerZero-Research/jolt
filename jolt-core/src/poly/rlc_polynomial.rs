@@ -273,7 +273,7 @@ pub struct StreamingRLCContext<F: JoltField> {
     /// Advice polynomials with their RLC coefficients and IDs.
     /// These are NOT streamed from trace - they're passed in directly.
     /// Format: (poly_id, coeff, polynomial) - ID is needed to determine
-    /// commitment dimensions (ProgramImageInit uses Main's sigma).
+    /// commitment dimensions.
     pub advice_polys: Vec<(CommittedPolynomial, F, MultilinearPolynomial<F>)>,
     pub trace_source: TraceSource,
     pub preprocessing: Arc<RLCStreamingData>,
@@ -596,17 +596,7 @@ impl<F: JoltField> RLCPolynomial<F> {
                     // In AddressMajor this occupies evenly-spaced columns (stride-by-K), not a contiguous block.
                     match DoryGlobals::get_layout() {
                         DoryLayout::CycleMajor => {
-                            // Contiguous prefix block: full columns, limited rows.
-                            debug_assert!(
-                                advice_len % num_columns == 0,
-                                "ProgramImageInit len ({advice_len}) must be divisible by num_columns ({num_columns})"
-                            );
-                            // Avoid O(num_columns) work when the program image is much smaller than the
-                            // main matrix width. We only need to visit the actual program-image words;
-                            // the padded tail is identically zero.
-                            //
-                            // For CycleMajor, coefficient index maps as:
-                            //   idx = row * num_columns + col
+                            // Contiguous prefix block: full columns, limited rows (partial rows allowed).
                             let advice_cols = num_columns;
                             let max_nonzero_prefix = ctx.preprocessing.program.program_image_words.len();
                             let len = max_nonzero_prefix.min(advice_len);
@@ -657,10 +647,6 @@ impl<F: JoltField> RLCPolynomial<F> {
                                 num_columns,
                                 k_chunk * cycles_per_row,
                                 "Expected num_columns == K * cycles_per_row in AddressMajor"
-                            );
-                            debug_assert!(
-                                advice_len % cycles_per_row == 0,
-                                "ProgramImageInit len ({advice_len}) must be divisible by cycles_per_row ({cycles_per_row})"
                             );
                             // Avoid O(cycles_per_row) work when the program image is small.
                             // For AddressMajor trace-dense embedding, coefficient index maps as:

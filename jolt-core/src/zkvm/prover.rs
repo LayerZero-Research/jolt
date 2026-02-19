@@ -409,6 +409,8 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             (trace.len() + 1).next_power_of_two()
         };
 
+        tracing::info!("padded_trace_len: {}", padded_trace_len);
+
         // In Committed mode, Stage 8 folds bytecode chunk openings into the *joint* opening.
         // That folding currently requires log_T >= log_K_bytecode, so we ensure the padded trace
         // length is at least the (power-of-two padded) bytecode size.
@@ -421,6 +423,8 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 .program_commitments
                 .as_ref()
                 .expect("program commitments missing in committed preprocessing");
+            tracing::info!("trusted.bytecode_T: {}", trusted.bytecode_T);
+            tracing::info!("preprocessing.shared.bytecode_size(): {}", preprocessing.shared.bytecode_size());
             padded_trace_len
                 .max(preprocessing.shared.bytecode_size())
                 .max(trusted.bytecode_T) // Ensure T >= bytecode_T for CycleMajor row alignment
@@ -440,6 +444,8 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 (false, 0usize)
             };
         let padded_trace_len = if has_program_image {
+            tracing::info!("padded_trace_len: {}", padded_trace_len);
+            tracing::info!("program_image_len_words: {}", preprocessing.program.program_image_words.len());
             padded_trace_len.max(program_image_len_words_padded)
         } else {
             padded_trace_len
@@ -482,6 +488,8 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                     + {
                         let base = preprocessing.program.program_image_words.len() as u64;
                         if has_program_image {
+                            tracing::info!("program_image_len_words_padded: {}", program_image_len_words_padded);
+                            tracing::info!("base: {}", base);
                             (program_image_len_words_padded as u64).max(base)
                         } else {
                             base
@@ -490,6 +498,8 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                     + 1,
             )
             .next_power_of_two() as usize;
+
+        tracing::info!("ram_K: {}", ram_K);
 
         let transcript = ProofTranscript::new(b"Jolt");
         let opening_accumulator = ProverOpeningAccumulator::new(trace.len().log_2());
@@ -614,7 +624,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                             &self.preprocessing.program,
                             trusted.program_image_num_words,
                         );
-                    // Recompute log_k_chunk and max_log_t to get Main's sigma.
+                    // Use the explicit context initialization to match TrustedProgramCommitments::derive()
                     let max_t_any: usize = self
                         .preprocessing
                         .shared
@@ -628,13 +638,11 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                     } else {
                         8
                     };
-                    // Use the explicit context initialization to match TrustedProgramCommitments::derive()
-                    let (sigma_main, _) = DoryGlobals::main_sigma_nu(log_k_chunk, max_log_t);
-                    let main_num_columns = 1usize << sigma_main;
+                    let k_chunk = 1usize << log_k_chunk;
                     DoryGlobals::initialize_program_image_context_with_num_columns(
-                        1usize << log_k_chunk,
+                        k_chunk,
                         trusted.program_image_num_words,
-                        main_num_columns,
+                        trusted.program_image_num_columns,
                     );
                     let _ctx = DoryGlobals::with_context(DoryContext::ProgramImage);
                     let (recommit, _hint) = PCS::commit(&mle, &self.preprocessing.generators);

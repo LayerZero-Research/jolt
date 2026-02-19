@@ -285,6 +285,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
 
         self.initialize_transcript_preamble()?;
         self.verify_stages_1_to_7()?;
+        tracing::info!("verify_stage8");
         self.verify_stage8()?;
 
         Ok(())
@@ -351,8 +352,11 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
         self.verify_stage3()?;
         self.verify_stage4()?;
         self.verify_stage5()?;
+        tracing::info!("verify_stage6a");
         self.verify_stage6a()?;
+        tracing::info!("verify_stage6b");
         self.verify_stage6b()?;
+        tracing::info!("verify_stage7");
         self.verify_stage7()?;
         Ok(())
     }
