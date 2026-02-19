@@ -246,9 +246,8 @@ where
         MultilinearPolynomial::OneHot(_) | MultilinearPolynomial::RLC(_) => false,
     };
 
-    // Treat ProgramImage like Main here when its context is sized to match Main's K.
-    // This enables AddressMajor "trace-dense" embedding (stride-by-K columns) for the
-    // committed program-image polynomial.
+    // In Main + AddressMajor, trace-dense polynomials are embedded by strided columns.
+    // Treat ProgramImage like Main to enable stride-by-K embedding in committed mode.
     let is_trace_dense_addr_major =
         matches!(dory_context, DoryContext::Main | DoryContext::ProgramImage)
             && dory_layout == DoryLayout::AddressMajor

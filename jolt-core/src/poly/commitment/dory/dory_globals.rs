@@ -160,6 +160,7 @@ static mut BYTECODE_NUM_COLUMNS: OnceLock<usize> = OnceLock::new();
 static mut PROGRAM_IMAGE_T: OnceLock<usize> = OnceLock::new();
 static mut PROGRAM_IMAGE_MAX_NUM_ROWS: OnceLock<usize> = OnceLock::new();
 static mut PROGRAM_IMAGE_NUM_COLUMNS: OnceLock<usize> = OnceLock::new();
+static mut PROGRAM_IMAGE_K_CHUNK: OnceLock<usize> = OnceLock::new();
 
 // Context tracking: 0=Main, 1=TrustedAdvice, 2=UntrustedAdvice, 3=Bytecode, 4=ProgramImage
 static CURRENT_CONTEXT: AtomicU8 = AtomicU8::new(0);
@@ -337,9 +338,17 @@ impl DoryGlobals {
             Self::set_num_columns_for_context(num_columns, DoryContext::ProgramImage);
             Self::set_T_for_context(padded_len_words, DoryContext::ProgramImage);
             Self::set_max_num_rows_for_context(num_rows, DoryContext::ProgramImage);
+            #[allow(static_mut_refs)]
+            unsafe {
+                let _ = PROGRAM_IMAGE_K_CHUNK.set(k_chunk);
+            }
         } else {
             // Fallback: balanced dimensions for the program image itself.
             Self::initialize_context(1, padded_len_words, DoryContext::ProgramImage, None);
+            #[allow(static_mut_refs)]
+            unsafe {
+                let _ = PROGRAM_IMAGE_K_CHUNK.set(1);
+            }
         }
         Some(())
     }
@@ -371,15 +380,18 @@ impl DoryGlobals {
         assert!(k_chunk > 0);
         assert!(num_columns.is_power_of_two());
         let total_size = k_chunk * padded_len_words;
-        assert!(
-            total_size >= num_columns,
-            "program-image K*T ({total_size}) must be >= num_columns ({num_columns})"
-        );
-        assert!(
-            total_size % num_columns == 0,
-            "program-image K*T ({total_size}) must be divisible by num_columns ({num_columns})"
-        );
-        let num_rows = total_size / num_columns;
+        // Allow partial rows when the program image is smaller than a full row.
+        // If total_size < num_columns, we treat it as a single (partially filled) row.
+        let num_rows = if total_size >= num_columns {
+            debug_assert_eq!(
+                total_size % num_columns,
+                0,
+                "program-image K*T ({total_size}) must be divisible by num_columns ({num_columns})"
+            );
+            total_size / num_columns
+        } else {
+            1
+        };
 
         // If already initialized, ensure it matches (avoid silently ignoring OnceCell::set failures).
         #[allow(static_mut_refs)]
@@ -399,6 +411,10 @@ impl DoryGlobals {
         Self::set_num_columns_for_context(num_columns, DoryContext::ProgramImage);
         Self::set_T_for_context(padded_len_words, DoryContext::ProgramImage);
         Self::set_max_num_rows_for_context(num_rows, DoryContext::ProgramImage);
+        #[allow(static_mut_refs)]
+        unsafe {
+            let _ = PROGRAM_IMAGE_K_CHUNK.set(k_chunk);
+        }
         Some(())
     }
 
@@ -562,7 +578,18 @@ impl DoryGlobals {
     /// Equivalent to `T / num_rows` and to `num_cols / K`.
     pub fn address_major_cycles_per_row() -> usize {
         let (num_rows, num_cols) = Self::matrix_shape();
-        let k = Self::k_from_matrix_shape();
+        let k = match Self::current_context() {
+            DoryContext::ProgramImage => {
+                #[allow(static_mut_refs)]
+                unsafe {
+                    PROGRAM_IMAGE_K_CHUNK
+                        .get()
+                        .copied()
+                        .unwrap_or_else(|| Self::k_from_matrix_shape())
+                }
+            }
+            _ => Self::k_from_matrix_shape(),
+        };
         debug_assert!(k > 0);
         debug_assert_eq!(num_cols % k, 0, "Expected num_cols to be divisible by K");
         debug_assert_eq!(
@@ -791,6 +818,7 @@ impl DoryGlobals {
             let _ = PROGRAM_IMAGE_T.take();
             let _ = PROGRAM_IMAGE_MAX_NUM_ROWS.take();
             let _ = PROGRAM_IMAGE_NUM_COLUMNS.take();
+            let _ = PROGRAM_IMAGE_K_CHUNK.take();
         }
 
         // Reset context to Main
