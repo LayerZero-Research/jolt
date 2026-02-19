@@ -280,7 +280,7 @@ pub struct TrustedProgramCommitments<PCS: CommitmentScheme> {
     pub bytecode_len: usize,
     /// The T value used for bytecode coefficient indexing.
     /// For CycleMajor: max_trace_len (main-matrix dimensions).
-    /// For AddressMajor: bytecode_len (bytecode dimensions).
+    /// For AddressMajor: bytecode_len (bytecode dimensions), no extra padding.
     /// Used in Stage 8 VMP to ensure correct index mapping.
     pub bytecode_T: usize,
 
@@ -388,7 +388,7 @@ impl<PCS: CommitmentScheme> TrustedProgramCommitments<PCS> {
         } else {
             // Layout-conditional bytecode commitment generation (dense fallback):
             // - CycleMajor: Use main-matrix dimensions (k_chunk * T) for correct Stage 8 embedding
-            // - AddressMajor: Use bytecode dimensions (k_chunk * bytecode_len), which works correctly
+            // - AddressMajor: Use bytecode dimensions (no extra padding)
             //
             // Note: The context guard must remain alive through the commit operation, so we
             // initialize and build/commit together for each layout branch.
@@ -419,6 +419,12 @@ impl<PCS: CommitmentScheme> TrustedProgramCommitments<PCS> {
                     (commitments, hints, num_columns, max_trace_len)
                 }
                 DoryLayout::AddressMajor => {
+                    let bytecode_T = DoryGlobals::bytecode_t_for_main_sigma(
+                        k_chunk,
+                        bytecode_len,
+                        log_k_chunk,
+                        log_t,
+                    );
                     let _guard = DoryGlobals::initialize_bytecode_context_for_main_sigma(
                         k_chunk,
                         bytecode_len,
@@ -428,15 +434,23 @@ impl<PCS: CommitmentScheme> TrustedProgramCommitments<PCS> {
                     let _ctx = DoryGlobals::with_context(DoryContext::Bytecode);
                     let num_columns = DoryGlobals::get_num_columns();
 
-                    let chunks =
-                        build_bytecode_chunks_from_program::<PCS::Field>(program, log_k_chunk);
+                    let chunks = if bytecode_T == bytecode_len {
+                        build_bytecode_chunks_from_program::<PCS::Field>(program, log_k_chunk)
+                    } else {
+                        build_bytecode_chunks_for_main_matrix_from_program::<PCS::Field>(
+                            program,
+                            log_k_chunk,
+                            bytecode_T,
+                            layout,
+                        )
+                    };
                     debug_assert_eq!(chunks.len(), num_chunks);
 
                     let (commitments, hints): (Vec<_>, Vec<_>) = chunks
                         .par_iter()
                         .map(|poly| PCS::commit(poly, generators))
                         .unzip();
-                    (commitments, hints, num_columns, bytecode_len)
+                    (commitments, hints, num_columns, bytecode_T)
                 }
             }
         };
