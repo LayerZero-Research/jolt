@@ -596,18 +596,25 @@ fn derive_bytecode_commitments_sparse_dory(
             // For tier-2 commitment, we can skip identity rows (pairing with identity is neutral).
             let mut nonzero_rows: Vec<ArkG1> = Vec::with_capacity(row_map.len());
             let mut nonzero_g2: Vec<_> = Vec::with_capacity(row_map.len());
+            let mut nonzero_indices: Vec<usize> = Vec::with_capacity(row_map.len());
 
             for (row_idx, row_commitment) in row_map.into_iter() {
                 let rc = ArkG1(row_commitment);
                 row_commitments[row_idx] = rc;
                 nonzero_rows.push(rc);
                 nonzero_g2.push(setup.g2_vec[row_idx].clone());
+                nonzero_indices.push(row_idx);
             }
 
-            let tier2 = <BN254 as PairingCurve>::multi_pair_g2_setup(&nonzero_rows, &nonzero_g2);
+            let tier2 = <BN254 as PairingCurve>::multi_pair_g2_indexed(
+                &nonzero_rows,
+                &nonzero_g2,
+                &nonzero_indices,
+            );
             (tier2, row_commitments)
         })
         .unzip();
+
 
     (commitments, hints, num_columns, bytecode_T)
 }
