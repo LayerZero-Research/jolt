@@ -18,10 +18,11 @@ use crate::poly::commitment::commitment_scheme::CommitmentScheme;
 use crate::poly::commitment::dory::{DoryCommitmentScheme, DoryContext, DoryGlobals, DoryLayout};
 use crate::poly::multilinear_polynomial::MultilinearPolynomial;
 use crate::poly::opening_proof::{OpeningAccumulator, SumcheckId};
+use crate::utils::math::Math;
 use crate::zkvm::bytecode::chunks::total_lanes;
 use crate::zkvm::claim_reductions::AdviceKind;
 use crate::zkvm::config::ProgramMode;
-use crate::zkvm::program::ProgramPreprocessing;
+use crate::zkvm::program::{ProgramPreprocessing, TrustedProgramCommitments};
 use crate::zkvm::prover::JoltProverPreprocessing;
 use crate::zkvm::ram::populate_memory_states;
 use crate::zkvm::verifier::{JoltSharedPreprocessing, JoltVerifier, JoltVerifierPreprocessing};
@@ -566,6 +567,145 @@ fn fib_e2e_committed_large_trace_address_major() {
             .with_committed_program()
             .with_dory_layout(DoryLayout::AddressMajor),
     );
+}
+
+#[test]
+#[serial]
+fn fib_e2e_committed_address_major_bytecode_smaller_than_one_main_row() {
+    DoryGlobals::reset();
+    DoryGlobals::set_layout(DoryLayout::AddressMajor);
+
+    let config = E2ETestConfig::fibonacci(10_000)
+        .with_committed_program()
+        .with_dory_layout(DoryLayout::AddressMajor)
+        .with_max_trace_length(1 << 17);
+
+    let mut program = host::Program::new(config.program_name);
+    let (instructions, init_memory_state, _) = program.decode();
+    let (_, _, _, io_device) = program.trace(
+        &config.inputs,
+        &config.untrusted_advice,
+        &config.trusted_advice,
+    );
+
+    let program_data = Arc::new(ProgramPreprocessing::preprocess(
+        instructions,
+        init_memory_state,
+    ));
+    let shared_preprocessing = JoltSharedPreprocessing::new(
+        program_data.meta(),
+        io_device.memory_layout.clone(),
+        config.max_trace_length,
+    );
+
+    // Build committed preprocessing manually so we can force the "bytecode smaller than one
+    // main row" planning case (main width from a larger commitment bound).
+    let commitment_max_trace_len = 1usize << 27;
+    let log_k_chunk = 4usize;
+    let commitment_setup = DoryCommitmentScheme::setup_prover(log_k_chunk + 27);
+    let (program_commitments, program_hints) = TrustedProgramCommitments::derive(
+        &program_data,
+        &commitment_setup,
+        log_k_chunk,
+        commitment_max_trace_len,
+    );
+
+    let k_chunk = 1usize << log_k_chunk;
+    let log_t = commitment_max_trace_len.log_2();
+    let main_num_columns = DoryGlobals::main_num_columns(log_k_chunk, log_t);
+    let total_size = k_chunk * program_commitments.bytecode_len;
+    let bytecode_num_columns = program_commitments.bytecode_num_columns;
+    let bytecode_num_rows = if total_size >= bytecode_num_columns {
+        total_size / bytecode_num_columns
+    } else {
+        1
+    };
+
+    println!(
+        "commitment planning dims: main(cols={}, rows={}), bytecode(cols={}, rows={}, K*T={})",
+        main_num_columns,
+        (k_chunk * commitment_max_trace_len) / main_num_columns,
+        bytecode_num_columns,
+        bytecode_num_rows,
+        total_size
+    );
+
+    assert!(
+        total_size < main_num_columns,
+        "expected bytecode matrix to be smaller than one main row, got K*T={} and main_num_columns={} (bytecode_len={}, k_chunk={}, log_t={})",
+        total_size,
+        main_num_columns,
+        program_commitments.bytecode_len,
+        k_chunk,
+        log_t
+    );
+    assert_eq!(bytecode_num_columns, main_num_columns);
+
+    let prover_preprocessing: JoltProverPreprocessing<Fr, DoryCommitmentScheme> =
+        JoltProverPreprocessing {
+            generators: commitment_setup,
+            shared: shared_preprocessing,
+            program: Arc::clone(&program_data),
+            program_commitments: Some(program_commitments),
+            program_hints: Some(program_hints),
+        };
+
+    // End-to-end proof + verification under this exact configuration.
+    let elf_contents = program.get_elf_contents().expect("elf contents is None");
+    let prover = RV64IMACProver::gen_from_elf_with_program_mode(
+        &prover_preprocessing,
+        &elf_contents,
+        &config.inputs,
+        &config.untrusted_advice,
+        &config.trusted_advice,
+        None,
+        None,
+        ProgramMode::Committed,
+    );
+    let io_device = prover.program_io.clone();
+    let runtime_k_chunk = prover.one_hot_params.k_chunk;
+    let runtime_padded_t = prover.padded_trace_len;
+    let (jolt_proof, debug_info) = prover.prove();
+    let (sigma_main, nu_main) =
+        DoryGlobals::try_get_main_sigma_nu().expect("main dory context not initialized by prover");
+    let stage8_main_num_columns = 1usize << sigma_main;
+    let stage8_main_num_rows = 1usize << nu_main;
+    let (bytecode_num_rows_ctx, bytecode_num_columns_ctx, bytecode_t_ctx) = {
+        let _ctx = DoryGlobals::with_context(DoryContext::Bytecode);
+        let (rows, cols) = DoryGlobals::matrix_shape();
+        let t = DoryGlobals::get_T();
+        (rows, cols, t)
+    };
+    println!(
+        "stage8 runtime dims: main(cols={}, rows={}, K={}, T={}), bytecode(cols={}, rows={}, bytecode_T={})",
+        stage8_main_num_columns,
+        stage8_main_num_rows,
+        runtime_k_chunk,
+        runtime_padded_t,
+        bytecode_num_columns_ctx,
+        bytecode_num_rows_ctx,
+        bytecode_t_ctx
+    );
+    assert!(
+        stage8_main_num_rows >= 4,
+        "expected at least 4 main rows at runtime, got {} (cols={}, K={}, T={})",
+        stage8_main_num_rows,
+        stage8_main_num_columns,
+        runtime_k_chunk,
+        runtime_padded_t
+    );
+
+    let verifier_preprocessing = JoltVerifierPreprocessing::from(&prover_preprocessing);
+    RV64IMACVerifier::new(
+        &verifier_preprocessing,
+        jolt_proof,
+        io_device,
+        None,
+        debug_info,
+    )
+    .expect("Failed to create verifier")
+    .verify()
+    .expect("Verification failed");
 }
 
 #[test]

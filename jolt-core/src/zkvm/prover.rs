@@ -420,7 +420,10 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 .as_ref()
                 .expect("program commitments missing in committed preprocessing");
             tracing::info!("trusted.bytecode_T: {}", trusted.bytecode_T);
-            tracing::info!("preprocessing.shared.bytecode_size(): {}", preprocessing.shared.bytecode_size());
+            tracing::info!(
+                "preprocessing.shared.bytecode_size(): {}",
+                preprocessing.shared.bytecode_size()
+            );
             padded_trace_len
                 .max(preprocessing.shared.bytecode_size())
                 .max(trusted.bytecode_T) // Ensure T >= bytecode_T for CycleMajor row alignment
@@ -441,7 +444,10 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             };
         let padded_trace_len = if has_program_image {
             tracing::info!("padded_trace_len: {}", padded_trace_len);
-            tracing::info!("program_image_len_words: {}", preprocessing.program.program_image_words.len());
+            tracing::info!(
+                "program_image_len_words: {}",
+                preprocessing.program.program_image_words.len()
+            );
             padded_trace_len.max(program_image_len_words_padded)
         } else {
             padded_trace_len
@@ -484,7 +490,10 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                     + {
                         let base = preprocessing.program.program_image_words.len() as u64;
                         if has_program_image {
-                            tracing::info!("program_image_len_words_padded: {}", program_image_len_words_padded);
+                            tracing::info!(
+                                "program_image_len_words_padded: {}",
+                                program_image_len_words_padded
+                            );
                             tracing::info!("base: {}", base);
                             (program_image_len_words_padded as u64).max(base)
                         } else {

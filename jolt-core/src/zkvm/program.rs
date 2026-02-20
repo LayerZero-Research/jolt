@@ -232,7 +232,11 @@ pub struct TrustedProgramCommitments<PCS: CommitmentScheme> {
     // ─── Bytecode chunk commitments ───
     /// Commitments to bytecode chunk polynomials.
     pub bytecode_commitments: Vec<PCS::Commitment>,
-    /// Number of columns used when committing bytecode chunks.
+    /// Bytecode-context column count used when deriving bytecode commitments.
+    ///
+    /// In committed mode Stage 8, this value is also reused as the Main-context column width.
+    /// For AddressMajor, this is the Main-width target from `(K, max_trace_len)`.
+    /// If bytecode is smaller than one row, row 0 is implicitly right-zero-padded.
     pub bytecode_num_columns: usize,
     /// log2(k_chunk) used for lane chunking.
     pub log_k_chunk: u8,
@@ -311,28 +315,28 @@ impl<PCS: CommitmentScheme> TrustedProgramCommitments<PCS> {
             let hints: Vec<PCS::OpeningProofHint> = unsafe { std::mem::transmute(hints) };
             (commitments, hints, num_columns, bytecode_t)
         } else {
-            // Layout-conditional bytecode commitment generation (dense fallback):
-            // - CycleMajor: Use main-matrix dimensions (k_chunk * T) for correct Stage 8 embedding
-            // - AddressMajor: Use bytecode dimensions (no extra padding)
-            //
-            // Note: The context guard must remain alive through the commit operation, so we
-            // initialize and build/commit together for each layout branch.
-            //
-            // bytecode_T: The T value used for bytecode coefficient indexing (needed for Stage 8 VMP).
+            // Dense fallback uses the same explicit committed bytecode plan as the sparse path.
+            // The planned width is later reused as committed-mode Main width in Stage 8.
+            let (num_columns, bytecode_T) = committed_bytecode_dimensions(
+                layout,
+                bytecode_len,
+                log_k_chunk,
+                log_t,
+                max_trace_len,
+            );
+            let _guard = DoryGlobals::initialize_bytecode_context_with_dimensions(
+                k_chunk,
+                bytecode_T,
+                num_columns,
+            );
+            let _ctx = DoryGlobals::with_context(DoryContext::Bytecode);
+
             match layout {
                 DoryLayout::CycleMajor => {
-                    let _guard = DoryGlobals::initialize_bytecode_context_with_main_dimensions(
-                        k_chunk,
-                        max_trace_len,
-                        log_k_chunk,
-                    );
-                    let _ctx = DoryGlobals::with_context(DoryContext::Bytecode);
-                    let num_columns = DoryGlobals::get_num_columns();
-
                     let chunks = build_bytecode_chunks_for_main_matrix_from_program::<PCS::Field>(
                         program,
                         log_k_chunk,
-                        max_trace_len,
+                        bytecode_T,
                         layout,
                     );
                     debug_assert_eq!(chunks.len(), num_chunks);
@@ -341,34 +345,11 @@ impl<PCS: CommitmentScheme> TrustedProgramCommitments<PCS> {
                         .par_iter()
                         .map(|poly| PCS::commit(poly, generators))
                         .unzip();
-                    (commitments, hints, num_columns, max_trace_len)
+                    (commitments, hints, num_columns, bytecode_T)
                 }
                 DoryLayout::AddressMajor => {
-                    let bytecode_T = DoryGlobals::bytecode_t_for_main_sigma(
-                        k_chunk,
-                        bytecode_len,
-                        log_k_chunk,
-                        log_t,
-                    );
-                    let _guard = DoryGlobals::initialize_bytecode_context_for_main_sigma(
-                        k_chunk,
-                        bytecode_len,
-                        log_k_chunk,
-                        log_t,
-                    );
-                    let _ctx = DoryGlobals::with_context(DoryContext::Bytecode);
-                    let num_columns = DoryGlobals::get_num_columns();
-
-                    let chunks = if bytecode_T == bytecode_len {
-                        build_bytecode_chunks_from_program::<PCS::Field>(program, log_k_chunk)
-                    } else {
-                        build_bytecode_chunks_for_main_matrix_from_program::<PCS::Field>(
-                            program,
-                            log_k_chunk,
-                            bytecode_T,
-                            layout,
-                        )
-                    };
+                    let chunks =
+                        build_bytecode_chunks_from_program::<PCS::Field>(program, log_k_chunk);
                     debug_assert_eq!(chunks.len(), num_chunks);
 
                     let (commitments, hints): (Vec<_>, Vec<_>) = chunks
@@ -381,15 +362,11 @@ impl<PCS: CommitmentScheme> TrustedProgramCommitments<PCS> {
         };
 
         // ─── Derive program image commitment ───
-        // Compute Main's column width (sigma_main) for Stage 8 hint compatibility.
-        let (sigma_main, _nu_main) = DoryGlobals::main_sigma_nu(log_k_chunk, log_t);
-        let main_num_columns = 1usize << sigma_main;
+        // Compute Main's column width for Stage 8 hint compatibility.
+        let main_num_columns = DoryGlobals::main_num_columns(log_k_chunk, log_t);
 
         // Pad to a power-of-two length (minimum 1).
-        let program_image_num_words = program
-            .program_image_len_words()
-            .next_power_of_two()
-            .max(1);
+        let program_image_num_words = program.program_image_len_words().next_power_of_two().max(1);
 
         // Initialize ProgramImage context with Main's column width for hint compatibility.
         // This supports partial rows when program_image_num_words is smaller than a full row.
@@ -471,6 +448,28 @@ fn build_program_image_polynomial_padded<F: crate::field::JoltField>(
     MultilinearPolynomial::from(coeffs)
 }
 
+/// Committed-mode bytecode matrix dimensions.
+///
+/// Flow is explicit:
+/// 1) derive Main width from `(log_k_chunk, log_t)` only
+/// 2) choose bytecode `T` by layout
+/// 3) keep bytecode width equal to Main width; if bytecode is smaller than one row,
+///    the remaining entries in row 0 are implicit zeros
+#[inline]
+fn committed_bytecode_dimensions(
+    layout: DoryLayout,
+    bytecode_len: usize,
+    log_k_chunk: usize,
+    log_t: usize,
+    max_trace_len: usize,
+) -> (usize, usize) {
+    let main_num_columns = DoryGlobals::main_num_columns(log_k_chunk, log_t);
+    match layout {
+        DoryLayout::CycleMajor => (main_num_columns, max_trace_len),
+        DoryLayout::AddressMajor => (main_num_columns, bytecode_len),
+    }
+}
+
 /// Streaming/sparse bytecode commitments for Dory.
 ///
 /// Computes tier-1 row commitments directly from the instruction stream by only touching
@@ -494,35 +493,24 @@ fn derive_bytecode_commitments_sparse_dory(
     let num_chunks = total_lanes().div_ceil(k_chunk);
     let log_t = max_trace_len.log_2();
 
-    // Initialize Bytecode context with dimensions matching the committed-bytecode strategy.
-    let (num_columns, bytecode_T) = match layout {
-        DoryLayout::CycleMajor => {
-            let _guard = DoryGlobals::initialize_bytecode_context_with_main_dimensions(
-                k_chunk,
-                max_trace_len,
-                log_k_chunk,
-            );
-            let _ctx = DoryGlobals::with_context(DoryContext::Bytecode);
-            (DoryGlobals::get_num_columns(), max_trace_len)
-        }
-        DoryLayout::AddressMajor => {
-            let _guard = DoryGlobals::initialize_bytecode_context_for_main_sigma(
-                k_chunk,
-                bytecode_len,
-                log_k_chunk,
-                log_t,
-            );
-            let _ctx = DoryGlobals::with_context(DoryContext::Bytecode);
-            (DoryGlobals::get_num_columns(), bytecode_len)
-        }
-    };
+    // Committed bytecode always uses Main width; tiny bytecode uses an implicit
+    // partially-filled first row (right side zero-padded).
+    let (num_columns, bytecode_T) =
+        committed_bytecode_dimensions(layout, bytecode_len, log_k_chunk, log_t, max_trace_len);
+    let _guard =
+        DoryGlobals::initialize_bytecode_context_with_dimensions(k_chunk, bytecode_T, num_columns);
+    let _ctx = DoryGlobals::with_context(DoryContext::Bytecode);
 
     let total_size = k_chunk * bytecode_T;
-    debug_assert!(
-        total_size % num_columns == 0,
-        "expected (k_chunk*bytecode_T) divisible by num_columns"
-    );
-    let num_rows = total_size / num_columns;
+    let num_rows = if total_size >= num_columns {
+        debug_assert!(
+            total_size % num_columns == 0,
+            "expected (k_chunk*bytecode_T) divisible by num_columns"
+        );
+        total_size / num_columns
+    } else {
+        1
+    };
 
     // Build tier-1 row commitments by streaming once over the program instructions.
     //
@@ -615,7 +603,6 @@ fn derive_bytecode_commitments_sparse_dory(
         })
         .unzip();
 
-
     (commitments, hints, num_columns, bytecode_T)
 }
 
@@ -649,6 +636,55 @@ fn build_bytecode_chunks_for_main_matrix_from_program<F: crate::field::JoltField
         pc_map: program.pc_map.clone(),
     };
     build_bytecode_chunks_for_main_matrix::<F>(&legacy, log_k_chunk, padded_trace_len, layout)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn address_major_tiny_program_can_be_smaller_than_one_main_row() {
+        // Tiny program fixture: default preprocessing already has minimal padded bytecode length.
+        let program = ProgramPreprocessing::default();
+        let bytecode_len = program.bytecode_len();
+        assert_eq!(bytecode_len, 2);
+
+        // Example parameters:
+        // - k_chunk = 2^3 = 8
+        // - max_trace_len = 2^20 => log_t = 20
+        // - main_num_columns = 2^ceil((3+20)/2) = 2^12 = 4096
+        let log_k_chunk = 3usize;
+        let k_chunk = 1usize << log_k_chunk;
+        let max_trace_len = 1usize << 20;
+        let log_t = max_trace_len.log_2();
+        let main_num_columns = DoryGlobals::main_num_columns(log_k_chunk, log_t);
+        assert_eq!(main_num_columns, 4096);
+
+        let total_size = k_chunk * bytecode_len;
+        assert_eq!(total_size, 16);
+        assert!(total_size < main_num_columns);
+
+        // In current committed AddressMajor flow, width stays at Main width and row 0 is partial.
+        let (num_columns, bytecode_t) = committed_bytecode_dimensions(
+            DoryLayout::AddressMajor,
+            bytecode_len,
+            log_k_chunk,
+            log_t,
+            max_trace_len,
+        );
+        assert_eq!(bytecode_t, bytecode_len);
+        assert_eq!(num_columns, main_num_columns);
+
+        let _guard = DoryGlobals::initialize_bytecode_context_with_dimensions(
+            k_chunk,
+            bytecode_t,
+            num_columns,
+        );
+        let _ctx = DoryGlobals::with_context(DoryContext::Bytecode);
+        let (rows, cols) = DoryGlobals::matrix_shape();
+        assert_eq!(cols, main_num_columns);
+        assert_eq!(rows, 1);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

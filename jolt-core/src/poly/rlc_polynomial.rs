@@ -71,12 +71,8 @@ pub fn compute_bytecode_vmp_contribution<F: JoltField>(
     // - AddressMajor: bytecode_len (bytecode dimensions)
     let index_T = bytecode_T;
 
-    debug_assert!(
-        k_chunk * bytecode_T >= bytecode_cols,
-        "bytecode_T*k_chunk must cover at least one full row: (k_chunk*bytecode_T)={} < num_columns={}",
-        k_chunk * bytecode_T,
-        bytecode_cols
-    );
+    // Bytecode may be smaller than one full row at Main width. In that case, the
+    // right side of row 0 is implicitly zero and contributes nothing.
 
     // Build a dense coefficient table per chunk so we can invert the loops:
     // iterate cycles once and only touch lanes that are nonzero for that instruction.
@@ -516,7 +512,8 @@ impl<F: JoltField> RLCPolynomial<F> {
                         DoryLayout::CycleMajor => {
                             // Contiguous prefix block: full columns, limited rows (partial rows allowed).
                             let advice_cols = num_columns;
-                            let max_nonzero_prefix = ctx.preprocessing.program.program_image_words.len();
+                            let max_nonzero_prefix =
+                                ctx.preprocessing.program.program_image_words.len();
                             let len = max_nonzero_prefix.min(advice_len);
 
                             // Fast path for u64-backed program image (Committed mode).
@@ -571,7 +568,8 @@ impl<F: JoltField> RLCPolynomial<F> {
                             //   idx = row * cycles_per_row + offset
                             // and it contributes to main column:
                             //   col = offset * K
-                            let max_nonzero_prefix = ctx.preprocessing.program.program_image_words.len();
+                            let max_nonzero_prefix =
+                                ctx.preprocessing.program.program_image_words.len();
                             let len = max_nonzero_prefix.min(advice_len);
 
                             if let MultilinearPolynomial::U64Scalars(poly) = advice_poly {

@@ -717,8 +717,8 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
     /// Stage 8: Dory batch opening verification.
     fn verify_stage8(&mut self) -> Result<(), anyhow::Error> {
         // Initialize DoryGlobals with the layout from the proof.
-        // In committed mode, we must also match the Main-context sigma used to derive trusted
-        // bytecode commitments, otherwise Stage 8 batching will be inconsistent.
+        // In committed mode, we must replay the exact Stage-8 Main width from trusted preprocessing,
+        // otherwise Stage 8 batching will be inconsistent.
         let _guard = if self.proof.program_mode == ProgramMode::Committed {
             let committed = self.preprocessing.program.as_committed()?;
             DoryGlobals::initialize_main_context_with_num_columns(

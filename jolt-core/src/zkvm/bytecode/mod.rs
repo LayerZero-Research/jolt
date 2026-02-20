@@ -8,7 +8,7 @@ use common::constants::{ALIGNMENT_FACTOR_BYTECODE, RAM_START_ADDRESS};
 use tracer::instruction::{Cycle, Instruction};
 
 use crate::poly::commitment::commitment_scheme::CommitmentScheme;
-use crate::poly::commitment::dory::{DoryContext, DoryGlobals};
+use crate::poly::commitment::dory::{DoryContext, DoryGlobals, DoryLayout};
 use crate::utils::errors::ProofVerifyError;
 use crate::utils::math::Math;
 use crate::zkvm::bytecode::chunks::{
@@ -51,12 +51,15 @@ pub struct TrustedBytecodeCommitments<PCS: CommitmentScheme> {
 }
 
 impl<PCS: CommitmentScheme> TrustedBytecodeCommitments<PCS> {
-    /// Derive commitments from full bytecode (the canonical constructor).
+    /// Offline preprocessing: derive trusted commitments from full bytecode.
     ///
-    /// This is the "offline preprocessing" step that must be done honestly.
+    /// This must be run honestly by whoever prepares committed bytecode artifacts.
     /// Returns trusted commitments + hints for opening proofs.
-    #[tracing::instrument(skip_all, name = "TrustedBytecodeCommitments::derive")]
-    pub fn derive(
+    #[tracing::instrument(
+        skip_all,
+        name = "TrustedBytecodeCommitments::derive_offline_from_full_bytecode"
+    )]
+    pub fn derive_offline_from_full_bytecode(
         bytecode: &BytecodePreprocessing,
         generators: &PCS::ProverSetup,
         log_k_chunk: usize,
@@ -67,17 +70,29 @@ impl<PCS: CommitmentScheme> TrustedBytecodeCommitments<PCS> {
         let num_chunks = total_lanes().div_ceil(k_chunk);
 
         let log_t = max_trace_len.log_2();
-        let bytecode_T =
-            DoryGlobals::bytecode_t_for_main_sigma(k_chunk, bytecode_len, log_k_chunk, log_t);
-        let _guard = DoryGlobals::initialize_bytecode_context_for_main_sigma(
+        let layout = DoryGlobals::get_layout();
+        let main_num_columns = DoryGlobals::main_num_columns(log_k_chunk, log_t);
+        let bytecode_T = match layout {
+            DoryLayout::CycleMajor => {
+                let total_size = k_chunk * bytecode_len;
+                if total_size >= main_num_columns {
+                    bytecode_len
+                } else {
+                    main_num_columns / k_chunk
+                }
+            }
+            DoryLayout::AddressMajor => bytecode_len,
+        };
+        let num_columns = match layout {
+            DoryLayout::CycleMajor => main_num_columns,
+            DoryLayout::AddressMajor => main_num_columns,
+        };
+        let _guard = DoryGlobals::initialize_bytecode_context_with_dimensions(
             k_chunk,
-            bytecode_len,
-            log_k_chunk,
-            log_t,
+            bytecode_T,
+            num_columns,
         );
         let _ctx = DoryGlobals::with_context(DoryContext::Bytecode);
-        let num_columns = DoryGlobals::get_num_columns();
-        let layout = DoryGlobals::get_layout();
 
         let bytecode_chunks = if bytecode_T == bytecode_len {
             build_bytecode_chunks::<PCS::Field>(bytecode, log_k_chunk)
