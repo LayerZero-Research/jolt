@@ -697,7 +697,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
             let mut params = advice_reduction_verifier_trusted.params.borrow_mut();
             if params.num_address_phase_rounds() > 0 {
                 // Transition phase
-                params.phase = ReductionPhase::AddressVariables;
+                params.reduction.phase = ReductionPhase::AddressVariables;
                 instances.push(advice_reduction_verifier_trusted);
             }
         }
@@ -707,7 +707,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
             let mut params = advice_reduction_verifier_untrusted.params.borrow_mut();
             if params.num_address_phase_rounds() > 0 {
                 // Transition phase
-                params.phase = ReductionPhase::AddressVariables;
+                params.reduction.phase = ReductionPhase::AddressVariables;
                 instances.push(advice_reduction_verifier_untrusted);
             }
         }
@@ -717,7 +717,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
             let mut params = program_image_reduction_verifier.params.borrow_mut();
             if params.num_address_phase_rounds() > 0 {
                 // Transition phase
-                params.phase = ReductionPhase::AddressVariables;
+                params.reduction.phase = ReductionPhase::AddressVariables;
                 instances.push(program_image_reduction_verifier);
             }
         }

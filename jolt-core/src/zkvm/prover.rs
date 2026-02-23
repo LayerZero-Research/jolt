@@ -1658,7 +1658,8 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 > 0
             {
                 // Transition phase
-                advice_reduction_prover_trusted.params.phase = ReductionPhase::AddressVariables;
+                advice_reduction_prover_trusted.params.reduction.phase =
+                    ReductionPhase::AddressVariables;
                 instances.push(Box::new(advice_reduction_prover_trusted));
             }
         }
@@ -1671,7 +1672,8 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 > 0
             {
                 // Transition phase
-                advice_reduction_prover_untrusted.params.phase = ReductionPhase::AddressVariables;
+                advice_reduction_prover_untrusted.params.reduction.phase =
+                    ReductionPhase::AddressVariables;
                 instances.push(Box::new(advice_reduction_prover_untrusted));
             }
         }
@@ -1683,7 +1685,8 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 > 0
             {
                 // Transition phase
-                program_image_reduction_prover.params.phase = ReductionPhase::AddressVariables;
+                program_image_reduction_prover.params.reduction.phase =
+                    ReductionPhase::AddressVariables;
                 instances.push(Box::new(program_image_reduction_prover));
             } else {
                 drop_in_background_thread(program_image_reduction_prover);
