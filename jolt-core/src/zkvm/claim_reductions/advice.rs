@@ -591,13 +591,13 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
                     eq_eval + params.gamma * eq_final
                 };
 
-                let gap_len = if params.cycle_phase_row_rounds.is_empty()
-                    || params.cycle_phase_col_rounds.is_empty()
-                {
-                    0
+                let cycle_phase_total_rounds = if !params.cycle_phase_row_rounds.is_empty() {
+                    params.cycle_phase_row_rounds.end - params.cycle_phase_col_rounds.start
                 } else {
-                    params.cycle_phase_row_rounds.start - params.cycle_phase_col_rounds.end
+                    params.cycle_phase_col_rounds.len()
                 };
+                let gap_len = cycle_phase_total_rounds
+                    - (params.cycle_phase_col_rounds.len() + params.cycle_phase_row_rounds.len());
                 let two_inv = F::from_u64(2).inverse().unwrap();
                 let scale = (0..gap_len).fold(F::one(), |acc, _| acc * two_inv);
 

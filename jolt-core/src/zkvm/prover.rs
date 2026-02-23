@@ -162,6 +162,9 @@ pub struct JoltCpuProver<
     /// The bytecode claim reduction sumcheck effectively spans two stages (6b and 7).
     /// Cache the prover state here between stages.
     bytecode_reduction_prover: Option<BytecodeClaimReductionProver<F>>,
+    /// The program-image claim reduction may span Stage 6b (cycle) and Stage 7 (address).
+    /// Cache the prover state here between stages.
+    program_image_reduction_prover: Option<ProgramImageClaimReductionProver<F>>,
     /// Bytecode read RAF params, cached between Stage 6a and 6b.
     bytecode_read_raf_params: Option<BytecodeReadRafSumcheckParams<F>>,
     /// Booleanity params, cached between Stage 6a and 6b.
@@ -548,6 +551,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             advice_reduction_prover_trusted: None,
             advice_reduction_prover_untrusted: None,
             bytecode_reduction_prover: None,
+            program_image_reduction_prover: None,
             bytecode_read_raf_params: None,
             booleanity_params: None,
             unpadded_trace_len,
@@ -608,27 +612,18 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                             &self.preprocessing.program,
                             trusted.program_image_num_words,
                         );
-                    // Use the explicit context initialization to match TrustedProgramCommitments::derive()
-                    let max_t_any: usize = self
-                        .preprocessing
-                        .shared
-                        .max_padded_trace_length
-                        .max(self.preprocessing.shared.bytecode_size())
-                        .next_power_of_two();
-                    let max_log_t = max_t_any.log_2();
-                    let log_k_chunk = if max_log_t < common::constants::ONEHOT_CHUNK_THRESHOLD_LOG_T
-                    {
-                        4
-                    } else {
-                        8
-                    };
-                    let k_chunk = 1usize << log_k_chunk;
-                    DoryGlobals::initialize_program_image_context_with_num_columns(
-                        k_chunk,
+                    // Use the same balanced ProgramImage context as TrustedProgramCommitments::derive().
+                    DoryGlobals::initialize_context(
+                        1,
                         trusted.program_image_num_words,
-                        trusted.program_image_num_columns,
+                        DoryContext::ProgramImage,
+                        None,
                     );
                     let _ctx = DoryGlobals::with_context(DoryContext::ProgramImage);
+                    debug_assert_eq!(
+                        DoryGlobals::get_num_columns(),
+                        trusted.program_image_num_columns
+                    );
                     let (recommit, _hint) = PCS::commit(&mle, &self.preprocessing.generators);
                     assert_eq!(
                         recommit, trusted.program_image_commitment,
@@ -1548,10 +1543,11 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         if let Some(advice) = self.advice_reduction_prover_untrusted.as_mut() {
             instances.push(advice);
         }
-        // Program-image claim reduction (Stage 6b): binds staged Stage 4 program-image scalar claims
-        // to the trusted commitment via a degree-2 sumcheck, caching an opening of ProgramImageInit.
-        let mut program_image_reduction: Option<ProgramImageClaimReductionProver<F>> = None;
-        if self.program_mode == ProgramMode::Committed {
+        // Program-image claim reduction (Phase 1 in Stage 6b): binds cycle-derived variables and
+        // caches an intermediate claim for Stage 7 when address-phase rounds are needed.
+        if self.program_mode == ProgramMode::Committed
+            && self.program_image_reduction_prover.is_none()
+        {
             let trusted = self
                 .preprocessing
                 .program_commitments
@@ -1570,6 +1566,8 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 padded_len_words,
                 self.one_hot_params.ram_k,
                 self.trace.len(),
+                self.one_hot_params.log_k_chunk,
+                trusted.bytecode_num_columns,
                 &self.rw_config,
                 &self.opening_accumulator,
                 &mut self.transcript,
@@ -1577,10 +1575,10 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             // Build padded coefficients for ProgramWord polynomial.
             let mut coeffs = self.preprocessing.program.program_image_words.clone();
             coeffs.resize(padded_len_words, 0u64);
-            program_image_reduction =
+            self.program_image_reduction_prover =
                 Some(ProgramImageClaimReductionProver::initialize(params, coeffs));
         }
-        if let Some(ref mut prog) = program_image_reduction {
+        if let Some(prog) = self.program_image_reduction_prover.as_mut() {
             instances.push(prog);
         }
 
@@ -1602,8 +1600,15 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         drop_in_background_thread(lookups_ra_virtual);
         drop_in_background_thread(inc_reduction);
 
-        if let Some(prog) = program_image_reduction {
-            drop_in_background_thread(prog);
+        let drop_program_image_after_stage6b = self
+            .program_image_reduction_prover
+            .as_ref()
+            .map(|prog| prog.params.num_address_phase_rounds() == 0)
+            .unwrap_or(false);
+        if drop_program_image_after_stage6b {
+            if let Some(prog) = self.program_image_reduction_prover.take() {
+                drop_in_background_thread(prog);
+            }
         }
 
         sumcheck_proof
@@ -1668,6 +1673,20 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 // Transition phase
                 advice_reduction_prover_untrusted.params.phase = ReductionPhase::AddressVariables;
                 instances.push(Box::new(advice_reduction_prover_untrusted));
+            }
+        }
+        if let Some(mut program_image_reduction_prover) = self.program_image_reduction_prover.take()
+        {
+            if program_image_reduction_prover
+                .params
+                .num_address_phase_rounds()
+                > 0
+            {
+                // Transition phase
+                program_image_reduction_prover.params.phase = ReductionPhase::AddressVariables;
+                instances.push(Box::new(program_image_reduction_prover));
+            } else {
+                drop_in_background_thread(program_image_reduction_prover);
             }
         }
 

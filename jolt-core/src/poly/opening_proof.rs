@@ -160,6 +160,8 @@ pub enum SumcheckId {
     AdviceClaimReduction,
     BytecodeClaimReductionCyclePhase,
     BytecodeClaimReduction,
+    /// Cycle-phase intermediate claim for program-image reduction.
+    ProgramImageClaimReductionCyclePhase,
     IncClaimReduction,
     HammingWeightClaimReduction,
     /// Claim reduction binding the staged program-image (initial RAM) scalar contribution(s)

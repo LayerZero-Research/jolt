@@ -362,18 +362,15 @@ impl<PCS: CommitmentScheme> TrustedProgramCommitments<PCS> {
         };
 
         // ─── Derive program image commitment ───
-        // Compute Main's column width for Stage 8 hint compatibility.
-        let main_num_columns = DoryGlobals::main_num_columns(log_k_chunk, log_t);
-
         // Pad to a power-of-two length (minimum 1).
         let program_image_num_words = program.program_image_len_words().next_power_of_two().max(1);
 
-        // Initialize ProgramImage context with Main's column width for hint compatibility.
-        // This supports partial rows when program_image_num_words is smaller than a full row.
-        DoryGlobals::initialize_program_image_context_with_num_columns(
-            k_chunk,
+        // Commit ProgramImage in its own balanced context (advice-style top-left embedding).
+        let _guard_prog = DoryGlobals::initialize_context(
+            1,
             program_image_num_words,
-            main_num_columns,
+            DoryContext::ProgramImage,
+            None,
         );
         let _ctx2 = DoryGlobals::with_context(DoryContext::ProgramImage);
         let program_image_num_columns = DoryGlobals::get_num_columns();

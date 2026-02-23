@@ -104,6 +104,9 @@ pub struct JoltVerifier<
     /// The bytecode claim reduction sumcheck effectively spans two stages (6b and 7).
     /// Cache the verifier state here between stages.
     bytecode_reduction_verifier: Option<BytecodeClaimReductionVerifier<F>>,
+    /// The program-image claim reduction may span Stage 6b (cycle) and Stage 7 (address).
+    /// Cache the verifier state here between stages.
+    program_image_reduction_verifier: Option<ProgramImageClaimReductionVerifier<F>>,
     /// Bytecode read RAF params, cached between Stage 6a and 6b.
     bytecode_read_raf_params: Option<BytecodeReadRafSumcheckParams<F>>,
     /// Booleanity params, cached between Stage 6a and 6b.
@@ -215,6 +218,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
             advice_reduction_verifier_trusted: None,
             advice_reduction_verifier_untrusted: None,
             bytecode_reduction_verifier: None,
+            program_image_reduction_verifier: None,
             bytecode_read_raf_params: None,
             booleanity_params: None,
             spartan_key,
@@ -600,7 +604,8 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
 
         // Program-image claim reduction (Stage 6b): binds staged Stage 4 scalar program-image claims
         // to the trusted commitment, caching an opening of ProgramImageInit.
-        let program_image_reduction = if self.proof.program_mode == ProgramMode::Committed {
+        self.program_image_reduction_verifier = if self.proof.program_mode == ProgramMode::Committed
+        {
             let trusted = self
                 .preprocessing
                 .program
@@ -621,11 +626,15 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
                 padded_len_words,
                 self.proof.ram_K,
                 self.proof.trace_length,
+                self.one_hot_params.log_k_chunk,
+                trusted.bytecode_num_columns,
                 &self.proof.rw_config,
                 &self.opening_accumulator,
                 &mut self.transcript,
             );
-            Some(ProgramImageClaimReductionVerifier { params })
+            Some(ProgramImageClaimReductionVerifier {
+                params: std::cell::RefCell::new(params),
+            })
         } else {
             None
         };
@@ -649,7 +658,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
         if let Some(ref advice) = self.advice_reduction_verifier_untrusted {
             instances.push(advice);
         }
-        if let Some(ref prog) = program_image_reduction {
+        if let Some(ref prog) = self.program_image_reduction_verifier {
             instances.push(prog);
         }
 
@@ -700,6 +709,16 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
                 // Transition phase
                 params.phase = ReductionPhase::AddressVariables;
                 instances.push(advice_reduction_verifier_untrusted);
+            }
+        }
+        if let Some(program_image_reduction_verifier) =
+            self.program_image_reduction_verifier.as_mut()
+        {
+            let mut params = program_image_reduction_verifier.params.borrow_mut();
+            if params.num_address_phase_rounds() > 0 {
+                // Transition phase
+                params.phase = ReductionPhase::AddressVariables;
+                instances.push(program_image_reduction_verifier);
             }
         }
 

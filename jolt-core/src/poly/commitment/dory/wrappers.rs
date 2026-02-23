@@ -247,11 +247,11 @@ where
     };
 
     // In Main + AddressMajor, trace-dense polynomials are embedded by strided columns.
-    // Treat ProgramImage like Main to enable stride-by-K embedding in committed mode.
-    let is_trace_dense_addr_major =
-        matches!(dory_context, DoryContext::Main | DoryContext::ProgramImage)
-            && dory_layout == DoryLayout::AddressMajor
-            && is_trace_dense;
+    // ProgramImage now follows advice-style top-left embedding, so it should use
+    // regular contiguous row-major commitments instead of the Main strided path.
+    let is_trace_dense_addr_major = matches!(dory_context, DoryContext::Main)
+        && dory_layout == DoryLayout::AddressMajor
+        && is_trace_dense;
 
     let (dense_affine_bases, dense_chunk_size): (Vec<_>, usize) = if is_trace_dense_addr_major {
         let cycles_per_row = DoryGlobals::address_major_cycles_per_row();

@@ -506,114 +506,61 @@ impl<F: JoltField> RLCPolynomial<F> {
             .for_each(|(poly_id, coeff, advice_poly)| {
                 let advice_len = advice_poly.original_len();
                 if *poly_id == CommittedPolynomial::ProgramImageInit {
-                    // ProgramImageInit is embedded like a trace-dense polynomial (missing lane variables).
-                    // In AddressMajor this occupies evenly-spaced columns (stride-by-K), not a contiguous block.
-                    match DoryGlobals::get_layout() {
-                        DoryLayout::CycleMajor => {
-                            // Contiguous prefix block: full columns, limited rows (partial rows allowed).
-                            let advice_cols = num_columns;
-                            let max_nonzero_prefix =
-                                ctx.preprocessing.program.program_image_words.len();
-                            let len = max_nonzero_prefix.min(advice_len);
+                    // ProgramImageInit now follows the same top-left block embedding policy as
+                    // advice polynomials across both layouts.
+                    let advice_vars = advice_len.log_2();
+                    let (sigma_a, nu_a) = DoryGlobals::balanced_sigma_nu(advice_vars);
+                    let advice_cols = 1usize << sigma_a;
+                    let advice_rows = 1usize << nu_a;
 
-                            // Fast path for u64-backed program image (Committed mode).
-                            if let MultilinearPolynomial::U64Scalars(poly) = advice_poly {
-                                for (idx, &word) in poly.coeffs[..len].iter().enumerate() {
-                                    if word == 0 {
-                                        continue;
-                                    }
-                                    let row_idx = idx / advice_cols;
-                                    if row_idx >= left_vec.len() {
-                                        continue;
-                                    }
-                                    let left = left_vec[row_idx];
-                                    if left.is_zero() {
-                                        continue;
-                                    }
-                                    let col_idx = idx % advice_cols;
-                                    result[col_idx] += left * *coeff * F::from_u64(word);
-                                }
-                            } else {
-                                // Fallback: generic coefficient access (should be rare).
-                                for idx in 0..len {
-                                    let row_idx = idx / advice_cols;
-                                    if row_idx >= left_vec.len() {
-                                        continue;
-                                    }
-                                    let left = left_vec[row_idx];
-                                    if left.is_zero() {
-                                        continue;
-                                    }
-                                    let advice_val = advice_poly.get_coeff(idx);
-                                    if advice_val.is_zero() {
-                                        continue;
-                                    }
-                                    let col_idx = idx % advice_cols;
-                                    result[col_idx] += left * *coeff * advice_val;
-                                }
+                    debug_assert!(
+                        advice_cols <= num_columns,
+                        "Program image columns ({advice_cols}) must fit in main num_columns={num_columns}; \
+guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
+                    );
+
+                    let effective_rows = advice_rows.min(left_vec.len());
+                    let max_nonzero_prefix = ctx.preprocessing.program.program_image_words.len();
+                    let len = max_nonzero_prefix.min(advice_len);
+
+                    if let MultilinearPolynomial::U64Scalars(poly) = advice_poly {
+                        for (idx, &word) in poly.coeffs[..len].iter().enumerate() {
+                            if word == 0 {
+                                continue;
                             }
+                            let row_idx = idx / advice_cols;
+                            if row_idx >= effective_rows {
+                                continue;
+                            }
+                            let left = left_vec[row_idx];
+                            if left.is_zero() {
+                                continue;
+                            }
+                            let col_idx = idx % advice_cols;
+                            result[col_idx] += left * *coeff * F::from_u64(word);
                         }
-                        DoryLayout::AddressMajor => {
-                            // Strided columns: lane variables are the low bits, so selecting lane=0
-                            // hits columns {0, K, 2K, ...}.
-                            let k_chunk = DoryGlobals::k_from_matrix_shape();
-                            let cycles_per_row = DoryGlobals::address_major_cycles_per_row(); // == num_columns / K
-                            debug_assert_eq!(
-                                num_columns,
-                                k_chunk * cycles_per_row,
-                                "Expected num_columns == K * cycles_per_row in AddressMajor"
-                            );
-                            // Avoid O(cycles_per_row) work when the program image is small.
-                            // For AddressMajor trace-dense embedding, coefficient index maps as:
-                            //   idx = row * cycles_per_row + offset
-                            // and it contributes to main column:
-                            //   col = offset * K
-                            let max_nonzero_prefix =
-                                ctx.preprocessing.program.program_image_words.len();
-                            let len = max_nonzero_prefix.min(advice_len);
-
-                            if let MultilinearPolynomial::U64Scalars(poly) = advice_poly {
-                                for (idx, &word) in poly.coeffs[..len].iter().enumerate() {
-                                    if word == 0 {
-                                        continue;
-                                    }
-                                    let row_idx = idx / cycles_per_row;
-                                    if row_idx >= left_vec.len() {
-                                        continue;
-                                    }
-                                    let left = left_vec[row_idx];
-                                    if left.is_zero() {
-                                        continue;
-                                    }
-                                    let offset = idx % cycles_per_row;
-                                    let col_idx = offset * k_chunk;
-                                    result[col_idx] += left * *coeff * F::from_u64(word);
-                                }
-                            } else {
-                                for idx in 0..len {
-                                    let row_idx = idx / cycles_per_row;
-                                    if row_idx >= left_vec.len() {
-                                        continue;
-                                    }
-                                    let left = left_vec[row_idx];
-                                    if left.is_zero() {
-                                        continue;
-                                    }
-                                    let advice_val = advice_poly.get_coeff(idx);
-                                    if advice_val.is_zero() {
-                                        continue;
-                                    }
-                                    let offset = idx % cycles_per_row;
-                                    let col_idx = offset * k_chunk;
-                                    result[col_idx] += left * *coeff * advice_val;
-                                }
+                    } else {
+                        for idx in 0..len {
+                            let row_idx = idx / advice_cols;
+                            if row_idx >= effective_rows {
+                                continue;
                             }
+                            let left = left_vec[row_idx];
+                            if left.is_zero() {
+                                continue;
+                            }
+                            let advice_val = advice_poly.get_coeff(idx);
+                            if advice_val.is_zero() {
+                                continue;
+                            }
+                            let col_idx = idx % advice_cols;
+                            result[col_idx] += left * *coeff * advice_val;
                         }
                     }
                     return;
                 }
 
-                // Other advice polynomials use balanced dimensions and embed as a top-left block.
+                // Advice polynomials use balanced dimensions and embed as a top-left block.
                 let advice_vars = advice_len.log_2();
                 let (sigma_a, nu_a) = DoryGlobals::balanced_sigma_nu(advice_vars);
                 let advice_cols = 1usize << sigma_a;
