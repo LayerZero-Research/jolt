@@ -257,10 +257,7 @@ impl CanonicalSerialize for CommittedPolynomial {
                 3u8.serialize_with_mode(&mut writer, compress)?;
                 (u8::try_from(*i).unwrap()).serialize_with_mode(writer, compress)
             }
-            Self::BytecodeChunk(i) => {
-                7u8.serialize_with_mode(&mut writer, compress)?;
-                (u8::try_from(*i).unwrap()).serialize_with_mode(writer, compress)
-            }
+            Self::Bytecode => 7u8.serialize_with_mode(writer, compress),
             Self::RamRa(i) => {
                 4u8.serialize_with_mode(&mut writer, compress)?;
                 (u8::try_from(*i).unwrap()).serialize_with_mode(writer, compress)
@@ -277,10 +274,10 @@ impl CanonicalSerialize for CommittedPolynomial {
             | Self::RamInc
             | Self::TrustedAdvice
             | Self::UntrustedAdvice
-            | Self::ProgramImageInit => 1,
+            | Self::ProgramImageInit
+            | Self::Bytecode => 1,
             Self::InstructionRa(_)
             | Self::BytecodeRa(_)
-            | Self::BytecodeChunk(_)
             | Self::RamRa(_) => 2,
         }
     }
@@ -316,10 +313,7 @@ impl CanonicalDeserialize for CommittedPolynomial {
                 }
                 5 => Self::TrustedAdvice,
                 6 => Self::UntrustedAdvice,
-                7 => {
-                    let i = u8::deserialize_with_mode(reader, compress, validate)?;
-                    Self::BytecodeChunk(i as usize)
-                }
+                7 => Self::Bytecode,
                 8 => Self::ProgramImageInit,
                 _ => return Err(SerializationError::InvalidData),
             },

@@ -4,7 +4,9 @@ use crate::poly::multilinear_polynomial::MultilinearPolynomial;
 use crate::utils::accumulation::Acc6S;
 use crate::utils::math::{s64_from_diff_u64s, Math};
 use crate::utils::thread::unsafe_allocate_zero_vec;
-use crate::zkvm::bytecode::chunks::{for_each_active_lane_value, total_lanes, ActiveLaneValue};
+use crate::zkvm::bytecode::chunks::{
+    committed_lanes, for_each_active_lane_value, ActiveLaneValue,
+};
 use crate::zkvm::config::OneHotParams;
 use crate::zkvm::instruction::LookupQuery;
 use crate::zkvm::program::ProgramPreprocessing;
@@ -26,7 +28,7 @@ pub struct RLCStreamingData {
     pub memory_layout: MemoryLayout,
 }
 
-/// Computes the bytecode chunk polynomial contribution to a vector-matrix product.
+/// Computes the committed bytecode polynomial contribution to a vector-matrix product.
 ///
 /// This is a standalone version of the bytecode VMP computation that can be used
 /// by external callers (e.g., GPU prover) without needing a full `StreamingRLCContext`.
@@ -34,30 +36,32 @@ pub struct RLCStreamingData {
 /// # Arguments
 /// * `result` - Output buffer to accumulate contributions into
 /// * `left_vec` - Left vector for the vector-matrix product (length >= num_rows)
-/// * `num_columns` - Number of columns in the Dory matrix
-/// * `bytecode_polys` - List of (chunk_index, coefficient) pairs for the RLC
+/// * `num_columns` - Number of columns in the Main Dory matrix
+/// * `bytecode_coeff` - RLC coefficient for the committed bytecode polynomial
 /// * `program` - Program preprocessing data
-/// * `one_hot_params` - One-hot parameters (contains k_chunk)
-/// * `bytecode_T` - The T value used for bytecode coefficient indexing (from TrustedProgramCommitments)
+/// * `bytecode_T` - Stored bytecode cycle domain (expected to equal `bytecode_len`)
 pub fn compute_bytecode_vmp_contribution<F: JoltField>(
     result: &mut [F],
     left_vec: &[F],
     num_columns: usize,
-    bytecode_polys: &[(usize, F)],
+    bytecode_coeff: F,
     program: &ProgramPreprocessing,
-    one_hot_params: &OneHotParams,
     bytecode_T: usize,
 ) {
-    if bytecode_polys.is_empty() {
+    if bytecode_coeff.is_zero() {
         return;
     }
 
     let layout = DoryGlobals::get_layout();
-    let k_chunk = one_hot_params.k_chunk;
     let bytecode_len = program.bytecode_len();
-    let bytecode_cols = num_columns;
-    let total = total_lanes();
-    let num_chunks = total.div_ceil(k_chunk);
+    let lane_capacity = committed_lanes();
+    let total_vars = lane_capacity.log_2() + bytecode_len.log_2();
+    let (sigma_bytecode, _) = DoryGlobals::balanced_sigma_nu(total_vars);
+    let bytecode_cols = 1usize << sigma_bytecode;
+    debug_assert!(
+        bytecode_cols <= num_columns,
+        "bytecode columns ({bytecode_cols}) must fit in main num_columns ({num_columns})"
+    );
     debug_assert!(
         bytecode_cols.is_power_of_two(),
         "Dory num_columns must be power-of-two (got {bytecode_cols})"
@@ -65,52 +69,29 @@ pub fn compute_bytecode_vmp_contribution<F: JoltField>(
     let col_shift = bytecode_cols.trailing_zeros();
     let col_mask = bytecode_cols - 1;
 
-    // Use the passed bytecode_T for coefficient indexing.
-    // This is the T value used when the bytecode was committed:
-    // - CycleMajor: max_trace_len (main-matrix dimensions)
-    // - AddressMajor: bytecode_len (bytecode dimensions)
-    let index_T = bytecode_T;
+    // Committed bytecode uses top-left embedding with bytecode's own cycle domain.
+    // Keep the parameter for backward compatibility and guard against stale commitments.
+    let index_T = bytecode_len;
+    debug_assert_eq!(
+        bytecode_T, index_T,
+        "bytecode_T mismatch: expected bytecode_len={index_T}, got {bytecode_T}"
+    );
 
-    // Bytecode may be smaller than one full row at Main width. In that case, the
-    // right side of row 0 is implicitly zero and contributes nothing.
-
-    // Build a dense coefficient table per chunk so we can invert the loops:
-    // iterate cycles once and only touch lanes that are nonzero for that instruction.
-    let mut coeff_by_chunk: Vec<F> = unsafe_allocate_zero_vec(num_chunks);
-    let mut any_nonzero = false;
-    for (chunk_idx, coeff) in bytecode_polys.iter() {
-        if *chunk_idx < num_chunks && !coeff.is_zero() {
-            coeff_by_chunk[*chunk_idx] += *coeff;
-            any_nonzero = true;
-        }
-    }
-    if !any_nonzero {
-        return;
-    }
+    // Bytecode is embedded as a top-left block of Main:
+    // - rows [0 .. bytecode_rows)
+    // - cols [0 .. bytecode_cols)
+    // where bytecode_rows = (K_bytecode * bytecode_len) / bytecode_cols.
 
     // Parallelize over cycles with thread-local accumulation.
     let bytecode_contrib: Vec<F> = program.instructions[..bytecode_len]
         .par_iter()
         .enumerate()
         .fold(
-            || unsafe_allocate_zero_vec(bytecode_cols),
+            || unsafe_allocate_zero_vec(num_columns),
             |mut acc, (cycle, instr)| {
                 for_each_active_lane_value::<F>(instr, |global_lane, lane_val| {
-                    let chunk_idx = global_lane / k_chunk;
-                    if chunk_idx >= num_chunks {
-                        return;
-                    }
-                    let coeff = coeff_by_chunk[chunk_idx];
-                    if coeff.is_zero() {
-                        return;
-                    }
-                    let lane = global_lane % k_chunk;
-
-                    // Use layout-conditional indexing.
-                    let global_index = match layout {
-                        DoryLayout::CycleMajor => lane * index_T + cycle,
-                        DoryLayout::AddressMajor => cycle * k_chunk + lane,
-                    };
+                    let global_index =
+                        layout.address_cycle_to_index(global_lane, cycle, lane_capacity, index_T);
                     let row_index = global_index >> col_shift;
                     if row_index >= left_vec.len() {
                         return;
@@ -121,7 +102,7 @@ pub fn compute_bytecode_vmp_contribution<F: JoltField>(
                     }
                     let col_index = global_index & col_mask;
 
-                    let base = left * coeff;
+                    let base = left * bytecode_coeff;
                     match lane_val {
                         ActiveLaneValue::One => {
                             acc[col_index] += base;
@@ -135,7 +116,7 @@ pub fn compute_bytecode_vmp_contribution<F: JoltField>(
             },
         )
         .reduce(
-            || unsafe_allocate_zero_vec(bytecode_cols),
+            || unsafe_allocate_zero_vec(num_columns),
             |mut a, b| {
                 a.iter_mut().zip(b.iter()).for_each(|(x, y)| *x += *y);
                 a
@@ -180,11 +161,10 @@ impl TraceSource {
 pub struct StreamingRLCContext<F: JoltField> {
     pub dense_polys: Vec<(CommittedPolynomial, F)>,
     pub onehot_polys: Vec<(CommittedPolynomial, F)>,
-    /// Bytecode chunk polynomials with their RLC coefficients.
-    pub bytecode_polys: Vec<(usize, F)>,
+    /// RLC coefficient for the committed bytecode polynomial.
+    pub bytecode_coeff: F,
     /// The T value used for bytecode coefficient indexing (from TrustedProgramCommitments).
-    /// For CycleMajor: max_trace_len (main-matrix dimensions).
-    /// For AddressMajor: bytecode_len (bytecode dimensions).
+    /// In committed mode this is fixed to `bytecode_len` (top-left embedding).
     pub bytecode_T: usize,
     /// Advice polynomials with their RLC coefficients and IDs.
     /// These are NOT streamed from trace - they're passed in directly.
@@ -298,7 +278,7 @@ impl<F: JoltField> RLCPolynomial<F> {
     /// * `poly_ids` - List of polynomial identifiers
     /// * `coefficients` - RLC coefficients for each polynomial
     /// * `advice_poly_map` - Map of advice polynomial IDs to their actual polynomials
-    /// * `bytecode_T` - The T value used for bytecode coefficient indexing (from TrustedProgramCommitments)
+    /// * `bytecode_T` - Stored bytecode cycle domain (expected to equal `bytecode_len`)
     #[tracing::instrument(skip_all)]
     pub fn new_streaming(
         one_hot_params: OneHotParams,
@@ -313,7 +293,7 @@ impl<F: JoltField> RLCPolynomial<F> {
 
         let mut dense_polys = Vec::new();
         let mut onehot_polys = Vec::new();
-        let mut bytecode_polys = Vec::new();
+        let mut bytecode_coeff = F::zero();
         let mut advice_polys = Vec::new();
 
         for (poly_id, coeff) in poly_ids.iter().zip(coefficients.iter()) {
@@ -326,10 +306,8 @@ impl<F: JoltField> RLCPolynomial<F> {
                 | CommittedPolynomial::RamRa(_) => {
                     onehot_polys.push((*poly_id, *coeff));
                 }
-                CommittedPolynomial::BytecodeChunk(_) => {
-                    if let CommittedPolynomial::BytecodeChunk(idx) = poly_id {
-                        bytecode_polys.push((*idx, *coeff));
-                    }
+                CommittedPolynomial::Bytecode => {
+                    bytecode_coeff += *coeff;
                 }
                 CommittedPolynomial::TrustedAdvice
                 | CommittedPolynomial::UntrustedAdvice
@@ -353,7 +331,7 @@ impl<F: JoltField> RLCPolynomial<F> {
             streaming_context: Some(Arc::new(StreamingRLCContext {
                 dense_polys,
                 onehot_polys,
-                bytecode_polys,
+                bytecode_coeff,
                 bytecode_T,
                 advice_polys,
                 trace_source,
@@ -598,9 +576,9 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
             });
     }
 
-    /// Adds the bytecode chunk polynomial contribution to the vector-matrix-vector product result.
+    /// Adds the committed bytecode polynomial contribution to the vector-matrix-vector product result.
     ///
-    /// Bytecode chunk polynomials are embedded in the top-left block by fixing the extra cycle
+    /// Committed bytecode is embedded in the top-left block by fixing the extra cycle
     /// variables to 0, so we only iterate cycles in `[0, bytecode_len)`.
     fn vmp_bytecode_contribution(
         result: &mut [F],
@@ -612,9 +590,8 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
             result,
             left_vec,
             num_columns,
-            &ctx.bytecode_polys,
+            ctx.bytecode_coeff,
             &ctx.preprocessing.program,
-            &ctx.one_hot_params,
             ctx.bytecode_T,
         );
     }

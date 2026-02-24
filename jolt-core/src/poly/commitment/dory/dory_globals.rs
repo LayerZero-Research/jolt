@@ -215,8 +215,6 @@ impl DoryGlobals {
     }
 
     /// Initialize Bytecode context with explicit dimensions.
-    ///
-    /// In committed mode, the chosen bytecode width is later reused as the Stage-8 Main width.
     pub fn initialize_bytecode_context_with_dimensions(
         k_chunk: usize,
         bytecode_t: usize,
@@ -228,7 +226,7 @@ impl DoryGlobals {
         );
         let total_size = k_chunk * bytecode_t;
 
-        // Allow partial rows when bytecode is smaller than a full row at Main width.
+        // Allow partial rows when bytecode is smaller than a full row at the chosen width.
         // This corresponds to implicit zero padding on the right side of row 0.
         let num_rows = if total_size >= num_columns {
             assert!(
@@ -388,9 +386,8 @@ impl DoryGlobals {
 
     /// Initialize the **Main** context using an explicit pre-agreed `num_columns`.
     ///
-    /// This is used in `ProgramMode::Committed` so prover and verifier replay the exact Stage-8
-    /// Main width recorded in trusted preprocessing. The source of truth is trusted data, not a
-    /// re-derivation at runtime.
+    /// This is for callers that need a fixed Main width instead of the default balanced
+    /// `(sigma, nu)` split derived from `(K, T)`.
     ///
     /// # Safety / correctness notes
     /// - Requires `num_columns` to be a power of two.

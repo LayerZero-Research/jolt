@@ -25,7 +25,7 @@ pub fn get_instruction_sumcheck_phases(log_t: usize) -> usize {
 
 /// Controls whether the prover/verifier use the **full** program path (verifier may do O(K))
 /// or the **committed** program path (staged Val claims + claim reduction + folded Stage 8
-/// opening for bytecode chunk + program image commitments).
+/// opening for bytecode + program image commitments).
 ///
 /// "Program" encompasses both bytecode (instructions) and program image (initial RAM).
 #[repr(u8)]
@@ -33,7 +33,7 @@ pub fn get_instruction_sumcheck_phases(log_t: usize) -> usize {
 pub enum ProgramMode {
     /// Full mode: verifier has full access to bytecode and program image.
     Full = 0,
-    /// Committed mode: verifier only has commitments to bytecode chunks and program image.
+    /// Committed mode: verifier only has commitments to bytecode and program image.
     /// Uses staged Val claims + claim reductions + folded Stage 8 joint opening.
     Committed = 1,
 }

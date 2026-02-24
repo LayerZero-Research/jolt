@@ -1,43 +1,35 @@
-//! Two-phase Bytecode claim reduction (Stage 6b cycle → Stage 7 lane/address).
-//!
-//! This reduction batches the 5 bytecode Val-stage claims emitted at the Stage 6a boundary:
-//! `Val_s(r_bc)` for `s = 0..5` (val-only; RAF terms excluded).
-//!
-//! High level:
-//! - Sample `η` and form `C_in = Σ_s η^s · Val_s(r_bc)`.
-//! - Define a canonical set of bytecode "lanes" (448 total) and a lane weight function
-//!   `W_η(lane) = Σ_s η^s · w_s(lane)` derived from the same stage-specific gammas used to
-//!   define `Val_s`.
-//! - Prove, via a two-phase sumcheck, that `C_in` equals a single linear functional of the
-//!   (eventual) committed bytecode chunk polynomials.
-//!
-//! NOTE: This module wires the reduction logic and emits openings for bytecode chunk polynomials.
-//! Commitment + Stage 8 batching integration is handled separately (see `bytecode-commitment-progress.md`).
+//! Two-phase bytecode claim reduction (Stage 6b cycle -> Stage 7 address),
+//! implemented with the shared pre-committed reduction parent.
 
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::cmp::Ordering;
+use std::ops::Range;
 use std::sync::Arc;
 
 use allocative::Allocative;
-use itertools::Itertools;
 use rayon::prelude::*;
 
 use crate::field::JoltField;
+use crate::poly::commitment::dory::{DoryGlobals, DoryLayout};
 use crate::poly::eq_poly::EqPolynomial;
-use crate::poly::multilinear_polynomial::{BindingOrder, MultilinearPolynomial, PolynomialBinding};
+use crate::poly::multilinear_polynomial::{
+    BindingOrder, MultilinearPolynomial, PolynomialBinding,
+};
 use crate::poly::opening_proof::{
     OpeningAccumulator, OpeningPoint, ProverOpeningAccumulator, SumcheckId,
-    VerifierOpeningAccumulator, BIG_ENDIAN, LITTLE_ENDIAN,
+    VerifierOpeningAccumulator, BIG_ENDIAN,
 };
-use crate::poly::unipoly::UniPoly;
-use crate::subprotocols::sumcheck_prover::SumcheckInstanceProver;
 use crate::subprotocols::sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier};
 use crate::transcripts::Transcript;
 use crate::utils::math::Math;
-use crate::zkvm::bytecode::chunks::{
-    for_each_active_lane_value, total_lanes, weighted_lane_sum_for_instruction, ActiveLaneValue,
-};
+use crate::zkvm::bytecode::chunks::{build_committed_bytecode_polynomial_from_instructions, committed_lanes};
 use crate::zkvm::bytecode::read_raf_checking::BytecodeReadRafSumcheckParams;
+use crate::zkvm::claim_reductions::precommitted::sealed;
+use crate::zkvm::claim_reductions::{
+    cycle_phase_round_schedule, internal_dummy_gap_len, PreCommittedClaimReductionParams,
+    PreCommittedPolyClaimReduction, PreCommittedPolyClaimReductionState,
+    PreCommittedSumcheckInstanceParams, PreCommittedSumcheckInstanceProver,
+};
 use crate::zkvm::instruction::{
     CircuitFlags, InstructionFlags, NUM_CIRCUIT_FLAGS, NUM_INSTRUCTION_FLAGS,
 };
@@ -50,38 +42,30 @@ use strum::EnumCount;
 const DEGREE_BOUND: usize = 2;
 const NUM_VAL_STAGES: usize = 5;
 
-/// For `DoryLayout::AddressMajor`, committed bytecode chunks are stored in "cycle-major" index order
-/// (cycle*K + address), which makes `BindingOrder::LowToHigh` bind **lane** bits first.
-///
-/// The claim reduction sumcheck needs to bind **cycle** bits first in Stage 6b, so we permute
-/// dense coefficient vectors into the `DoryLayout::CycleMajor` order (address*T + cycle) when
-/// running the reduction. This is a pure index permutation, i.e. a variable renaming, and the
-/// resulting evaluations match the committed polynomial when the opening point is interpreted in
-/// the unified `[lane || cycle]` order.
-// NOTE: With the fused-lane cycle-phase refactor, we no longer materialize the full per-lane
-// bytecode chunk polynomials inside this reduction prover. This means we also no longer need
-// to permute AddressMajor <-> CycleMajor coefficient vectors here.
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Allocative)]
 pub enum BytecodeReductionPhase {
     CycleVariables,
-    LaneVariables,
+    AddressVariables,
 }
 
 #[derive(Clone, Allocative)]
 pub struct BytecodeClaimReductionParams<F: JoltField> {
-    pub phase: BytecodeReductionPhase,
+    pub reduction: PreCommittedPolyClaimReductionState<F, BytecodeReductionPhase>,
     pub eta: F,
     pub eta_powers: [F; NUM_VAL_STAGES],
     pub log_k: usize,
+    pub log_t: usize,
     pub log_k_chunk: usize,
-    pub num_chunks: usize,
-    /// Bytecode address point (log_K bits, big-endian).
+    pub bytecode_col_vars: usize,
+    pub bytecode_row_vars: usize,
+    pub main_col_vars: usize,
+    pub main_row_vars: usize,
+    #[allocative(skip)]
+    pub cycle_phase_row_rounds: Range<usize>,
+    #[allocative(skip)]
+    pub cycle_phase_col_rounds: Range<usize>,
     pub r_bc: OpeningPoint<BIG_ENDIAN, F>,
-    /// Per-chunk lane weight tables (length = k_chunk) for `W_eta`.
-    pub chunk_lane_weights: Vec<Vec<F>>,
-    /// (little-endian) challenges used in the cycle phase.
-    pub cycle_var_challenges: Vec<F::Challenge>,
+    pub lane_weights: Vec<F>,
 }
 
 impl<F: JoltField> BytecodeClaimReductionParams<F> {
@@ -91,6 +75,8 @@ impl<F: JoltField> BytecodeClaimReductionParams<F> {
         transcript: &mut impl Transcript,
     ) -> Self {
         let log_k = bytecode_read_raf_params.log_K;
+        let log_t = bytecode_read_raf_params.log_T;
+        let log_k_chunk = bytecode_read_raf_params.one_hot_params.log_k_chunk;
 
         let eta: F = transcript.challenge_scalar();
         let mut eta_powers = [F::one(); NUM_VAL_STAGES];
@@ -98,41 +84,58 @@ impl<F: JoltField> BytecodeClaimReductionParams<F> {
             eta_powers[i] = eta_powers[i - 1] * eta;
         }
 
-        // r_bc comes from the Stage 6a BytecodeReadRaf address phase.
         let (r_bc, _) = accumulator.get_virtual_polynomial_opening(
             VirtualPolynomial::BytecodeReadRafAddrClaim,
             SumcheckId::BytecodeReadRafAddressPhase,
         );
 
-        let log_k_chunk = bytecode_read_raf_params.one_hot_params.log_k_chunk;
-        let k_chunk = 1 << log_k_chunk;
-        let num_chunks = total_lanes().div_ceil(k_chunk);
+        let lane_weights = compute_lane_weights(bytecode_read_raf_params, accumulator, &eta_powers);
 
-        let chunk_lane_weights = compute_chunk_lane_weights(
-            bytecode_read_raf_params,
-            accumulator,
-            &eta_powers,
-            num_chunks,
-            k_chunk,
+        let (main_col_vars, main_row_vars) = DoryGlobals::try_get_main_sigma_nu()
+            .unwrap_or_else(|| DoryGlobals::main_sigma_nu(log_k_chunk, log_t));
+        let total_vars = committed_lanes().log_2() + log_k;
+        // Bytecode uses its own balanced dimensions (independent from Main).
+        // In Stage 8 it is embedded as a top-left block in Main.
+        let (bytecode_col_vars, bytecode_row_vars) = DoryGlobals::balanced_sigma_nu(total_vars);
+        let (cycle_phase_col_rounds, cycle_phase_row_rounds) = cycle_phase_round_schedule(
+            log_t,
+            log_k_chunk,
+            main_col_vars,
+            bytecode_row_vars,
+            bytecode_col_vars,
         );
 
         Self {
-            phase: BytecodeReductionPhase::CycleVariables,
+            reduction: PreCommittedPolyClaimReductionState::new(
+                BytecodeReductionPhase::CycleVariables,
+            ),
             eta,
             eta_powers,
             log_k,
+            log_t,
             log_k_chunk,
-            num_chunks,
+            bytecode_col_vars,
+            bytecode_row_vars,
+            main_col_vars,
+            main_row_vars,
+            cycle_phase_row_rounds,
+            cycle_phase_col_rounds,
             r_bc,
-            chunk_lane_weights,
-            cycle_var_challenges: vec![],
+            lane_weights,
         }
+    }
+
+    pub fn num_address_phase_rounds(&self) -> usize {
+        (self.bytecode_col_vars + self.bytecode_row_vars)
+            - (self.cycle_phase_col_rounds.len() + self.cycle_phase_row_rounds.len())
     }
 }
 
-impl<F: JoltField> SumcheckInstanceParams<F> for BytecodeClaimReductionParams<F> {
-    fn input_claim(&self, accumulator: &dyn OpeningAccumulator<F>) -> F {
-        match self.phase {
+impl<F: JoltField> sealed::Sealed for BytecodeClaimReductionParams<F> {}
+
+impl<F: JoltField> PreCommittedSumcheckInstanceParams<F> for BytecodeClaimReductionParams<F> {
+    fn precommitted_input_claim(&self, accumulator: &dyn OpeningAccumulator<F>) -> F {
+        match self.reduction.phase {
             BytecodeReductionPhase::CycleVariables => (0..NUM_VAL_STAGES)
                 .map(|stage| {
                     let (_, val_claim) = accumulator.get_virtual_polynomial_opening(
@@ -142,7 +145,7 @@ impl<F: JoltField> SumcheckInstanceParams<F> for BytecodeClaimReductionParams<F>
                     self.eta_powers[stage] * val_claim
                 })
                 .sum(),
-            BytecodeReductionPhase::LaneVariables => {
+            BytecodeReductionPhase::AddressVariables => {
                 accumulator
                     .get_virtual_polynomial_opening(
                         VirtualPolynomial::BytecodeClaimReductionIntermediate,
@@ -153,383 +156,136 @@ impl<F: JoltField> SumcheckInstanceParams<F> for BytecodeClaimReductionParams<F>
         }
     }
 
-    fn degree(&self) -> usize {
+    fn precommitted_degree(&self) -> usize {
         DEGREE_BOUND
     }
+}
 
-    fn num_rounds(&self) -> usize {
-        match self.phase {
-            BytecodeReductionPhase::CycleVariables => self.log_k,
-            BytecodeReductionPhase::LaneVariables => self.log_k_chunk,
-        }
-    }
-
-    fn normalize_opening_point(
-        &self,
-        challenges: &[<F as JoltField>::Challenge],
-    ) -> OpeningPoint<BIG_ENDIAN, F> {
-        match self.phase {
-            BytecodeReductionPhase::CycleVariables => {
-                OpeningPoint::<LITTLE_ENDIAN, F>::new(challenges.to_vec()).match_endianness()
-            }
-            BytecodeReductionPhase::LaneVariables => {
-                // Full point: [lane || cycle] in big-endian.
-                let full_le: Vec<F::Challenge> =
-                    [self.cycle_var_challenges.as_slice(), challenges].concat();
-                OpeningPoint::<LITTLE_ENDIAN, F>::new(full_le).match_endianness()
-            }
-        }
-    }
+impl<F: JoltField> PreCommittedClaimReductionParams<F> for BytecodeClaimReductionParams<F> {
+    crate::zkvm::claim_reductions::precommitted::impl_standard_precommitted_claim_reduction_params!(
+        BytecodeReductionPhase,
+        BytecodeReductionPhase::CycleVariables,
+        this => this.bytecode_col_vars + this.bytecode_row_vars
+    );
 }
 
 #[derive(Allocative)]
 pub struct BytecodeClaimReductionProver<F: JoltField> {
     pub params: BytecodeClaimReductionParams<F>,
-    /// Program instructions (padded to power-of-2). Used for a fast first round.
-    #[allocative(skip)]
-    program: Arc<ProgramPreprocessing>,
-    /// Cycle-only polynomial:
-    /// \( S(k) = \sum_{\ell} W_{\eta}(\ell) \cdot lane\_value(\ell, instr[k]) \).
-    ///
-    /// This matches the GPU implementation's "main polynomial" strategy: during the cycle-phase
-    /// sumcheck we only need the **lane-summed** polynomial over the cycle domain (size K),
-    /// rather than all 448 lane polynomials.
-    cycle_weighted_sum: MultilinearPolynomial<F>,
-    /// Lane-only chunk polynomials after evaluating cycle vars at `r_cycle`:
-    /// \( B_i(\cdot, r\_cycle) \) for each chunk i.
-    ///
-    /// This is computed once at the Stage 6b → Stage 7 transition and is only
-    /// `num_chunks * k_chunk` field elements (≤ 448 total, padded).
-    lane_chunks_at_r_cycle: Vec<MultilinearPolynomial<F>>,
-    /// Eq table/polynomial over the bytecode address point `r_bc` (cycle variables only).
-    eq_r_bc: MultilinearPolynomial<F>,
-    /// Lane-weight polynomials over the lane variables only (one per chunk).
-    lane_weight_polys: Vec<MultilinearPolynomial<F>>,
-    /// Batched-sumcheck scaling for trailing dummy rounds (see `round_offset`).
-    #[allocative(skip)]
-    batch_dummy_rounds: AtomicUsize,
+    value_poly: MultilinearPolynomial<F>,
+    eq_poly: MultilinearPolynomial<F>,
+    scale: F,
 }
 
+impl<F: JoltField> sealed::Sealed for BytecodeClaimReductionProver<F> {}
+
 impl<F: JoltField> BytecodeClaimReductionProver<F> {
-    #[tracing::instrument(skip_all, name = "BytecodeClaimReductionProver::initialize")]
-    pub fn initialize(
-        params: BytecodeClaimReductionParams<F>,
-        program: Arc<ProgramPreprocessing>,
-    ) -> Self {
-        let log_k = params.log_k;
-        let t_size = 1 << log_k;
-        let k_chunk = 1 << params.log_k_chunk;
-
-        // Eq table over the bytecode address point.
-        let eq_r_bc = EqPolynomial::<F>::evals(&params.r_bc.r);
-        debug_assert_eq!(eq_r_bc.len(), t_size);
-
-        // Keep eq table as a polynomial so we can bind it during the cycle phase.
-        let eq_r_bc = MultilinearPolynomial::from(eq_r_bc);
-
-        // Lane-weight polynomials (lane vars only) used in the lane phase.
-        let lane_weight_polys: Vec<MultilinearPolynomial<F>> = params
-            .chunk_lane_weights
-            .iter()
-            .map(|w| MultilinearPolynomial::from(w.clone()))
-            .collect();
-
-        // Build the fused-lane cycle polynomial S(k) over the cycle domain only.
-        let bytecode_len = program.bytecode_len();
-        debug_assert_eq!(bytecode_len, t_size);
-        let total = total_lanes();
-        let mut lane_weights_global = vec![F::zero(); total];
-        for global_lane in 0..total {
-            let chunk_idx = global_lane / k_chunk;
-            let lane = global_lane % k_chunk;
-            lane_weights_global[global_lane] = params.chunk_lane_weights[chunk_idx][lane];
-        }
-        let cycle_weighted_evals: Vec<F> = program
-            .instructions
-            .par_iter()
-            .map(|instr| weighted_lane_sum_for_instruction(&lane_weights_global, instr))
-            .collect();
-        debug_assert_eq!(cycle_weighted_evals.len(), t_size);
-        let cycle_weighted_sum = MultilinearPolynomial::from(cycle_weighted_evals);
+    pub fn initialize(params: BytecodeClaimReductionParams<F>, program: Arc<ProgramPreprocessing>) -> Self {
+        let raw_value_poly =
+            build_committed_bytecode_polynomial_from_instructions::<F>(&program.instructions);
+        let (value_poly, eq_poly) = build_permuted_value_and_eq_polys(&params, &raw_value_poly);
 
         Self {
             params,
-            program,
-            cycle_weighted_sum,
-            lane_chunks_at_r_cycle: vec![],
-            eq_r_bc,
-            lane_weight_polys,
-            batch_dummy_rounds: AtomicUsize::new(0),
+            value_poly,
+            eq_poly,
+            scale: F::one(),
         }
-    }
-
-    /// Prepare the lane-phase witness polynomials \(B_i(\cdot, r_{cycle})\).
-    ///
-    /// This is intended to be called once after the cycle-phase sumcheck has finished
-    /// (i.e. after all `log_K` cycle challenges are known) and before we transition
-    /// `params.phase` to [`BytecodeReductionPhase::LaneVariables`].
-    #[tracing::instrument(skip_all, name = "BytecodeClaimReductionProver::prepare_lane_phase")]
-    pub fn prepare_lane_phase(&mut self) {
-        if !self.lane_chunks_at_r_cycle.is_empty() {
-            return;
-        }
-
-        let log_k = self.params.log_k;
-        let k_chunk = 1usize << self.params.log_k_chunk;
-        let num_chunks = self.params.num_chunks;
-        let total = total_lanes();
-
-        assert_eq!(
-            self.params.cycle_var_challenges.len(),
-            log_k,
-            "prepare_lane_phase called before cycle challenges are complete (have {}, expected {})",
-            self.params.cycle_var_challenges.len(),
-            log_k
-        );
-
-        // Convert the stored LE (LSB-first) cycle challenges into BE (MSB-first) order
-        // for EqPolynomial::evals, which uses big-endian indexing.
-        let r_cycle_be: OpeningPoint<BIG_ENDIAN, F> =
-            OpeningPoint::<LITTLE_ENDIAN, F>::new(self.params.cycle_var_challenges.clone())
-                .match_endianness();
-
-        let eq_cycle = EqPolynomial::<F>::evals(&r_cycle_be.r);
-        debug_assert_eq!(eq_cycle.len(), self.program.instructions.len());
-
-        // b_vals[global_lane] = Σ_k eq(r_cycle, k) * lane_value(global_lane, instr[k])
-        let b_vals: Vec<F> = self
-            .program
-            .instructions
-            .par_iter()
-            .zip(eq_cycle.par_iter())
-            .fold(
-                || vec![F::zero(); total],
-                |mut acc, (instr, eq_k)| {
-                    for_each_active_lane_value::<F>(instr, |lane, v| match v {
-                        ActiveLaneValue::One => {
-                            acc[lane] += *eq_k;
-                        }
-                        ActiveLaneValue::Scalar(s) => {
-                            acc[lane] += *eq_k * s;
-                        }
-                    });
-                    acc
-                },
-            )
-            .reduce(
-                || vec![F::zero(); total],
-                |mut a, b| {
-                    a.iter_mut().zip(b.iter()).for_each(|(x, y)| *x += *y);
-                    a
-                },
-            );
-
-        // Chunk b_vals into `num_chunks` lane polynomials of length k_chunk.
-        self.lane_chunks_at_r_cycle = (0..num_chunks)
-            .map(|chunk_idx| {
-                let mut coeffs = vec![F::zero(); k_chunk];
-                for lane in 0..k_chunk {
-                    let global_lane = chunk_idx * k_chunk + lane;
-                    if global_lane < total {
-                        coeffs[lane] = b_vals[global_lane];
-                    }
-                }
-                MultilinearPolynomial::from(coeffs)
-            })
-            .collect();
-    }
-
-    fn compute_message_impl(&self, _round: usize, previous_claim: F) -> UniPoly<F> {
-        let mut evals: [F; DEGREE_BOUND] = match self.params.phase {
-            BytecodeReductionPhase::CycleVariables => {
-                let t_size = self.eq_r_bc.len();
-                debug_assert_eq!(t_size, self.cycle_weighted_sum.len());
-                debug_assert!(t_size.is_power_of_two());
-
-                let eq_evals: &[F] = match &self.eq_r_bc {
-                    MultilinearPolynomial::LargeScalars(p) => &p.Z,
-                    _ => unreachable!("EqPolynomial::evals produces a dense field polynomial"),
-                };
-                let s_evals: &[F] = match &self.cycle_weighted_sum {
-                    MultilinearPolynomial::LargeScalars(p) => &p.Z,
-                    _ => unreachable!("cycle_weighted_sum is a dense field polynomial"),
-                };
-
-                // Round univariate is over the current LSB of the (remaining) cycle domain.
-                let num_pairs = t_size / 2;
-                let (h0_sum, h2_sum) = (0..num_pairs)
-                    .into_par_iter()
-                    .map(|j| {
-                        let k0 = 2 * j;
-                        let k1 = k0 + 1;
-                        let s0 = s_evals[k0];
-                        let s1 = s_evals[k1];
-                        let e0 = eq_evals[k0];
-                        let e1 = eq_evals[k1];
-
-                        let h0 = s0 * e0;
-                        let s2 = (s1 + s1) - s0;
-                        let e2 = (e1 + e1) - e0;
-                        let h2 = s2 * e2;
-                        (h0, h2)
-                    })
-                    .reduce(
-                        || (F::zero(), F::zero()),
-                        |(a0, a1), (b0, b1)| (a0 + b0, a1 + b1),
-                    );
-
-                [h0_sum, h2_sum]
-            }
-            BytecodeReductionPhase::LaneVariables => {
-                let eq_eval = self.eq_r_bc.get_bound_coeff(0);
-                assert!(
-                    !self.lane_chunks_at_r_cycle.is_empty(),
-                    "lane-phase invoked before prepare_lane_phase()"
-                );
-                let half = self.lane_chunks_at_r_cycle[0].len() / 2;
-                (0..half)
-                    .into_par_iter()
-                    .map(|j| {
-                        let mut out = [F::zero(); DEGREE_BOUND];
-                        for (chunk_idx, b) in self.lane_chunks_at_r_cycle.iter().enumerate() {
-                            let b_evals =
-                                b.sumcheck_evals_array::<DEGREE_BOUND>(j, BindingOrder::LowToHigh);
-                            let lw_evals = self.lane_weight_polys[chunk_idx]
-                                .sumcheck_evals_array::<DEGREE_BOUND>(j, BindingOrder::LowToHigh);
-                            out[0] += b_evals[0] * (lw_evals[0] * eq_eval);
-                            out[1] += b_evals[1] * (lw_evals[1] * eq_eval);
-                        }
-                        out
-                    })
-                    .reduce(
-                        || [F::zero(); DEGREE_BOUND],
-                        |mut acc, arr| {
-                            acc.iter_mut().zip(arr.iter()).for_each(|(a, b)| *a += *b);
-                            acc
-                        },
-                    )
-            }
-        };
-
-        // If this instance is back-loaded in a batched sumcheck (i.e., it has trailing dummy
-        // rounds), then `previous_claim` is scaled by 2^{dummy_rounds}. The per-round univariate
-        // evaluations must be scaled by the same factor to satisfy the sumcheck consistency check.
-        let dummy_rounds = self.batch_dummy_rounds.load(Ordering::Relaxed);
-        if dummy_rounds != 0 {
-            let scale = F::one().mul_pow_2(dummy_rounds);
-            for e in evals.iter_mut() {
-                *e *= scale;
-            }
-        }
-        UniPoly::from_evals_and_hint(previous_claim, &evals)
     }
 }
 
-impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for BytecodeClaimReductionProver<F> {
-    fn get_params(&self) -> &dyn SumcheckInstanceParams<F> {
+impl<F: JoltField> PreCommittedPolyClaimReduction<F> for BytecodeClaimReductionProver<F> {
+    type Params = BytecodeClaimReductionParams<F>;
+
+    fn params(&self) -> &Self::Params {
         &self.params
     }
 
-    fn round_offset(&self, max_num_rounds: usize) -> usize {
-        // Bytecode claim reduction's cycle-phase rounds must align to the *start* of the
-        // batched cycle challenge vector so that its (log_K) point is the suffix (LSB side)
-        // of the full (log_T) cycle point used by other Stage 6b instances. This is required
-        // for Stage 8's committed-bytecode embedding when log_T > log_K.
-        //
-        // This deviates from the default "front-loaded" batching offset, so we record the number
-        // of trailing dummy rounds and scale univariate evaluations accordingly.
-        let dummy_rounds = max_num_rounds.saturating_sub(self.params.num_rounds());
-        self.batch_dummy_rounds
-            .store(dummy_rounds, Ordering::Relaxed);
-        0
+    fn params_mut(&mut self) -> &mut Self::Params {
+        &mut self.params
     }
 
-    #[tracing::instrument(skip_all, name = "BytecodeClaimReductionProver::compute_message")]
-    fn compute_message(&mut self, _round: usize, previous_claim: F) -> UniPoly<F> {
-        self.compute_message_impl(_round, previous_claim)
+    fn value_poly(&self) -> &MultilinearPolynomial<F> {
+        &self.value_poly
     }
 
-    #[tracing::instrument(skip_all, name = "BytecodeClaimReductionProver::ingest_challenge")]
-    fn ingest_challenge(&mut self, r_j: F::Challenge, _round: usize) {
-        if self.params.phase == BytecodeReductionPhase::CycleVariables {
-            self.params.cycle_var_challenges.push(r_j);
-            self.eq_r_bc.bind_parallel(r_j, BindingOrder::LowToHigh);
-            self.cycle_weighted_sum
-                .bind_parallel(r_j, BindingOrder::LowToHigh);
-        }
-        if self.params.phase == BytecodeReductionPhase::LaneVariables {
-            self.lane_weight_polys
-                .iter_mut()
-                .for_each(|p| p.bind_parallel(r_j, BindingOrder::LowToHigh));
-            self.lane_chunks_at_r_cycle
-                .iter_mut()
-                .for_each(|p| p.bind_parallel(r_j, BindingOrder::LowToHigh));
-        }
+    fn value_poly_mut(&mut self) -> &mut MultilinearPolynomial<F> {
+        &mut self.value_poly
     }
 
-    fn cache_openings(
+    fn eq_poly(&self) -> &MultilinearPolynomial<F> {
+        &self.eq_poly
+    }
+
+    fn eq_poly_mut(&mut self) -> &mut MultilinearPolynomial<F> {
+        &mut self.eq_poly
+    }
+
+    fn scale(&self) -> &F {
+        &self.scale
+    }
+
+    fn scale_mut(&mut self) -> &mut F {
+        &mut self.scale
+    }
+}
+
+impl<F: JoltField, T: Transcript> PreCommittedSumcheckInstanceProver<F, T>
+    for BytecodeClaimReductionProver<F>
+{
+    fn precommitted_params(&self) -> &dyn SumcheckInstanceParams<F> {
+        &self.params
+    }
+
+    fn precommitted_cache_openings(
         &self,
         accumulator: &mut ProverOpeningAccumulator<F>,
         transcript: &mut T,
         sumcheck_challenges: &[F::Challenge],
     ) {
-        match self.params.phase {
-            BytecodeReductionPhase::CycleVariables => {
-                // Cache intermediate claim for Stage 7.
-                let opening_point = self.params.normalize_opening_point(sumcheck_challenges);
+        let opening_point = self.params.normalize_opening_point(sumcheck_challenges);
 
-                let eq_eval = self.eq_r_bc.get_bound_coeff(0);
-                let s_eval = self.cycle_weighted_sum.get_bound_coeff(0);
-                let sum = s_eval * eq_eval;
+        if self.params.reduction.phase == BytecodeReductionPhase::CycleVariables {
+            let c_mid = <Self as PreCommittedPolyClaimReduction<F>>::cycle_intermediate_claim(self);
+            accumulator.append_virtual(
+                transcript,
+                VirtualPolynomial::BytecodeClaimReductionIntermediate,
+                SumcheckId::BytecodeClaimReductionCyclePhase,
+                opening_point.clone(),
+                c_mid,
+            );
+        }
 
-                accumulator.append_virtual(
-                    transcript,
-                    VirtualPolynomial::BytecodeClaimReductionIntermediate,
-                    SumcheckId::BytecodeClaimReductionCyclePhase,
-                    opening_point,
-                    sum,
-                );
-            }
-            BytecodeReductionPhase::LaneVariables => {
-                // Cache final openings of the bytecode chunk polynomials at the full point.
-                let opening_point = self.params.normalize_opening_point(sumcheck_challenges);
-                let (r_lane, r_cycle) = opening_point.split_at(self.params.log_k_chunk);
-
-                let polynomial_types: Vec<CommittedPolynomial> = (0..self.params.num_chunks)
-                    .map(CommittedPolynomial::BytecodeChunk)
-                    .collect();
-                let claims: Vec<F> = self
-                    .lane_chunks_at_r_cycle
-                    .iter()
-                    .map(|p| p.final_sumcheck_claim())
-                    .collect();
-
-                accumulator.append_sparse(
-                    transcript,
-                    polynomial_types,
-                    SumcheckId::BytecodeClaimReduction,
-                    r_lane.r,
-                    r_cycle.r,
-                    claims,
-                );
-            }
+        if let Some(bytecode_claim) =
+            <Self as PreCommittedPolyClaimReduction<F>>::final_claim_if_ready(self)
+        {
+            accumulator.append_dense(
+                transcript,
+                CommittedPolynomial::Bytecode,
+                SumcheckId::BytecodeClaimReduction,
+                opening_point.r,
+                bytecode_claim,
+            );
         }
     }
 
     #[cfg(feature = "allocative")]
-    fn update_flamegraph(&self, flamegraph: &mut allocative::FlameGraphBuilder) {
+    fn precommitted_update_flamegraph(&self, flamegraph: &mut allocative::FlameGraphBuilder) {
         flamegraph.visit_root(self);
     }
 }
 
 pub struct BytecodeClaimReductionVerifier<F: JoltField> {
     pub params: RefCell<BytecodeClaimReductionParams<F>>,
+    eq_poly: MultilinearPolynomial<F>,
 }
 
 impl<F: JoltField> BytecodeClaimReductionVerifier<F> {
     pub fn new(params: BytecodeClaimReductionParams<F>) -> Self {
+        let eq_poly = build_permuted_eq_poly(&params);
         Self {
             params: RefCell::new(params),
+            eq_poly,
         }
     }
 }
@@ -541,9 +297,9 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         unsafe { &*self.params.as_ptr() }
     }
 
-    fn round_offset(&self, _max_num_rounds: usize) -> usize {
-        // Must mirror the prover: align this instance to the start of the batched challenge vector.
-        0
+    fn round_offset(&self, max_num_rounds: usize) -> usize {
+        let params = self.params.borrow();
+        params.round_offset(max_num_rounds)
     }
 
     fn expected_output_claim(
@@ -552,7 +308,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         sumcheck_challenges: &[F::Challenge],
     ) -> F {
         let params = self.params.borrow();
-        match params.phase {
+        match params.reduction.phase {
             BytecodeReductionPhase::CycleVariables => {
                 accumulator
                     .get_virtual_polynomial_opening(
@@ -561,29 +317,31 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
                     )
                     .1
             }
-            BytecodeReductionPhase::LaneVariables => {
-                let opening_point = params.normalize_opening_point(sumcheck_challenges);
-                let (r_lane, r_cycle) = opening_point.split_at(params.log_k_chunk);
-
-                let eq_eval = EqPolynomial::<F>::mle(&r_cycle.r, &params.r_bc.r);
-
-                // Evaluate each chunk's lane-weight polynomial at r_lane and combine with chunk openings.
-                let eq_lane = EqPolynomial::<F>::evals(&r_lane.r);
-                let mut sum = F::zero();
-                for chunk_idx in 0..params.num_chunks {
-                    let (_, chunk_opening) = accumulator.get_committed_polynomial_opening(
-                        CommittedPolynomial::BytecodeChunk(chunk_idx),
-                        SumcheckId::BytecodeClaimReduction,
-                    );
-                    let w_eval: F = params.chunk_lane_weights[chunk_idx]
-                        .iter()
-                        .zip(eq_lane.iter())
-                        .map(|(w, e)| *w * *e)
-                        .sum();
-                    sum += chunk_opening * w_eval;
+            BytecodeReductionPhase::AddressVariables => {
+                let (_, bytecode_opening) = accumulator.get_committed_polynomial_opening(
+                    CommittedPolynomial::Bytecode,
+                    SumcheckId::BytecodeClaimReduction,
+                );
+                // Sumcheck binding order is always:
+                //   1) cycle-phase variables, then
+                //   2) address-phase variables.
+                // This differs from AddressMajor opening-point serialization.
+                let mut binding_challenges = params.reduction.cycle_var_challenges.clone();
+                binding_challenges.extend_from_slice(sumcheck_challenges);
+                let mut eq_poly = self.eq_poly.clone();
+                for r_j in binding_challenges.iter() {
+                    eq_poly.bind_parallel(*r_j, BindingOrder::LowToHigh);
                 }
+                let eq_eval = eq_poly.final_sumcheck_claim();
 
-                sum * eq_eval
+                let gap_len = internal_dummy_gap_len(
+                    &params.cycle_phase_col_rounds,
+                    &params.cycle_phase_row_rounds,
+                );
+                let two_inv = F::from_u64(2).inverse().unwrap();
+                let scale = (0..gap_len).fold(F::one(), |acc, _| acc * two_inv);
+
+                bytecode_opening * eq_eval * scale
             }
         }
     }
@@ -595,45 +353,130 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         sumcheck_challenges: &[F::Challenge],
     ) {
         let mut params = self.params.borrow_mut();
-        match params.phase {
-            BytecodeReductionPhase::CycleVariables => {
-                let opening_point = params.normalize_opening_point(sumcheck_challenges);
-                accumulator.append_virtual(
-                    transcript,
-                    VirtualPolynomial::BytecodeClaimReductionIntermediate,
-                    SumcheckId::BytecodeClaimReductionCyclePhase,
-                    opening_point,
-                );
-                // Record LE challenges for phase 2 normalization.
-                params.cycle_var_challenges = sumcheck_challenges.to_vec();
-            }
-            BytecodeReductionPhase::LaneVariables => {
-                let opening_point = params.normalize_opening_point(sumcheck_challenges);
-                let polynomial_types: Vec<CommittedPolynomial> = (0..params.num_chunks)
-                    .map(CommittedPolynomial::BytecodeChunk)
-                    .collect();
-                accumulator.append_sparse(
-                    transcript,
-                    polynomial_types,
-                    SumcheckId::BytecodeClaimReduction,
-                    opening_point.r,
-                );
-            }
+        if params.reduction.phase == BytecodeReductionPhase::CycleVariables {
+            let opening_point = params.normalize_opening_point(sumcheck_challenges);
+            accumulator.append_virtual(
+                transcript,
+                VirtualPolynomial::BytecodeClaimReductionIntermediate,
+                SumcheckId::BytecodeClaimReductionCyclePhase,
+                opening_point.clone(),
+            );
+            params
+                .reduction
+                .set_cycle_challenges_from_opening_point(&opening_point);
+        }
+
+        if params.num_address_phase_rounds() == 0
+            || params.reduction.phase == BytecodeReductionPhase::AddressVariables
+        {
+            let opening_point = params.normalize_opening_point(sumcheck_challenges);
+            accumulator.append_dense(
+                transcript,
+                CommittedPolynomial::Bytecode,
+                SumcheckId::BytecodeClaimReduction,
+                opening_point.r,
+            );
         }
     }
 }
 
-fn compute_chunk_lane_weights<F: JoltField>(
+fn build_permuted_value_and_eq_polys<F: JoltField>(
+    params: &BytecodeClaimReductionParams<F>,
+    raw_value_poly: &MultilinearPolynomial<F>,
+) -> (MultilinearPolynomial<F>, MultilinearPolynomial<F>) {
+    let eq_cycle = EqPolynomial::<F>::evals(&params.r_bc.r);
+    let mut indexed: Vec<(usize, (F, F))> = (0..raw_value_poly.len())
+        .map(|idx| {
+            let (lane, cycle) = native_index_to_lane_cycle(params, idx);
+            let eq = params.lane_weights[lane] * eq_cycle[cycle];
+            (idx, (raw_value_poly.get_coeff(idx), eq))
+        })
+        .collect();
+
+    indexed.par_sort_by(|(a, _), (b, _)| {
+        let (addr_a, cycle_a) = index_to_main_address_cycle(params, *a);
+        let (addr_b, cycle_b) = index_to_main_address_cycle(params, *b);
+        match addr_a.cmp(&addr_b) {
+            Ordering::Less => Ordering::Less,
+            Ordering::Greater => Ordering::Greater,
+            Ordering::Equal => cycle_a.cmp(&cycle_b),
+        }
+    });
+
+    let (value_coeffs, eq_coeffs): (Vec<F>, Vec<F>) = indexed.into_iter().map(|(_, p)| p).unzip();
+    (value_coeffs.into(), eq_coeffs.into())
+}
+
+fn build_permuted_eq_poly<F: JoltField>(
+    params: &BytecodeClaimReductionParams<F>,
+) -> MultilinearPolynomial<F> {
+    let eq_cycle = EqPolynomial::<F>::evals(&params.r_bc.r);
+    let total_size = 1usize << (params.bytecode_col_vars + params.bytecode_row_vars);
+    let mut indexed: Vec<(usize, F)> = (0..total_size)
+        .map(|idx| {
+            let (lane, cycle) = native_index_to_lane_cycle(params, idx);
+            (idx, params.lane_weights[lane] * eq_cycle[cycle])
+        })
+        .collect();
+
+    indexed.par_sort_by(|(a, _), (b, _)| {
+        let (addr_a, cycle_a) = index_to_main_address_cycle(params, *a);
+        let (addr_b, cycle_b) = index_to_main_address_cycle(params, *b);
+        match addr_a.cmp(&addr_b) {
+            Ordering::Less => Ordering::Less,
+            Ordering::Greater => Ordering::Greater,
+            Ordering::Equal => cycle_a.cmp(&cycle_b),
+        }
+    });
+
+    let eq_coeffs: Vec<F> = indexed.into_iter().map(|(_, e)| e).collect();
+    eq_coeffs.into()
+}
+
+#[inline(always)]
+fn native_index_to_lane_cycle<F: JoltField>(
+    params: &BytecodeClaimReductionParams<F>,
+    index: usize,
+) -> (usize, usize) {
+    let bytecode_len = 1usize << params.log_k;
+    match DoryGlobals::get_layout() {
+        DoryLayout::CycleMajor => (index / bytecode_len, index % bytecode_len),
+        DoryLayout::AddressMajor => (index % committed_lanes(), index / committed_lanes()),
+    }
+}
+
+#[inline(always)]
+fn index_to_main_address_cycle<F: JoltField>(
+    params: &BytecodeClaimReductionParams<F>,
+    index: usize,
+) -> (usize, usize) {
+    let bytecode_cols = 1usize << params.bytecode_col_vars;
+    let row = index / bytecode_cols;
+    let col = index % bytecode_cols;
+    let main_cols = 1usize << params.main_col_vars;
+    let global_index = row * main_cols + col;
+    match DoryGlobals::get_layout() {
+        DoryLayout::CycleMajor => {
+            let address = global_index / (1usize << params.log_t);
+            let cycle = global_index % (1usize << params.log_t);
+            (address, cycle)
+        }
+        DoryLayout::AddressMajor => {
+            let address = global_index % (1usize << params.log_k_chunk);
+            let cycle = global_index / (1usize << params.log_k_chunk);
+            (address, cycle)
+        }
+    }
+}
+
+fn compute_lane_weights<F: JoltField>(
     bytecode_read_raf_params: &BytecodeReadRafSumcheckParams<F>,
     accumulator: &dyn OpeningAccumulator<F>,
     eta_powers: &[F; NUM_VAL_STAGES],
-    num_chunks: usize,
-    k_chunk: usize,
-) -> Vec<Vec<F>> {
+) -> Vec<F> {
     let reg_count = REGISTER_COUNT as usize;
-    let total = total_lanes();
+    let total = crate::zkvm::bytecode::chunks::total_lanes();
 
-    // Offsets (canonical lane ordering)
     let rs1_start = 0usize;
     let rs2_start = rs1_start + reg_count;
     let rd_start = rs2_start + reg_count;
@@ -645,7 +488,6 @@ fn compute_chunk_lane_weights<F: JoltField>(
     let raf_flag_idx = lookup_start + LookupTables::<XLEN>::COUNT;
     debug_assert_eq!(raf_flag_idx + 1, total);
 
-    // Eq tables for stage4/stage5 register selection weights.
     let log_reg = reg_count.log_2();
     let r_register_4 = accumulator
         .get_virtual_polynomial_opening(
@@ -662,9 +504,8 @@ fn compute_chunk_lane_weights<F: JoltField>(
         .r;
     let eq_r_register_5 = EqPolynomial::<F>::evals(&r_register_5[..log_reg]);
 
-    let mut weights = vec![F::zero(); total];
+    let mut weights = vec![F::zero(); committed_lanes()];
 
-    // Stage 1
     {
         let coeff = eta_powers[0];
         let g = &bytecode_read_raf_params.stage1_gammas;
@@ -674,8 +515,6 @@ fn compute_chunk_lane_weights<F: JoltField>(
             weights[circuit_start + i] += coeff * g[2 + i];
         }
     }
-
-    // Stage 2
     {
         let coeff = eta_powers[1];
         let g = &bytecode_read_raf_params.stage2_gammas;
@@ -684,8 +523,6 @@ fn compute_chunk_lane_weights<F: JoltField>(
         weights[instr_start + (InstructionFlags::IsRdNotZero as usize)] += coeff * g[2];
         weights[circuit_start + (CircuitFlags::WriteLookupOutputToRD as usize)] += coeff * g[3];
     }
-
-    // Stage 3
     {
         let coeff = eta_powers[2];
         let g = &bytecode_read_raf_params.stage3_gammas;
@@ -699,8 +536,6 @@ fn compute_chunk_lane_weights<F: JoltField>(
         weights[circuit_start + (CircuitFlags::VirtualInstruction as usize)] += coeff * g[7];
         weights[circuit_start + (CircuitFlags::IsFirstInSequence as usize)] += coeff * g[8];
     }
-
-    // Stage 4
     {
         let coeff = eta_powers[3];
         let g = &bytecode_read_raf_params.stage4_gammas;
@@ -710,8 +545,6 @@ fn compute_chunk_lane_weights<F: JoltField>(
             weights[rs2_start + r] += coeff * g[2] * eq_r_register_4[r];
         }
     }
-
-    // Stage 5
     {
         let coeff = eta_powers[4];
         let g = &bytecode_read_raf_params.stage5_gammas;
@@ -724,19 +557,5 @@ fn compute_chunk_lane_weights<F: JoltField>(
         }
     }
 
-    // Chunk into k_chunk-sized blocks.
-    (0..num_chunks)
-        .map(|chunk_idx| {
-            (0..k_chunk)
-                .map(|lane| {
-                    let global = chunk_idx * k_chunk + lane;
-                    if global < total {
-                        weights[global]
-                    } else {
-                        F::zero()
-                    }
-                })
-                .collect_vec()
-        })
-        .collect_vec()
+    weights
 }

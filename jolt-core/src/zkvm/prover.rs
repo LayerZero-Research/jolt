@@ -47,7 +47,7 @@ use crate::{
     transcripts::Transcript,
     utils::{math::Math, thread::drop_in_background_thread},
     zkvm::{
-        bytecode::{chunks::total_lanes, read_raf_checking::BytecodeReadRafSumcheckParams},
+        bytecode::{chunks::committed_lanes, read_raf_checking::BytecodeReadRafSumcheckParams},
         claim_reductions::{
             AdviceClaimReductionParams, AdviceClaimReductionProver, AdviceKind,
             BytecodeClaimReductionParams, BytecodeClaimReductionProver, BytecodeReductionPhase,
@@ -410,13 +410,14 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
 
         tracing::info!("padded_trace_len: {}", padded_trace_len);
 
-        // In Committed mode, Stage 8 folds bytecode chunk openings into the *joint* opening.
-        // That folding currently requires log_T >= log_K_bytecode, so we ensure the padded trace
-        // length is at least the (power-of-two padded) bytecode size.
+        // In Committed mode, Stage 8 folds the committed bytecode polynomial opening into
+        // the *joint* opening.
+        // That folding requires enough main-cycle variables to embed bytecode's 512-lane domain:
+        // log_k_chunk + log_T >= log2(512) + log_bytecode_len.
         //
-        // For CycleMajor layout, bytecode chunks are committed with bytecode_T for coefficient
-        // indexing. The main context's T must be >= bytecode_T for row indices to align correctly
-        // during Stage 8 VMP computation.
+        // Equivalently:
+        //   T >= bytecode_len * (512 / k_chunk_main)
+        // where k_chunk_main = 2^log_k_chunk.
         let padded_trace_len = if program_mode == ProgramMode::Committed {
             let trusted = preprocessing
                 .program_commitments
@@ -427,9 +428,17 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 "preprocessing.shared.bytecode_size(): {}",
                 preprocessing.shared.bytecode_size()
             );
+            tracing::info!("bytecode_len: {}", trusted.bytecode_len);
+            let main_k = 1usize << (trusted.log_k_chunk as usize);
+            debug_assert_eq!(committed_lanes() % main_k, 0);
+            let min_t_for_bytecode_embedding =
+                trusted.bytecode_len * (committed_lanes() / main_k);
+            tracing::info!("min_t_for_bytecode_embedding: {}", min_t_for_bytecode_embedding);
+            tracing::info!("main_k: {}", main_k);
             padded_trace_len
                 .max(preprocessing.shared.bytecode_size())
-                .max(trusted.bytecode_T) // Ensure T >= bytecode_T for CycleMajor row alignment
+                .max(trusted.bytecode_T)
+                .max(min_t_for_bytecode_embedding)
         } else {
             padded_trace_len
         };
@@ -596,10 +605,9 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
 
         if self.program_mode == ProgramMode::Committed {
             if let Some(trusted) = &self.preprocessing.program_commitments {
-                // Append bytecode chunk commitments
-                for commitment in &trusted.bytecode_commitments {
-                    self.transcript.append_serializable(commitment);
-                }
+                // Append committed bytecode commitment.
+                self.transcript
+                    .append_serializable(&trusted.bytecode_commitment);
                 // Append program image commitment
                 self.transcript
                     .append_serializable(&trusted.program_image_commitment);
@@ -642,10 +650,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         }
         if self.program_mode == ProgramMode::Committed {
             if let Some(hints) = self.preprocessing.program_hints.as_ref() {
-                for (idx, hint) in hints.bytecode_hints.iter().enumerate() {
-                    opening_proof_hints
-                        .insert(CommittedPolynomial::BytecodeChunk(idx), hint.clone());
-                }
+                opening_proof_hints.insert(CommittedPolynomial::Bytecode, hints.bytecode_hint.clone());
             }
             if let Some(hints) = self.preprocessing.program_hints.as_ref() {
                 opening_proof_hints.insert(
@@ -728,26 +733,12 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         Vec<PCS::Commitment>,
         HashMap<CommittedPolynomial, PCS::OpeningProofHint>,
     ) {
-        let _guard = if self.program_mode == ProgramMode::Committed {
-            let committed = self
-                .preprocessing
-                .program_commitments
-                .as_ref()
-                .expect("program commitments missing in committed mode");
-            DoryGlobals::initialize_main_context_with_num_columns(
-                1 << self.one_hot_params.log_k_chunk,
-                self.padded_trace_len,
-                committed.bytecode_num_columns,
-                Some(DoryGlobals::get_layout()),
-            )
-        } else {
-            DoryGlobals::initialize_context(
-                1 << self.one_hot_params.log_k_chunk,
-                self.padded_trace_len,
-                DoryContext::Main,
-                Some(DoryGlobals::get_layout()),
-            )
-        };
+        let _guard = DoryGlobals::initialize_context(
+            1 << self.one_hot_params.log_k_chunk,
+            self.padded_trace_len,
+            DoryContext::Main,
+            Some(DoryGlobals::get_layout()),
+        );
 
         let polys = all_committed_polynomials(&self.one_hot_params);
         let T = DoryGlobals::get_T();
@@ -1560,6 +1551,11 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 m <= log_t,
                 "program-image claim reduction requires m=log2(padded_len_words) <= log_T (got m={m}, log_T={log_t})"
             );
+            let main_num_columns = DoryGlobals::try_get_main_sigma_nu()
+                .map(|(sigma, _)| 1usize << sigma)
+                .unwrap_or_else(|| {
+                    DoryGlobals::main_num_columns(self.one_hot_params.log_k_chunk, log_t)
+                });
             let params = ProgramImageClaimReductionParams::new(
                 &self.program_io,
                 self.preprocessing.program.min_bytecode_address,
@@ -1567,7 +1563,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 self.one_hot_params.ram_k,
                 self.trace.len(),
                 self.one_hot_params.log_k_chunk,
-                trusted.bytecode_num_columns,
+                main_num_columns,
                 &self.rw_config,
                 &self.opening_accumulator,
                 &mut self.transcript,
@@ -1641,12 +1637,12 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             vec![Box::new(hw_prover)];
 
         if let Some(mut bytecode_reduction_prover) = self.bytecode_reduction_prover.take() {
-            // Stage 6b → Stage 7 transition for bytecode claim reduction:
-            // - Cycle-phase sumcheck is complete, so we can materialize the lane-phase witness
-            //   polynomials B_i(·, r_cycle) (GPU-style "export b_vals").
-            bytecode_reduction_prover.prepare_lane_phase();
-            bytecode_reduction_prover.params.phase = BytecodeReductionPhase::LaneVariables;
-            instances.push(Box::new(bytecode_reduction_prover));
+            if bytecode_reduction_prover.params.num_address_phase_rounds() > 0 {
+                // Transition to address rounds only when phase-2 rounds are required.
+                bytecode_reduction_prover.params.reduction.phase =
+                    BytecodeReductionPhase::AddressVariables;
+                instances.push(Box::new(bytecode_reduction_prover));
+            }
         }
 
         if let Some(mut advice_reduction_prover_trusted) =
@@ -1717,26 +1713,12 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
     ) -> PCS::Proof {
         tracing::info!("Stage 8 proving (Dory batch opening)");
 
-        let _guard = if self.program_mode == ProgramMode::Committed {
-            let committed = self
-                .preprocessing
-                .program_commitments
-                .as_ref()
-                .expect("program commitments missing in committed mode");
-            DoryGlobals::initialize_main_context_with_num_columns(
-                self.one_hot_params.k_chunk,
-                self.padded_trace_len,
-                committed.bytecode_num_columns,
-                Some(DoryGlobals::get_layout()),
-            )
-        } else {
-            DoryGlobals::initialize_context(
-                self.one_hot_params.k_chunk,
-                self.padded_trace_len,
-                DoryContext::Main,
-                Some(DoryGlobals::get_layout()),
-            )
-        };
+        let _guard = DoryGlobals::initialize_context(
+            self.one_hot_params.k_chunk,
+            self.padded_trace_len,
+            DoryContext::Main,
+            Some(DoryGlobals::get_layout()),
+        );
 
         // Get the unified opening point from HammingWeightClaimReduction
         // This contains (r_address_stage7 || r_cycle_stage6) in big-endian
@@ -1851,47 +1833,27 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             ));
         }
 
-        // Bytecode chunk polynomials: committed in Bytecode context and embedded into the
+        // Committed bytecode polynomial: committed in Bytecode context and embedded into the
         // main opening point by fixing the extra cycle variables to 0.
         if self.program_mode == ProgramMode::Committed {
             let (bytecode_point, _) = self.opening_accumulator.get_committed_polynomial_opening(
-                CommittedPolynomial::BytecodeChunk(0),
+                CommittedPolynomial::Bytecode,
                 SumcheckId::BytecodeClaimReduction,
             );
-            let log_t = opening_point.r.len() - log_k_chunk;
-            let log_k = bytecode_point.r.len() - log_k_chunk;
+            let log_t = opening_point.r.len();
+            let log_k = bytecode_point.r.len();
             assert!(
                 log_k <= log_t,
                 "bytecode folding requires log_T >= log_K (got log_T={log_t}, log_K={log_k})"
             );
-            #[cfg(test)]
-            {
-                if log_k == log_t {
-                    assert_eq!(
-                        bytecode_point.r, opening_point.r,
-                        "BytecodeChunk opening point must equal unified opening point when log_K == log_T"
-                    );
-                } else {
-                    let (r_lane_main, r_cycle_main) = opening_point.split_at(log_k_chunk);
-                    let (r_lane_bc, r_cycle_bc) = bytecode_point.split_at(log_k_chunk);
-                    debug_assert_eq!(r_lane_main.r, r_lane_bc.r);
-                    debug_assert_eq!(&r_cycle_main.r[(log_t - log_k)..], r_cycle_bc.r.as_slice());
-                }
-            }
             let lagrange_factor =
                 compute_advice_lagrange_factor::<F>(&opening_point.r, &bytecode_point.r);
 
-            let num_chunks = total_lanes().div_ceil(self.one_hot_params.k_chunk);
-            for i in 0..num_chunks {
-                let (_, claim) = self.opening_accumulator.get_committed_polynomial_opening(
-                    CommittedPolynomial::BytecodeChunk(i),
-                    SumcheckId::BytecodeClaimReduction,
-                );
-                polynomial_claims.push((
-                    CommittedPolynomial::BytecodeChunk(i),
-                    claim * lagrange_factor,
-                ));
-            }
+            let (_, claim) = self.opening_accumulator.get_committed_polynomial_opening(
+                CommittedPolynomial::Bytecode,
+                SumcheckId::BytecodeClaimReduction,
+            );
+            polynomial_claims.push((CommittedPolynomial::Bytecode, claim * lagrange_factor));
         }
 
         // Program-image polynomial: opened by ProgramImageClaimReduction in Stage 6b.
@@ -1954,9 +1916,8 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         // Build streaming RLC polynomial directly (no witness poly regeneration!)
         // Use materialized trace (default, single pass) instead of lazy trace
         //
-        // bytecode_T: The T value used for bytecode coefficient indexing.
-        // In Committed mode, use the value stored in trusted commitments.
-        // In Full mode, use bytecode_len (original behavior).
+        // bytecode_T is recorded in trusted commitments (committed mode) and equals
+        // `bytecode_len` in full mode.
         let bytecode_T = if self.program_mode == ProgramMode::Committed {
             let trusted = self
                 .preprocessing
@@ -2055,7 +2016,7 @@ where
 
     /// Setup generators for Committed mode, ensuring capacity for both:
     /// - Main context up to `max_padded_trace_length`
-    /// - Bytecode context up to `bytecode_size`
+    /// - Bytecode context up to `committed_lanes() * bytecode_size`
     /// - ProgramImage context up to the padded program-image word length
     fn setup_generators_committed(
         shared: &JoltSharedPreprocessing,
@@ -2073,7 +2034,14 @@ where
         } else {
             8
         };
-        PCS::setup_prover(max_log_k_chunk + max_log_t_any)
+        let main_num_vars = max_log_k_chunk + max_log_t_any;
+        let bytecode_num_vars = committed_lanes().log_2() + shared.bytecode_size().log_2();
+        let program_image_num_vars = prog_len_words_padded.log_2();
+        PCS::setup_prover(
+            main_num_vars
+                .max(bytecode_num_vars)
+                .max(program_image_num_vars),
+        )
     }
 
     /// Create prover preprocessing in Full mode (no commitments).
@@ -2097,7 +2065,7 @@ where
     /// Create prover preprocessing in Committed mode (with program commitments).
     ///
     /// Use this when the verifier should only receive commitments (succinct verification).
-    /// Computes commitments + hints for all bytecode chunk polynomials and program image during preprocessing.
+    /// Computes commitments + hints for committed bytecode + program image during preprocessing.
     #[tracing::instrument(skip_all, name = "JoltProverPreprocessing::new_committed")]
     pub fn new_committed(
         shared: JoltSharedPreprocessing,

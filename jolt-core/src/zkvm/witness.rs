@@ -30,9 +30,11 @@ pub enum CommittedPolynomial {
     InstructionRa(usize),
     /// One-hot ra polynomial for the bytecode instance of Shout
     BytecodeRa(usize),
-    /// Packed bytecode commitment chunk polynomial (lane chunk i).
-    /// This is used by BytecodeClaimReduction; commitment + batching integration is staged separately.
-    BytecodeChunk(usize),
+    /// Committed bytecode polynomial.
+    ///
+    /// This polynomial stores 512 padded lanes per opcode cycle and is opened by
+    /// `BytecodeClaimReduction`.
+    Bytecode,
     /// One-hot ra/wa polynomial for the RAM instance of Twist
     /// Note that for RAM, ra and wa are the same polynomial because
     /// there is at most one load or store per cycle.
@@ -123,8 +125,8 @@ impl CommittedPolynomial {
                     .collect();
                 PCS::process_chunk_onehot(setup, one_hot_params.k_chunk, &row)
             }
-            CommittedPolynomial::BytecodeChunk(_) => {
-                panic!("Bytecode chunk polynomials are not stream-committed yet")
+            CommittedPolynomial::Bytecode => {
+                panic!("Committed bytecode polynomial is not stream-committed from trace")
             }
             CommittedPolynomial::RamRa(idx) => {
                 let row: Vec<Option<usize>> = row_cycles
@@ -173,8 +175,8 @@ impl CommittedPolynomial {
                     one_hot_params.k_chunk,
                 ))
             }
-            CommittedPolynomial::BytecodeChunk(_) => {
-                panic!("Bytecode chunk polynomials are not supported by generate_witness yet")
+            CommittedPolynomial::Bytecode => {
+                panic!("Committed bytecode polynomial is not supported by generate_witness")
             }
             CommittedPolynomial::RamRa(i) => {
                 let one_hot_params = one_hot_params.unwrap();

@@ -19,7 +19,7 @@ use crate::poly::commitment::dory::{DoryCommitmentScheme, DoryContext, DoryGloba
 use crate::poly::multilinear_polynomial::MultilinearPolynomial;
 use crate::poly::opening_proof::{OpeningAccumulator, SumcheckId};
 use crate::utils::math::Math;
-use crate::zkvm::bytecode::chunks::total_lanes;
+use crate::zkvm::bytecode::chunks::{committed_lanes, total_lanes};
 use crate::zkvm::claim_reductions::AdviceKind;
 use crate::zkvm::config::ProgramMode;
 use crate::zkvm::program::{ProgramPreprocessing, TrustedProgramCommitments};
@@ -550,7 +550,7 @@ fn muldiv_e2e_committed_program() {
 #[serial]
 fn fib_e2e_committed_large_trace() {
     // Larger trace length (2^17) in committed mode.
-    // Tests bytecode chunking with log_k_chunk=8 (256 lanes per chunk).
+    // Tests committed-bytecode folding with log_k_chunk=8 runtime one-hot config.
     run_e2e_test(
         E2ETestConfig::fibonacci(1000)
             .with_max_trace_length(1 << 17)
@@ -571,7 +571,7 @@ fn fib_e2e_committed_large_trace_address_major() {
 
 #[test]
 #[serial]
-fn fib_e2e_committed_address_major_bytecode_smaller_than_one_main_row() {
+fn fib_e2e_committed_address_major_manual_preprocessing() {
     DoryGlobals::reset();
     DoryGlobals::set_layout(DoryLayout::AddressMajor);
 
@@ -598,8 +598,7 @@ fn fib_e2e_committed_address_major_bytecode_smaller_than_one_main_row() {
         config.max_trace_length,
     );
 
-    // Build committed preprocessing manually so we can force the "bytecode smaller than one
-    // main row" planning case (main width from a larger commitment bound).
+    // Build committed preprocessing manually with a large commitment bound.
     let commitment_max_trace_len = 1usize << 27;
     let log_k_chunk = 4usize;
     let commitment_setup = DoryCommitmentScheme::setup_prover(log_k_chunk + 27);
@@ -610,10 +609,13 @@ fn fib_e2e_committed_address_major_bytecode_smaller_than_one_main_row() {
         commitment_max_trace_len,
     );
 
-    let k_chunk = 1usize << log_k_chunk;
+    let k_bytecode = committed_lanes();
     let log_t = commitment_max_trace_len.log_2();
     let main_num_columns = DoryGlobals::main_num_columns(log_k_chunk, log_t);
-    let total_size = k_chunk * program_commitments.bytecode_len;
+    let total_size = k_bytecode * program_commitments.bytecode_len;
+    let total_vars = total_size.log_2();
+    let (sigma_bytecode, _) = DoryGlobals::balanced_sigma_nu(total_vars);
+    let expected_bytecode_num_columns = 1usize << sigma_bytecode;
     let bytecode_num_columns = program_commitments.bytecode_num_columns;
     let bytecode_num_rows = if total_size >= bytecode_num_columns {
         total_size / bytecode_num_columns
@@ -624,22 +626,15 @@ fn fib_e2e_committed_address_major_bytecode_smaller_than_one_main_row() {
     println!(
         "commitment planning dims: main(cols={}, rows={}), bytecode(cols={}, rows={}, K*T={})",
         main_num_columns,
-        (k_chunk * commitment_max_trace_len) / main_num_columns,
+        ((1usize << log_k_chunk) * commitment_max_trace_len) / main_num_columns,
         bytecode_num_columns,
         bytecode_num_rows,
         total_size
     );
 
-    assert!(
-        total_size < main_num_columns,
-        "expected bytecode matrix to be smaller than one main row, got K*T={} and main_num_columns={} (bytecode_len={}, k_chunk={}, log_t={})",
-        total_size,
-        main_num_columns,
-        program_commitments.bytecode_len,
-        k_chunk,
-        log_t
-    );
-    assert_eq!(bytecode_num_columns, main_num_columns);
+    assert!(bytecode_num_rows >= 1);
+    assert_eq!(bytecode_num_columns, expected_bytecode_num_columns);
+    assert_ne!(bytecode_num_columns, main_num_columns);
 
     let prover_preprocessing: JoltProverPreprocessing<Fr, DoryCommitmentScheme> =
         JoltProverPreprocessing {
@@ -724,17 +719,15 @@ fn sha2_committed_program_with_advice() {
 }
 
 // ============================================================================
-// New Tests - Bytecode Lane Ordering / Chunking
+// New Tests - Bytecode Lane Capacity
 // ============================================================================
 
 #[test]
-fn bytecode_lane_chunking_counts() {
-    // Canonical lane spec (see bytecode-commitment-progress.md):
-    // 3*REGISTER_COUNT (rs1/rs2/rd) + 2 scalars + 13 circuit flags + 7 instr flags
-    // + 41 lookup selector + 1 raf flag = 448 (with REGISTER_COUNT=128).
+fn bytecode_lane_capacity() {
+    // Canonical lanes occupy a prefix; committed mode pads every opcode row to 512 lanes.
     assert_eq!(total_lanes(), 448);
-    assert_eq!(total_lanes().div_ceil(16), 28);
-    assert_eq!(total_lanes().div_ceil(256), 2);
+    assert_eq!(committed_lanes(), 512);
+    assert!(committed_lanes() > total_lanes());
 }
 
 // ============================================================================
@@ -816,8 +809,8 @@ fn program_mode_detection_committed() {
     // But it should have commitments and metadata
     let trusted = verifier_committed.program.as_committed().unwrap();
     assert!(
-        !trusted.bytecode_commitments.is_empty(),
-        "Should have bytecode commitments"
+        trusted.bytecode_num_columns > 0,
+        "Should have committed bytecode metadata"
     );
     assert!(
         trusted.bytecode_len > 0,
