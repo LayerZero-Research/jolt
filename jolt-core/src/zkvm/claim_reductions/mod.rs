@@ -14,7 +14,6 @@ pub use advice::{
 };
 pub use bytecode::{
     BytecodeClaimReductionParams, BytecodeClaimReductionProver, BytecodeClaimReductionVerifier,
-    BytecodeReductionPhase,
 };
 pub use hamming_weight::{
     HammingWeightClaimReductionParams, HammingWeightClaimReductionProver,
@@ -30,8 +29,10 @@ pub use instruction_lookups::{
 };
 pub use precommitted::{
     cycle_phase_round_schedule, internal_dummy_gap_len, normalize_two_phase_opening_point,
-    precommitted_num_rounds, PreCommittedClaimReductionParams, PreCommittedPolyClaimReduction,
-    PreCommittedPolyClaimReductionState, PreCommittedSumcheckInstanceParams,
+    precommitted_num_rounds, PreCommitted, PreCommittedClaimReductionParams,
+    PreCommittedPolyClaimReduction,
+    PreCommittedPolyClaimReductionState, PreCommittedPolyReductionCore,
+    PreCommittedSumcheckInstanceParams,
     PreCommittedSumcheckInstanceProver,
 };
 pub use program_image::{

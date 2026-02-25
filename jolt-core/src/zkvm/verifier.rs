@@ -7,10 +7,12 @@ use std::sync::Arc;
 use crate::poly::commitment::commitment_scheme::CommitmentScheme;
 use crate::poly::commitment::dory::{DoryContext, DoryGlobals};
 use crate::subprotocols::sumcheck::BatchedSumcheck;
-use crate::zkvm::claim_reductions::advice::ReductionPhase;
 use crate::zkvm::claim_reductions::RegistersClaimReductionSumcheckVerifier;
 use crate::zkvm::config::OneHotParams;
 use crate::zkvm::config::ProgramMode;
+use crate::zkvm::bytecode::chunks::{
+    validate_committed_bytecode_chunk_count, DEFAULT_COMMITTED_BYTECODE_CHUNK_COUNT,
+};
 use crate::zkvm::program::{
     ProgramMetadata, ProgramPreprocessing, TrustedProgramCommitments, VerifierProgram,
 };
@@ -27,7 +29,7 @@ use crate::zkvm::{
     },
     claim_reductions::{
         AdviceClaimReductionVerifier, AdviceKind, BytecodeClaimReductionParams,
-        BytecodeClaimReductionVerifier, BytecodeReductionPhase,
+        BytecodeClaimReductionVerifier, PreCommittedClaimReductionParams,
         HammingWeightClaimReductionVerifier, IncClaimReductionSumcheckVerifier,
         InstructionLookupsClaimReductionSumcheckVerifier, ProgramImageClaimReductionParams,
         ProgramImageClaimReductionVerifier, RamRaClaimReductionSumcheckVerifier,
@@ -190,6 +192,25 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
                     committed.log_k_chunk, proof.one_hot_config.log_k_chunk
                 )));
             }
+            if committed.bytecode_chunk_count != preprocessing.shared.bytecode_chunk_count {
+                return Err(ProofVerifyError::InvalidBytecodeConfig(format!(
+                    "bytecode chunk count mismatch: commitments={}, shared={}",
+                    committed.bytecode_chunk_count, preprocessing.shared.bytecode_chunk_count
+                )));
+            }
+            if committed.bytecode_chunk_commitments.len() != committed.bytecode_chunk_count {
+                return Err(ProofVerifyError::InvalidBytecodeConfig(format!(
+                    "bytecode chunk commitment count mismatch: commitments={}, chunk_count={}",
+                    committed.bytecode_chunk_commitments.len(),
+                    committed.bytecode_chunk_count
+                )));
+            }
+            if !committed.bytecode_len.is_multiple_of(committed.bytecode_chunk_count) {
+                return Err(ProofVerifyError::InvalidBytecodeConfig(format!(
+                    "bytecode chunk count ({}) must divide bytecode_len ({})",
+                    committed.bytecode_chunk_count, committed.bytecode_len
+                )));
+            }
             if committed.bytecode_len != preprocessing.shared.bytecode_size() {
                 return Err(ProofVerifyError::InvalidBytecodeConfig(format!(
                     "bytecode length mismatch: commitments={}, shared={}",
@@ -244,8 +265,9 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
         }
         if self.proof.program_mode == ProgramMode::Committed {
             let trusted = self.preprocessing.program.as_committed()?;
-            self.transcript
-                .append_serializable(&trusted.bytecode_commitment);
+            for commitment in &trusted.bytecode_chunk_commitments {
+                self.transcript.append_serializable(commitment);
+            }
             self.transcript
                 .append_serializable(&trusted.program_image_commitment);
         }
@@ -255,13 +277,9 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
         self.verify_stage3()?;
         self.verify_stage4()?;
         self.verify_stage5()?;
-        tracing::info!("verify_stage6a");
         self.verify_stage6a()?;
-        tracing::info!("verify_stage6b");
         self.verify_stage6b()?;
-        tracing::info!("verify_stage7");
         self.verify_stage7()?;
-        tracing::info!("verify_stage8");
         self.verify_stage8()?;
 
         Ok(())
@@ -555,6 +573,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
         if self.proof.program_mode == ProgramMode::Committed {
             let bytecode_reduction_params = BytecodeClaimReductionParams::new(
                 &bytecode_read_raf_params,
+                self.preprocessing.shared.bytecode_chunk_count,
                 &self.opening_accumulator,
                 &mut self.transcript,
             );
@@ -684,7 +703,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
         if let Some(bytecode_reduction_verifier) = self.bytecode_reduction_verifier.as_mut() {
             let mut params = bytecode_reduction_verifier.params.borrow_mut();
             if params.num_address_phase_rounds() > 0 {
-                params.reduction.phase = BytecodeReductionPhase::AddressVariables;
+                params.transition_to_address_phase();
                 instances.push(bytecode_reduction_verifier);
             }
         }
@@ -694,7 +713,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
             let mut params = advice_reduction_verifier_trusted.params.borrow_mut();
             if params.num_address_phase_rounds() > 0 {
                 // Transition phase
-                params.reduction.phase = ReductionPhase::AddressVariables;
+                params.transition_to_address_phase();
                 instances.push(advice_reduction_verifier_trusted);
             }
         }
@@ -704,7 +723,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
             let mut params = advice_reduction_verifier_untrusted.params.borrow_mut();
             if params.num_address_phase_rounds() > 0 {
                 // Transition phase
-                params.reduction.phase = ReductionPhase::AddressVariables;
+                params.transition_to_address_phase();
                 instances.push(advice_reduction_verifier_untrusted);
             }
         }
@@ -714,7 +733,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
             let mut params = program_image_reduction_verifier.params.borrow_mut();
             if params.num_address_phase_rounds() > 0 {
                 // Transition phase
-                params.reduction.phase = ReductionPhase::AddressVariables;
+                params.transition_to_address_phase();
                 instances.push(program_image_reduction_verifier);
             }
         }
@@ -819,29 +838,30 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
             ));
         }
 
-        // Committed bytecode polynomial: committed in Bytecode context and embedded into the
-        // main opening point by fixing the extra cycle variables to 0.
+        // Committed bytecode chunk polynomials: each chunk is committed separately in Bytecode
+        // context and embedded into the main opening point as a top-left block.
         if self.proof.program_mode == ProgramMode::Committed {
-            let (bytecode_point, _) = self.opening_accumulator.get_committed_polynomial_opening(
-                CommittedPolynomial::Bytecode,
-                SumcheckId::BytecodeClaimReduction,
-            );
-            let log_t = opening_point.r.len();
-            let log_k = bytecode_point.r.len();
-            if log_k > log_t {
-                return Err(ProofVerifyError::InvalidBytecodeConfig(format!(
-                    "bytecode folding requires log_T >= log_K (got log_T={log_t}, log_K={log_k})"
-                ))
-                .into());
+            let trusted = self.preprocessing.program.as_committed()?;
+            for chunk_idx in 0..trusted.bytecode_chunk_commitments.len() {
+                let (bytecode_point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
+                    CommittedPolynomial::BytecodeChunk(chunk_idx),
+                    SumcheckId::BytecodeClaimReduction,
+                );
+                let log_t = opening_point.r.len();
+                let log_k = bytecode_point.r.len();
+                if log_k > log_t {
+                    return Err(ProofVerifyError::InvalidBytecodeConfig(format!(
+                        "bytecode chunking requires log_T >= log_K (got log_T={log_t}, log_K={log_k})"
+                    ))
+                    .into());
+                }
+                let lagrange_factor =
+                    compute_advice_lagrange_factor::<F>(&opening_point.r, &bytecode_point.r);
+                polynomial_claims.push((
+                    CommittedPolynomial::BytecodeChunk(chunk_idx),
+                    claim * lagrange_factor,
+                ));
             }
-            let lagrange_factor =
-                compute_advice_lagrange_factor::<F>(&opening_point.r, &bytecode_point.r);
-
-            let (_, claim) = self.opening_accumulator.get_committed_polynomial_opening(
-                CommittedPolynomial::Bytecode,
-                SumcheckId::BytecodeClaimReduction,
-            );
-            polynomial_claims.push((CommittedPolynomial::Bytecode, claim * lagrange_factor));
         }
 
         // Program-image polynomial: opened by ProgramImageClaimReduction in Stage 6b.
@@ -903,9 +923,15 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
 
         if self.proof.program_mode == ProgramMode::Committed {
             let committed = self.preprocessing.program.as_committed()?;
-            commitments_map
-                .entry(CommittedPolynomial::Bytecode)
-                .or_insert_with(|| committed.bytecode_commitment.clone());
+            for (chunk_idx, commitment) in committed.bytecode_chunk_commitments.iter().enumerate() {
+                if state
+                    .polynomial_claims
+                    .iter()
+                    .any(|(p, _)| *p == CommittedPolynomial::BytecodeChunk(chunk_idx))
+                {
+                    commitments_map.insert(CommittedPolynomial::BytecodeChunk(chunk_idx), commitment.clone());
+                }
+            }
 
             // Add trusted program-image commitment if it's part of the batch.
             if state
@@ -980,6 +1006,10 @@ pub struct JoltSharedPreprocessing {
     pub program_meta: ProgramMetadata,
     pub memory_layout: MemoryLayout,
     pub max_padded_trace_length: usize,
+    /// Chunk count for committed bytecode preprocessing.
+    ///
+    /// `1` keeps legacy behavior (single chunk).
+    pub bytecode_chunk_count: usize,
 }
 
 impl JoltSharedPreprocessing {
@@ -999,6 +1029,29 @@ impl JoltSharedPreprocessing {
             program_meta,
             memory_layout,
             max_padded_trace_length,
+            bytecode_chunk_count: DEFAULT_COMMITTED_BYTECODE_CHUNK_COUNT,
+        }
+    }
+
+    /// Create shared preprocessing for committed mode with explicit bytecode chunking.
+    #[tracing::instrument(skip_all, name = "JoltSharedPreprocessing::new_committed")]
+    pub fn new_committed(
+        program_meta: ProgramMetadata,
+        memory_layout: MemoryLayout,
+        max_padded_trace_length: usize,
+        bytecode_chunk_count: usize,
+    ) -> JoltSharedPreprocessing {
+        validate_committed_bytecode_chunk_count(bytecode_chunk_count);
+        assert!(
+            program_meta.bytecode_len.is_multiple_of(bytecode_chunk_count),
+            "bytecode chunk count ({bytecode_chunk_count}) must divide bytecode size ({})",
+            program_meta.bytecode_len
+        );
+        Self {
+            program_meta,
+            memory_layout,
+            max_padded_trace_length,
+            bytecode_chunk_count,
         }
     }
 

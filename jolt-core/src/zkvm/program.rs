@@ -6,7 +6,6 @@
 //!
 //! Both come from the same ELF file and are conceptually "the program".
 
-use std::any::TypeId;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::Arc;
@@ -20,14 +19,14 @@ use tracer::instruction::{Cycle, Instruction};
 
 use crate::poly::commitment::commitment_scheme::CommitmentScheme;
 use crate::poly::commitment::dory::{
-    ArkG1, ArkGT, ArkworksProverSetup, DoryCommitmentScheme, DoryContext, DoryGlobals, DoryLayout,
-    BN254,
+    ArkG1, ArkGT, ArkworksProverSetup, DoryContext, DoryGlobals, DoryLayout, BN254,
 };
 use crate::poly::multilinear_polynomial::MultilinearPolynomial;
 use crate::utils::errors::ProofVerifyError;
 use crate::utils::math::Math;
 use crate::zkvm::bytecode::chunks::{
-    ActiveLaneValue, build_committed_bytecode_polynomial_from_instructions, committed_lanes, for_each_active_lane_value
+    ActiveLaneValue, committed_bytecode_chunk_cycle_len, committed_lanes, for_each_active_lane_value,
+    validate_committed_bytecode_chunking_for_len,
 };
 pub use crate::zkvm::bytecode::BytecodePCMapper;
 use ark_bn254::{Fr, G1Projective};
@@ -228,8 +227,11 @@ impl ProgramMetadata {
 #[derive(Clone, Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct TrustedProgramCommitments<PCS: CommitmentScheme> {
     // ─── Bytecode commitment ───
-    /// Commitment to the single committed bytecode polynomial.
-    pub bytecode_commitment: PCS::Commitment,
+    /// Commitments to individual chunked bytecode chunk polynomials.
+    ///
+    /// For chunk count `c`, this contains exactly `c` commitments:
+    /// `BytecodeChunk(0)..BytecodeChunk(c-1)`.
+    pub bytecode_chunk_commitments: Vec<PCS::Commitment>,
     /// Bytecode-context column count used when deriving bytecode commitments.
     ///
     /// This is derived from bytecode dimensions only (`K_bytecode * bytecode_len`) and is
@@ -239,6 +241,11 @@ pub struct TrustedProgramCommitments<PCS: CommitmentScheme> {
     pub log_k_chunk: u8,
     /// Bytecode length (power-of-two padded).
     pub bytecode_len: usize,
+    /// Chunk count used to build committed bytecode chunk polynomials.
+    ///
+    /// - `1` means a single chunk
+    /// - `c > 1` splits cycles into `c` chunks stacked on one cycle domain
+    pub bytecode_chunk_count: usize,
     /// The T value used for bytecode coefficient indexing.
     /// In committed mode this is fixed to `bytecode_len` so bytecode always embeds
     /// into the top-left block of the Main matrix.
@@ -259,8 +266,8 @@ pub struct TrustedProgramCommitments<PCS: CommitmentScheme> {
 /// These are the Dory tier-1 data needed to build opening proofs.
 #[derive(Clone, CanonicalSerialize, CanonicalDeserialize)]
 pub struct TrustedProgramHints<PCS: CommitmentScheme> {
-    /// Hint for the committed bytecode polynomial.
-    pub bytecode_hint: PCS::OpeningProofHint,
+    /// Hints for each chunked bytecode chunk polynomial commitment.
+    pub bytecode_chunk_hints: Vec<PCS::OpeningProofHint>,
     /// Hint for program image commitment.
     pub program_image_hint: PCS::OpeningProofHint,
 }
@@ -275,55 +282,29 @@ impl<PCS: CommitmentScheme> TrustedProgramCommitments<PCS> {
         program: &ProgramPreprocessing,
         generators: &PCS::ProverSetup,
         log_k_chunk: usize,
-        _max_trace_len: usize,
+        bytecode_chunk_count: usize,
     ) -> (Self, TrustedProgramHints<PCS>) {
         // ─── Derive bytecode commitments ───
         let bytecode_len = program.bytecode_len();
+        validate_committed_bytecode_chunking_for_len(bytecode_len, bytecode_chunk_count);
 
         // Get layout before context initialization. Layout affects coefficient indexing.
         let layout = DoryGlobals::get_layout();
 
-        // Bytecode commitments: prefer a streaming/sparse Tier-1 commitment path for Dory.
-        //
-        // This avoids materializing the dense committed-bytecode coefficient vector.
-        // For non-Dory PCS implementations, we fall back to the dense polynomial commit path.
-        let (bytecode_commitment, bytecode_hint, bytecode_num_columns, bytecode_T) = if TypeId::of::<
-            PCS,
-        >(
-        )
-            == TypeId::of::<DoryCommitmentScheme>()
-        {
-            // SAFETY: guarded by the TypeId check above. In this monomorphization, PCS is
-            // DoryCommitmentScheme, so ProverSetup/Commitment/Hint types match exactly.
-            let dory_setup: &ArkworksProverSetup =
-                unsafe { &*(generators as *const PCS::ProverSetup as *const ArkworksProverSetup) };
-            let (commitment, hint, num_columns, bytecode_t) = derive_bytecode_commitment_sparse_dory(
-                    program,
-                    dory_setup,
-                    layout,
-                );
-            let mut commitments: Vec<PCS::Commitment> =
-                unsafe { std::mem::transmute(vec![commitment]) };
-            let mut hints: Vec<PCS::OpeningProofHint> = unsafe { std::mem::transmute(vec![hint]) };
-            (
-                commitments.pop().unwrap(),
-                hints.pop().unwrap(),
-                num_columns,
-                bytecode_t,
-            )
-        } else {
-            // Dense fallback uses the same explicit committed bytecode plan as the sparse path.
-            let (num_columns, bytecode_T) = committed_bytecode_dimensions(bytecode_len);
-            let _guard = DoryGlobals::initialize_bytecode_context_with_dimensions(
-                committed_lanes(),
-                bytecode_T,
-                num_columns,
+        // Bytecode commitments use the sparse Dory path.
+        let dory_setup: &ArkworksProverSetup =
+            unsafe { &*(generators as *const PCS::ProverSetup as *const ArkworksProverSetup) };
+        let (commitments, hints, bytecode_num_columns, bytecode_T) =
+            derive_bytecode_chunk_commitments_sparse_dory(
+                program,
+                dory_setup,
+                layout,
+                bytecode_chunk_count,
             );
-            let _ctx = DoryGlobals::with_context(DoryContext::Bytecode);
-            let poly = build_committed_bytecode_polynomial_from_instructions::<PCS::Field>(&program.instructions);
-            let (commitment, hint) = PCS::commit(&poly, generators);
-            (commitment, hint, num_columns, bytecode_T)
-        };
+        let bytecode_chunk_commitments: Vec<PCS::Commitment> =
+            unsafe { std::mem::transmute(commitments) };
+        let bytecode_chunk_hints: Vec<PCS::OpeningProofHint> =
+            unsafe { std::mem::transmute(hints) };
 
         // ─── Derive program image commitment ───
         // Pad to a power-of-two length (minimum 1).
@@ -347,56 +328,30 @@ impl<PCS: CommitmentScheme> TrustedProgramCommitments<PCS> {
 
         (
             Self {
-                bytecode_commitment,
+                bytecode_chunk_commitments,
                 bytecode_num_columns,
                 log_k_chunk: log_k_chunk as u8,
                 bytecode_len,
+                bytecode_chunk_count,
                 bytecode_T,
                 program_image_commitment,
                 program_image_num_columns,
                 program_image_num_words,
             },
             TrustedProgramHints {
-                bytecode_hint,
+                bytecode_chunk_hints,
                 program_image_hint,
             },
         )
     }
 
-    /// Build the program-image polynomial from full preprocessing.
-    ///
-    /// Needed for Stage 8 opening proof generation.
-    pub fn build_program_image_polynomial<F: crate::field::JoltField>(
-        program: &ProgramPreprocessing,
-    ) -> MultilinearPolynomial<F> {
-        build_program_image_polynomial::<F>(program)
-    }
-
-    /// Build the program-image polynomial with explicit padded size.
-    ///
-    /// Used in committed mode where the padded size may be larger than the program's
-    /// own padded size (to match Main context dimensions).
-    pub fn build_program_image_polynomial_padded<F: crate::field::JoltField>(
-        program: &ProgramPreprocessing,
-        padded_len: usize,
-    ) -> MultilinearPolynomial<F> {
-        build_program_image_polynomial_padded::<F>(program, padded_len)
-    }
-}
-
-/// Build program-image polynomial from ProgramPreprocessing.
-fn build_program_image_polynomial<F: crate::field::JoltField>(
-    program: &ProgramPreprocessing,
-) -> MultilinearPolynomial<F> {
-    let padded_len = program.program_image_len_words_padded();
-    build_program_image_polynomial_padded::<F>(program, padded_len)
 }
 
 /// Build program-image polynomial from ProgramPreprocessing with explicit padded size.
 ///
 /// Implementation note: we store program-image coefficients as `u64` small scalars (U64Scalars)
 /// to avoid eagerly converting the entire image to field elements.
-fn build_program_image_polynomial_padded<F: crate::field::JoltField>(
+pub(crate) fn build_program_image_polynomial_padded<F: crate::field::JoltField>(
     program: &ProgramPreprocessing,
     padded_len: usize,
 ) -> MultilinearPolynomial<F> {
@@ -412,38 +367,41 @@ fn build_program_image_polynomial_padded<F: crate::field::JoltField>(
 /// Committed-mode bytecode matrix dimensions.
 ///
 /// Flow is explicit:
-/// 1) use bytecode's own cycle domain (`T = bytecode_len`)
+/// 1) use chunked bytecode cycle domain (`T = bytecode_len / chunk_count`)
 /// 2) derive bytecode width from bytecode total variables only (`K_bytecode * T`)
 #[inline]
-fn committed_bytecode_dimensions(bytecode_len: usize) -> (usize, usize) {
+fn committed_bytecode_dimensions(bytecode_len: usize, bytecode_chunk_count: usize) -> (usize, usize) {
     debug_assert!(bytecode_len.is_power_of_two());
-    let total_vars = committed_lanes().log_2() + bytecode_len.log_2();
+    let chunk_cycle_len = committed_bytecode_chunk_cycle_len(bytecode_len, bytecode_chunk_count);
+    let total_vars = committed_lanes().log_2() + chunk_cycle_len.log_2();
     let (sigma_bytecode, _) = DoryGlobals::balanced_sigma_nu(total_vars);
     let bytecode_num_columns = 1usize << sigma_bytecode;
-    (bytecode_num_columns, bytecode_len)
+    (bytecode_num_columns, chunk_cycle_len)
 }
 
-/// Streaming/sparse committed-bytecode commitment for Dory.
+/// Streaming/sparse committed-bytecode chunk commitments for Dory.
 ///
 /// Computes tier-1 row commitments directly from the instruction stream by only touching
 /// nonzero lane values (via `for_each_active_lane_value`). This avoids materializing the
-/// dense coefficient vector for the committed bytecode polynomial.
+/// dense coefficient vectors for committed bytecode chunk polynomials.
 ///
 /// Returns:
-/// - commitment: committed bytecode polynomial commitment
-/// - hint: tier-1 row commitments (Dory opening proof hint)
+/// - commitments: committed bytecode chunk polynomial commitments (one per chunk)
+/// - hints: tier-1 row commitments (Dory opening proof hint) per chunk
 /// - num_columns: bytecode context matrix width
 /// - bytecode_T: the T used for coefficient indexing (needed later in Stage 8 VMP)
-fn derive_bytecode_commitment_sparse_dory(
+fn derive_bytecode_chunk_commitments_sparse_dory(
     program: &ProgramPreprocessing,
     setup: &ArkworksProverSetup,
     layout: DoryLayout,
-) -> (ArkGT, Vec<ArkG1>, usize, usize) {
+    bytecode_chunk_count: usize,
+) -> (Vec<ArkGT>, Vec<Vec<ArkG1>>, usize, usize) {
     let k_bytecode = committed_lanes();
     let bytecode_len = program.bytecode_len();
 
-    let (balanced_num_columns, bytecode_T) = committed_bytecode_dimensions(bytecode_len);
-    let total_vars = k_bytecode.log_2() + bytecode_len.log_2();
+    let (balanced_num_columns, bytecode_T) =
+        committed_bytecode_dimensions(bytecode_len, bytecode_chunk_count);
+    let total_vars = k_bytecode.log_2() + bytecode_T.log_2();
     let sigma_balanced = balanced_num_columns.log_2();
 
     // Validate that the balanced bytecode sigma fits the Dory setup capacity:
@@ -480,78 +438,79 @@ fn derive_bytecode_commitment_sparse_dory(
         1
     };
 
-    // Build tier-1 row commitments by streaming once over the instruction list.
-    let sparse_rows: HashMap<usize, G1Projective> = program.instructions[..bytecode_len]
-        .par_iter()
-        .enumerate()
-        .fold(
-            HashMap::<usize, G1Projective>::new,
-            |mut acc, (cycle, instr)| {
-                for_each_active_lane_value::<Fr>(instr, |global_lane, lane_val| {
-                    let global_index =
-                        layout.address_cycle_to_index(global_lane, cycle, k_bytecode, bytecode_T);
-                    let row_idx = global_index / num_columns;
-                    let col_idx = global_index % num_columns;
-                    debug_assert!(row_idx < num_rows);
+    let chunk_results: Vec<(ArkGT, Vec<ArkG1>)> = (0..bytecode_chunk_count)
+        .into_par_iter()
+        .map(|chunk_idx| {
+            // Build tier-1 row commitments for this chunk over its instruction slice only.
+            let chunk_start = chunk_idx * bytecode_T;
+            let chunk_end = chunk_start + bytecode_T;
+            let sparse_rows: HashMap<usize, G1Projective> = program.instructions[chunk_start..chunk_end]
+                .par_iter()
+                .enumerate()
+                .fold(HashMap::<usize, G1Projective>::new, |mut acc, (chunk_cycle, instr)| {
+                    for_each_active_lane_value::<Fr>(instr, |global_lane, lane_val| {
+                        let global_index = layout.address_cycle_to_index(
+                            global_lane,
+                            chunk_cycle,
+                            k_bytecode,
+                            bytecode_T,
+                        );
+                        let row_idx = global_index / num_columns;
+                        let col_idx = global_index % num_columns;
+                        debug_assert!(row_idx < num_rows);
 
-                    let scalar = match lane_val {
-                        ActiveLaneValue::One => Fr::one(),
-                        ActiveLaneValue::Scalar(v) => v,
-                    };
-                    if scalar.is_zero() {
-                        return;
-                    }
+                        let scalar = match lane_val {
+                            ActiveLaneValue::One => Fr::one(),
+                            ActiveLaneValue::Scalar(v) => v,
+                        };
+                        if scalar.is_zero() {
+                            return;
+                        }
 
-                    let base = setup.g1_vec[col_idx].0;
-                    let entry = acc.entry(row_idx).or_insert_with(G1Projective::zero);
-                    if scalar.is_one() {
-                        *entry += base;
-                    } else {
-                        *entry += base * scalar;
+                        let base = setup.g1_vec[col_idx].0;
+                        let entry = acc.entry(row_idx).or_insert_with(G1Projective::zero);
+                        if scalar.is_one() {
+                            *entry += base;
+                        } else {
+                            *entry += base * scalar;
+                        }
+                    });
+                    acc
+                })
+                .reduce(HashMap::<usize, G1Projective>::new, |mut a, b| {
+                    for (row_idx, row_commitment) in b.into_iter() {
+                        let entry = a.entry(row_idx).or_insert_with(G1Projective::zero);
+                        *entry += row_commitment;
                     }
+                    a
                 });
-                acc
-            },
-        )
-        .reduce(
-            HashMap::<usize, G1Projective>::new,
-            |mut a, b| {
-                for (row_idx, row_commitment) in b.into_iter() {
-                    let entry = a.entry(row_idx).or_insert_with(G1Projective::zero);
-                    *entry += row_commitment;
-                }
-                a
-            },
-        );
 
-    // Materialize full row-commitment vector (hint) and compute tier-2 commitment.
-    let mut row_commitments: Vec<ArkG1> = vec![ArkG1(G1Projective::zero()); num_rows];
-    let mut nonzero_rows: Vec<ArkG1> = Vec::with_capacity(sparse_rows.len());
-    let mut nonzero_g2: Vec<_> = Vec::with_capacity(sparse_rows.len());
-    let mut nonzero_indices: Vec<usize> = Vec::with_capacity(sparse_rows.len());
+            // Materialize full row-commitment vector (hint) and compute tier-2 commitment.
+            let mut row_commitments: Vec<ArkG1> = vec![ArkG1(G1Projective::zero()); num_rows];
+            let mut nonzero_rows: Vec<ArkG1> = Vec::with_capacity(sparse_rows.len());
+            let mut nonzero_g2: Vec<_> = Vec::with_capacity(sparse_rows.len());
+            let mut nonzero_indices: Vec<usize> = Vec::with_capacity(sparse_rows.len());
 
-    for (row_idx, row_commitment) in sparse_rows.into_iter() {
-        let rc = ArkG1(row_commitment);
-        row_commitments[row_idx] = rc;
-        nonzero_rows.push(rc);
-        nonzero_g2.push(setup.g2_vec[row_idx].clone());
-        nonzero_indices.push(row_idx);
-    }
+            for (row_idx, row_commitment) in sparse_rows.into_iter() {
+                let rc = ArkG1(row_commitment);
+                row_commitments[row_idx] = rc;
+                nonzero_rows.push(rc);
+                nonzero_g2.push(setup.g2_vec[row_idx].clone());
+                nonzero_indices.push(row_idx);
+            }
 
-    let tier2 = <BN254 as PairingCurve>::multi_pair_g2_indexed(
-        &nonzero_rows,
-        &nonzero_g2,
-        &nonzero_indices,
-    );
+            let tier2 = <BN254 as PairingCurve>::multi_pair_g2_indexed(
+                &nonzero_rows,
+                &nonzero_g2,
+                &nonzero_indices,
+            );
+            (tier2, row_commitments)
+        })
+        .collect();
+    let (chunk_commitments, chunk_hints): (Vec<_>, Vec<_>) = chunk_results.into_iter().unzip();
 
-    (tier2, row_commitments, num_columns, bytecode_T)
+    (chunk_commitments, chunk_hints, num_columns, bytecode_T)
 }
-
-// fn build_committed_bytecode_polynomial_from_program<F: crate::field::JoltField>(
-//     program: &ProgramPreprocessing,
-// ) -> MultilinearPolynomial<F> {
-//     build_committed_bytecode_polynomial_from_instructions::<F>(&program.instructions)
-// }
 
 #[cfg(test)]
 mod tests {
@@ -579,7 +538,8 @@ mod tests {
         let expected_bytecode_cols = 1usize << sigma_bytecode;
 
         // Bytecode dimensions are derived from bytecode only.
-        let (num_columns, bytecode_t) = committed_bytecode_dimensions(bytecode_len);
+        let (num_columns, bytecode_t) =
+            committed_bytecode_dimensions(bytecode_len, 1);
         assert_eq!(bytecode_t, bytecode_len);
         assert_eq!(num_columns, expected_bytecode_cols);
         assert_ne!(num_columns, main_num_columns);

@@ -4,7 +4,6 @@
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::ops::Range;
-use std::sync::Arc;
 
 use allocative::Allocative;
 use rayon::prelude::*;
@@ -22,19 +21,19 @@ use crate::poly::opening_proof::{
 use crate::subprotocols::sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier};
 use crate::transcripts::Transcript;
 use crate::utils::math::Math;
-use crate::zkvm::bytecode::chunks::{build_committed_bytecode_polynomial_from_instructions, committed_lanes};
+use crate::zkvm::bytecode::chunks::committed_lanes;
 use crate::zkvm::bytecode::read_raf_checking::BytecodeReadRafSumcheckParams;
 use crate::zkvm::claim_reductions::precommitted::sealed;
 use crate::zkvm::claim_reductions::{
     cycle_phase_round_schedule, internal_dummy_gap_len, PreCommittedClaimReductionParams,
-    PreCommittedPolyClaimReduction, PreCommittedPolyClaimReductionState,
+    PreCommitted, PreCommittedPolyClaimReduction, PreCommittedPolyClaimReductionState,
+    PreCommittedPolyReductionCore,
     PreCommittedSumcheckInstanceParams, PreCommittedSumcheckInstanceProver,
 };
 use crate::zkvm::instruction::{
     CircuitFlags, InstructionFlags, NUM_CIRCUIT_FLAGS, NUM_INSTRUCTION_FLAGS,
 };
 use crate::zkvm::lookup_table::LookupTables;
-use crate::zkvm::program::ProgramPreprocessing;
 use crate::zkvm::witness::{CommittedPolynomial, VirtualPolynomial};
 use common::constants::{REGISTER_COUNT, XLEN};
 use strum::EnumCount;
@@ -42,20 +41,17 @@ use strum::EnumCount;
 const DEGREE_BOUND: usize = 2;
 const NUM_VAL_STAGES: usize = 5;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Allocative)]
-pub enum BytecodeReductionPhase {
-    CycleVariables,
-    AddressVariables,
-}
-
 #[derive(Clone, Allocative)]
 pub struct BytecodeClaimReductionParams<F: JoltField> {
-    pub reduction: PreCommittedPolyClaimReductionState<F, BytecodeReductionPhase>,
+    pub reduction: PreCommittedPolyClaimReductionState<F, PreCommitted>,
     pub eta: F,
     pub eta_powers: [F; NUM_VAL_STAGES],
+    /// Eq weights over high bytecode address bits (one per committed chunk).
+    pub chunk_rbc_weights: Vec<F>,
     pub log_k: usize,
     pub log_t: usize,
     pub log_k_chunk: usize,
+    pub bytecode_chunk_count: usize,
     pub bytecode_col_vars: usize,
     pub bytecode_row_vars: usize,
     pub main_col_vars: usize,
@@ -71,12 +67,19 @@ pub struct BytecodeClaimReductionParams<F: JoltField> {
 impl<F: JoltField> BytecodeClaimReductionParams<F> {
     pub fn new(
         bytecode_read_raf_params: &BytecodeReadRafSumcheckParams<F>,
+        bytecode_chunk_count: usize,
         accumulator: &dyn OpeningAccumulator<F>,
         transcript: &mut impl Transcript,
     ) -> Self {
-        let log_k = bytecode_read_raf_params.log_K;
+        let log_k_full = bytecode_read_raf_params.log_K;
         let log_t = bytecode_read_raf_params.log_T;
         let log_k_chunk = bytecode_read_raf_params.one_hot_params.log_k_chunk;
+        let full_bytecode_len = 1usize << log_k_full;
+        assert!(
+            full_bytecode_len.is_multiple_of(bytecode_chunk_count),
+            "bytecode chunk count ({bytecode_chunk_count}) must divide bytecode_len ({full_bytecode_len})"
+        );
+        let log_k = (full_bytecode_len / bytecode_chunk_count).log_2();
 
         let eta: F = transcript.challenge_scalar();
         let mut eta_powers = [F::one(); NUM_VAL_STAGES];
@@ -84,10 +87,19 @@ impl<F: JoltField> BytecodeClaimReductionParams<F> {
             eta_powers[i] = eta_powers[i - 1] * eta;
         }
 
-        let (r_bc, _) = accumulator.get_virtual_polynomial_opening(
+        let (r_bc_full, _) = accumulator.get_virtual_polynomial_opening(
             VirtualPolynomial::BytecodeReadRafAddrClaim,
             SumcheckId::BytecodeReadRafAddressPhase,
         );
+        debug_assert_eq!(r_bc_full.r.len(), log_k_full);
+        let dropped_bits = log_k_full - log_k;
+        let chunk_rbc_weights = if dropped_bits == 0 {
+            vec![F::one()]
+        } else {
+            EqPolynomial::<F>::evals(&r_bc_full.r[..dropped_bits])
+        };
+        debug_assert_eq!(chunk_rbc_weights.len(), bytecode_chunk_count);
+        let r_bc = OpeningPoint::new(r_bc_full.r[dropped_bits..].to_vec());
 
         let lane_weights = compute_lane_weights(bytecode_read_raf_params, accumulator, &eta_powers);
 
@@ -107,13 +119,15 @@ impl<F: JoltField> BytecodeClaimReductionParams<F> {
 
         Self {
             reduction: PreCommittedPolyClaimReductionState::new(
-                BytecodeReductionPhase::CycleVariables,
+                PreCommitted::CycleVariables,
             ),
             eta,
             eta_powers,
+            chunk_rbc_weights,
             log_k,
             log_t,
             log_k_chunk,
+            bytecode_chunk_count,
             bytecode_col_vars,
             bytecode_row_vars,
             main_col_vars,
@@ -136,7 +150,7 @@ impl<F: JoltField> sealed::Sealed for BytecodeClaimReductionParams<F> {}
 impl<F: JoltField> PreCommittedSumcheckInstanceParams<F> for BytecodeClaimReductionParams<F> {
     fn precommitted_input_claim(&self, accumulator: &dyn OpeningAccumulator<F>) -> F {
         match self.reduction.phase {
-            BytecodeReductionPhase::CycleVariables => (0..NUM_VAL_STAGES)
+            PreCommitted::CycleVariables => (0..NUM_VAL_STAGES)
                 .map(|stage| {
                     let (_, val_claim) = accumulator.get_virtual_polynomial_opening(
                         VirtualPolynomial::BytecodeValStage(stage),
@@ -145,7 +159,7 @@ impl<F: JoltField> PreCommittedSumcheckInstanceParams<F> for BytecodeClaimReduct
                     self.eta_powers[stage] * val_claim
                 })
                 .sum(),
-            BytecodeReductionPhase::AddressVariables => {
+            PreCommitted::AddressVariables => {
                 accumulator
                     .get_virtual_polynomial_opening(
                         VirtualPolynomial::BytecodeClaimReductionIntermediate,
@@ -162,34 +176,68 @@ impl<F: JoltField> PreCommittedSumcheckInstanceParams<F> for BytecodeClaimReduct
 }
 
 impl<F: JoltField> PreCommittedClaimReductionParams<F> for BytecodeClaimReductionParams<F> {
-    crate::zkvm::claim_reductions::precommitted::impl_standard_precommitted_claim_reduction_params!(
-        BytecodeReductionPhase,
-        BytecodeReductionPhase::CycleVariables,
-        this => this.bytecode_col_vars + this.bytecode_row_vars
-    );
+    fn reduction(&self) -> &PreCommittedPolyClaimReductionState<F, PreCommitted> {
+        &self.reduction
+    }
+
+    fn reduction_mut(&mut self) -> &mut PreCommittedPolyClaimReductionState<F, PreCommitted> {
+        &mut self.reduction
+    }
+
+    fn cycle_phase_col_rounds(&self) -> &Range<usize> {
+        &self.cycle_phase_col_rounds
+    }
+
+    fn cycle_phase_row_rounds(&self) -> &Range<usize> {
+        &self.cycle_phase_row_rounds
+    }
+
+    fn total_poly_vars(&self) -> usize {
+        self.bytecode_col_vars + self.bytecode_row_vars
+    }
+
+    fn cycle_alignment_rounds(&self) -> usize {
+        self.log_t
+    }
+
+    fn address_alignment_rounds(&self) -> usize {
+        self.log_k_chunk
+    }
 }
 
 #[derive(Allocative)]
 pub struct BytecodeClaimReductionProver<F: JoltField> {
-    pub params: BytecodeClaimReductionParams<F>,
-    value_poly: MultilinearPolynomial<F>,
-    eq_poly: MultilinearPolynomial<F>,
-    scale: F,
+    core: PreCommittedPolyReductionCore<F, BytecodeClaimReductionParams<F>>,
+    chunk_value_polys: Vec<MultilinearPolynomial<F>>,
 }
 
 impl<F: JoltField> sealed::Sealed for BytecodeClaimReductionProver<F> {}
 
 impl<F: JoltField> BytecodeClaimReductionProver<F> {
-    pub fn initialize(params: BytecodeClaimReductionParams<F>, program: Arc<ProgramPreprocessing>) -> Self {
-        let raw_value_poly =
-            build_committed_bytecode_polynomial_from_instructions::<F>(&program.instructions);
+    pub fn initialize(
+        params: BytecodeClaimReductionParams<F>,
+        raw_chunk_polys: &[MultilinearPolynomial<F>],
+    ) -> Self {
+        let raw_value_coeffs: Vec<F> = (0..raw_chunk_polys[0].len())
+            .into_par_iter()
+            .map(|idx| {
+                raw_chunk_polys
+                    .iter()
+                    .zip(params.chunk_rbc_weights.iter())
+                    .map(|(poly, weight)| poly.get_coeff(idx) * *weight)
+                    .sum::<F>()
+            })
+            .collect();
+        let raw_value_poly: MultilinearPolynomial<F> = raw_value_coeffs.into();
         let (value_poly, eq_poly) = build_permuted_value_and_eq_polys(&params, &raw_value_poly);
+        let chunk_value_polys = raw_chunk_polys
+            .par_iter()
+            .map(|raw_chunk_poly| build_permuted_value_and_eq_polys(&params, raw_chunk_poly).0)
+            .collect();
 
         Self {
-            params,
-            value_poly,
-            eq_poly,
-            scale: F::one(),
+            core: PreCommittedPolyReductionCore::new(params, value_poly, eq_poly),
+            chunk_value_polys,
         }
     }
 }
@@ -197,55 +245,34 @@ impl<F: JoltField> BytecodeClaimReductionProver<F> {
 impl<F: JoltField> PreCommittedPolyClaimReduction<F> for BytecodeClaimReductionProver<F> {
     type Params = BytecodeClaimReductionParams<F>;
 
-    fn params(&self) -> &Self::Params {
-        &self.params
+    fn precommitted_core(&self) -> &PreCommittedPolyReductionCore<F, Self::Params> {
+        &self.core
     }
 
-    fn params_mut(&mut self) -> &mut Self::Params {
-        &mut self.params
+    fn precommitted_core_mut(&mut self) -> &mut PreCommittedPolyReductionCore<F, Self::Params> {
+        &mut self.core
     }
 
-    fn value_poly(&self) -> &MultilinearPolynomial<F> {
-        &self.value_poly
-    }
-
-    fn value_poly_mut(&mut self) -> &mut MultilinearPolynomial<F> {
-        &mut self.value_poly
-    }
-
-    fn eq_poly(&self) -> &MultilinearPolynomial<F> {
-        &self.eq_poly
-    }
-
-    fn eq_poly_mut(&mut self) -> &mut MultilinearPolynomial<F> {
-        &mut self.eq_poly
-    }
-
-    fn scale(&self) -> &F {
-        &self.scale
-    }
-
-    fn scale_mut(&mut self) -> &mut F {
-        &mut self.scale
+    fn bind_aux_polys(&mut self, r_j: F::Challenge) {
+        for poly in self.chunk_value_polys.iter_mut() {
+            poly.bind_parallel(r_j, BindingOrder::LowToHigh);
+        }
     }
 }
 
 impl<F: JoltField, T: Transcript> PreCommittedSumcheckInstanceProver<F, T>
     for BytecodeClaimReductionProver<F>
 {
-    fn precommitted_params(&self) -> &dyn SumcheckInstanceParams<F> {
-        &self.params
-    }
-
     fn precommitted_cache_openings(
         &self,
         accumulator: &mut ProverOpeningAccumulator<F>,
         transcript: &mut T,
         sumcheck_challenges: &[F::Challenge],
     ) {
-        let opening_point = self.params.normalize_opening_point(sumcheck_challenges);
+        let params = self.params();
+        let opening_point = params.normalize_opening_point(sumcheck_challenges);
 
-        if self.params.reduction.phase == BytecodeReductionPhase::CycleVariables {
+        if params.reduction.phase == PreCommitted::CycleVariables {
             let c_mid = <Self as PreCommittedPolyClaimReduction<F>>::cycle_intermediate_claim(self);
             accumulator.append_virtual(
                 transcript,
@@ -259,13 +286,26 @@ impl<F: JoltField, T: Transcript> PreCommittedSumcheckInstanceProver<F, T>
         if let Some(bytecode_claim) =
             <Self as PreCommittedPolyClaimReduction<F>>::final_claim_if_ready(self)
         {
-            accumulator.append_dense(
-                transcript,
-                CommittedPolynomial::Bytecode,
-                SumcheckId::BytecodeClaimReduction,
-                opening_point.r,
-                bytecode_claim,
-            );
+            let chunk_claims: Vec<F> = self
+                .chunk_value_polys
+                .iter()
+                .map(|poly| poly.final_sumcheck_claim())
+                .collect();
+            let weighted_chunk_sum = chunk_claims
+                .iter()
+                .zip(params.chunk_rbc_weights.iter())
+                .map(|(claim, weight)| *claim * *weight)
+                .sum::<F>();
+            debug_assert_eq!(weighted_chunk_sum, bytecode_claim);
+            for (chunk_idx, claim) in chunk_claims.into_iter().enumerate() {
+                accumulator.append_dense(
+                    transcript,
+                    CommittedPolynomial::BytecodeChunk(chunk_idx),
+                    SumcheckId::BytecodeClaimReduction,
+                    opening_point.r.clone(),
+                    claim,
+                );
+            }
         }
     }
 
@@ -309,7 +349,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
     ) -> F {
         let params = self.params.borrow();
         match params.reduction.phase {
-            BytecodeReductionPhase::CycleVariables => {
+            PreCommitted::CycleVariables => {
                 accumulator
                     .get_virtual_polynomial_opening(
                         VirtualPolynomial::BytecodeClaimReductionIntermediate,
@@ -317,11 +357,18 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
                     )
                     .1
             }
-            BytecodeReductionPhase::AddressVariables => {
-                let (_, bytecode_opening) = accumulator.get_committed_polynomial_opening(
-                    CommittedPolynomial::Bytecode,
-                    SumcheckId::BytecodeClaimReduction,
-                );
+            PreCommitted::AddressVariables => {
+                let bytecode_opening: F = (0..params.bytecode_chunk_count)
+                    .map(|chunk_idx| {
+                        params.chunk_rbc_weights[chunk_idx]
+                            * accumulator
+                            .get_committed_polynomial_opening(
+                                CommittedPolynomial::BytecodeChunk(chunk_idx),
+                                SumcheckId::BytecodeClaimReduction,
+                            )
+                            .1
+                    })
+                    .sum();
                 // Sumcheck binding order is always:
                 //   1) cycle-phase variables, then
                 //   2) address-phase variables.
@@ -353,7 +400,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         sumcheck_challenges: &[F::Challenge],
     ) {
         let mut params = self.params.borrow_mut();
-        if params.reduction.phase == BytecodeReductionPhase::CycleVariables {
+        if params.reduction.phase == PreCommitted::CycleVariables {
             let opening_point = params.normalize_opening_point(sumcheck_challenges);
             accumulator.append_virtual(
                 transcript,
@@ -367,15 +414,17 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         }
 
         if params.num_address_phase_rounds() == 0
-            || params.reduction.phase == BytecodeReductionPhase::AddressVariables
+            || params.reduction.phase == PreCommitted::AddressVariables
         {
             let opening_point = params.normalize_opening_point(sumcheck_challenges);
-            accumulator.append_dense(
-                transcript,
-                CommittedPolynomial::Bytecode,
-                SumcheckId::BytecodeClaimReduction,
-                opening_point.r,
-            );
+            for chunk_idx in 0..params.bytecode_chunk_count {
+                accumulator.append_dense(
+                    transcript,
+                    CommittedPolynomial::BytecodeChunk(chunk_idx),
+                    SumcheckId::BytecodeClaimReduction,
+                    opening_point.r.clone(),
+                );
+            }
         }
     }
 }

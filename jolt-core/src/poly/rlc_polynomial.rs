@@ -5,7 +5,8 @@ use crate::utils::accumulation::Acc6S;
 use crate::utils::math::{s64_from_diff_u64s, Math};
 use crate::utils::thread::unsafe_allocate_zero_vec;
 use crate::zkvm::bytecode::chunks::{
-    committed_lanes, for_each_active_lane_value, ActiveLaneValue,
+    committed_bytecode_chunk_cycle_len, committed_lanes, for_each_active_lane_value,
+    ActiveLaneValue,
 };
 use crate::zkvm::config::OneHotParams;
 use crate::zkvm::instruction::LookupQuery;
@@ -40,6 +41,7 @@ pub struct RLCStreamingData {
 /// * `bytecode_coeff` - RLC coefficient for the committed bytecode polynomial
 /// * `program` - Program preprocessing data
 /// * `bytecode_T` - Stored bytecode cycle domain (expected to equal `bytecode_len`)
+/// * `bytecode_chunk_count` - Cycle chunk count used during bytecode commitment preprocessing
 pub fn compute_bytecode_vmp_contribution<F: JoltField>(
     result: &mut [F],
     left_vec: &[F],
@@ -47,15 +49,17 @@ pub fn compute_bytecode_vmp_contribution<F: JoltField>(
     bytecode_coeff: F,
     program: &ProgramPreprocessing,
     bytecode_T: usize,
+    bytecode_chunk_count: usize,
 ) {
     if bytecode_coeff.is_zero() {
         return;
     }
 
-    let layout = DoryGlobals::get_layout();
     let bytecode_len = program.bytecode_len();
+    let layout = DoryGlobals::get_layout();
     let lane_capacity = committed_lanes();
-    let total_vars = lane_capacity.log_2() + bytecode_len.log_2();
+    let chunk_cycle_len = committed_bytecode_chunk_cycle_len(bytecode_len, bytecode_chunk_count);
+    let total_vars = lane_capacity.log_2() + chunk_cycle_len.log_2();
     let (sigma_bytecode, _) = DoryGlobals::balanced_sigma_nu(total_vars);
     let bytecode_cols = 1usize << sigma_bytecode;
     debug_assert!(
@@ -71,10 +75,10 @@ pub fn compute_bytecode_vmp_contribution<F: JoltField>(
 
     // Committed bytecode uses top-left embedding with bytecode's own cycle domain.
     // Keep the parameter for backward compatibility and guard against stale commitments.
-    let index_T = bytecode_len;
+    let index_T = chunk_cycle_len;
     debug_assert_eq!(
         bytecode_T, index_T,
-        "bytecode_T mismatch: expected bytecode_len={index_T}, got {bytecode_T}"
+        "bytecode_T mismatch: expected chunk_cycle_len={index_T}, got {bytecode_T}"
     );
 
     // Bytecode is embedded as a top-left block of Main:
@@ -89,9 +93,11 @@ pub fn compute_bytecode_vmp_contribution<F: JoltField>(
         .fold(
             || unsafe_allocate_zero_vec(num_columns),
             |mut acc, (cycle, instr)| {
+                debug_assert!(cycle < bytecode_len);
+                let chunk_cycle = cycle % chunk_cycle_len;
                 for_each_active_lane_value::<F>(instr, |global_lane, lane_val| {
                     let global_index =
-                        layout.address_cycle_to_index(global_lane, cycle, lane_capacity, index_T);
+                        layout.address_cycle_to_index(global_lane, chunk_cycle, lane_capacity, index_T);
                     let row_index = global_index >> col_shift;
                     if row_index >= left_vec.len() {
                         return;
@@ -166,11 +172,13 @@ pub struct StreamingRLCContext<F: JoltField> {
     /// The T value used for bytecode coefficient indexing (from TrustedProgramCommitments).
     /// In committed mode this is fixed to `bytecode_len` (top-left embedding).
     pub bytecode_T: usize,
-    /// Advice polynomials with their RLC coefficients and IDs.
+    /// Cycle chunk count used during committed bytecode preprocessing.
+    pub bytecode_chunk_count: usize,
+    /// Pre-committed polynomials with their RLC coefficients and IDs.
     /// These are NOT streamed from trace - they're passed in directly.
     /// Format: (poly_id, coeff, polynomial) - ID is needed to determine
     /// commitment dimensions.
-    pub advice_polys: Vec<(CommittedPolynomial, F, MultilinearPolynomial<F>)>,
+    pub pre_committed_polys: Vec<(CommittedPolynomial, F, MultilinearPolynomial<F>)>,
     pub trace_source: TraceSource,
     pub preprocessing: Arc<RLCStreamingData>,
     pub one_hot_params: OneHotParams,
@@ -277,8 +285,9 @@ impl<F: JoltField> RLCPolynomial<F> {
     /// * `trace_source` - Either materialized trace (default) or lazy trace (experimental)
     /// * `poly_ids` - List of polynomial identifiers
     /// * `coefficients` - RLC coefficients for each polynomial
-    /// * `advice_poly_map` - Map of advice polynomial IDs to their actual polynomials
+    /// * `pre_committed_poly_map` - Map of pre-committed polynomial IDs to their actual polynomials
     /// * `bytecode_T` - Stored bytecode cycle domain (expected to equal `bytecode_len`)
+    /// * `bytecode_chunk_count` - Chunk count used for committed bytecode commitment
     #[tracing::instrument(skip_all)]
     pub fn new_streaming(
         one_hot_params: OneHotParams,
@@ -286,15 +295,16 @@ impl<F: JoltField> RLCPolynomial<F> {
         trace_source: TraceSource,
         poly_ids: Vec<CommittedPolynomial>,
         coefficients: &[F],
-        mut advice_poly_map: HashMap<CommittedPolynomial, MultilinearPolynomial<F>>,
+        mut pre_committed_poly_map: HashMap<CommittedPolynomial, MultilinearPolynomial<F>>,
         bytecode_T: usize,
+        bytecode_chunk_count: usize,
     ) -> Self {
         debug_assert_eq!(poly_ids.len(), coefficients.len());
 
         let mut dense_polys = Vec::new();
         let mut onehot_polys = Vec::new();
-        let mut bytecode_coeff = F::zero();
-        let mut advice_polys = Vec::new();
+        let bytecode_coeff = F::zero();
+        let mut pre_committed_polys = Vec::new();
 
         for (poly_id, coeff) in poly_ids.iter().zip(coefficients.iter()) {
             match poly_id {
@@ -306,19 +316,18 @@ impl<F: JoltField> RLCPolynomial<F> {
                 | CommittedPolynomial::RamRa(_) => {
                     onehot_polys.push((*poly_id, *coeff));
                 }
-                CommittedPolynomial::Bytecode => {
-                    bytecode_coeff += *coeff;
-                }
-                CommittedPolynomial::TrustedAdvice
+                CommittedPolynomial::BytecodeChunk(_)
+                | CommittedPolynomial::TrustedAdvice
                 | CommittedPolynomial::UntrustedAdvice
                 | CommittedPolynomial::ProgramImageInit => {
                     // "Extra" polynomials are passed in directly (not streamed from trace).
-                    // Today this includes advice polynomials and (in committed mode) the program-image polynomial.
-                    if advice_poly_map.contains_key(poly_id) {
-                        advice_polys.push((
+                    // Today this includes pre-committed polynomials such as advice, bytecode
+                    // chunks, and the program-image polynomial.
+                    if pre_committed_poly_map.contains_key(poly_id) {
+                        pre_committed_polys.push((
                             *poly_id,
                             *coeff,
-                            advice_poly_map.remove(poly_id).unwrap(),
+                            pre_committed_poly_map.remove(poly_id).unwrap(),
                         ));
                     }
                 }
@@ -333,7 +342,8 @@ impl<F: JoltField> RLCPolynomial<F> {
                 onehot_polys,
                 bytecode_coeff,
                 bytecode_T,
-                advice_polys,
+                bytecode_chunk_count,
+                pre_committed_polys,
                 trace_source,
                 preprocessing,
                 one_hot_params,
@@ -455,145 +465,182 @@ impl<F: JoltField> RLCPolynomial<F> {
         result
     }
 
-    /// Adds the advice polynomial contribution to the vector-matrix-vector product result.
+    /// Adds pre-committed polynomial contributions to the vector-matrix-vector product result.
     ///
-    /// In Dory's batch opening, advice polynomials are embedded as the top-left block of the
+    /// In Dory's batch opening, pre-committed polynomials are embedded as top-left blocks of the
     /// main matrix. This function computes their contribution to the VMV product:
     /// ```text
-    /// result[col] += left_vec[row] * (coeff * advice[row, col])
+    /// result[col] += left_vec[row] * (coeff * poly[row, col])
     /// ```
-    /// for rows and columns within the advice block.
+    /// for rows and columns within each pre-committed block.
     ///
-    /// The advice block occupies:
-    /// - `sigma_a = ceil(advice_vars/2)`, `nu_a = advice_vars - sigma_a`
-    /// - `advice` occupies rows `[0 .. 2^{nu_a})` and cols `[0 .. 2^{sigma_a})`
+    /// Each balanced block occupies:
+    /// - `sigma_a = ceil(poly_vars/2)`, `nu_a = poly_vars - sigma_a`
+    /// - rows `[0 .. 2^{nu_a})` and cols `[0 .. 2^{sigma_a})`
     ///
     /// # Complexity
     /// It uses O(m + a) space where m is the number of rows
-    /// and a is the advice size, so even though it is linear it is negl space overall.
-    fn vmp_advice_contribution(
+    /// and a is the pre-committed polynomial size, so even though it is linear it is negl space overall.
+    fn vmp_pre_committed_contribution(
         result: &mut [F],
         left_vec: &[F],
         num_columns: usize,
         ctx: &StreamingRLCContext<F>,
     ) {
-        // For each advice polynomial, compute its contribution to the result
-        ctx.advice_polys
-            .iter()
-            .filter(|(_, _, advice_poly)| advice_poly.original_len() > 0)
-            .for_each(|(poly_id, coeff, advice_poly)| {
-                let advice_len = advice_poly.original_len();
-                if *poly_id == CommittedPolynomial::ProgramImageInit {
-                    // ProgramImageInit now follows the same top-left block embedding policy as
-                    // advice polynomials across both layouts.
-                    let advice_vars = advice_len.log_2();
-                    let (sigma_a, nu_a) = DoryGlobals::balanced_sigma_nu(advice_vars);
-                    let advice_cols = 1usize << sigma_a;
-                    let advice_rows = 1usize << nu_a;
-
-                    debug_assert!(
-                        advice_cols <= num_columns,
-                        "Program image columns ({advice_cols}) must fit in main num_columns={num_columns}; \
-guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
+        // Dispatch by polynomial type so each pre-committed polynomial class can evolve
+        // independently while sharing one integration point in VMV.
+        for (poly_id, coeff, poly) in ctx.pre_committed_polys.iter() {
+            if poly.original_len() == 0 {
+                continue;
+            }
+            match poly_id {
+                CommittedPolynomial::ProgramImageInit => {
+                    Self::vmp_program_image_contribution(
+                        result,
+                        left_vec,
+                        num_columns,
+                        *coeff,
+                        poly,
+                        ctx.preprocessing.program.program_image_words.len(),
                     );
-
-                    let effective_rows = advice_rows.min(left_vec.len());
-                    let max_nonzero_prefix = ctx.preprocessing.program.program_image_words.len();
-                    let len = max_nonzero_prefix.min(advice_len);
-
-                    if let MultilinearPolynomial::U64Scalars(poly) = advice_poly {
-                        for (idx, &word) in poly.coeffs[..len].iter().enumerate() {
-                            if word == 0 {
-                                continue;
-                            }
-                            let row_idx = idx / advice_cols;
-                            if row_idx >= effective_rows {
-                                continue;
-                            }
-                            let left = left_vec[row_idx];
-                            if left.is_zero() {
-                                continue;
-                            }
-                            let col_idx = idx % advice_cols;
-                            result[col_idx] += left * *coeff * F::from_u64(word);
-                        }
-                    } else {
-                        for idx in 0..len {
-                            let row_idx = idx / advice_cols;
-                            if row_idx >= effective_rows {
-                                continue;
-                            }
-                            let left = left_vec[row_idx];
-                            if left.is_zero() {
-                                continue;
-                            }
-                            let advice_val = advice_poly.get_coeff(idx);
-                            if advice_val.is_zero() {
-                                continue;
-                            }
-                            let col_idx = idx % advice_cols;
-                            result[col_idx] += left * *coeff * advice_val;
-                        }
-                    }
-                    return;
                 }
+                CommittedPolynomial::TrustedAdvice | CommittedPolynomial::UntrustedAdvice => {
+                    Self::vmp_balanced_top_left_contribution(
+                        result,
+                        left_vec,
+                        num_columns,
+                        *coeff,
+                        poly,
+                        "Advice",
+                    );
+                }
+                CommittedPolynomial::BytecodeChunk(_) => {
+                    Self::vmp_balanced_top_left_contribution(
+                        result,
+                        left_vec,
+                        num_columns,
+                        *coeff,
+                        poly,
+                        "Bytecode chunk",
+                    );
+                }
+                _ => {
+                    debug_assert!(
+                        false,
+                        "unexpected pre-committed polynomial in VMV: {poly_id:?}"
+                    );
+                }
+            }
+        }
+    }
 
-                // Advice polynomials use balanced dimensions and embed as a top-left block.
-                let advice_vars = advice_len.log_2();
-                let (sigma_a, nu_a) = DoryGlobals::balanced_sigma_nu(advice_vars);
-                let advice_cols = 1usize << sigma_a;
-                let advice_rows = 1usize << nu_a;
+    fn vmp_program_image_contribution(
+        result: &mut [F],
+        left_vec: &[F],
+        num_columns: usize,
+        coeff: F,
+        poly: &MultilinearPolynomial<F>,
+        nonzero_prefix_len: usize,
+    ) {
+        let poly_len = poly.original_len();
+        let poly_vars = poly_len.log_2();
+        let (sigma_a, nu_a) = DoryGlobals::balanced_sigma_nu(poly_vars);
+        let poly_cols = 1usize << sigma_a;
+        let poly_rows = 1usize << nu_a;
 
-                debug_assert!(
-                    advice_cols <= num_columns,
-                    "Advice columns ({advice_cols}) must fit in main num_columns={num_columns}; \
+        debug_assert!(
+            poly_cols <= num_columns,
+            "Program image columns ({poly_cols}) must fit in main num_columns={num_columns}; \
 guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
-                );
+        );
 
-                let effective_rows = advice_rows.min(left_vec.len());
-                let column_contributions: Vec<F> = (0..advice_cols)
-                    .into_par_iter()
-                    .map(|col_idx| {
-                        left_vec[..effective_rows]
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, &left)| !left.is_zero())
-                            .map(|(row_idx, &left)| {
-                                let coeff_idx = row_idx * advice_cols + col_idx;
-                                let advice_val = advice_poly.get_coeff(coeff_idx);
-                                left * *coeff * advice_val
-                            })
-                            .sum()
-                    })
-                    .collect();
+        let effective_rows = poly_rows.min(left_vec.len());
+        let len = nonzero_prefix_len.min(poly_len);
 
-                result[..advice_cols]
-                    .par_iter_mut()
-                    .zip(column_contributions.par_iter())
-                    .for_each(|(res, &contrib)| {
-                        *res += contrib;
-                    });
+        let MultilinearPolynomial::U64Scalars(program_image_poly) = poly else {
+            unreachable!("ProgramImageInit polynomial must be U64Scalars");
+        };
+        let column_contributions: Vec<F> = program_image_poly.coeffs[..len]
+            .par_iter()
+            .enumerate()
+            .fold(
+                || unsafe_allocate_zero_vec(poly_cols),
+                |mut acc, (idx, &word)| {
+                    if word == 0 {
+                        return acc;
+                    }
+                    let row_idx = idx / poly_cols;
+                    if row_idx >= effective_rows {
+                        return acc;
+                    }
+                    let left = left_vec[row_idx];
+                    if left.is_zero() {
+                        return acc;
+                    }
+                    let col_idx = idx % poly_cols;
+                    acc[col_idx] += left * coeff * F::from_u64(word);
+                    acc
+                },
+            )
+            .reduce(
+                || unsafe_allocate_zero_vec(poly_cols),
+                |mut a, b| {
+                    a.iter_mut().zip(b.iter()).for_each(|(x, y)| *x += *y);
+                    a
+                },
+            );
+
+        result[..poly_cols]
+            .par_iter_mut()
+            .zip(column_contributions.par_iter())
+            .for_each(|(res, &contrib)| {
+                *res += contrib;
             });
     }
 
-    /// Adds the committed bytecode polynomial contribution to the vector-matrix-vector product result.
-    ///
-    /// Committed bytecode is embedded in the top-left block by fixing the extra cycle
-    /// variables to 0, so we only iterate cycles in `[0, bytecode_len)`.
-    fn vmp_bytecode_contribution(
+    fn vmp_balanced_top_left_contribution(
         result: &mut [F],
         left_vec: &[F],
         num_columns: usize,
-        ctx: &StreamingRLCContext<F>,
+        coeff: F,
+        poly: &MultilinearPolynomial<F>,
+        label: &str,
     ) {
-        compute_bytecode_vmp_contribution(
-            result,
-            left_vec,
-            num_columns,
-            ctx.bytecode_coeff,
-            &ctx.preprocessing.program,
-            ctx.bytecode_T,
+        let poly_len = poly.original_len();
+        let poly_vars = poly_len.log_2();
+        let (sigma_a, nu_a) = DoryGlobals::balanced_sigma_nu(poly_vars);
+        let poly_cols = 1usize << sigma_a;
+        let poly_rows = 1usize << nu_a;
+
+        debug_assert!(
+            poly_cols <= num_columns,
+            "{label} columns ({poly_cols}) must fit in main num_columns={num_columns}; \
+guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
         );
+
+        let effective_rows = poly_rows.min(left_vec.len());
+        let column_contributions: Vec<F> = (0..poly_cols)
+            .into_par_iter()
+            .map(|col_idx| {
+                left_vec[..effective_rows]
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, &left)| !left.is_zero())
+                    .map(|(row_idx, &left)| {
+                        let coeff_idx = row_idx * poly_cols + col_idx;
+                        let poly_val = poly.get_coeff(coeff_idx);
+                        left * coeff * poly_val
+                    })
+                    .sum()
+            })
+            .collect();
+
+        result[..poly_cols]
+            .par_iter_mut()
+            .zip(column_contributions.par_iter())
+            .for_each(|(res, &contrib)| {
+                *res += contrib;
+            });
     }
 
     /// Streaming VMP implementation that generates rows on-demand from trace.
@@ -646,8 +693,7 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
         // Use the regular vector_matrix_product on the materialized polynomial
         let mut result = materialized.vector_matrix_product(left_vec);
 
-        Self::vmp_advice_contribution(&mut result, left_vec, num_columns, ctx);
-        Self::vmp_bytecode_contribution(&mut result, left_vec, num_columns, ctx);
+        Self::vmp_pre_committed_contribution(&mut result, left_vec, num_columns, ctx);
 
         result
     }
@@ -769,9 +815,8 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
 
         let mut result = VmvSetup::<F>::finalize(dense_accs, onehot_accs, num_columns);
 
-        // Advice contribution is small and independent of the trace; add it after the streamed pass.
-        Self::vmp_advice_contribution(&mut result, left_vec, num_columns, ctx);
-        Self::vmp_bytecode_contribution(&mut result, left_vec, num_columns, ctx);
+        // Pre-committed contribution is small and independent of the trace; add it after the streamed pass.
+        Self::vmp_pre_committed_contribution(&mut result, left_vec, num_columns, ctx);
         result
     }
 
@@ -824,9 +869,8 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
             );
         let mut result = VmvSetup::<F>::finalize(dense_accs, onehot_accs, num_columns);
 
-        // Advice contribution is small and independent of the trace; add it after the streamed pass.
-        Self::vmp_advice_contribution(&mut result, left_vec, num_columns, ctx);
-        Self::vmp_bytecode_contribution(&mut result, left_vec, num_columns, ctx);
+        // Pre-committed contribution is small and independent of the trace; add it after the streamed pass.
+        Self::vmp_pre_committed_contribution(&mut result, left_vec, num_columns, ctx);
         result
     }
 }

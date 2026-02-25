@@ -1,4 +1,3 @@
-use std::any::TypeId;
 use std::io::{Read, Write};
 use std::sync::Arc;
 
@@ -10,11 +9,14 @@ use tracer::instruction::{Cycle, Instruction};
 
 use crate::poly::commitment::commitment_scheme::CommitmentScheme;
 use crate::poly::commitment::dory::{
-    ArkworksProverSetup, DoryCommitmentScheme, DoryContext, DoryGlobals,
+    ArkworksProverSetup, DoryContext, DoryGlobals,
 };
 use crate::utils::errors::ProofVerifyError;
 use crate::utils::math::Math;
-use crate::zkvm::bytecode::chunks::{build_committed_bytecode_polynomial_from_instructions, committed_lanes};
+use crate::zkvm::bytecode::chunks::{
+    build_committed_bytecode_chunk_polynomials,
+    committed_bytecode_chunk_cycle_len, committed_lanes, validate_committed_bytecode_chunk_count,
+};
 
 pub(crate) mod chunks;
 pub mod read_raf_checking;
@@ -35,13 +37,16 @@ pub mod read_raf_checking;
 /// verification will be unsound. Only use `derive()` or trusted deserialization.
 #[derive(Clone, Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct TrustedBytecodeCommitments<PCS: CommitmentScheme> {
-    /// The committed bytecode polynomial commitment.
+    /// Commitments to committed-bytecode chunk polynomials.
     /// Trust is enforced by the type - create via `derive()` or deserialize from trusted source.
-    pub commitment: PCS::Commitment,
-    /// Number of columns used when committing the bytecode polynomial.
+    pub chunk_commitments: Vec<PCS::Commitment>,
+    /// Number of chunks used for committed bytecode.
+    pub chunk_count: usize,
+    /// Number of columns used when committing each bytecode chunk polynomial.
     ///
-    /// This is derived from bytecode dimensions only (`K_bytecode * bytecode_len`) and is
-    /// independent from Main-context matrix dimensions.
+    /// This is derived from chunk dimensions only
+    /// (`K_bytecode * (bytecode_len / chunk_count)`) and is independent from Main-context
+    /// matrix dimensions.
     pub num_columns: usize,
     /// log2(k_chunk) from one-hot configuration (used for main-matrix sizing).
     pub log_k_chunk: u8,
@@ -56,37 +61,37 @@ impl<PCS: CommitmentScheme> TrustedBytecodeCommitments<PCS> {
     /// Returns trusted commitments + hints for opening proofs.
     #[tracing::instrument(
         skip_all,
-        name = "TrustedBytecodeCommitments::derive_offline_from_full_bytecode"
+        name = "TrustedBytecodeCommitments::derive"
     )]
-    pub fn derive_offline_from_full_bytecode(
+    pub fn derive(
         bytecode: &BytecodePreprocessing,
         generators: &PCS::ProverSetup,
         log_k_chunk: usize,
-        _max_trace_len: usize,
+        bytecode_chunk_count: usize,
     ) -> (Self, Vec<PCS::OpeningProofHint>) {
+        validate_committed_bytecode_chunk_count(bytecode_chunk_count);
         let bytecode_len = bytecode.bytecode.len();
+        let bytecode_chunk_len =
+            committed_bytecode_chunk_cycle_len(bytecode_len, bytecode_chunk_count);
 
         debug_assert!(bytecode_len.is_power_of_two());
-        let total_vars = committed_lanes().log_2() + bytecode_len.log_2();
+        let total_vars = committed_lanes().log_2() + bytecode_chunk_len.log_2();
         let (bytecode_sigma, _) = DoryGlobals::balanced_sigma_nu(total_vars);
-        if TypeId::of::<PCS>() == TypeId::of::<DoryCommitmentScheme>() {
-            // SAFETY: guarded by the TypeId check above.
-            let dory_setup: &ArkworksProverSetup =
-                unsafe { &*(generators as *const PCS::ProverSetup as *const ArkworksProverSetup) };
-            let max_sigma = dory_setup.g1_vec.len().log_2();
-            let max_nu = dory_setup.g2_vec.len().log_2();
-            let min_sigma = total_vars.saturating_sub(max_nu);
-            assert!(
-                min_sigma <= max_sigma,
-                "bytecode commitment exceeds setup capacity: total_vars={total_vars}, setup(log_g1={max_sigma}, log_g2={max_nu})"
-            );
-            assert!(
-                bytecode_sigma >= min_sigma && bytecode_sigma <= max_sigma,
-                "balanced bytecode sigma out of setup range: sigma={bytecode_sigma}, allowed=[{min_sigma},{max_sigma}] (total_vars={total_vars})"
-            );
-        }
+        let dory_setup: &ArkworksProverSetup =
+            unsafe { &*(generators as *const PCS::ProverSetup as *const ArkworksProverSetup) };
+        let max_sigma = dory_setup.g1_vec.len().log_2();
+        let max_nu = dory_setup.g2_vec.len().log_2();
+        let min_sigma = total_vars.saturating_sub(max_nu);
+        assert!(
+            min_sigma <= max_sigma,
+            "bytecode commitment exceeds setup capacity: total_vars={total_vars}, setup(log_g1={max_sigma}, log_g2={max_nu})"
+        );
+        assert!(
+            bytecode_sigma >= min_sigma && bytecode_sigma <= max_sigma,
+            "balanced bytecode sigma out of setup range: sigma={bytecode_sigma}, allowed=[{min_sigma},{max_sigma}] (total_vars={total_vars})"
+        );
         let bytecode_num_columns = 1usize << bytecode_sigma;
-        let bytecode_T = bytecode_len;
+        let bytecode_T = bytecode_chunk_len;
         let _guard = DoryGlobals::initialize_bytecode_context_with_dimensions(
             committed_lanes(),
             bytecode_T,
@@ -94,17 +99,26 @@ impl<PCS: CommitmentScheme> TrustedBytecodeCommitments<PCS> {
         );
         let _ctx = DoryGlobals::with_context(DoryContext::Bytecode);
 
-        let bytecode_poly = build_committed_bytecode_polynomial_from_instructions::<PCS::Field>(&bytecode.bytecode);
-        let (commitment, hint) = PCS::commit(&bytecode_poly, generators);
+        let bytecode_polys = build_committed_bytecode_chunk_polynomials::<
+            PCS::Field,
+        >(&bytecode.bytecode, bytecode_chunk_count);
+        let mut commitments = Vec::with_capacity(bytecode_polys.len());
+        let mut hints = Vec::with_capacity(bytecode_polys.len());
+        for bytecode_poly in bytecode_polys.iter() {
+            let (commitment, hint) = PCS::commit(&bytecode_poly, generators);
+            commitments.push(commitment);
+            hints.push(hint);
+        }
 
         (
             Self {
-                commitment,
+                chunk_commitments: commitments,
+                chunk_count: bytecode_chunk_count,
                 num_columns: bytecode_num_columns,
                 log_k_chunk: log_k_chunk as u8,
                 bytecode_len,
             },
-            vec![hint],
+            hints,
         )
     }
 }

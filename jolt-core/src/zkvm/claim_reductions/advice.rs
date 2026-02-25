@@ -46,7 +46,8 @@ use crate::transcripts::Transcript;
 use crate::utils::math::Math;
 use crate::zkvm::claim_reductions::{
     cycle_phase_round_schedule, internal_dummy_gap_len, PreCommittedClaimReductionParams,
-    PreCommittedPolyClaimReduction, PreCommittedPolyClaimReductionState,
+    PreCommitted, PreCommittedPolyClaimReduction, PreCommittedPolyClaimReductionState,
+    PreCommittedPolyReductionCore,
     PreCommittedSumcheckInstanceParams, PreCommittedSumcheckInstanceProver,
 };
 use crate::zkvm::config::OneHotConfig;
@@ -62,16 +63,10 @@ pub enum AdviceKind {
     Untrusted,
 }
 
-#[derive(Debug, Clone, Copy, Allocative, PartialEq, Eq)]
-pub enum ReductionPhase {
-    CycleVariables,
-    AddressVariables,
-}
-
 #[derive(Clone, Allocative)]
 pub struct AdviceClaimReductionParams<F: JoltField> {
     pub kind: AdviceKind,
-    pub reduction: PreCommittedPolyClaimReductionState<F, ReductionPhase>,
+    pub reduction: PreCommittedPolyClaimReductionState<F, PreCommitted>,
     pub gamma: F,
     pub single_opening: bool,
     pub log_k_chunk: usize,
@@ -135,7 +130,7 @@ impl<F: JoltField> AdviceClaimReductionParams<F> {
 
         Self {
             kind,
-            reduction: PreCommittedPolyClaimReductionState::new(ReductionPhase::CycleVariables),
+            reduction: PreCommittedPolyClaimReductionState::new(PreCommitted::CycleVariables),
             gamma,
             advice_col_vars,
             advice_row_vars,
@@ -166,7 +161,7 @@ impl<F: JoltField> crate::zkvm::claim_reductions::precommitted::sealed::Sealed
 impl<F: JoltField> PreCommittedSumcheckInstanceParams<F> for AdviceClaimReductionParams<F> {
     fn precommitted_input_claim(&self, accumulator: &dyn OpeningAccumulator<F>) -> F {
         match self.reduction.phase {
-            ReductionPhase::CycleVariables => {
+            PreCommitted::CycleVariables => {
                 let mut claim = F::zero();
                 if let Some((_, eval)) =
                     accumulator.get_advice_opening(self.kind, SumcheckId::RamValEvaluation)
@@ -182,7 +177,7 @@ impl<F: JoltField> PreCommittedSumcheckInstanceParams<F> for AdviceClaimReductio
                 }
                 claim
             }
-            ReductionPhase::AddressVariables => {
+            PreCommitted::AddressVariables => {
                 // Address phase starts from the cycle phase intermediate claim.
                 accumulator
                     .get_advice_opening(self.kind, SumcheckId::AdviceClaimReductionCyclePhase)
@@ -198,20 +193,38 @@ impl<F: JoltField> PreCommittedSumcheckInstanceParams<F> for AdviceClaimReductio
 }
 
 impl<F: JoltField> PreCommittedClaimReductionParams<F> for AdviceClaimReductionParams<F> {
-    crate::zkvm::claim_reductions::precommitted::impl_standard_precommitted_claim_reduction_params!(
-        ReductionPhase,
-        ReductionPhase::CycleVariables,
-        this => this.advice_col_vars + this.advice_row_vars
-    );
+    fn reduction(&self) -> &PreCommittedPolyClaimReductionState<F, PreCommitted> {
+        &self.reduction
+    }
+
+    fn reduction_mut(&mut self) -> &mut PreCommittedPolyClaimReductionState<F, PreCommitted> {
+        &mut self.reduction
+    }
+
+    fn cycle_phase_col_rounds(&self) -> &Range<usize> {
+        &self.cycle_phase_col_rounds
+    }
+
+    fn cycle_phase_row_rounds(&self) -> &Range<usize> {
+        &self.cycle_phase_row_rounds
+    }
+
+    fn total_poly_vars(&self) -> usize {
+        self.advice_col_vars + self.advice_row_vars
+    }
+
+    fn cycle_alignment_rounds(&self) -> usize {
+        self.log_t
+    }
+
+    fn address_alignment_rounds(&self) -> usize {
+        self.log_k_chunk
+    }
 }
 
 #[derive(Allocative)]
 pub struct AdviceClaimReductionProver<F: JoltField> {
-    pub params: AdviceClaimReductionParams<F>,
-    advice_poly: MultilinearPolynomial<F>,
-    eq_poly: MultilinearPolynomial<F>,
-    /// Running internal scaling factor 2^{-dummy_done} over phase-1 dummy rounds.
-    scale: F,
+    core: PreCommittedPolyReductionCore<F, AdviceClaimReductionParams<F>>,
 }
 
 impl<F: JoltField> crate::zkvm::claim_reductions::precommitted::sealed::Sealed
@@ -300,10 +313,7 @@ impl<F: JoltField> AdviceClaimReductionProver<F> {
         let eq_poly: MultilinearPolynomial<F> = eq_coeffs.into();
 
         Self {
-            params,
-            advice_poly,
-            eq_poly,
-            scale: F::one(),
+            core: PreCommittedPolyReductionCore::new(params, advice_poly, eq_poly),
         }
     }
 }
@@ -311,57 +321,30 @@ impl<F: JoltField> AdviceClaimReductionProver<F> {
 impl<F: JoltField> PreCommittedPolyClaimReduction<F> for AdviceClaimReductionProver<F> {
     type Params = AdviceClaimReductionParams<F>;
 
-    fn params(&self) -> &Self::Params {
-        &self.params
+    fn precommitted_core(&self) -> &PreCommittedPolyReductionCore<F, Self::Params> {
+        &self.core
     }
 
-    fn params_mut(&mut self) -> &mut Self::Params {
-        &mut self.params
-    }
-
-    fn value_poly(&self) -> &MultilinearPolynomial<F> {
-        &self.advice_poly
-    }
-
-    fn value_poly_mut(&mut self) -> &mut MultilinearPolynomial<F> {
-        &mut self.advice_poly
-    }
-
-    fn eq_poly(&self) -> &MultilinearPolynomial<F> {
-        &self.eq_poly
-    }
-
-    fn eq_poly_mut(&mut self) -> &mut MultilinearPolynomial<F> {
-        &mut self.eq_poly
-    }
-
-    fn scale(&self) -> &F {
-        &self.scale
-    }
-
-    fn scale_mut(&mut self) -> &mut F {
-        &mut self.scale
+    fn precommitted_core_mut(&mut self) -> &mut PreCommittedPolyReductionCore<F, Self::Params> {
+        &mut self.core
     }
 }
 
 impl<F: JoltField, T: Transcript> PreCommittedSumcheckInstanceProver<F, T>
     for AdviceClaimReductionProver<F>
 {
-    fn precommitted_params(&self) -> &dyn SumcheckInstanceParams<F> {
-        &self.params
-    }
-
     fn precommitted_cache_openings(
         &self,
         accumulator: &mut ProverOpeningAccumulator<F>,
         transcript: &mut T,
         sumcheck_challenges: &[F::Challenge],
     ) {
-        let opening_point = self.params.normalize_opening_point(sumcheck_challenges);
-        if self.params.reduction.phase == ReductionPhase::CycleVariables {
+        let params = self.params();
+        let opening_point = params.normalize_opening_point(sumcheck_challenges);
+        if params.reduction.phase == PreCommitted::CycleVariables {
             let c_mid = <Self as PreCommittedPolyClaimReduction<F>>::cycle_intermediate_claim(self);
 
-            match self.params.kind {
+            match params.kind {
                 AdviceKind::Trusted => accumulator.append_trusted_advice(
                     transcript,
                     SumcheckId::AdviceClaimReductionCyclePhase,
@@ -380,7 +363,7 @@ impl<F: JoltField, T: Transcript> PreCommittedSumcheckInstanceProver<F, T>
         if let Some(advice_claim) =
             <Self as PreCommittedPolyClaimReduction<F>>::final_claim_if_ready(self)
         {
-            match self.params.kind {
+            match params.kind {
                 AdviceKind::Trusted => accumulator.append_trusted_advice(
                     transcript,
                     SumcheckId::AdviceClaimReduction,
@@ -445,13 +428,13 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
     ) -> F {
         let params = self.params.borrow();
         match params.reduction.phase {
-            ReductionPhase::CycleVariables => {
+            PreCommitted::CycleVariables => {
                 accumulator
                     .get_advice_opening(params.kind, SumcheckId::AdviceClaimReductionCyclePhase)
                     .unwrap_or_else(|| panic!("Cycle phase intermediate claim not found",))
                     .1
             }
-            ReductionPhase::AddressVariables => {
+            PreCommitted::AddressVariables => {
                 let opening_point = params.normalize_opening_point(sumcheck_challenges);
                 let advice_claim = accumulator
                     .get_advice_opening(params.kind, SumcheckId::AdviceClaimReduction)
@@ -490,7 +473,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         sumcheck_challenges: &[F::Challenge],
     ) {
         let mut params = self.params.borrow_mut();
-        if params.reduction.phase == ReductionPhase::CycleVariables {
+        if params.reduction.phase == PreCommitted::CycleVariables {
             let opening_point = params.normalize_opening_point(sumcheck_challenges);
             match params.kind {
                 AdviceKind::Trusted => accumulator.append_trusted_advice(
@@ -510,7 +493,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         }
 
         if params.num_address_phase_rounds() == 0
-            || params.reduction.phase == ReductionPhase::AddressVariables
+            || params.reduction.phase == PreCommitted::AddressVariables
         {
             let opening_point = params.normalize_opening_point(sumcheck_challenges);
             match params.kind {

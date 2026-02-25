@@ -557,7 +557,10 @@ impl MacroBuilder {
             Ident::new(&format!("preprocess_committed_{fn_name}"), fn_name.span());
         quote! {
             #[cfg(all(not(target_arch = "wasm32"), not(feature = "guest")))]
-            pub fn #preprocess_fn_name(program: &mut jolt::host::Program)
+            pub fn #preprocess_fn_name(
+                program: &mut jolt::host::Program,
+                bytecode_chunk_count: usize,
+            )
                 -> jolt::JoltProverPreprocessing<jolt::F, jolt::PCS>
             {
                 #imports
@@ -575,10 +578,11 @@ impl MacroBuilder {
                 let memory_layout = MemoryLayout::new(&memory_config);
 
                 let program_data = Arc::new(ProgramPreprocessing::preprocess(instructions, memory_init));
-                let shared = JoltSharedPreprocessing::new(
+                let shared = JoltSharedPreprocessing::new_committed(
                     program_data.meta(),
                     memory_layout,
                     #max_trace_length,
+                    bytecode_chunk_count,
                 );
                 JoltProverPreprocessing::new_committed(shared, program_data)
             }

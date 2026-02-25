@@ -30,6 +30,36 @@ pub const fn committed_lanes() -> usize {
     COMMITTED_BYTECODE_LANE_CAPACITY
 }
 
+/// Default chunk count for committed bytecode.
+///
+/// `1` keeps current behavior (single chunk).
+pub const DEFAULT_COMMITTED_BYTECODE_CHUNK_COUNT: usize = 1;
+
+/// Validates the chunk count used for committed bytecode chunking.
+#[inline]
+pub fn validate_committed_bytecode_chunk_count(chunk_count: usize) {
+    assert!(chunk_count > 0, "bytecode chunk count must be non-zero");
+    assert!(
+        chunk_count.is_power_of_two(),
+        "bytecode chunk count must be a power of two"
+    );
+}
+
+#[inline(always)]
+pub fn validate_committed_bytecode_chunking_for_len(bytecode_len: usize, chunk_count: usize) {
+    validate_committed_bytecode_chunk_count(chunk_count);
+    assert!(
+        bytecode_len.is_multiple_of(chunk_count),
+        "bytecode length ({bytecode_len}) must be divisible by chunk count ({chunk_count})"
+    );
+}
+
+#[inline(always)]
+pub fn committed_bytecode_chunk_cycle_len(bytecode_len: usize, chunk_count: usize) -> usize {
+    validate_committed_bytecode_chunking_for_len(bytecode_len, chunk_count);
+    bytecode_len / chunk_count
+}
+
 /// Canonical lane layout for committed bytecode lanes.
 ///
 /// The global lane order matches [`lane_value`] and the weights in
@@ -168,34 +198,46 @@ pub fn for_each_active_lane_value<F: JoltField>(
 }
 
 
-/// Coefficients are written at `(lane, cycle)` for all active canonical lanes, and all
-/// remaining lane slots (`[total_lanes()..512)`) are zero-padded.
 #[tracing::instrument(
     skip_all,
-    name = "bytecode::build_committed_bytecode_polynomial_from_instructions"
+    name = "bytecode::build_committed_bytecode_chunk_polynomials"
 )]
-pub fn build_committed_bytecode_polynomial_from_instructions<F: JoltField>(
+pub fn build_committed_bytecode_chunk_polynomials<F: JoltField>(
     instructions: &[Instruction],
-) -> MultilinearPolynomial<F> {
+    chunk_count: usize,
+) -> Vec<MultilinearPolynomial<F>> {
     let bytecode_len = instructions.len();
+    validate_committed_bytecode_chunking_for_len(bytecode_len, chunk_count);
+
+    let chunk_cycle_len = committed_bytecode_chunk_cycle_len(bytecode_len, chunk_count);
     let lane_capacity = committed_lanes();
-    let mut coeffs = unsafe_allocate_zero_vec(lane_capacity * bytecode_len);
+    let mut chunk_coeffs: Vec<Vec<F>> = (0..chunk_count)
+        .map(|_| unsafe_allocate_zero_vec(lane_capacity * chunk_cycle_len))
+        .collect();
 
     for (cycle, instr) in instructions.iter().enumerate() {
+        let cycle_chunk_idx = cycle / chunk_cycle_len;
+        let chunk_cycle = cycle % chunk_cycle_len;
+        let coeffs = &mut chunk_coeffs[cycle_chunk_idx];
+
         for_each_active_lane_value::<F>(instr, |global_lane, lane_val| {
             debug_assert!(global_lane < total_lanes());
             let idx = DoryGlobals::get_layout().address_cycle_to_index(
                 global_lane,
-                cycle,
+                chunk_cycle,
                 lane_capacity,
-                bytecode_len,
+                chunk_cycle_len,
             );
-            coeffs[idx] = match lane_val {
+            let lane_value = match lane_val {
                 ActiveLaneValue::One => F::one(),
                 ActiveLaneValue::Scalar(v) => v,
             };
+            coeffs[idx] += lane_value;
         });
     }
 
-    MultilinearPolynomial::from(coeffs)
+    chunk_coeffs
+        .into_iter()
+        .map(MultilinearPolynomial::from)
+        .collect()
 }

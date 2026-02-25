@@ -17,55 +17,12 @@ pub(crate) mod sealed {
     pub trait Sealed {}
 }
 
-macro_rules! impl_standard_precommitted_claim_reduction_params {
-    ($phase_ty:ty, $cycle_phase:path, $self_ident:ident => $total_poly_vars:expr) => {
-        type Phase = $phase_ty;
-
-        fn reduction(
-            &self,
-        ) -> &$crate::zkvm::claim_reductions::precommitted::PreCommittedPolyClaimReductionState<
-            F,
-            Self::Phase,
-        > {
-            &self.reduction
-        }
-
-        fn reduction_mut(
-            &mut self,
-        ) -> &mut $crate::zkvm::claim_reductions::precommitted::PreCommittedPolyClaimReductionState<
-            F,
-            Self::Phase,
-        > {
-            &mut self.reduction
-        }
-
-        fn cycle_phase_tag(&self) -> Self::Phase {
-            $cycle_phase
-        }
-
-        fn cycle_phase_col_rounds(&self) -> &std::ops::Range<usize> {
-            &self.cycle_phase_col_rounds
-        }
-
-        fn cycle_phase_row_rounds(&self) -> &std::ops::Range<usize> {
-            &self.cycle_phase_row_rounds
-        }
-
-        fn total_poly_vars(&self) -> usize {
-            let $self_ident = self;
-            $total_poly_vars
-        }
-
-        fn cycle_alignment_rounds(&self) -> usize {
-            self.log_t
-        }
-
-        fn address_alignment_rounds(&self) -> usize {
-            self.log_k_chunk
-        }
-    };
+/// Unified two-phase marker for all pre-committed claim reductions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Allocative)]
+pub enum PreCommitted {
+    CycleVariables,
+    AddressVariables,
 }
-pub(crate) use impl_standard_precommitted_claim_reduction_params;
 
 /// Shared phase/cycle-challenge state for two-phase claim reductions over pre-committed
 /// polynomials (e.g. advice and program image).
@@ -204,11 +161,8 @@ pub fn normalize_two_phase_opening_point<F: JoltField, Phase: Copy + Eq + Alloca
 
 /// Param access used by the shared pre-committed parent sumcheck.
 pub trait PreCommittedClaimReductionParams<F: JoltField> {
-    type Phase: Copy + Eq + Allocative;
-
-    fn reduction(&self) -> &PreCommittedPolyClaimReductionState<F, Self::Phase>;
-    fn reduction_mut(&mut self) -> &mut PreCommittedPolyClaimReductionState<F, Self::Phase>;
-    fn cycle_phase_tag(&self) -> Self::Phase;
+    fn reduction(&self) -> &PreCommittedPolyClaimReductionState<F, PreCommitted>;
+    fn reduction_mut(&mut self) -> &mut PreCommittedPolyClaimReductionState<F, PreCommitted>;
     fn cycle_phase_col_rounds(&self) -> &Range<usize>;
     fn cycle_phase_row_rounds(&self) -> &Range<usize>;
     fn total_poly_vars(&self) -> usize;
@@ -216,13 +170,13 @@ pub trait PreCommittedClaimReductionParams<F: JoltField> {
     fn address_alignment_rounds(&self) -> usize;
 
     fn is_cycle_phase(&self) -> bool {
-        self.reduction().phase == self.cycle_phase_tag()
+        self.reduction().phase == PreCommitted::CycleVariables
     }
 
     fn num_rounds_for_current_phase(&self) -> usize {
         precommitted_num_rounds(
             self.reduction().phase,
-            self.cycle_phase_tag(),
+            PreCommitted::CycleVariables,
             self.cycle_phase_col_rounds(),
             self.cycle_phase_row_rounds(),
             self.total_poly_vars(),
@@ -231,10 +185,14 @@ pub trait PreCommittedClaimReductionParams<F: JoltField> {
 
     fn round_offset(&self, max_num_rounds: usize) -> usize {
         self.reduction().round_offset(
-            self.cycle_phase_tag(),
+            PreCommitted::CycleVariables,
             max_num_rounds,
             self.cycle_alignment_rounds(),
         )
+    }
+
+    fn transition_to_address_phase(&mut self) {
+        self.reduction_mut().phase = PreCommitted::AddressVariables;
     }
 }
 
@@ -255,7 +213,7 @@ pub trait PreCommittedSumcheckInstanceParams<F: JoltField>:
     ) -> OpeningPoint<BIG_ENDIAN, F> {
         normalize_two_phase_opening_point(
             self.reduction(),
-            self.cycle_phase_tag(),
+            PreCommitted::CycleVariables,
             self.cycle_phase_col_rounds(),
             self.cycle_phase_row_rounds(),
             challenges,
@@ -285,19 +243,74 @@ where
     }
 }
 
+/// Shared prover state for pre-committed claim reductions.
+///
+/// This removes boilerplate in child provers by keeping common `(params, value, eq, scale)`
+/// fields in a single struct reused across all implementations.
+#[derive(Allocative)]
+pub struct PreCommittedPolyReductionCore<F: JoltField, P: PreCommittedClaimReductionParams<F>> {
+    pub params: P,
+    pub value_poly: MultilinearPolynomial<F>,
+    pub eq_poly: MultilinearPolynomial<F>,
+    pub scale: F,
+}
+
+impl<F: JoltField, P: PreCommittedClaimReductionParams<F>> PreCommittedPolyReductionCore<F, P> {
+    pub fn new(params: P, value_poly: MultilinearPolynomial<F>, eq_poly: MultilinearPolynomial<F>) -> Self {
+        Self {
+            params,
+            value_poly,
+            eq_poly,
+            scale: F::one(),
+        }
+    }
+}
+
 /// Parent sumcheck implementation (Rust trait-based inheritance) for pre-committed
 /// polynomial reductions where prover messages are over `value_poly * eq_poly`.
 pub trait PreCommittedPolyClaimReduction<F: JoltField> {
     type Params: PreCommittedClaimReductionParams<F>;
 
-    fn params(&self) -> &Self::Params;
-    fn params_mut(&mut self) -> &mut Self::Params;
-    fn value_poly(&self) -> &MultilinearPolynomial<F>;
-    fn value_poly_mut(&mut self) -> &mut MultilinearPolynomial<F>;
-    fn eq_poly(&self) -> &MultilinearPolynomial<F>;
-    fn eq_poly_mut(&mut self) -> &mut MultilinearPolynomial<F>;
-    fn scale(&self) -> &F;
-    fn scale_mut(&mut self) -> &mut F;
+    fn precommitted_core(&self) -> &PreCommittedPolyReductionCore<F, Self::Params>;
+    fn precommitted_core_mut(&mut self) -> &mut PreCommittedPolyReductionCore<F, Self::Params>;
+
+    fn params(&self) -> &Self::Params {
+        &self.precommitted_core().params
+    }
+
+    fn params_mut(&mut self) -> &mut Self::Params {
+        &mut self.precommitted_core_mut().params
+    }
+
+    fn value_poly(&self) -> &MultilinearPolynomial<F> {
+        &self.precommitted_core().value_poly
+    }
+
+    fn value_poly_mut(&mut self) -> &mut MultilinearPolynomial<F> {
+        &mut self.precommitted_core_mut().value_poly
+    }
+
+    fn eq_poly(&self) -> &MultilinearPolynomial<F> {
+        &self.precommitted_core().eq_poly
+    }
+
+    fn eq_poly_mut(&mut self) -> &mut MultilinearPolynomial<F> {
+        &mut self.precommitted_core_mut().eq_poly
+    }
+
+    fn scale(&self) -> &F {
+        &self.precommitted_core().scale
+    }
+
+    fn scale_mut(&mut self) -> &mut F {
+        &mut self.precommitted_core_mut().scale
+    }
+
+    fn bind_aux_polys(&mut self, _r_j: F::Challenge) {}
+
+    fn transition_to_address_phase(&mut self) {
+        self.params_mut().transition_to_address_phase();
+    }
 
     fn round_offset(&self, max_num_rounds: usize) -> usize {
         self.params().round_offset(max_num_rounds)
@@ -340,6 +353,7 @@ pub trait PreCommittedPolyClaimReduction<F: JoltField> {
                     .bind_parallel(r_j, BindingOrder::LowToHigh);
                 self.eq_poly_mut()
                     .bind_parallel(r_j, BindingOrder::LowToHigh);
+                self.bind_aux_polys(r_j);
                 self.params_mut()
                     .reduction_mut()
                     .cycle_var_challenges
@@ -352,6 +366,7 @@ pub trait PreCommittedPolyClaimReduction<F: JoltField> {
             .bind_parallel(r_j, BindingOrder::LowToHigh);
         self.eq_poly_mut()
             .bind_parallel(r_j, BindingOrder::LowToHigh);
+        self.bind_aux_polys(r_j);
     }
 
     fn cycle_intermediate_claim(&self) -> F {
@@ -412,8 +427,12 @@ pub trait PreCommittedPolyClaimReduction<F: JoltField> {
 /// [`PreCommittedPolyClaimReduction`].
 pub trait PreCommittedSumcheckInstanceProver<F: JoltField, T: Transcript>:
     PreCommittedPolyClaimReduction<F> + sealed::Sealed + Send + Sync + MaybeAllocative
+where
+    Self::Params: PreCommittedSumcheckInstanceParams<F>,
 {
-    fn precommitted_params(&self) -> &dyn SumcheckInstanceParams<F>;
+    fn precommitted_params(&self) -> &dyn SumcheckInstanceParams<F> {
+        self.params()
+    }
 
     fn precommitted_round_offset(&self, max_num_rounds: usize) -> usize {
         <Self as PreCommittedPolyClaimReduction<F>>::round_offset(self, max_num_rounds)
@@ -443,6 +462,7 @@ where
     F: JoltField,
     T: Transcript,
     P: PreCommittedSumcheckInstanceProver<F, T>,
+    <P as PreCommittedPolyClaimReduction<F>>::Params: PreCommittedSumcheckInstanceParams<F>,
 {
     fn get_params(&self) -> &dyn SumcheckInstanceParams<F> {
         <P as PreCommittedSumcheckInstanceProver<F, T>>::precommitted_params(self)

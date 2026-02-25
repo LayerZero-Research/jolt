@@ -22,9 +22,10 @@ use crate::subprotocols::sumcheck_verifier::{SumcheckInstanceParams, SumcheckIns
 use crate::transcripts::Transcript;
 use crate::utils::math::Math;
 use crate::zkvm::claim_reductions::{
-    advice::ReductionPhase, cycle_phase_round_schedule, internal_dummy_gap_len,
+    cycle_phase_round_schedule, internal_dummy_gap_len, PreCommitted,
     PreCommittedClaimReductionParams, PreCommittedPolyClaimReduction,
-    PreCommittedPolyClaimReductionState, PreCommittedSumcheckInstanceParams,
+    PreCommittedPolyClaimReductionState, PreCommittedPolyReductionCore,
+    PreCommittedSumcheckInstanceParams,
     PreCommittedSumcheckInstanceProver,
 };
 use crate::zkvm::config::ReadWriteConfig;
@@ -36,7 +37,7 @@ const DEGREE_BOUND: usize = 2;
 
 #[derive(Clone, Allocative)]
 pub struct ProgramImageClaimReductionParams<F: JoltField> {
-    pub reduction: PreCommittedPolyClaimReductionState<F, ReductionPhase>,
+    pub reduction: PreCommittedPolyClaimReductionState<F, PreCommitted>,
     pub gamma: F,
     pub single_opening: bool,
     pub log_k_chunk: usize,
@@ -139,7 +140,7 @@ impl<F: JoltField> ProgramImageClaimReductionParams<F> {
         let gamma: F = transcript.challenge_scalar();
 
         Self {
-            reduction: PreCommittedPolyClaimReductionState::new(ReductionPhase::CycleVariables),
+            reduction: PreCommittedPolyClaimReductionState::new(PreCommitted::CycleVariables),
             gamma,
             single_opening,
             log_k_chunk,
@@ -171,7 +172,7 @@ impl<F: JoltField> crate::zkvm::claim_reductions::precommitted::sealed::Sealed
 impl<F: JoltField> PreCommittedSumcheckInstanceParams<F> for ProgramImageClaimReductionParams<F> {
     fn precommitted_input_claim(&self, accumulator: &dyn OpeningAccumulator<F>) -> F {
         match self.reduction.phase {
-            ReductionPhase::CycleVariables => {
+            PreCommitted::CycleVariables => {
                 // Scalar claims were staged in Stage 4 as virtual openings.
                 let (_, c_rw) = accumulator.get_virtual_polynomial_opening(
                     VirtualPolynomial::ProgramImageInitContributionRw,
@@ -187,7 +188,7 @@ impl<F: JoltField> PreCommittedSumcheckInstanceParams<F> for ProgramImageClaimRe
                     c_rw + self.gamma * c_raf
                 }
             }
-            ReductionPhase::AddressVariables => {
+            PreCommitted::AddressVariables => {
                 accumulator
                     .get_committed_polynomial_opening(
                         CommittedPolynomial::ProgramImageInit,
@@ -204,20 +205,38 @@ impl<F: JoltField> PreCommittedSumcheckInstanceParams<F> for ProgramImageClaimRe
 }
 
 impl<F: JoltField> PreCommittedClaimReductionParams<F> for ProgramImageClaimReductionParams<F> {
-    crate::zkvm::claim_reductions::precommitted::impl_standard_precommitted_claim_reduction_params!(
-        ReductionPhase,
-        ReductionPhase::CycleVariables,
-        this => this.m
-    );
+    fn reduction(&self) -> &PreCommittedPolyClaimReductionState<F, PreCommitted> {
+        &self.reduction
+    }
+
+    fn reduction_mut(&mut self) -> &mut PreCommittedPolyClaimReductionState<F, PreCommitted> {
+        &mut self.reduction
+    }
+
+    fn cycle_phase_col_rounds(&self) -> &Range<usize> {
+        &self.cycle_phase_col_rounds
+    }
+
+    fn cycle_phase_row_rounds(&self) -> &Range<usize> {
+        &self.cycle_phase_row_rounds
+    }
+
+    fn total_poly_vars(&self) -> usize {
+        self.m
+    }
+
+    fn cycle_alignment_rounds(&self) -> usize {
+        self.log_t
+    }
+
+    fn address_alignment_rounds(&self) -> usize {
+        self.log_k_chunk
+    }
 }
 
 #[derive(Allocative)]
 pub struct ProgramImageClaimReductionProver<F: JoltField> {
-    pub params: ProgramImageClaimReductionParams<F>,
-    program_word: MultilinearPolynomial<F>,
-    eq_slice: MultilinearPolynomial<F>,
-    /// Running internal scaling factor 2^{-dummy_done} over phase-1 dummy rounds.
-    scale: F,
+    core: PreCommittedPolyReductionCore<F, ProgramImageClaimReductionParams<F>>,
 }
 
 impl<F: JoltField> crate::zkvm::claim_reductions::precommitted::sealed::Sealed
@@ -348,10 +367,7 @@ impl<F: JoltField> ProgramImageClaimReductionProver<F> {
         let eq_slice: MultilinearPolynomial<F> = MultilinearPolynomial::from(eq_coeffs);
 
         Self {
-            params,
-            program_word,
-            eq_slice,
-            scale: F::one(),
+            core: PreCommittedPolyReductionCore::new(params, program_word, eq_slice),
         }
     }
 }
@@ -359,54 +375,27 @@ impl<F: JoltField> ProgramImageClaimReductionProver<F> {
 impl<F: JoltField> PreCommittedPolyClaimReduction<F> for ProgramImageClaimReductionProver<F> {
     type Params = ProgramImageClaimReductionParams<F>;
 
-    fn params(&self) -> &Self::Params {
-        &self.params
+    fn precommitted_core(&self) -> &PreCommittedPolyReductionCore<F, Self::Params> {
+        &self.core
     }
 
-    fn params_mut(&mut self) -> &mut Self::Params {
-        &mut self.params
-    }
-
-    fn value_poly(&self) -> &MultilinearPolynomial<F> {
-        &self.program_word
-    }
-
-    fn value_poly_mut(&mut self) -> &mut MultilinearPolynomial<F> {
-        &mut self.program_word
-    }
-
-    fn eq_poly(&self) -> &MultilinearPolynomial<F> {
-        &self.eq_slice
-    }
-
-    fn eq_poly_mut(&mut self) -> &mut MultilinearPolynomial<F> {
-        &mut self.eq_slice
-    }
-
-    fn scale(&self) -> &F {
-        &self.scale
-    }
-
-    fn scale_mut(&mut self) -> &mut F {
-        &mut self.scale
+    fn precommitted_core_mut(&mut self) -> &mut PreCommittedPolyReductionCore<F, Self::Params> {
+        &mut self.core
     }
 }
 
 impl<F: JoltField, T: Transcript> PreCommittedSumcheckInstanceProver<F, T>
     for ProgramImageClaimReductionProver<F>
 {
-    fn precommitted_params(&self) -> &dyn SumcheckInstanceParams<F> {
-        &self.params
-    }
-
     fn precommitted_cache_openings(
         &self,
         accumulator: &mut ProverOpeningAccumulator<F>,
         transcript: &mut T,
         sumcheck_challenges: &[F::Challenge],
     ) {
-        let opening_point = self.params.normalize_opening_point(sumcheck_challenges);
-        if self.params.reduction.phase == ReductionPhase::CycleVariables {
+        let params = self.params();
+        let opening_point = params.normalize_opening_point(sumcheck_challenges);
+        if params.reduction.phase == PreCommitted::CycleVariables {
             let c_mid = <Self as PreCommittedPolyClaimReduction<F>>::cycle_intermediate_claim(self);
             accumulator.append_dense(
                 transcript,
@@ -458,7 +447,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
     ) -> F {
         let params = self.params.borrow();
         match params.reduction.phase {
-            ReductionPhase::CycleVariables => {
+            PreCommitted::CycleVariables => {
                 accumulator
                     .get_committed_polynomial_opening(
                         CommittedPolynomial::ProgramImageInit,
@@ -466,7 +455,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
                     )
                     .1
             }
-            ReductionPhase::AddressVariables => {
+            PreCommitted::AddressVariables => {
                 let opening_point = params.normalize_opening_point(sumcheck_challenges);
                 debug_assert_eq!(opening_point.len(), params.m);
                 let pw_eval = accumulator
@@ -512,7 +501,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
     ) {
         let mut params = self.params.borrow_mut();
         let opening_point = params.normalize_opening_point(sumcheck_challenges);
-        if params.reduction.phase == ReductionPhase::CycleVariables {
+        if params.reduction.phase == PreCommitted::CycleVariables {
             accumulator.append_dense(
                 transcript,
                 CommittedPolynomial::ProgramImageInit,
@@ -524,7 +513,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
                 .set_cycle_challenges_from_opening_point(&opening_point);
         }
 
-        if params.reduction.phase == ReductionPhase::AddressVariables
+        if params.reduction.phase == PreCommitted::AddressVariables
             || params.num_address_phase_rounds() == 0
         {
             accumulator.append_dense(

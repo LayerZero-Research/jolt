@@ -40,6 +40,10 @@ pub struct E2ETestConfig {
     pub max_trace_length: usize,
     /// Whether to use Committed program mode (vs Full)
     pub committed_program: bool,
+    /// Optional override for committed bytecode chunk count.
+    ///
+    /// If `None`, uses the default chunk count from `JoltSharedPreprocessing::new`.
+    pub bytecode_chunk_count: Option<usize>,
     /// Dory layout override (None = use default CycleMajor)
     pub dory_layout: Option<DoryLayout>,
     /// Trusted advice bytes
@@ -57,6 +61,7 @@ impl Default for E2ETestConfig {
             inputs: postcard::to_stdvec(&100u32).unwrap(),
             max_trace_length: 1 << 16,
             committed_program: false,
+            bytecode_chunk_count: None,
             dory_layout: None,
             trusted_advice: vec![],
             untrusted_advice: vec![],
@@ -165,6 +170,13 @@ impl E2ETestConfig {
         self
     }
 
+    /// Override committed bytecode chunk count.
+    pub fn with_bytecode_chunk_count(mut self, chunk_count: usize) -> Self {
+        assert!(chunk_count > 0, "bytecode_chunk_count must be > 0");
+        self.bytecode_chunk_count = Some(chunk_count);
+        self
+    }
+
     /// Set Dory layout.
     pub fn with_dory_layout(mut self, layout: DoryLayout) -> Self {
         self.dory_layout = Some(layout);
@@ -240,11 +252,14 @@ pub fn run_e2e_test(config: E2ETestConfig) {
         instructions,
         init_memory_state,
     ));
-    let shared_preprocessing = JoltSharedPreprocessing::new(
+    let mut shared_preprocessing = JoltSharedPreprocessing::new(
         program_data.meta(),
         io_device.memory_layout.clone(),
         config.max_trace_length,
     );
+    if let Some(chunk_count) = config.bytecode_chunk_count {
+        shared_preprocessing.bytecode_chunk_count = chunk_count;
+    }
 
     // Create prover preprocessing (mode-dependent)
     let prover_preprocessing = if config.committed_program {
@@ -499,6 +514,58 @@ fn sha2_e2e_committed_program_address_major() {
 
 #[test]
 #[serial]
+fn sha2_e2e_committed_bytecode_commitment_address_major_chunks_1() {
+    #[cfg(feature = "host")]
+    use jolt_inlines_sha2 as _;
+    run_e2e_test(
+        E2ETestConfig::sha2()
+            .with_committed_program()
+            .with_dory_layout(DoryLayout::AddressMajor)
+            .with_bytecode_chunk_count(1),
+    );
+}
+
+#[test]
+#[serial]
+fn sha2_e2e_committed_bytecode_commitment_address_major_chunks_4() {
+    #[cfg(feature = "host")]
+    use jolt_inlines_sha2 as _;
+    run_e2e_test(
+        E2ETestConfig::sha2()
+            .with_committed_program()
+            .with_dory_layout(DoryLayout::AddressMajor)
+            .with_bytecode_chunk_count(4),
+    );
+}
+
+#[test]
+#[serial]
+fn sha2_e2e_committed_bytecode_commitment_cycle_major_chunks_1() {
+    #[cfg(feature = "host")]
+    use jolt_inlines_sha2 as _;
+    run_e2e_test(
+        E2ETestConfig::sha2()
+            .with_committed_program()
+            .with_dory_layout(DoryLayout::CycleMajor)
+            .with_bytecode_chunk_count(1),
+    );
+}
+
+#[test]
+#[serial]
+fn sha2_e2e_committed_bytecode_commitment_cycle_major_chunks_4() {
+    #[cfg(feature = "host")]
+    use jolt_inlines_sha2 as _;
+    run_e2e_test(
+        E2ETestConfig::sha2()
+            .with_committed_program()
+            .with_dory_layout(DoryLayout::CycleMajor)
+            .with_bytecode_chunk_count(4),
+    );
+}
+
+#[test]
+#[serial]
 fn sha3_e2e_committed_program() {
     // Another larger program for committed mode coverage.
     #[cfg(feature = "host")]
@@ -550,7 +617,7 @@ fn muldiv_e2e_committed_program() {
 #[serial]
 fn fib_e2e_committed_large_trace() {
     // Larger trace length (2^17) in committed mode.
-    // Tests committed-bytecode folding with log_k_chunk=8 runtime one-hot config.
+    // Tests committed-bytecode chunking with log_k_chunk=8 runtime one-hot config.
     run_e2e_test(
         E2ETestConfig::fibonacci(1000)
             .with_max_trace_length(1 << 17)
@@ -606,13 +673,13 @@ fn fib_e2e_committed_address_major_manual_preprocessing() {
         &program_data,
         &commitment_setup,
         log_k_chunk,
-        commitment_max_trace_len,
+        shared_preprocessing.bytecode_chunk_count,
     );
 
     let k_bytecode = committed_lanes();
     let log_t = commitment_max_trace_len.log_2();
     let main_num_columns = DoryGlobals::main_num_columns(log_k_chunk, log_t);
-    let total_size = k_bytecode * program_commitments.bytecode_len;
+    let total_size = k_bytecode * program_commitments.bytecode_T;
     let total_vars = total_size.log_2();
     let (sigma_bytecode, _) = DoryGlobals::balanced_sigma_nu(total_vars);
     let expected_bytecode_num_columns = 1usize << sigma_bytecode;

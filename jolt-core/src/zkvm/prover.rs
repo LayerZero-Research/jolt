@@ -1,9 +1,6 @@
 #[cfg(test)]
 use crate::poly::multilinear_polynomial::PolynomialEvaluation;
-use crate::{
-    subprotocols::streaming_schedule::LinearOnlySchedule,
-    zkvm::{claim_reductions::advice::ReductionPhase, config::OneHotConfig},
-};
+use crate::{subprotocols::streaming_schedule::LinearOnlySchedule, zkvm::config::OneHotConfig};
 use std::{
     collections::HashMap,
     fs::File,
@@ -47,15 +44,22 @@ use crate::{
     transcripts::Transcript,
     utils::{math::Math, thread::drop_in_background_thread},
     zkvm::{
-        bytecode::{chunks::committed_lanes, read_raf_checking::BytecodeReadRafSumcheckParams},
+        bytecode::{
+            chunks::{
+                build_committed_bytecode_chunk_polynomials, committed_lanes,
+                validate_committed_bytecode_chunk_count,
+            },
+            read_raf_checking::BytecodeReadRafSumcheckParams,
+        },
         claim_reductions::{
             AdviceClaimReductionParams, AdviceClaimReductionProver, AdviceKind,
-            BytecodeClaimReductionParams, BytecodeClaimReductionProver, BytecodeReductionPhase,
+            BytecodeClaimReductionParams, BytecodeClaimReductionProver,
             HammingWeightClaimReductionParams, HammingWeightClaimReductionProver,
             IncClaimReductionSumcheckParams, IncClaimReductionSumcheckProver,
             InstructionLookupsClaimReductionSumcheckParams,
             InstructionLookupsClaimReductionSumcheckProver, ProgramImageClaimReductionParams,
-            ProgramImageClaimReductionProver, RaReductionParams, RamRaClaimReductionSumcheckProver,
+            ProgramImageClaimReductionProver, PreCommittedPolyClaimReduction, RaReductionParams,
+            RamRaClaimReductionSumcheckProver,
             RegistersClaimReductionSumcheckParams, RegistersClaimReductionSumcheckProver,
         },
         config::{OneHotParams, ProgramMode, ReadWriteConfig},
@@ -63,7 +67,10 @@ use crate::{
             ra_virtual::InstructionRaSumcheckParams,
             read_raf_checking::InstructionReadRafSumcheckParams,
         },
-        program::{ProgramPreprocessing, TrustedProgramCommitments, TrustedProgramHints},
+        program::{
+            build_program_image_polynomial_padded, ProgramPreprocessing, TrustedProgramCommitments,
+            TrustedProgramHints,
+        },
         ram::{
             hamming_booleanity::HammingBooleanitySumcheckParams,
             output_check::OutputSumcheckParams,
@@ -162,6 +169,8 @@ pub struct JoltCpuProver<
     /// The bytecode claim reduction sumcheck effectively spans two stages (6b and 7).
     /// Cache the prover state here between stages.
     bytecode_reduction_prover: Option<BytecodeClaimReductionProver<F>>,
+    /// Raw committed bytecode chunk polynomials, built once and reused in Stage 6b and Stage 8.
+    committed_bytecode_chunk_polynomials: Option<Vec<MultilinearPolynomial<F>>>,
     /// The program-image claim reduction may span Stage 6b (cycle) and Stage 7 (address).
     /// Cache the prover state here between stages.
     program_image_reduction_prover: Option<ProgramImageClaimReductionProver<F>>,
@@ -410,13 +419,13 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
 
         tracing::info!("padded_trace_len: {}", padded_trace_len);
 
-        // In Committed mode, Stage 8 folds the committed bytecode polynomial opening into
+        // In Committed mode, Stage 8 batches committed bytecode chunk polynomial openings into
         // the *joint* opening.
-        // That folding requires enough main-cycle variables to embed bytecode's 512-lane domain:
-        // log_k_chunk + log_T >= log2(512) + log_bytecode_len.
+        // That chunking requires enough main-cycle variables to embed bytecode's committed lane domain:
+        // log_k_chunk + log_T >= log2(K_bytecode_chunked) + log_bytecode_len.
         //
         // Equivalently:
-        //   T >= bytecode_len * (512 / k_chunk_main)
+        //   T >= bytecode_T * (K_bytecode / k_chunk_main)
         // where k_chunk_main = 2^log_k_chunk.
         let padded_trace_len = if program_mode == ProgramMode::Committed {
             let trusted = preprocessing
@@ -430,9 +439,8 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             );
             tracing::info!("bytecode_len: {}", trusted.bytecode_len);
             let main_k = 1usize << (trusted.log_k_chunk as usize);
-            debug_assert_eq!(committed_lanes() % main_k, 0);
             let min_t_for_bytecode_embedding =
-                trusted.bytecode_len * (committed_lanes() / main_k);
+                trusted.bytecode_T * (committed_lanes() / main_k);
             tracing::info!("min_t_for_bytecode_embedding: {}", min_t_for_bytecode_embedding);
             tracing::info!("main_k: {}", main_k);
             padded_trace_len
@@ -560,6 +568,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             advice_reduction_prover_trusted: None,
             advice_reduction_prover_untrusted: None,
             bytecode_reduction_prover: None,
+            committed_bytecode_chunk_polynomials: None,
             program_image_reduction_prover: None,
             bytecode_read_raf_params: None,
             booleanity_params: None,
@@ -605,9 +614,10 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
 
         if self.program_mode == ProgramMode::Committed {
             if let Some(trusted) = &self.preprocessing.program_commitments {
-                // Append committed bytecode commitment.
-                self.transcript
-                    .append_serializable(&trusted.bytecode_commitment);
+                // Append committed bytecode chunk commitments.
+                for commitment in &trusted.bytecode_chunk_commitments {
+                    self.transcript.append_serializable(commitment);
+                }
                 // Append program image commitment
                 self.transcript
                     .append_serializable(&trusted.program_image_commitment);
@@ -615,11 +625,10 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 {
                     // Sanity: re-commit the program image polynomial and ensure it matches the trusted commitment.
                     // Must use the same padded size and context as TrustedProgramCommitments::derive().
-                    let mle =
-                        TrustedProgramCommitments::<PCS>::build_program_image_polynomial_padded::<F>(
-                            &self.preprocessing.program,
-                            trusted.program_image_num_words,
-                        );
+                    let mle = build_program_image_polynomial_padded::<F>(
+                        &self.preprocessing.program,
+                        trusted.program_image_num_words,
+                    );
                     // Use the same balanced ProgramImage context as TrustedProgramCommitments::derive().
                     DoryGlobals::initialize_context(
                         1,
@@ -650,9 +659,9 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         }
         if self.program_mode == ProgramMode::Committed {
             if let Some(hints) = self.preprocessing.program_hints.as_ref() {
-                opening_proof_hints.insert(CommittedPolynomial::Bytecode, hints.bytecode_hint.clone());
-            }
-            if let Some(hints) = self.preprocessing.program_hints.as_ref() {
+                for (chunk_idx, hint) in hints.bytecode_chunk_hints.iter().enumerate() {
+                    opening_proof_hints.insert(CommittedPolynomial::BytecodeChunk(chunk_idx), hint.clone());
+                }
                 opening_proof_hints.insert(
                     CommittedPolynomial::ProgramImageInit,
                     hints.program_image_hint.clone(),
@@ -1404,12 +1413,25 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         if self.program_mode == ProgramMode::Committed {
             let bytecode_reduction_params = BytecodeClaimReductionParams::new(
                 &bytecode_read_raf_params,
+                self.preprocessing.shared.bytecode_chunk_count,
                 &self.opening_accumulator,
                 &mut self.transcript,
             );
+            if self.committed_bytecode_chunk_polynomials.is_none() {
+                self.committed_bytecode_chunk_polynomials = Some(
+                    build_committed_bytecode_chunk_polynomials::<F>(
+                        &self.preprocessing.program.instructions,
+                        bytecode_reduction_params.bytecode_chunk_count,
+                    ),
+                );
+            }
+            let raw_chunk_polys = self
+                .committed_bytecode_chunk_polynomials
+                .as_ref()
+                .expect("committed bytecode chunk polynomials should be initialized");
             self.bytecode_reduction_prover = Some(BytecodeClaimReductionProver::initialize(
                 bytecode_reduction_params,
-                Arc::clone(&self.preprocessing.program),
+                raw_chunk_polys,
             ));
         } else {
             // Legacy mode: do not run the bytecode claim reduction.
@@ -1599,7 +1621,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         let drop_program_image_after_stage6b = self
             .program_image_reduction_prover
             .as_ref()
-            .map(|prog| prog.params.num_address_phase_rounds() == 0)
+            .map(|prog| prog.params().num_address_phase_rounds() == 0)
             .unwrap_or(false);
         if drop_program_image_after_stage6b {
             if let Some(prog) = self.program_image_reduction_prover.take() {
@@ -1637,10 +1659,9 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             vec![Box::new(hw_prover)];
 
         if let Some(mut bytecode_reduction_prover) = self.bytecode_reduction_prover.take() {
-            if bytecode_reduction_prover.params.num_address_phase_rounds() > 0 {
+            if bytecode_reduction_prover.params().num_address_phase_rounds() > 0 {
                 // Transition to address rounds only when phase-2 rounds are required.
-                bytecode_reduction_prover.params.reduction.phase =
-                    BytecodeReductionPhase::AddressVariables;
+                bytecode_reduction_prover.transition_to_address_phase();
                 instances.push(Box::new(bytecode_reduction_prover));
             }
         }
@@ -1648,41 +1669,26 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         if let Some(mut advice_reduction_prover_trusted) =
             self.advice_reduction_prover_trusted.take()
         {
-            if advice_reduction_prover_trusted
-                .params
-                .num_address_phase_rounds()
-                > 0
-            {
+            if advice_reduction_prover_trusted.params().num_address_phase_rounds() > 0 {
                 // Transition phase
-                advice_reduction_prover_trusted.params.reduction.phase =
-                    ReductionPhase::AddressVariables;
+                advice_reduction_prover_trusted.transition_to_address_phase();
                 instances.push(Box::new(advice_reduction_prover_trusted));
             }
         }
         if let Some(mut advice_reduction_prover_untrusted) =
             self.advice_reduction_prover_untrusted.take()
         {
-            if advice_reduction_prover_untrusted
-                .params
-                .num_address_phase_rounds()
-                > 0
-            {
+            if advice_reduction_prover_untrusted.params().num_address_phase_rounds() > 0 {
                 // Transition phase
-                advice_reduction_prover_untrusted.params.reduction.phase =
-                    ReductionPhase::AddressVariables;
+                advice_reduction_prover_untrusted.transition_to_address_phase();
                 instances.push(Box::new(advice_reduction_prover_untrusted));
             }
         }
         if let Some(mut program_image_reduction_prover) = self.program_image_reduction_prover.take()
         {
-            if program_image_reduction_prover
-                .params
-                .num_address_phase_rounds()
-                > 0
-            {
+            if program_image_reduction_prover.params().num_address_phase_rounds() > 0 {
                 // Transition phase
-                program_image_reduction_prover.params.reduction.phase =
-                    ReductionPhase::AddressVariables;
+                program_image_reduction_prover.transition_to_address_phase();
                 instances.push(Box::new(program_image_reduction_prover));
             } else {
                 drop_in_background_thread(program_image_reduction_prover);
@@ -1833,27 +1839,49 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             ));
         }
 
-        // Committed bytecode polynomial: committed in Bytecode context and embedded into the
-        // main opening point by fixing the extra cycle variables to 0.
+        // Committed bytecode chunk polynomials: each chunk is committed separately in Bytecode
+        // context and embedded into the main opening point as a top-left block.
         if self.program_mode == ProgramMode::Committed {
-            let (bytecode_point, _) = self.opening_accumulator.get_committed_polynomial_opening(
-                CommittedPolynomial::Bytecode,
-                SumcheckId::BytecodeClaimReduction,
-            );
-            let log_t = opening_point.r.len();
-            let log_k = bytecode_point.r.len();
-            assert!(
-                log_k <= log_t,
-                "bytecode folding requires log_T >= log_K (got log_T={log_t}, log_K={log_k})"
-            );
-            let lagrange_factor =
-                compute_advice_lagrange_factor::<F>(&opening_point.r, &bytecode_point.r);
+            let trusted = self
+                .preprocessing
+                .program_commitments
+                .as_ref()
+                .expect("program commitments missing in committed mode");
+            if !trusted.bytecode_chunk_commitments.is_empty() {
+                let (bytecode_point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
+                    CommittedPolynomial::BytecodeChunk(0),
+                    SumcheckId::BytecodeClaimReduction,
+                );
+                let bytecode_point_r = bytecode_point.r;
+                let log_t = opening_point.r.len();
+                let log_k = bytecode_point_r.len();
+                assert!(
+                    log_k <= log_t,
+                    "bytecode chunking requires log_T >= log_K (got log_T={log_t}, log_K={log_k})"
+                );
+                let lagrange_factor =
+                    compute_advice_lagrange_factor::<F>(&opening_point.r, &bytecode_point_r);
+                polynomial_claims.push((
+                    CommittedPolynomial::BytecodeChunk(0),
+                    claim * lagrange_factor,
+                ));
 
-            let (_, claim) = self.opening_accumulator.get_committed_polynomial_opening(
-                CommittedPolynomial::Bytecode,
-                SumcheckId::BytecodeClaimReduction,
-            );
-            polynomial_claims.push((CommittedPolynomial::Bytecode, claim * lagrange_factor));
+                for chunk_idx in 1..trusted.bytecode_chunk_commitments.len() {
+                    let (chunk_point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
+                        CommittedPolynomial::BytecodeChunk(chunk_idx),
+                        SumcheckId::BytecodeClaimReduction,
+                    );
+                    debug_assert_eq!(
+                        chunk_point.r,
+                        bytecode_point_r,
+                        "all bytecode chunk openings should share one opening point"
+                    );
+                    polynomial_claims.push((
+                        CommittedPolynomial::BytecodeChunk(chunk_idx),
+                        claim * lagrange_factor,
+                    ));
+                }
+            }
         }
 
         // Program-image polynomial: opened by ProgramImageClaimReduction in Stage 6b.
@@ -1889,13 +1917,13 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             memory_layout: self.preprocessing.shared.memory_layout.clone(),
         });
 
-        // Build advice polynomials map for RLC
-        let mut advice_polys = HashMap::new();
+        // Build pre-committed polynomial map for RLC
+        let mut pre_committed_polys = HashMap::new();
         if let Some(poly) = self.advice.trusted_advice_polynomial.take() {
-            advice_polys.insert(CommittedPolynomial::TrustedAdvice, poly);
+            pre_committed_polys.insert(CommittedPolynomial::TrustedAdvice, poly);
         }
         if let Some(poly) = self.advice.untrusted_advice_polynomial.take() {
-            advice_polys.insert(CommittedPolynomial::UntrustedAdvice, poly);
+            pre_committed_polys.insert(CommittedPolynomial::UntrustedAdvice, poly);
         }
         if self.program_mode == ProgramMode::Committed {
             let trusted = self
@@ -1903,10 +1931,22 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 .program_commitments
                 .as_ref()
                 .expect("program commitments missing in committed mode");
+            let bytecode_chunk_polys = self
+                .committed_bytecode_chunk_polynomials
+                .take()
+                .expect("committed bytecode chunk polynomials should be cached by Stage 6b");
+            debug_assert_eq!(
+                bytecode_chunk_polys.len(),
+                trusted.bytecode_chunk_count,
+                "cached committed bytecode chunk polynomials must match trusted chunk count"
+            );
+            for (chunk_idx, poly) in bytecode_chunk_polys.into_iter().enumerate() {
+                pre_committed_polys.insert(CommittedPolynomial::BytecodeChunk(chunk_idx), poly);
+            }
             // Use the padded size from the trusted commitments (may be larger than program's own padded size)
-            advice_polys.insert(
+            pre_committed_polys.insert(
                 CommittedPolynomial::ProgramImageInit,
-                TrustedProgramCommitments::<PCS>::build_program_image_polynomial_padded::<F>(
+                build_program_image_polynomial_padded::<F>(
                     &self.preprocessing.program,
                     trusted.program_image_num_words,
                 ),
@@ -1928,13 +1968,24 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         } else {
             self.preprocessing.program.bytecode_len()
         };
+        let bytecode_chunk_count = if self.program_mode == ProgramMode::Committed {
+            let trusted = self
+                .preprocessing
+                .program_commitments
+                .as_ref()
+                .expect("program commitments missing in committed mode");
+            trusted.bytecode_chunk_count
+        } else {
+            committed_lanes()
+        };
         let (joint_poly, hint) = state.build_streaming_rlc::<PCS>(
             self.one_hot_params.clone(),
             TraceSource::Materialized(Arc::clone(&self.trace)),
             streaming_data,
             opening_proof_hints,
-            advice_polys,
+            pre_committed_polys,
             bytecode_T,
+            bytecode_chunk_count,
         );
 
         PCS::prove(
@@ -2035,7 +2086,14 @@ where
             8
         };
         let main_num_vars = max_log_k_chunk + max_log_t_any;
-        let bytecode_num_vars = committed_lanes().log_2() + shared.bytecode_size().log_2();
+        assert!(
+            shared.bytecode_size().is_multiple_of(shared.bytecode_chunk_count),
+            "bytecode chunk count ({}) must divide bytecode size ({})",
+            shared.bytecode_chunk_count,
+            shared.bytecode_size()
+        );
+        let chunked_bytecode_len = shared.bytecode_size() / shared.bytecode_chunk_count;
+        let bytecode_num_vars = committed_lanes().log_2() + chunked_bytecode_len.log_2();
         let program_image_num_vars = prog_len_words_padded.log_2();
         PCS::setup_prover(
             main_num_vars
@@ -2071,6 +2129,8 @@ where
         shared: JoltSharedPreprocessing,
         program: Arc<ProgramPreprocessing>,
     ) -> JoltProverPreprocessing<F, PCS> {
+        validate_committed_bytecode_chunk_count(shared.bytecode_chunk_count);
+
         let generators = Self::setup_generators_committed(&shared, &program);
         let max_t_any: usize = shared
             .max_padded_trace_length
@@ -2083,7 +2143,12 @@ where
             8
         };
         let (program_commitments, program_hints) =
-            TrustedProgramCommitments::derive(&program, &generators, log_k_chunk, max_t_any);
+            TrustedProgramCommitments::derive(
+                &program,
+                &generators,
+                log_k_chunk,
+                shared.bytecode_chunk_count,
+            );
         JoltProverPreprocessing {
             generators,
             shared,
