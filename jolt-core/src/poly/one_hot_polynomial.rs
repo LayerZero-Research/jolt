@@ -4,7 +4,7 @@
 
 use crate::field::JoltField;
 use crate::msm::VariableBaseMSM;
-use crate::poly::commitment::dory::{DoryGlobals, DoryLayout};
+use crate::poly::commitment::dory::{DoryContext, DoryGlobals, DoryLayout};
 use crate::poly::eq_poly::EqPolynomial;
 use crate::utils::math::Math;
 use allocative::Allocative;
@@ -51,12 +51,25 @@ impl<F: JoltField> Default for OneHotPolynomial<F> {
 }
 
 impl<F: JoltField> OneHotPolynomial<F> {
+    #[inline]
+    fn effective_t_for_layout(&self) -> usize {
+        let t = self.nonzero_indices.len();
+        if DoryGlobals::get_layout() == DoryLayout::CycleMajor
+            && matches!(DoryGlobals::current_context(), DoryContext::Main)
+            && t < DoryGlobals::get_T()
+        {
+            DoryGlobals::get_T()
+        } else {
+            t
+        }
+    }
+
     /// The number of rows in the coefficient matrix used to
     /// commit to this polynomial using Dory.
     ///
     /// Note: the Dory matrix may be square or almost-square depending on `log2(K*T)`.
     pub fn num_rows(&self) -> usize {
-        let t = self.nonzero_indices.len();
+        let t = self.effective_t_for_layout();
         match DoryGlobals::get_layout() {
             DoryLayout::AddressMajor => t.div_ceil(DoryGlobals::address_major_cycles_per_row()),
             DoryLayout::CycleMajor => (t * self.K).div_ceil(DoryGlobals::get_num_columns()),
@@ -123,6 +136,7 @@ impl<F: JoltField> OneHotPolynomial<F> {
         let num_rows = self.num_rows();
         let row_len = DoryGlobals::get_num_columns();
         let t = self.nonzero_indices.len();
+        let effective_t = self.effective_t_for_layout();
 
         debug_assert!(
             bases.len() >= row_len,
@@ -134,7 +148,10 @@ impl<F: JoltField> OneHotPolynomial<F> {
 
         // CycleMajor optimization for T >> K: process by cycle chunks, group by address
         let rows_per_k = t / row_len;
-        if layout == DoryLayout::CycleMajor && rows_per_k >= rayon::current_num_threads() {
+        if layout == DoryLayout::CycleMajor
+            && effective_t == t
+            && rows_per_k >= rayon::current_num_threads()
+        {
             let chunk_commitments: Vec<Vec<G>> = self
                 .nonzero_indices
                 .par_chunks(row_len)
@@ -174,7 +191,8 @@ impl<F: JoltField> OneHotPolynomial<F> {
         let mut row_indices: Vec<Vec<usize>> = vec![Vec::new(); num_rows];
         for (cycle, k) in self.nonzero_indices.iter().enumerate() {
             if let Some(k) = k {
-                let global_index = layout.address_cycle_to_index(*k as usize, cycle, self.K, t);
+                let global_index =
+                    layout.address_cycle_to_index(*k as usize, cycle, self.K, effective_t);
                 let row_index = global_index / row_len;
                 let col_index = global_index % row_len;
                 if row_index < num_rows {
@@ -211,12 +229,13 @@ impl<F: JoltField> OneHotPolynomial<F> {
     pub fn vector_matrix_product(&self, left_vec: &[F], coeff: F, result: &mut [F]) {
         let layout = DoryGlobals::get_layout();
         let t = self.nonzero_indices.len();
+        let effective_t = self.effective_t_for_layout();
         let num_columns = DoryGlobals::get_num_columns();
         debug_assert_eq!(result.len(), num_columns);
 
         // CycleMajor optimization for T >= row_len (typical case where T >= K)
         if layout == DoryLayout::CycleMajor && t >= num_columns {
-            let rows_per_k = t / num_columns;
+            let rows_per_k = effective_t / num_columns;
             result
                 .par_iter_mut()
                 .enumerate()
@@ -236,7 +255,8 @@ impl<F: JoltField> OneHotPolynomial<F> {
         // General path: iterate through nonzero indices and compute contributions
         for (cycle, k) in self.nonzero_indices.iter().enumerate() {
             if let Some(k) = k {
-                let global_index = layout.address_cycle_to_index(*k as usize, cycle, self.K, t);
+                let global_index =
+                    layout.address_cycle_to_index(*k as usize, cycle, self.K, effective_t);
                 let row_index = global_index / num_columns;
                 let col_index = global_index % num_columns;
                 if row_index < left_vec.len() && col_index < result.len() {

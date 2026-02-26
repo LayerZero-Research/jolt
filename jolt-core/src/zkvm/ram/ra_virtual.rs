@@ -127,9 +127,10 @@ impl<F: JoltField> RamRaVirtualParams<F> {
             DoryLayout::CycleMajor => {
                 let col_end = std::cmp::min(target_log_T, poly_col_vars);
                 let col_binding_rounds = 0..col_end;
+                let row_start_unclamped = main_col_vars.saturating_sub(one_hot_params.log_k_chunk);
                 let row_start = std::cmp::min(
                     target_log_T,
-                    std::cmp::max(std::cmp::min(target_log_T, main_col_vars), col_end),
+                    std::cmp::max(row_start_unclamped, col_end),
                 );
                 let row_end = std::cmp::min(target_log_T, row_start + poly_row_vars);
                 (col_binding_rounds, row_start..row_end)
@@ -146,6 +147,13 @@ impl<F: JoltField> RamRaVirtualParams<F> {
                 (col_binding_rounds, row_start..row_end)
             }
         };
+        assert_eq!(
+            cycle_phase_col_rounds.len() + cycle_phase_row_rounds.len(),
+            log_T,
+            "RAM RA cycle schedule must bind exactly log_T rounds (layout={dory_layout:?}, log_T={log_T}, target_log_T={target_log_T}, col_rounds={:?}, row_rounds={:?})",
+            cycle_phase_col_rounds,
+            cycle_phase_row_rounds
+        );
 
         Self {
             r_cycle,

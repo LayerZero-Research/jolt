@@ -586,6 +586,22 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
             .one_hot_params
             .compute_r_address_chunks::<F>(&r_address.r);
 
+        for ra_poly in &self.ra {
+            assert_eq!(
+                ra_poly.len(),
+                1,
+                "BytecodeReadRaf cycle phase did not fully bind RA polynomial (len={}): \
+target_log_T={}, log_T={}, col_rounds={:?}, row_rounds={:?}, active_rounds={}, dummy_rounds={}",
+                ra_poly.len(),
+                self.params.target_log_T,
+                self.params.log_T,
+                self.params.cycle_phase_col_rounds,
+                self.params.cycle_phase_row_rounds,
+                self.params.cycle_active_rounds(),
+                self.params.cycle_dummy_rounds()
+            );
+        }
+
         for i in 0..self.params.d {
             accumulator.append_sparse(
                 transcript,
@@ -1758,9 +1774,14 @@ impl<F: JoltField> BytecodeReadRafSumcheckParams<F> {
             DoryLayout::CycleMajor => {
                 let col_end = std::cmp::min(target_log_T, poly_col_vars);
                 let col_binding_rounds = 0..col_end;
+                // Cycle-phase schedules operate only on cycle variables. In CycleMajor, if we
+                // anchor row rounds at `main_col_vars` directly, we can drop one active round
+                // when `target_log_T > n_cycle_vars` (leaving an RA variable unbound).
+                // Offset by address width to keep all `n_cycle_vars` cycle rounds active.
+                let row_start_unclamped = main_col_vars.saturating_sub(one_hot_params.log_k_chunk);
                 let row_start = std::cmp::min(
                     target_log_T,
-                    std::cmp::max(std::cmp::min(target_log_T, main_col_vars), col_end),
+                    std::cmp::max(row_start_unclamped, col_end),
                 );
                 let row_end = std::cmp::min(target_log_T, row_start + poly_row_vars);
                 (col_binding_rounds, row_start..row_end)
@@ -1777,6 +1798,13 @@ impl<F: JoltField> BytecodeReadRafSumcheckParams<F> {
                 (col_binding_rounds, row_start..row_end)
             }
         };
+        assert_eq!(
+            cycle_phase_col_rounds.len() + cycle_phase_row_rounds.len(),
+            n_cycle_vars,
+            "bytecode cycle schedule must bind exactly n_cycle_vars rounds (layout={dory_layout:?}, n_cycle_vars={n_cycle_vars}, target_log_T={target_log_T}, col_rounds={:?}, row_rounds={:?})",
+            cycle_phase_col_rounds,
+            cycle_phase_row_rounds
+        );
 
         Self {
             gamma_powers,

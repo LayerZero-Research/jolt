@@ -68,9 +68,10 @@ impl<F: JoltField> HammingBooleanitySumcheckParams<F> {
             DoryLayout::CycleMajor => {
                 let col_end = std::cmp::min(target_log_t, poly_col_vars);
                 let col_binding_rounds = 0..col_end;
+                let row_start_unclamped = main_col_vars.saturating_sub(one_hot_params.log_k_chunk);
                 let row_start = std::cmp::min(
                     target_log_t,
-                    std::cmp::max(std::cmp::min(target_log_t, main_col_vars), col_end),
+                    std::cmp::max(row_start_unclamped, col_end),
                 );
                 let row_end = std::cmp::min(target_log_t, row_start + poly_row_vars);
                 (col_binding_rounds, row_start..row_end)
@@ -87,6 +88,13 @@ impl<F: JoltField> HammingBooleanitySumcheckParams<F> {
                 (col_binding_rounds, row_start..row_end)
             }
         };
+        assert_eq!(
+            cycle_phase_col_rounds.len() + cycle_phase_row_rounds.len(),
+            log_t,
+            "hamming booleanity cycle schedule must bind exactly log_t rounds (layout={dory_layout:?}, log_t={log_t}, target_log_t={target_log_t}, col_rounds={:?}, row_rounds={:?})",
+            cycle_phase_col_rounds,
+            cycle_phase_row_rounds
+        );
 
         Self {
             r_cycle,
