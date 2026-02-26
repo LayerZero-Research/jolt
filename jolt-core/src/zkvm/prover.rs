@@ -1,5 +1,3 @@
-#[cfg(test)]
-use crate::poly::multilinear_polynomial::PolynomialEvaluation;
 use crate::{subprotocols::streaming_schedule::LinearOnlySchedule, zkvm::config::OneHotConfig};
 use std::{
     collections::HashMap,
@@ -26,8 +24,8 @@ use crate::{
         },
         multilinear_polynomial::MultilinearPolynomial,
         opening_proof::{
-            compute_advice_lagrange_factor, DoryOpeningState, OpeningAccumulator,
-            ProverOpeningAccumulator, SumcheckId,
+            compute_advice_lagrange_factor, DoryOpeningState, OpeningAccumulator, OpeningPoint,
+            ProverOpeningAccumulator, SumcheckId, BIG_ENDIAN,
         },
         rlc_polynomial::{RLCStreamingData, TraceSource},
     },
@@ -178,6 +176,8 @@ pub struct JoltCpuProver<
     bytecode_read_raf_params: Option<BytecodeReadRafSumcheckParams<F>>,
     /// Booleanity params, cached between Stage 6a and 6b.
     booleanity_params: Option<BooleanitySumcheckParams<F>>,
+    /// Full Stage 6b challenge vector over cycle rounds (little-endian order).
+    stage6_cycle_challenges: Option<Vec<F::Challenge>>,
     pub unpadded_trace_len: usize,
     pub padded_trace_len: usize,
     pub transcript: ProofTranscript,
@@ -384,21 +384,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
 
     #[inline]
     fn trace_for_stage6_context(&self) -> Arc<Vec<Cycle>> {
-        if self.trace.len() == self.padded_trace_len {
-            return Arc::clone(&self.trace);
-        }
-
-        assert!(
-            self.padded_trace_len.is_multiple_of(self.trace.len()),
-            "stage6 trace length must be a multiple of stage1 trace length"
-        );
-        let repeat_factor = self.padded_trace_len / self.trace.len();
-        let expanded = self
-            .trace
-            .iter()
-            .flat_map(|cycle| std::iter::repeat_n(cycle.clone(), repeat_factor))
-            .collect();
-        Arc::new(expanded)
+        Arc::clone(&self.trace)
     }
 
     pub fn gen_from_trace(
@@ -606,6 +592,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             program_image_reduction_prover: None,
             bytecode_read_raf_params: None,
             booleanity_params: None,
+            stage6_cycle_challenges: None,
             unpadded_trace_len,
             padded_trace_len,
             transcript,
@@ -1351,11 +1338,13 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
 
         let stage1_log_t = self.trace.len().log_2();
         let stage6_log_t = self.stage6_log_t();
+        let dory_layout = DoryGlobals::get_layout();
 
         let mut bytecode_read_raf_params = BytecodeReadRafSumcheckParams::gen(
             &self.preprocessing.program,
             stage1_log_t,
             stage6_log_t,
+            dory_layout,
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
@@ -1366,6 +1355,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         let booleanity_params = BooleanitySumcheckParams::new(
             stage1_log_t,
             stage6_log_t,
+            dory_layout,
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
@@ -1427,25 +1417,33 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             .take()
             .expect("booleanity_params must be set by prove_stage6a");
 
-        let ram_hamming_booleanity_params =
-            HammingBooleanitySumcheckParams::new(&self.opening_accumulator);
-
         let stage6_log_t = self.stage6_log_t();
         let stage6_trace_len = self.stage6_trace_length();
+        let dory_layout = DoryGlobals::get_layout();
+        let ram_hamming_booleanity_params = HammingBooleanitySumcheckParams::new(
+            self.trace.len(),
+            stage6_log_t,
+            dory_layout,
+            &self.one_hot_params,
+            &self.opening_accumulator,
+        );
         let ram_ra_virtual_params = RamRaVirtualParams::new(
             self.trace.len(),
             stage6_log_t,
+            dory_layout,
             &self.one_hot_params,
             &self.opening_accumulator,
         );
         let lookups_ra_virtual_params = InstructionRaSumcheckParams::new(
             stage6_log_t,
+            dory_layout,
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
         );
         let inc_reduction_params = IncClaimReductionSumcheckParams::new(
             self.trace.len(),
+            stage6_log_t,
             &self.opening_accumulator,
             &mut self.transcript,
         );
@@ -1647,11 +1645,12 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         write_instance_flamegraph_svg(&instances, "stage6b_start_flamechart.svg");
         tracing::info!("Stage 6b proving");
 
-        let (sumcheck_proof, _r_stage6b) = BatchedSumcheck::prove(
+        let (sumcheck_proof, r_stage6b) = BatchedSumcheck::prove(
             instances.iter_mut().map(|v| &mut **v as _).collect(),
             &mut self.opening_accumulator,
             &mut self.transcript,
         );
+        self.stage6_cycle_challenges = Some(r_stage6b);
         #[cfg(feature = "allocative")]
         write_instance_flamegraph_svg(&instances, "stage6b_end_flamechart.svg");
         drop_in_background_thread(bytecode_read_raf);
@@ -1770,49 +1769,39 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             Some(DoryGlobals::get_layout()),
         );
 
-        // Get the unified opening point from HammingWeightClaimReduction
-        // This contains (r_address_stage7 || r_cycle_stage6) in big-endian
-        let (opening_point, _) = self.opening_accumulator.get_committed_polynomial_opening(
+        let (hamming_point, _) = self.opening_accumulator.get_committed_polynomial_opening(
             CommittedPolynomial::InstructionRa(0),
             SumcheckId::HammingWeightClaimReduction,
+        );
+        let r_address_stage7 = hamming_point.r[..self.one_hot_params.log_k_chunk].to_vec();
+        let stage6_cycle_challenges_le = self
+            .stage6_cycle_challenges
+            .clone()
+            .expect("Stage 6b cycle challenges must be available before Stage 8");
+        let mut r_cycle_stage6 = stage6_cycle_challenges_le.clone();
+        // Stage-6 sumcheck challenges are stored in little-endian round order.
+        // Stage 8 uses big-endian opening points.
+        r_cycle_stage6.reverse();
+        let opening_point = OpeningPoint::<BIG_ENDIAN, F>::new(
+            [r_address_stage7.as_slice(), r_cycle_stage6.as_slice()].concat(),
         );
         // 1. Collect all (polynomial, claim) pairs
         let mut polynomial_claims = Vec::new();
 
         // Dense polynomials: RamInc and RdInc (from IncClaimReduction in Stage 6)
         // These are at r_cycle_stage6 only (length log_T)
-        let (_ram_inc_point, ram_inc_claim) =
+        let (ram_inc_point, ram_inc_claim) =
             self.opening_accumulator.get_committed_polynomial_opening(
                 CommittedPolynomial::RamInc,
                 SumcheckId::IncClaimReduction,
             );
-        let (_rd_inc_point, rd_inc_claim) =
+        let (rd_inc_point, rd_inc_claim) =
             self.opening_accumulator.get_committed_polynomial_opening(
                 CommittedPolynomial::RdInc,
                 SumcheckId::IncClaimReduction,
             );
-
-        #[cfg(test)]
-        {
-            let log_k_chunk = self.one_hot_params.log_k_chunk;
-            // IncClaimReduction can be offset when Stage 6b includes longer-cycle instances.
-            // Its opening-point challenges should still come from Stage-6 cycle challenges.
-            let r_cycle_stage6 = &opening_point.r[log_k_chunk..];
-            debug_assert!(
-                _ram_inc_point.r.iter().all(|r| r_cycle_stage6.contains(r)),
-                "RamInc opening point should be derived from Stage-6 r_cycle challenges"
-            );
-            debug_assert!(
-                _rd_inc_point.r.iter().all(|r| r_cycle_stage6.contains(r)),
-                "RdInc opening point should be derived from Stage-6 r_cycle challenges"
-            );
-        }
-
-        let log_k_chunk = self.one_hot_params.log_k_chunk;
-        let r_address_stage7 = &opening_point.r[..log_k_chunk];
-        // Dense polynomials embed as the first address column; only address factors apply.
-        let ram_inc_lagrange: F = r_address_stage7.iter().map(|r| F::one() - *r).product();
-        let rd_inc_lagrange: F = r_address_stage7.iter().map(|r| F::one() - *r).product();
+        let ram_inc_lagrange = compute_advice_lagrange_factor::<F>(&opening_point.r, &ram_inc_point.r);
+        let rd_inc_lagrange = compute_advice_lagrange_factor::<F>(&opening_point.r, &rd_inc_point.r);
         polynomial_claims.push((CommittedPolynomial::RamInc, ram_inc_claim * ram_inc_lagrange));
         polynomial_claims.push((CommittedPolynomial::RdInc, rd_inc_claim * rd_inc_lagrange));
 

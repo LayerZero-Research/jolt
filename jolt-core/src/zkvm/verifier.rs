@@ -64,7 +64,7 @@ use crate::{
     field::JoltField,
     poly::opening_proof::{
         compute_advice_lagrange_factor, DoryOpeningState, OpeningAccumulator, OpeningPoint,
-        SumcheckId, VerifierOpeningAccumulator,
+        SumcheckId, VerifierOpeningAccumulator, BIG_ENDIAN,
     },
     pprof_scope,
     subprotocols::{
@@ -112,6 +112,8 @@ pub struct JoltVerifier<
     bytecode_read_raf_params: Option<BytecodeReadRafSumcheckParams<F>>,
     /// Booleanity params, cached between Stage 6a and 6b.
     booleanity_params: Option<BooleanitySumcheckParams<F>>,
+    /// Full Stage 6b challenge vector over cycle rounds (little-endian order).
+    stage6_cycle_challenges: Option<Vec<F::Challenge>>,
     pub spartan_key: UniformSpartanKey<F>,
     pub one_hot_params: OneHotParams,
 }
@@ -246,6 +248,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
             program_image_reduction_verifier: None,
             bytecode_read_raf_params: None,
             booleanity_params: None,
+            stage6_cycle_challenges: None,
             spartan_key,
             one_hot_params,
         })
@@ -526,6 +529,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
             program_preprocessing,
             stage1_cycle_vars,
             stage6_cycle_vars,
+            self.proof.dory_layout,
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
@@ -534,6 +538,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
         let booleanity_params = BooleanitySumcheckParams::new(
             stage1_cycle_vars,
             stage6_cycle_vars,
+            self.proof.dory_layout,
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
@@ -572,23 +577,31 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
         // Initialize Stage 6b cycle verifiers from scratch (Option B).
         let stage6_log_t = self.proof.stage6_trace_length.log_2();
         let booleanity = BooleanityCycleSumcheckVerifier::new(booleanity_params);
-        let ram_hamming_booleanity =
-            HammingBooleanitySumcheckVerifier::new(&self.opening_accumulator);
+        let ram_hamming_booleanity = HammingBooleanitySumcheckVerifier::new(
+            self.proof.trace_length,
+            stage6_log_t,
+            self.proof.dory_layout,
+            &self.one_hot_params,
+            &self.opening_accumulator,
+        );
         let ram_ra_virtual = RamRaVirtualSumcheckVerifier::new(
             self.proof.trace_length,
             stage6_log_t,
+            self.proof.dory_layout,
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
         );
         let lookups_ra_virtual = LookupsRaSumcheckVerifier::new(
             stage6_log_t,
+            self.proof.dory_layout,
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
         );
         let inc_reduction = IncClaimReductionSumcheckVerifier::new(
             self.proof.trace_length,
+            stage6_log_t,
             &self.opening_accumulator,
             &mut self.transcript,
         );
@@ -705,13 +718,14 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
             instances.push(prog);
         }
 
-        let _r_stage6b = BatchedSumcheck::verify(
+        let r_stage6b = BatchedSumcheck::verify(
             &self.proof.stage6b_sumcheck_proof,
             instances,
             &mut self.opening_accumulator,
             &mut self.transcript,
         )
         .context("Stage 6b")?;
+        self.stage6_cycle_challenges = Some(r_stage6b);
 
         Ok(())
     }
@@ -789,12 +803,23 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
             Some(self.proof.dory_layout),
         );
 
-        // Get the unified opening point from HammingWeightClaimReduction
-        // This contains (r_address_stage7 || r_cycle_stage6) in big-endian
-        let (opening_point, _) = self.opening_accumulator.get_committed_polynomial_opening(
+        let (hamming_point, _) = self.opening_accumulator.get_committed_polynomial_opening(
             CommittedPolynomial::InstructionRa(0),
             SumcheckId::HammingWeightClaimReduction,
         );
+        let r_address_stage7 = hamming_point.r[..self.one_hot_params.log_k_chunk].to_vec();
+        let stage6_cycle_challenges_le = self
+            .stage6_cycle_challenges
+            .clone()
+            .expect("Stage 6b cycle challenges must be available before Stage 8");
+        let mut r_cycle_stage6 = stage6_cycle_challenges_le.clone();
+        // Stage-6 sumcheck challenges are stored in little-endian round order.
+        // Stage 8 uses big-endian opening points.
+        r_cycle_stage6.reverse();
+        let opening_point = OpeningPoint::<BIG_ENDIAN, F>::new(
+            [r_address_stage7.as_slice(), r_cycle_stage6.as_slice()].concat(),
+        );
+        let committed_program = self.preprocessing.program.as_committed().ok();
         // 1. Collect all (polynomial, claim) pairs
         let mut polynomial_claims = Vec::new();
 
@@ -807,11 +832,10 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
             CommittedPolynomial::RdInc,
             SumcheckId::IncClaimReduction,
         );
-
-        let log_k_chunk = self.one_hot_params.log_k_chunk;
-        let r_address_stage7 = &opening_point.r[..log_k_chunk];
-        let ram_inc_lagrange: F = r_address_stage7.iter().map(|r| F::one() - *r).product();
-        let rd_inc_lagrange: F = r_address_stage7.iter().map(|r| F::one() - *r).product();
+        let ram_inc_lagrange =
+            compute_advice_lagrange_factor::<F>(&opening_point.r, &_ram_inc_point.r);
+        let rd_inc_lagrange =
+            compute_advice_lagrange_factor::<F>(&opening_point.r, &_rd_inc_point.r);
         polynomial_claims.push((CommittedPolynomial::RamInc, ram_inc_claim * ram_inc_lagrange));
         polynomial_claims.push((CommittedPolynomial::RdInc, rd_inc_claim * rd_inc_lagrange));
 
@@ -877,7 +901,11 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
         // Committed bytecode chunk polynomials: each chunk is committed separately in Bytecode
         // context and embedded into the main opening point as a top-left block.
         if self.proof.program_mode == ProgramMode::Committed {
-            let trusted = self.preprocessing.program.as_committed()?;
+            let trusted = committed_program.ok_or_else(|| {
+                ProofVerifyError::BytecodeTypeMismatch(
+                    "expected committed bytecode preprocessing, got Full".to_string(),
+                )
+            })?;
             for chunk_idx in 0..trusted.bytecode_chunk_commitments.len() {
                 let (bytecode_point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
                     CommittedPolynomial::BytecodeChunk(chunk_idx),

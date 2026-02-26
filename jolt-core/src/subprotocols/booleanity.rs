@@ -23,6 +23,7 @@ use allocative::FlameGraphBuilder;
 use ark_std::Zero;
 use rayon::prelude::*;
 use std::iter::zip;
+use std::ops::Range;
 
 use common::jolt_device::MemoryLayout;
 use tracer::instruction::Cycle;
@@ -30,6 +31,7 @@ use tracer::instruction::Cycle;
 use crate::{
     field::JoltField,
     poly::{
+        commitment::dory::{DoryGlobals, DoryLayout},
         eq_poly::EqPolynomial,
         multilinear_polynomial::BindingOrder,
         opening_proof::{
@@ -69,6 +71,12 @@ pub struct BooleanitySumcheckParams<F: JoltField> {
     /// Target cycle-round count used in Stage 6b batching.
     /// This can exceed `log_t`, in which case the extra rounds are dummy rounds.
     pub target_log_t: usize,
+    /// Cycle-phase rounds that bind column variables for top-left embedding.
+    #[allocative(skip)]
+    pub cycle_phase_col_rounds: Range<usize>,
+    /// Cycle-phase rounds that bind row variables for top-left embedding.
+    #[allocative(skip)]
+    pub cycle_phase_row_rounds: Range<usize>,
     /// Single batching challenge γ.
     /// We derive per-polynomial batching coefficients as \( \gamma^{2i} \) for i = 0, 1, ...
     pub gamma: F::Challenge,
@@ -117,6 +125,7 @@ impl<F: JoltField> BooleanitySumcheckParams<F> {
     pub fn new(
         log_t: usize,
         target_log_t: usize,
+        dory_layout: DoryLayout,
         one_hot_params: &OneHotParams,
         accumulator: &dyn OpeningAccumulator<F>,
         transcript: &mut impl Transcript,
@@ -199,10 +208,40 @@ impl<F: JoltField> BooleanitySumcheckParams<F> {
             gamma2_i *= gamma_sq;
         }
 
+        let target_log_t = target_log_t.max(log_t);
+        let (sigma_main, _) = DoryGlobals::main_sigma_nu(log_k_chunk, target_log_t);
+        let main_col_vars = sigma_main;
+        let (poly_col_vars, poly_row_vars) = DoryGlobals::balanced_sigma_nu(log_t);
+        let (cycle_phase_col_rounds, cycle_phase_row_rounds) = match dory_layout {
+            DoryLayout::CycleMajor => {
+                let col_end = std::cmp::min(target_log_t, poly_col_vars);
+                let col_binding_rounds = 0..col_end;
+                let row_start = std::cmp::min(
+                    target_log_t,
+                    std::cmp::max(std::cmp::min(target_log_t, main_col_vars), col_end),
+                );
+                let row_end = std::cmp::min(target_log_t, row_start + poly_row_vars);
+                (col_binding_rounds, row_start..row_end)
+            }
+            DoryLayout::AddressMajor => {
+                let col_end = std::cmp::min(target_log_t, poly_col_vars);
+                let col_binding_rounds = 0..col_end;
+                let row_start_unclamped = main_col_vars.saturating_sub(log_k_chunk);
+                let row_start = std::cmp::min(
+                    target_log_t,
+                    std::cmp::max(row_start_unclamped, col_end),
+                );
+                let row_end = std::cmp::min(target_log_t, row_start + poly_row_vars);
+                (col_binding_rounds, row_start..row_end)
+            }
+        };
+
         Self {
             log_k_chunk,
             log_t,
-            target_log_t: target_log_t.max(log_t),
+            target_log_t,
+            cycle_phase_col_rounds,
+            cycle_phase_row_rounds,
             gamma,
             gamma_powers_square,
             r_address,
@@ -214,7 +253,7 @@ impl<F: JoltField> BooleanitySumcheckParams<F> {
 
     #[inline]
     pub fn cycle_active_rounds(&self) -> usize {
-        self.log_t
+        self.cycle_phase_col_rounds.len() + self.cycle_phase_row_rounds.len()
     }
 
     #[inline]
@@ -224,14 +263,29 @@ impl<F: JoltField> BooleanitySumcheckParams<F> {
 
     #[inline]
     pub fn cycle_dummy_rounds(&self) -> usize {
-        self.cycle_num_rounds()
-            .saturating_sub(self.cycle_active_rounds())
+        self.cycle_num_rounds().saturating_sub(self.cycle_active_rounds())
     }
 
     #[inline]
     pub fn cycle_dummy_scale(&self) -> F {
         let two_inv = F::from_u64(2).inverse().unwrap();
         (0..self.cycle_dummy_rounds()).fold(F::one(), |acc, _| acc * two_inv)
+    }
+
+    #[inline]
+    pub fn is_cycle_dummy_round(&self, round: usize) -> bool {
+        !self.cycle_phase_col_rounds.contains(&round) && !self.cycle_phase_row_rounds.contains(&round)
+    }
+
+    #[inline]
+    pub fn compact_cycle_challenges(&self, sumcheck_challenges: &[F::Challenge]) -> Vec<F::Challenge> {
+        let mut compact =
+            Vec::with_capacity(self.cycle_phase_col_rounds.len() + self.cycle_phase_row_rounds.len());
+        compact.extend_from_slice(&sumcheck_challenges[self.cycle_phase_col_rounds.clone()]);
+        if !self.cycle_phase_row_rounds.is_empty() {
+            compact.extend_from_slice(&sumcheck_challenges[self.cycle_phase_row_rounds.clone()]);
+        }
+        compact
     }
 }
 
@@ -866,8 +920,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
 
     #[tracing::instrument(skip_all, name = "BooleanityCycleSumcheckProver::compute_message")]
     fn compute_message(&mut self, round: usize, previous_claim: F) -> UniPoly<F> {
-        let dummy_rounds = self.params.cycle_dummy_rounds();
-        if round < dummy_rounds {
+        if self.params.is_cycle_dummy_round(round) {
             let two_inv = F::from_u64(2).inverse().unwrap();
             return UniPoly::from_coeff(vec![previous_claim * two_inv, F::zero()]);
         }
@@ -879,8 +932,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
 
     #[tracing::instrument(skip_all, name = "BooleanityCycleSumcheckProver::ingest_challenge")]
     fn ingest_challenge(&mut self, r_j: F::Challenge, round: usize) {
-        let dummy_rounds = self.params.cycle_dummy_rounds();
-        if round < dummy_rounds {
+        if self.params.is_cycle_dummy_round(round) {
             let two_inv = F::from_u64(2).inverse().unwrap();
             self.scale *= two_inv;
             return;
@@ -901,7 +953,8 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
         let mut r_address_le = r_address_point.r;
         r_address_le.reverse();
         let mut full_challenges = r_address_le;
-        full_challenges.extend_from_slice(sumcheck_challenges);
+        let compact_cycle_challenges = self.params.compact_cycle_challenges(sumcheck_challenges);
+        full_challenges.extend_from_slice(&compact_cycle_challenges);
         let opening_point = self.params.normalize_opening_point(&full_challenges);
 
         // H is scaled by rho_i; unscale so cached openings match the committed polynomials.
@@ -1089,8 +1142,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         accumulator: &VerifierOpeningAccumulator<F>,
         sumcheck_challenges: &[F::Challenge],
     ) -> F {
-        let dummy_rounds = self.params.cycle_dummy_rounds();
-        let active_cycle_challenges = &sumcheck_challenges[dummy_rounds..];
+        let active_cycle_challenges = self.params.compact_cycle_challenges(sumcheck_challenges);
         let (r_address_point, _) = accumulator.get_virtual_polynomial_opening(
             VirtualPolynomial::BooleanityAddrClaim,
             SumcheckId::BooleanityAddressPhase,
@@ -1098,7 +1150,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         let mut r_address_le = r_address_point.r;
         r_address_le.reverse();
         let mut full_challenges = r_address_le;
-        full_challenges.extend_from_slice(active_cycle_challenges);
+        full_challenges.extend_from_slice(&active_cycle_challenges);
 
         let ra_claims: Vec<F> = self
             .params
@@ -1140,7 +1192,8 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         let mut r_address_le = r_address_point.r;
         r_address_le.reverse();
         let mut full_challenges = r_address_le;
-        full_challenges.extend_from_slice(sumcheck_challenges);
+        let compact_cycle_challenges = self.params.compact_cycle_challenges(sumcheck_challenges);
+        full_challenges.extend_from_slice(&compact_cycle_challenges);
         let opening_point = self.params.normalize_opening_point(&full_challenges);
         accumulator.append_sparse(
             transcript,

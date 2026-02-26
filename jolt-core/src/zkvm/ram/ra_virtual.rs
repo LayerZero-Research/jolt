@@ -46,7 +46,7 @@
 //! Variables are bound low-to-high, matching the polynomial layout.
 
 use common::jolt_device::MemoryLayout;
-use std::sync::Arc;
+use std::{ops::Range, sync::Arc};
 use tracer::instruction::Cycle;
 
 use crate::poly::opening_proof::{
@@ -65,6 +65,7 @@ use crate::zkvm::witness::{CommittedPolynomial, VirtualPolynomial};
 use crate::{
     field::JoltField,
     poly::{
+        commitment::dory::{DoryGlobals, DoryLayout},
         eq_poly::EqPolynomial,
         multilinear_polynomial::{BindingOrder, PolynomialBinding},
     },
@@ -89,12 +90,17 @@ pub struct RamRaVirtualParams<F: JoltField> {
     pub log_T: usize,
     /// Target cycle-round count used in Stage 6b batching.
     pub target_log_T: usize,
+    #[allocative(skip)]
+    pub cycle_phase_col_rounds: Range<usize>,
+    #[allocative(skip)]
+    pub cycle_phase_row_rounds: Range<usize>,
 }
 
 impl<F: JoltField> RamRaVirtualParams<F> {
     pub fn new(
         trace_len: usize,
         target_log_t: usize,
+        dory_layout: DoryLayout,
         one_hot_params: &OneHotParams,
         opening_accumulator: &dyn OpeningAccumulator<F>,
     ) -> Self {
@@ -112,12 +118,43 @@ impl<F: JoltField> RamRaVirtualParams<F> {
         // Split r_address into chunks according to one-hot decomposition
         let r_address_chunks = one_hot_params.compute_r_address_chunks::<F>(&r_address.r);
 
+        let log_T = trace_len.log_2();
+        let target_log_T = target_log_t.max(log_T);
+        let (sigma_main, _) = DoryGlobals::main_sigma_nu(one_hot_params.log_k_chunk, target_log_T);
+        let main_col_vars = sigma_main;
+        let (poly_col_vars, poly_row_vars) = DoryGlobals::balanced_sigma_nu(log_T);
+        let (cycle_phase_col_rounds, cycle_phase_row_rounds) = match dory_layout {
+            DoryLayout::CycleMajor => {
+                let col_end = std::cmp::min(target_log_T, poly_col_vars);
+                let col_binding_rounds = 0..col_end;
+                let row_start = std::cmp::min(
+                    target_log_T,
+                    std::cmp::max(std::cmp::min(target_log_T, main_col_vars), col_end),
+                );
+                let row_end = std::cmp::min(target_log_T, row_start + poly_row_vars);
+                (col_binding_rounds, row_start..row_end)
+            }
+            DoryLayout::AddressMajor => {
+                let col_end = std::cmp::min(target_log_T, poly_col_vars);
+                let col_binding_rounds = 0..col_end;
+                let row_start_unclamped = main_col_vars.saturating_sub(one_hot_params.log_k_chunk);
+                let row_start = std::cmp::min(
+                    target_log_T,
+                    std::cmp::max(row_start_unclamped, col_end),
+                );
+                let row_end = std::cmp::min(target_log_T, row_start + poly_row_vars);
+                (col_binding_rounds, row_start..row_end)
+            }
+        };
+
         Self {
             r_cycle,
             r_address_chunks,
             d: one_hot_params.ram_d,
-            log_T: trace_len.log_2(),
-            target_log_T: target_log_t.max(trace_len.log_2()),
+            log_T,
+            target_log_T,
+            cycle_phase_col_rounds,
+            cycle_phase_row_rounds,
         }
     }
 }
@@ -152,7 +189,7 @@ impl<F: JoltField> SumcheckInstanceParams<F> for RamRaVirtualParams<F> {
 impl<F: JoltField> RamRaVirtualParams<F> {
     #[inline]
     fn active_cycle_rounds(&self) -> usize {
-        self.log_T
+        self.cycle_phase_col_rounds.len() + self.cycle_phase_row_rounds.len()
     }
 
     #[inline]
@@ -164,6 +201,22 @@ impl<F: JoltField> RamRaVirtualParams<F> {
     fn dummy_scale(&self) -> F {
         let two_inv = F::from_u64(2).inverse().unwrap();
         (0..self.dummy_rounds()).fold(F::one(), |acc, _| acc * two_inv)
+    }
+
+    #[inline]
+    fn is_cycle_dummy_round(&self, round: usize) -> bool {
+        !self.cycle_phase_col_rounds.contains(&round) && !self.cycle_phase_row_rounds.contains(&round)
+    }
+
+    #[inline]
+    fn compact_cycle_challenges(&self, sumcheck_challenges: &[F::Challenge]) -> Vec<F::Challenge> {
+        let mut compact =
+            Vec::with_capacity(self.cycle_phase_col_rounds.len() + self.cycle_phase_row_rounds.len());
+        compact.extend_from_slice(&sumcheck_challenges[self.cycle_phase_col_rounds.clone()]);
+        if !self.cycle_phase_row_rounds.is_empty() {
+            compact.extend_from_slice(&sumcheck_challenges[self.cycle_phase_row_rounds.clone()]);
+        }
+        compact
     }
 }
 
@@ -230,8 +283,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for RamRaVirtualS
 
     #[tracing::instrument(skip_all, name = "RamRaVirtualSumcheckProver::ingest_challenge")]
     fn ingest_challenge(&mut self, r_j: F::Challenge, round: usize) {
-        let dummy_rounds = self.params.dummy_rounds();
-        if round < dummy_rounds {
+        if self.params.is_cycle_dummy_round(round) {
             let two_inv = F::from_u64(2).inverse().unwrap();
             self.scale *= two_inv;
             return;
@@ -244,8 +296,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for RamRaVirtualS
 
     #[tracing::instrument(skip_all, name = "RamRaVirtualSumcheckProver::compute_message")]
     fn compute_message(&mut self, round: usize, previous_claim: F) -> UniPoly<F> {
-        let dummy_rounds = self.params.dummy_rounds();
-        if round < dummy_rounds {
+        if self.params.is_cycle_dummy_round(round) {
             let two_inv = F::from_u64(2).inverse().unwrap();
             return UniPoly::from_coeff(vec![previous_claim * two_inv, F::zero()]);
         }
@@ -262,7 +313,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for RamRaVirtualS
         transcript: &mut T,
         sumcheck_challenges: &[F::Challenge],
     ) {
-        let r_cycle_final = self.params.normalize_opening_point(sumcheck_challenges);
+        let compact_cycle_challenges = self.params.compact_cycle_challenges(sumcheck_challenges);
+        let r_cycle_final = self
+            .params
+            .normalize_opening_point(&compact_cycle_challenges);
 
         // Cache opening for each ra_i polynomial
         for i in 0..self.params.d {
@@ -293,12 +347,18 @@ impl<F: JoltField> RamRaVirtualSumcheckVerifier<F> {
     pub fn new(
         trace_len: usize,
         target_log_t: usize,
+        dory_layout: DoryLayout,
         one_hot_params: &OneHotParams,
         opening_accumulator: &VerifierOpeningAccumulator<F>,
         _transcript: &mut impl Transcript,
     ) -> Self {
-        let params =
-            RamRaVirtualParams::new(trace_len, target_log_t, one_hot_params, opening_accumulator);
+        let params = RamRaVirtualParams::new(
+            trace_len,
+            target_log_t,
+            dory_layout,
+            one_hot_params,
+            opening_accumulator,
+        );
         Self { params }
     }
 }
@@ -315,9 +375,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         accumulator: &VerifierOpeningAccumulator<F>,
         sumcheck_challenges: &[F::Challenge],
     ) -> F {
-        let dummy_rounds = self.params.dummy_rounds();
-        let active_cycle_challenges = &sumcheck_challenges[dummy_rounds..];
-        let r_cycle_final = self.params.normalize_opening_point(active_cycle_challenges);
+        let active_cycle_challenges = self.params.compact_cycle_challenges(sumcheck_challenges);
+        let r_cycle_final = self
+            .params
+            .normalize_opening_point(&active_cycle_challenges);
 
         // Compute eq(r_cycle_reduced, r_cycle_final)
         let eq_eval = EqPolynomial::<F>::mle_endian(&self.params.r_cycle, &r_cycle_final);
@@ -342,7 +403,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         transcript: &mut T,
         sumcheck_challenges: &[F::Challenge],
     ) {
-        let r_cycle_final = self.params.normalize_opening_point(sumcheck_challenges);
+        let compact_cycle_challenges = self.params.compact_cycle_challenges(sumcheck_challenges);
+        let r_cycle_final = self
+            .params
+            .normalize_opening_point(&compact_cycle_challenges);
 
         // Cache opening for each ra_i polynomial
         for i in 0..self.params.d {

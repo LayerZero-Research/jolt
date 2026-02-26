@@ -227,31 +227,33 @@ where
     // Dense polynomials (all scalar variants except OneHot/RLC) are committed row-wise.
     //
     // In `Main` + `AddressMajor`, we have two *representations* in this repo:
-    // - **Trace-dense**: length == T (e.g., `RdInc`, `RamInc`). These are embedded into the
-    //   main matrix by occupying evenly-spaced columns, so each row commitment uses
-    //   `cycles_per_row` bases (one per occupied column).
+    // - **Trace-dense**: length <= T (e.g., `RdInc`, `RamInc`, including decoupled Stage-6
+    //   lengths where trace_len < main T). These are embedded into the main matrix by occupying
+    //   evenly-spaced columns, so each row commitment uses `cycles_per_row` bases
+    //   (one per occupied column).
     // - **Matrix-dense**: length == K*T (e.g., bytecode chunk polynomials). These occupy the
     //   full matrix and must use the full `row_len` bases.
-    let is_trace_dense = match poly {
-        MultilinearPolynomial::LargeScalars(p) => p.Z.len() == DoryGlobals::get_T(),
-        MultilinearPolynomial::BoolScalars(p) => p.coeffs.len() == DoryGlobals::get_T(),
-        MultilinearPolynomial::U8Scalars(p) => p.coeffs.len() == DoryGlobals::get_T(),
-        MultilinearPolynomial::U16Scalars(p) => p.coeffs.len() == DoryGlobals::get_T(),
-        MultilinearPolynomial::U32Scalars(p) => p.coeffs.len() == DoryGlobals::get_T(),
-        MultilinearPolynomial::U64Scalars(p) => p.coeffs.len() == DoryGlobals::get_T(),
-        MultilinearPolynomial::U128Scalars(p) => p.coeffs.len() == DoryGlobals::get_T(),
-        MultilinearPolynomial::I64Scalars(p) => p.coeffs.len() == DoryGlobals::get_T(),
-        MultilinearPolynomial::I128Scalars(p) => p.coeffs.len() == DoryGlobals::get_T(),
-        MultilinearPolynomial::S128Scalars(p) => p.coeffs.len() == DoryGlobals::get_T(),
-        MultilinearPolynomial::OneHot(_) | MultilinearPolynomial::RLC(_) => false,
+    let dense_len = match poly {
+        MultilinearPolynomial::LargeScalars(p) => Some(p.Z.len()),
+        MultilinearPolynomial::BoolScalars(p) => Some(p.coeffs.len()),
+        MultilinearPolynomial::U8Scalars(p) => Some(p.coeffs.len()),
+        MultilinearPolynomial::U16Scalars(p) => Some(p.coeffs.len()),
+        MultilinearPolynomial::U32Scalars(p) => Some(p.coeffs.len()),
+        MultilinearPolynomial::U64Scalars(p) => Some(p.coeffs.len()),
+        MultilinearPolynomial::U128Scalars(p) => Some(p.coeffs.len()),
+        MultilinearPolynomial::I64Scalars(p) => Some(p.coeffs.len()),
+        MultilinearPolynomial::I128Scalars(p) => Some(p.coeffs.len()),
+        MultilinearPolynomial::S128Scalars(p) => Some(p.coeffs.len()),
+        MultilinearPolynomial::OneHot(_) | MultilinearPolynomial::RLC(_) => None,
     };
 
     // In Main + AddressMajor, trace-dense polynomials are embedded by strided columns.
     // ProgramImage now follows advice-style top-left embedding, so it should use
     // regular contiguous row-major commitments instead of the Main strided path.
+    let max_trace_dense_len = DoryGlobals::get_T();
     let is_trace_dense_addr_major = matches!(dory_context, DoryContext::Main)
         && dory_layout == DoryLayout::AddressMajor
-        && is_trace_dense;
+        && dense_len.is_some_and(|len| len <= max_trace_dense_len);
 
     let (dense_affine_bases, dense_chunk_size): (Vec<_>, usize) = if is_trace_dense_addr_major {
         let cycles_per_row = DoryGlobals::address_major_cycles_per_row();

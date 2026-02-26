@@ -77,6 +77,9 @@ pub struct IncClaimReductionSumcheckParams<F: JoltField> {
     /// γ, γ², γ³ for batching
     pub gamma_powers: [F; 3],
     pub n_cycle_vars: usize,
+    /// Number of Stage-6 cycle rounds to align this reduction against.
+    /// This can be larger than `n_cycle_vars` when main Stage-6 uses a wider cycle domain.
+    pub cycle_alignment_rounds: usize,
     pub r_cycle_stage2: OpeningPoint<BIG_ENDIAN, F>, // RamInc from RamReadWriteChecking
     pub r_cycle_stage4: OpeningPoint<BIG_ENDIAN, F>, // RamInc from RamValEvaluation/RamValFinal
     pub s_cycle_stage4: OpeningPoint<BIG_ENDIAN, F>, // RdInc from RegistersReadWriteChecking
@@ -86,12 +89,18 @@ pub struct IncClaimReductionSumcheckParams<F: JoltField> {
 impl<F: JoltField> IncClaimReductionSumcheckParams<F> {
     pub fn new(
         trace_len: usize,
+        cycle_alignment_rounds: usize,
         accumulator: &dyn OpeningAccumulator<F>,
         transcript: &mut impl Transcript,
     ) -> Self {
         let gamma: F = transcript.challenge_scalar();
         let gamma_sqr = gamma.square();
         let gamma_cub = gamma_sqr * gamma;
+        let n_cycle_vars = trace_len.log_2();
+        assert!(
+            cycle_alignment_rounds >= n_cycle_vars,
+            "cycle alignment rounds ({cycle_alignment_rounds}) must be >= dense cycle vars ({n_cycle_vars})"
+        );
 
         // Fetch opening points from accumulator
         let (r_cycle_stage2, _) = accumulator.get_committed_polynomial_opening(
@@ -127,7 +136,8 @@ impl<F: JoltField> IncClaimReductionSumcheckParams<F> {
 
         Self {
             gamma_powers: [gamma, gamma_sqr, gamma_cub],
-            n_cycle_vars: trace_len.log_2(),
+            n_cycle_vars,
+            cycle_alignment_rounds,
             r_cycle_stage2,
             r_cycle_stage4,
             s_cycle_stage4,
@@ -204,20 +214,37 @@ impl<F: JoltField> IncClaimReductionSumcheckProver<F> {
 impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
     for IncClaimReductionSumcheckProver<F>
 {
+    fn round_offset(&self, max_num_rounds: usize) -> usize {
+        // Align dense-cycle rounds to the shared Stage-6 cycle window (front), and let
+        // trailing dummy rounds be handled by compute_message scaling.
+        max_num_rounds.saturating_sub(self.params.cycle_alignment_rounds)
+    }
+
     fn get_params(&self) -> &dyn SumcheckInstanceParams<F> {
         &self.params
     }
 
     #[tracing::instrument(skip_all, name = "IncClaimReductionSumcheckProver::compute_message")]
     fn compute_message(&mut self, _round: usize, previous_claim: F) -> UniPoly<F> {
-        match &self.phase {
+        // BatchedSumcheck pre-scales shorter instances by 2^(max_rounds - num_rounds)
+        // under front-loaded scheduling. Since we align dense rounds to the Stage-6
+        // cycle window (and therefore leave trailing dummy rounds), unscale before
+        // producing the active-round message and rescale afterwards.
+        let trailing_dummy_rounds = self
+            .params
+            .cycle_alignment_rounds
+            .saturating_sub(self.params.n_cycle_vars);
+        let scaling_factor = F::one().mul_pow_2(trailing_dummy_rounds);
+        let previous_claim_unscaled = previous_claim * scaling_factor.inverse().unwrap();
+        let unscaled_poly = match &self.phase {
             IncClaimReductionPhase::Phase1(state) => {
-                state.compute_message(&self.params, previous_claim)
+                state.compute_message(&self.params, previous_claim_unscaled)
             }
             IncClaimReductionPhase::Phase2(state) => {
-                state.compute_message(&self.params, previous_claim)
+                state.compute_message(&self.params, previous_claim_unscaled)
             }
-        }
+        };
+        unscaled_poly * scaling_factor
     }
 
     #[tracing::instrument(skip_all, name = "IncClaimReductionSumcheckProver::ingest_challenge")]
@@ -645,10 +672,16 @@ pub struct IncClaimReductionSumcheckVerifier<F: JoltField> {
 impl<F: JoltField> IncClaimReductionSumcheckVerifier<F> {
     pub fn new(
         trace_len: usize,
+        cycle_alignment_rounds: usize,
         accumulator: &VerifierOpeningAccumulator<F>,
         transcript: &mut impl Transcript,
     ) -> Self {
-        let params = IncClaimReductionSumcheckParams::new(trace_len, accumulator, transcript);
+        let params = IncClaimReductionSumcheckParams::new(
+            trace_len,
+            cycle_alignment_rounds,
+            accumulator,
+            transcript,
+        );
         Self { params }
     }
 }
@@ -656,6 +689,10 @@ impl<F: JoltField> IncClaimReductionSumcheckVerifier<F> {
 impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
     for IncClaimReductionSumcheckVerifier<F>
 {
+    fn round_offset(&self, max_num_rounds: usize) -> usize {
+        max_num_rounds.saturating_sub(self.params.cycle_alignment_rounds)
+    }
+
     fn get_params(&self) -> &dyn SumcheckInstanceParams<F> {
         &self.params
     }
