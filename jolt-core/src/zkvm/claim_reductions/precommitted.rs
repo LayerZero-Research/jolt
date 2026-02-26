@@ -96,18 +96,20 @@ pub fn cycle_phase_round_schedule(
 ) -> (Range<usize>, Range<usize>) {
     match DoryGlobals::get_layout() {
         DoryLayout::CycleMajor => {
-            let col_binding_rounds = 0..std::cmp::min(log_t, poly_col_vars);
-            let row_binding_rounds = std::cmp::min(log_t, main_col_vars)
-                ..std::cmp::min(log_t, main_col_vars + poly_row_vars);
+            let col_end = std::cmp::min(log_t, poly_col_vars);
+            let col_binding_rounds = 0..col_end;
+            let row_start = std::cmp::min(log_t, std::cmp::max(std::cmp::min(log_t, main_col_vars), col_end));
+            let row_end = std::cmp::min(log_t, row_start + poly_row_vars);
+            let row_binding_rounds = row_start..row_end;
             (col_binding_rounds, row_binding_rounds)
         }
         DoryLayout::AddressMajor => {
-            let col_binding_rounds = 0..poly_col_vars.saturating_sub(log_k_chunk);
-            let row_binding_rounds = main_col_vars.saturating_sub(log_k_chunk)
-                ..std::cmp::min(
-                    log_t,
-                    main_col_vars.saturating_sub(log_k_chunk) + poly_row_vars,
-                );
+            let col_end = std::cmp::min(log_t, poly_col_vars.saturating_sub(log_k_chunk));
+            let col_binding_rounds = 0..col_end;
+            let row_start_unclamped = main_col_vars.saturating_sub(log_k_chunk);
+            let row_start = std::cmp::min(log_t, std::cmp::max(row_start_unclamped, col_end));
+            let row_end = std::cmp::min(log_t, row_start + poly_row_vars);
+            let row_binding_rounds = row_start..row_end;
             (col_binding_rounds, row_binding_rounds)
         }
     }
@@ -140,10 +142,16 @@ pub fn normalize_two_phase_opening_point<F: JoltField, Phase: Copy + Eq + Alloca
     challenges: &[F::Challenge],
 ) -> OpeningPoint<BIG_ENDIAN, F> {
     if reduction.phase == cycle_phase {
+        let compact_offset = cycle_phase_col_rounds.start;
+        let compact_col_rounds = 0..cycle_phase_col_rounds.len();
+        let compact_row_rounds = cycle_phase_row_rounds.start.saturating_sub(compact_offset)
+            ..cycle_phase_row_rounds.end.saturating_sub(compact_offset);
         let mut cycle_var_challenges: Vec<F::Challenge> =
             Vec::with_capacity(cycle_phase_col_rounds.len() + cycle_phase_row_rounds.len());
-        cycle_var_challenges.extend_from_slice(&challenges[cycle_phase_col_rounds.clone()]);
-        cycle_var_challenges.extend_from_slice(&challenges[cycle_phase_row_rounds.clone()]);
+        cycle_var_challenges.extend_from_slice(&challenges[compact_col_rounds]);
+        if !cycle_phase_row_rounds.is_empty() {
+            cycle_var_challenges.extend_from_slice(&challenges[compact_row_rounds]);
+        }
         return OpeningPoint::<LITTLE_ENDIAN, F>::new(cycle_var_challenges).match_endianness();
     }
 

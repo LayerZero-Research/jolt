@@ -180,6 +180,19 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
             .validate(proof.trace_length.log_2(), proof.ram_K.log_2())
             .map_err(ProofVerifyError::InvalidReadWriteConfig)?;
 
+        if proof.stage6_trace_length < proof.trace_length {
+            return Err(ProofVerifyError::InvalidBytecodeConfig(format!(
+                "stage6_trace_length ({}) must be >= trace_length ({})",
+                proof.stage6_trace_length, proof.trace_length
+            )));
+        }
+        if !proof.stage6_trace_length.is_power_of_two() {
+            return Err(ProofVerifyError::InvalidBytecodeConfig(format!(
+                "stage6_trace_length ({}) must be power-of-two",
+                proof.stage6_trace_length
+            )));
+        }
+
         // Construct full params from the validated config
         let one_hot_params =
             OneHotParams::from_config(&proof.one_hot_config, proof.bytecode_K, proof.ram_K);
@@ -273,14 +286,23 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
         }
 
         self.verify_stage1()?;
+        tracing::info!("Stage 1 verified");
         self.verify_stage2()?;
+        tracing::info!("Stage 2 verified");
         self.verify_stage3()?;
+        tracing::info!("Stage 3 verified");
         self.verify_stage4()?;
+        tracing::info!("Stage 4 verified");
         self.verify_stage5()?;
+        tracing::info!("Stage 5 verified");
         self.verify_stage6a()?;
+        tracing::info!("Stage 6a verified");
         self.verify_stage6b()?;
+        tracing::info!("Stage 6b verified");
         self.verify_stage7()?;
+        tracing::info!("Stage 7 verified");
         self.verify_stage8()?;
+        tracing::info!("Stage 8 verified");
 
         Ok(())
     }
@@ -490,7 +512,8 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
     }
 
     fn verify_stage6a(&mut self) -> Result<(), anyhow::Error> {
-        let n_cycle_vars = self.proof.trace_length.log_2();
+        let stage1_cycle_vars = self.proof.trace_length.log_2();
+        let stage6_cycle_vars = self.proof.stage6_trace_length.log_2();
         let program_preprocessing = match self.proof.program_mode {
             ProgramMode::Committed => {
                 // Ensure we have committed program commitments for committed mode.
@@ -501,14 +524,16 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
         };
         let bytecode_read_raf = BytecodeReadRafAddressSumcheckVerifier::new(
             program_preprocessing,
-            n_cycle_vars,
+            stage1_cycle_vars,
+            stage6_cycle_vars,
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
             self.proof.program_mode,
         )?;
         let booleanity_params = BooleanitySumcheckParams::new(
-            n_cycle_vars,
+            stage1_cycle_vars,
+            stage6_cycle_vars,
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
@@ -545,16 +570,19 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
             .expect("booleanity_params must be set by verify_stage6a");
 
         // Initialize Stage 6b cycle verifiers from scratch (Option B).
+        let stage6_log_t = self.proof.stage6_trace_length.log_2();
         let booleanity = BooleanityCycleSumcheckVerifier::new(booleanity_params);
         let ram_hamming_booleanity =
             HammingBooleanitySumcheckVerifier::new(&self.opening_accumulator);
         let ram_ra_virtual = RamRaVirtualSumcheckVerifier::new(
             self.proof.trace_length,
+            stage6_log_t,
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
         );
         let lookups_ra_virtual = LookupsRaSumcheckVerifier::new(
+            stage6_log_t,
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
@@ -590,7 +618,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
             self.advice_reduction_verifier_trusted = Some(AdviceClaimReductionVerifier::new(
                 AdviceKind::Trusted,
                 &self.program_io.memory_layout,
-                self.proof.trace_length,
+                self.proof.stage6_trace_length,
                 &self.opening_accumulator,
                 &mut self.transcript,
                 self.proof
@@ -602,7 +630,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
             self.advice_reduction_verifier_untrusted = Some(AdviceClaimReductionVerifier::new(
                 AdviceKind::Untrusted,
                 &self.program_io.memory_layout,
-                self.proof.trace_length,
+                self.proof.stage6_trace_length,
                 &self.opening_accumulator,
                 &mut self.transcript,
                 self.proof
@@ -621,7 +649,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
                 .as_committed()
                 .expect("program commitments missing in committed mode");
             let padded_len_words = trusted.program_image_num_words;
-            let log_t = self.proof.trace_length.log_2();
+            let log_t = self.proof.stage6_trace_length.log_2();
             let m = padded_len_words.log_2();
             if m > log_t {
                 return Err(ProofVerifyError::InvalidBytecodeConfig(format!(
@@ -639,7 +667,8 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
                 self.preprocessing.shared.min_bytecode_address(),
                 padded_len_words,
                 self.proof.ram_K,
-                self.proof.trace_length,
+                self.proof.stage6_trace_length,
+                self.proof.trace_length.log_2(),
                 self.one_hot_params.log_k_chunk,
                 main_num_columns,
                 &self.proof.rw_config,
@@ -692,6 +721,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
         // Create verifier for HammingWeightClaimReduction
         // (r_cycle and r_addr_bool are extracted from Booleanity opening internally)
         let hw_verifier = HammingWeightClaimReductionVerifier::new(
+            self.proof.trace_length.log_2(),
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
@@ -754,7 +784,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
         // Initialize Main Dory context from runtime `(K, T)` and the proof-provided layout.
         let _guard = DoryGlobals::initialize_context(
             1 << self.one_hot_params.log_k_chunk,
-            self.proof.trace_length.next_power_of_two(),
+            self.proof.stage6_trace_length,
             DoryContext::Main,
             Some(self.proof.dory_layout),
         );
@@ -765,50 +795,56 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
             CommittedPolynomial::InstructionRa(0),
             SumcheckId::HammingWeightClaimReduction,
         );
-        let log_k_chunk = self.one_hot_params.log_k_chunk;
-        let r_address_stage7 = &opening_point.r[..log_k_chunk];
-
         // 1. Collect all (polynomial, claim) pairs
         let mut polynomial_claims = Vec::new();
 
         // Dense polynomials: RamInc and RdInc (from IncClaimReduction in Stage 6)
-        let (_, ram_inc_claim) = self.opening_accumulator.get_committed_polynomial_opening(
+        let (_ram_inc_point, ram_inc_claim) = self.opening_accumulator.get_committed_polynomial_opening(
             CommittedPolynomial::RamInc,
             SumcheckId::IncClaimReduction,
         );
-        let (_, rd_inc_claim) = self.opening_accumulator.get_committed_polynomial_opening(
+        let (_rd_inc_point, rd_inc_claim) = self.opening_accumulator.get_committed_polynomial_opening(
             CommittedPolynomial::RdInc,
             SumcheckId::IncClaimReduction,
         );
 
-        // Apply Lagrange factor for dense polys
-        // Note: r_address is in big-endian, Lagrange factor uses ∏(1 - r_i)
-        let lagrange_factor: F = r_address_stage7.iter().map(|r| F::one() - *r).product();
-
-        polynomial_claims.push((CommittedPolynomial::RamInc, ram_inc_claim * lagrange_factor));
-        polynomial_claims.push((CommittedPolynomial::RdInc, rd_inc_claim * lagrange_factor));
+        let log_k_chunk = self.one_hot_params.log_k_chunk;
+        let r_address_stage7 = &opening_point.r[..log_k_chunk];
+        let ram_inc_lagrange: F = r_address_stage7.iter().map(|r| F::one() - *r).product();
+        let rd_inc_lagrange: F = r_address_stage7.iter().map(|r| F::one() - *r).product();
+        polynomial_claims.push((CommittedPolynomial::RamInc, ram_inc_claim * ram_inc_lagrange));
+        polynomial_claims.push((CommittedPolynomial::RdInc, rd_inc_claim * rd_inc_lagrange));
 
         // Sparse polynomials: all RA polys (from HammingWeightClaimReduction)
         for i in 0..self.one_hot_params.instruction_d {
-            let (_, claim) = self.opening_accumulator.get_committed_polynomial_opening(
+            let (ra_point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
                 CommittedPolynomial::InstructionRa(i),
                 SumcheckId::HammingWeightClaimReduction,
             );
-            polynomial_claims.push((CommittedPolynomial::InstructionRa(i), claim));
+            let lagrange_factor =
+                compute_advice_lagrange_factor::<F>(&opening_point.r, &ra_point.r);
+            polynomial_claims.push((
+                CommittedPolynomial::InstructionRa(i),
+                claim * lagrange_factor,
+            ));
         }
         for i in 0..self.one_hot_params.bytecode_d {
-            let (_, claim) = self.opening_accumulator.get_committed_polynomial_opening(
+            let (ra_point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
                 CommittedPolynomial::BytecodeRa(i),
                 SumcheckId::HammingWeightClaimReduction,
             );
-            polynomial_claims.push((CommittedPolynomial::BytecodeRa(i), claim));
+            let lagrange_factor =
+                compute_advice_lagrange_factor::<F>(&opening_point.r, &ra_point.r);
+            polynomial_claims.push((CommittedPolynomial::BytecodeRa(i), claim * lagrange_factor));
         }
         for i in 0..self.one_hot_params.ram_d {
-            let (_, claim) = self.opening_accumulator.get_committed_polynomial_opening(
+            let (ra_point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
                 CommittedPolynomial::RamRa(i),
                 SumcheckId::HammingWeightClaimReduction,
             );
-            polynomial_claims.push((CommittedPolynomial::RamRa(i), claim));
+            let lagrange_factor =
+                compute_advice_lagrange_factor::<F>(&opening_point.r, &ra_point.r);
+            polynomial_claims.push((CommittedPolynomial::RamRa(i), claim * lagrange_factor));
         }
 
         // Advice polynomials: TrustedAdvice and UntrustedAdvice (from AdviceClaimReduction in Stage 6)

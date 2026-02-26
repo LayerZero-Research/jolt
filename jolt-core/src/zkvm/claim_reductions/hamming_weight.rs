@@ -124,6 +124,9 @@ pub struct HammingWeightClaimReductionParams<F: JoltField> {
     pub gamma_powers: Vec<F>,
     /// Shared r_cycle from Booleanity (all ra claims share this)
     pub r_cycle: Vec<F::Challenge>,
+    /// Number of cycle rounds that were actively bound by Stage 6 sumchecks.
+    /// If `r_cycle.len()` is larger, the leading rounds are dummy rounds.
+    pub active_cycle_rounds: usize,
     /// Shared r_address from Booleanity (all families share this now)
     pub r_addr_bool: Vec<F::Challenge>,
     /// r_address values from Virtualization/ReadRaf sumcheck for each ra_i (N total)
@@ -149,6 +152,7 @@ impl<F: JoltField> HammingWeightClaimReductionParams<F> {
     /// - Booleanity claims (r_addr shared across all families from Booleanity sumcheck)
     /// - Virtualization claims (r_addr different per ra_i)
     pub fn new(
+        active_cycle_rounds: usize,
         one_hot_params: &OneHotParams,
         accumulator: &dyn OpeningAccumulator<F>,
         transcript: &mut impl Transcript,
@@ -238,6 +242,7 @@ impl<F: JoltField> HammingWeightClaimReductionParams<F> {
         Self {
             gamma_powers,
             r_cycle,
+            active_cycle_rounds,
             r_addr_bool,
             r_addr_virt,
             claims_hw,
@@ -246,6 +251,12 @@ impl<F: JoltField> HammingWeightClaimReductionParams<F> {
             log_k_chunk,
             polynomial_types,
         }
+    }
+
+    #[inline]
+    pub fn active_r_cycle(&self) -> &[F::Challenge] {
+        let active = self.active_cycle_rounds.min(self.r_cycle.len());
+        &self.r_cycle[..active]
     }
 }
 
@@ -320,7 +331,7 @@ impl<F: JoltField> HammingWeightClaimReductionProver<F> {
             program,
             &preprocessing.memory_layout,
             one_hot_params,
-            &params.r_cycle,
+            params.active_r_cycle(),
         );
         let G: Vec<MultilinearPolynomial<F>> = G_vecs
             .into_iter()
@@ -458,12 +469,17 @@ pub struct HammingWeightClaimReductionVerifier<F: JoltField> {
 impl<F: JoltField> HammingWeightClaimReductionVerifier<F> {
     /// Create verifier. r_cycle and r_addr_bool are extracted from Booleanity opening.
     pub fn new(
+        active_cycle_rounds: usize,
         one_hot_params: &OneHotParams,
         accumulator: &VerifierOpeningAccumulator<F>,
         transcript: &mut impl Transcript,
     ) -> Self {
-        let params =
-            HammingWeightClaimReductionParams::new(one_hot_params, accumulator, transcript);
+        let params = HammingWeightClaimReductionParams::new(
+            active_cycle_rounds,
+            one_hot_params,
+            accumulator,
+            transcript,
+        );
         Self { params }
     }
 }

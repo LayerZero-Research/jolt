@@ -104,7 +104,7 @@ impl<F: JoltField> OneHotPolynomial<F> {
     }
 
     pub fn from_indices(nonzero_indices: Vec<Option<u8>>, K: usize) -> Self {
-        debug_assert_eq!(DoryGlobals::get_T(), nonzero_indices.len());
+        debug_assert!(nonzero_indices.len() <= DoryGlobals::get_T());
         assert!(K <= 1usize << u8::BITS, "K must be <= 256 for indices");
 
         Self {

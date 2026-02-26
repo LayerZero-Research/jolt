@@ -74,6 +74,7 @@ impl<F: JoltField> ProgramImageClaimReductionParams<F> {
         padded_len_words: usize,
         ram_K: usize,
         trace_len: usize,
+        single_opening_log_t: usize,
         log_k_chunk: usize,
         main_num_columns: usize,
         rw_config: &ReadWriteConfig,
@@ -106,7 +107,7 @@ impl<F: JoltField> ProgramImageClaimReductionParams<F> {
         let (r_addr_rw, _) = r_rw.split_at(ram_num_vars);
 
         // r_address_raf comes from RamValFinal/RamOutputCheck (Stage 2), but may equal r_address_rw.
-        let single_opening = rw_config.needs_single_advice_opening(log_t);
+        let single_opening = rw_config.needs_single_advice_opening(single_opening_log_t);
         let r_addr_raf = if single_opening {
             None
         } else {

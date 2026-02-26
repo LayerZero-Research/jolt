@@ -72,7 +72,7 @@ impl<F: JoltField> BytecodeClaimReductionParams<F> {
         transcript: &mut impl Transcript,
     ) -> Self {
         let log_k_full = bytecode_read_raf_params.log_K;
-        let log_t = bytecode_read_raf_params.log_T;
+        let log_t = bytecode_read_raf_params.target_log_T;
         let log_k_chunk = bytecode_read_raf_params.one_hot_params.log_k_chunk;
         let full_bytecode_len = 1usize << log_k_full;
         assert!(

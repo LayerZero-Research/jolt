@@ -66,6 +66,9 @@ pub struct BooleanitySumcheckParams<F: JoltField> {
     pub log_k_chunk: usize,
     /// Log of trace length
     pub log_t: usize,
+    /// Target cycle-round count used in Stage 6b batching.
+    /// This can exceed `log_t`, in which case the extra rounds are dummy rounds.
+    pub target_log_t: usize,
     /// Single batching challenge γ.
     /// We derive per-polynomial batching coefficients as \( \gamma^{2i} \) for i = 0, 1, ...
     pub gamma: F::Challenge,
@@ -87,7 +90,7 @@ impl<F: JoltField> SumcheckInstanceParams<F> for BooleanitySumcheckParams<F> {
     }
 
     fn num_rounds(&self) -> usize {
-        self.log_k_chunk + self.log_t
+        self.log_k_chunk + self.target_log_t
     }
 
     fn input_claim(&self, _accumulator: &dyn OpeningAccumulator<F>) -> F {
@@ -113,6 +116,7 @@ impl<F: JoltField> BooleanitySumcheckParams<F> {
     /// (this is a somewhat arbitrary choice; any prior randomness would work)
     pub fn new(
         log_t: usize,
+        target_log_t: usize,
         one_hot_params: &OneHotParams,
         accumulator: &dyn OpeningAccumulator<F>,
         transcript: &mut impl Transcript,
@@ -198,6 +202,7 @@ impl<F: JoltField> BooleanitySumcheckParams<F> {
         Self {
             log_k_chunk,
             log_t,
+            target_log_t: target_log_t.max(log_t),
             gamma,
             gamma_powers_square,
             r_address,
@@ -205,6 +210,28 @@ impl<F: JoltField> BooleanitySumcheckParams<F> {
             polynomial_types,
             one_hot_params: one_hot_params.clone(),
         }
+    }
+
+    #[inline]
+    pub fn cycle_active_rounds(&self) -> usize {
+        self.log_t
+    }
+
+    #[inline]
+    pub fn cycle_num_rounds(&self) -> usize {
+        self.target_log_t
+    }
+
+    #[inline]
+    pub fn cycle_dummy_rounds(&self) -> usize {
+        self.cycle_num_rounds()
+            .saturating_sub(self.cycle_active_rounds())
+    }
+
+    #[inline]
+    pub fn cycle_dummy_scale(&self) -> F {
+        let two_inv = F::from_u64(2).inverse().unwrap();
+        (0..self.cycle_dummy_rounds()).fold(F::one(), |acc, _| acc * two_inv)
     }
 }
 
@@ -692,6 +719,8 @@ pub struct BooleanityCycleSumcheckProver<F: JoltField> {
     gamma_powers_inv: Vec<F>,
     /// Parameters
     pub params: BooleanitySumcheckParams<F>,
+    /// Product of `2^{-1}` over leading dummy rounds.
+    scale: F,
 }
 
 impl<F: JoltField> BooleanityCycleSumcheckProver<F> {
@@ -772,6 +801,7 @@ impl<F: JoltField> BooleanityCycleSumcheckProver<F> {
             gamma_powers,
             gamma_powers_inv,
             params,
+            scale: F::one(),
         }
     }
 
@@ -822,7 +852,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
     }
 
     fn num_rounds(&self) -> usize {
-        self.params.log_t
+        self.params.cycle_num_rounds()
     }
 
     fn input_claim(&self, accumulator: &ProverOpeningAccumulator<F>) -> F {
@@ -835,12 +865,26 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
     }
 
     #[tracing::instrument(skip_all, name = "BooleanityCycleSumcheckProver::compute_message")]
-    fn compute_message(&mut self, _round: usize, previous_claim: F) -> UniPoly<F> {
-        self.compute_message_impl(previous_claim)
+    fn compute_message(&mut self, round: usize, previous_claim: F) -> UniPoly<F> {
+        let dummy_rounds = self.params.cycle_dummy_rounds();
+        if round < dummy_rounds {
+            let two_inv = F::from_u64(2).inverse().unwrap();
+            return UniPoly::from_coeff(vec![previous_claim * two_inv, F::zero()]);
+        }
+
+        let inv_scale = self.scale.inverse().unwrap();
+        let unscaled_previous_claim = previous_claim * inv_scale;
+        self.compute_message_impl(unscaled_previous_claim) * self.scale
     }
 
     #[tracing::instrument(skip_all, name = "BooleanityCycleSumcheckProver::ingest_challenge")]
-    fn ingest_challenge(&mut self, r_j: F::Challenge, _round: usize) {
+    fn ingest_challenge(&mut self, r_j: F::Challenge, round: usize) {
+        let dummy_rounds = self.params.cycle_dummy_rounds();
+        if round < dummy_rounds {
+            let two_inv = F::from_u64(2).inverse().unwrap();
+            self.scale *= two_inv;
+            return;
+        }
         self.ingest_challenge_impl(r_j)
     }
 
@@ -1028,7 +1072,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
     }
 
     fn num_rounds(&self) -> usize {
-        self.params.log_t
+        self.params.cycle_num_rounds()
     }
 
     fn input_claim(&self, accumulator: &VerifierOpeningAccumulator<F>) -> F {
@@ -1045,6 +1089,8 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         accumulator: &VerifierOpeningAccumulator<F>,
         sumcheck_challenges: &[F::Challenge],
     ) -> F {
+        let dummy_rounds = self.params.cycle_dummy_rounds();
+        let active_cycle_challenges = &sumcheck_challenges[dummy_rounds..];
         let (r_address_point, _) = accumulator.get_virtual_polynomial_opening(
             VirtualPolynomial::BooleanityAddrClaim,
             SumcheckId::BooleanityAddressPhase,
@@ -1052,7 +1098,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         let mut r_address_le = r_address_point.r;
         r_address_le.reverse();
         let mut full_challenges = r_address_le;
-        full_challenges.extend_from_slice(sumcheck_challenges);
+        full_challenges.extend_from_slice(active_cycle_challenges);
 
         let ra_claims: Vec<F> = self
             .params
@@ -1074,7 +1120,8 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
             .chain(self.params.r_cycle.iter().cloned().rev())
             .collect();
 
-        EqPolynomial::<F>::mle(&full_challenges, &combined_r)
+        self.params.cycle_dummy_scale()
+            * EqPolynomial::<F>::mle(&full_challenges, &combined_r)
             * zip(&self.params.gamma_powers_square, ra_claims)
                 .map(|(gamma_2i, ra)| (ra.square() - ra) * gamma_2i)
                 .sum::<F>()

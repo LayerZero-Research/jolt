@@ -38,6 +38,7 @@ use tracer::instruction::Cycle;
 #[derive(Allocative, Clone)]
 pub struct InstructionRaSumcheckParams<F: JoltField> {
     pub r_cycle: OpeningPoint<BIG_ENDIAN, F>,
+    pub target_log_t: usize,
     pub r_address: OpeningPoint<BIG_ENDIAN, F>,
     pub one_hot_params: OneHotParams,
     pub gamma_powers: Vec<F>,
@@ -50,6 +51,7 @@ pub struct InstructionRaSumcheckParams<F: JoltField> {
 
 impl<F: JoltField> InstructionRaSumcheckParams<F> {
     pub fn new(
+        target_log_t: usize,
         one_hot_params: &OneHotParams,
         opening_accumulator: &dyn OpeningAccumulator<F>,
         transcript: &mut impl Transcript,
@@ -79,10 +81,12 @@ impl<F: JoltField> InstructionRaSumcheckParams<F> {
             SumcheckId::InstructionReadRaf,
         );
         let (_, r_cycle) = r.split_at(ra_virtual_log_k_chunk);
+        let cycle_rounds = r_cycle.len();
 
         let gamma_powers = transcript.challenge_scalar_powers(n_virtual_ra_polys);
         Self {
             r_cycle,
+            target_log_t: target_log_t.max(cycle_rounds),
             one_hot_params: one_hot_params.clone(),
             r_address: OpeningPoint::new(r_address),
             gamma_powers,
@@ -95,7 +99,7 @@ impl<F: JoltField> InstructionRaSumcheckParams<F> {
 
 impl<F: JoltField> SumcheckInstanceParams<F> for InstructionRaSumcheckParams<F> {
     fn num_rounds(&self) -> usize {
-        self.r_cycle.len()
+        self.target_log_t
     }
 
     fn input_claim(&self, accumulator: &dyn OpeningAccumulator<F>) -> F {
@@ -124,11 +128,30 @@ impl<F: JoltField> SumcheckInstanceParams<F> for InstructionRaSumcheckParams<F> 
     }
 }
 
+impl<F: JoltField> InstructionRaSumcheckParams<F> {
+    #[inline]
+    fn active_cycle_rounds(&self) -> usize {
+        self.r_cycle.len()
+    }
+
+    #[inline]
+    fn dummy_rounds(&self) -> usize {
+        self.target_log_t.saturating_sub(self.active_cycle_rounds())
+    }
+
+    #[inline]
+    fn dummy_scale(&self) -> F {
+        let two_inv = F::from_u64(2).inverse().unwrap();
+        (0..self.dummy_rounds()).fold(F::one(), |acc, _| acc * two_inv)
+    }
+}
+
 #[derive(Allocative)]
 pub struct InstructionRaSumcheckProver<F: JoltField> {
     ra_i_polys: Vec<RaPolynomial<u8, F>>,
     eq_poly: GruenSplitEqPolynomial<F>,
     pub params: InstructionRaSumcheckParams<F>,
+    scale: F,
 }
 
 impl<F: JoltField> InstructionRaSumcheckProver<F> {
@@ -184,6 +207,7 @@ impl<F: JoltField> InstructionRaSumcheckProver<F> {
             ra_i_polys,
             eq_poly: GruenSplitEqPolynomial::new(&params.r_cycle.r, BindingOrder::LowToHigh),
             params,
+            scale: F::one(),
         }
     }
 }
@@ -194,7 +218,15 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for InstructionRa
     }
 
     #[tracing::instrument(skip_all, name = "InstructionRaSumcheckProver::compute_message")]
-    fn compute_message(&mut self, _round: usize, previous_claim: F) -> UniPoly<F> {
+    fn compute_message(&mut self, round: usize, previous_claim: F) -> UniPoly<F> {
+        let dummy_rounds = self.params.dummy_rounds();
+        if round < dummy_rounds {
+            let two_inv = F::from_u64(2).inverse().unwrap();
+            return UniPoly::from_coeff(vec![previous_claim * two_inv, F::zero()]);
+        }
+
+        let inv_scale = self.scale.inverse().unwrap();
+        let previous_claim = previous_claim * inv_scale;
         let eq_poly = &self.eq_poly;
 
         // Compute q(X) = Σ_i ∏_j ra_{i,j}(X,·) on the U_D grid using a *single*
@@ -219,11 +251,17 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for InstructionRa
             n => unimplemented!("{n}"),
         };
 
-        finish_mles_product_sum_from_evals(&evals, previous_claim, eq_poly)
+        finish_mles_product_sum_from_evals(&evals, previous_claim, eq_poly) * self.scale
     }
 
     #[tracing::instrument(skip_all, name = "InstructionRaSumcheckProver::ingest_challenge")]
-    fn ingest_challenge(&mut self, r_j: F::Challenge, _round: usize) {
+    fn ingest_challenge(&mut self, r_j: F::Challenge, round: usize) {
+        let dummy_rounds = self.params.dummy_rounds();
+        if round < dummy_rounds {
+            let two_inv = F::from_u64(2).inverse().unwrap();
+            self.scale *= two_inv;
+            return;
+        }
         self.ra_i_polys
             .iter_mut()
             .for_each(|p| p.bind_parallel(r_j, BindingOrder::LowToHigh));
@@ -296,12 +334,17 @@ pub struct RaSumcheckVerifier<F: JoltField> {
 
 impl<F: JoltField> RaSumcheckVerifier<F> {
     pub fn new(
+        target_log_t: usize,
         one_hot_params: &OneHotParams,
         opening_accumulator: &VerifierOpeningAccumulator<F>,
         transcript: &mut impl Transcript,
     ) -> Self {
-        let params =
-            InstructionRaSumcheckParams::new(one_hot_params, opening_accumulator, transcript);
+        let params = InstructionRaSumcheckParams::new(
+            target_log_t,
+            one_hot_params,
+            opening_accumulator,
+            transcript,
+        );
         Self { params }
     }
 }
@@ -316,7 +359,9 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T> for RaSumcheckV
         accumulator: &VerifierOpeningAccumulator<F>,
         sumcheck_challenges: &[F::Challenge],
     ) -> F {
-        let r = self.params.normalize_opening_point(sumcheck_challenges);
+        let dummy_rounds = self.params.dummy_rounds();
+        let active_cycle_challenges = &sumcheck_challenges[dummy_rounds..];
+        let r = self.params.normalize_opening_point(active_cycle_challenges);
         let eq_eval = EqPolynomial::mle_endian(&self.params.r_cycle, &r);
 
         // Claims of the committed ra polynomials.
@@ -337,7 +382,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T> for RaSumcheckV
             ra_acc += self.params.gamma_powers[i] * committed_ra_prod;
         }
 
-        eq_eval * ra_acc
+        self.params.dummy_scale() * eq_eval * ra_acc
     }
 
     fn cache_openings(
