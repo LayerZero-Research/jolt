@@ -25,8 +25,8 @@ use crate::poly::multilinear_polynomial::MultilinearPolynomial;
 use crate::utils::errors::ProofVerifyError;
 use crate::utils::math::Math;
 use crate::zkvm::bytecode::chunks::{
-    ActiveLaneValue, committed_bytecode_chunk_cycle_len, committed_lanes, for_each_active_lane_value,
-    validate_committed_bytecode_chunking_for_len,
+    committed_bytecode_chunk_cycle_len, committed_lanes, for_each_active_lane_value,
+    validate_committed_bytecode_chunking_for_len, ActiveLaneValue,
 };
 pub use crate::zkvm::bytecode::BytecodePCMapper;
 use ark_bn254::{Fr, G1Projective};
@@ -344,7 +344,6 @@ impl<PCS: CommitmentScheme> TrustedProgramCommitments<PCS> {
             },
         )
     }
-
 }
 
 /// Build program-image polynomial from ProgramPreprocessing with explicit padded size.
@@ -370,7 +369,10 @@ pub(crate) fn build_program_image_polynomial_padded<F: crate::field::JoltField>(
 /// 1) use chunked bytecode cycle domain (`T = bytecode_len / chunk_count`)
 /// 2) derive bytecode width from bytecode total variables only (`K_bytecode * T`)
 #[inline]
-fn committed_bytecode_dimensions(bytecode_len: usize, bytecode_chunk_count: usize) -> (usize, usize) {
+fn committed_bytecode_dimensions(
+    bytecode_len: usize,
+    bytecode_chunk_count: usize,
+) -> (usize, usize) {
     debug_assert!(bytecode_len.is_power_of_two());
     let chunk_cycle_len = committed_bytecode_chunk_cycle_len(bytecode_len, bytecode_chunk_count);
     let total_vars = committed_lanes().log_2() + chunk_cycle_len.log_2();
@@ -423,8 +425,11 @@ fn derive_bytecode_chunk_commitments_sparse_dory(
     );
     let sigma_bytecode = sigma_balanced;
     let num_columns = 1usize << sigma_bytecode;
-    let _guard =
-        DoryGlobals::initialize_bytecode_context_with_dimensions(k_bytecode, bytecode_T, num_columns);
+    let _guard = DoryGlobals::initialize_bytecode_context_with_dimensions(
+        k_bytecode,
+        bytecode_T,
+        num_columns,
+    );
     let _ctx = DoryGlobals::with_context(DoryContext::Bytecode);
 
     let total_size = k_bytecode * bytecode_T;
@@ -444,39 +449,43 @@ fn derive_bytecode_chunk_commitments_sparse_dory(
             // Build tier-1 row commitments for this chunk over its instruction slice only.
             let chunk_start = chunk_idx * bytecode_T;
             let chunk_end = chunk_start + bytecode_T;
-            let sparse_rows: HashMap<usize, G1Projective> = program.instructions[chunk_start..chunk_end]
+            let sparse_rows: HashMap<usize, G1Projective> = program.instructions
+                [chunk_start..chunk_end]
                 .par_iter()
                 .enumerate()
-                .fold(HashMap::<usize, G1Projective>::new, |mut acc, (chunk_cycle, instr)| {
-                    for_each_active_lane_value::<Fr>(instr, |global_lane, lane_val| {
-                        let global_index = layout.address_cycle_to_index(
-                            global_lane,
-                            chunk_cycle,
-                            k_bytecode,
-                            bytecode_T,
-                        );
-                        let row_idx = global_index / num_columns;
-                        let col_idx = global_index % num_columns;
-                        debug_assert!(row_idx < num_rows);
+                .fold(
+                    HashMap::<usize, G1Projective>::new,
+                    |mut acc, (chunk_cycle, instr)| {
+                        for_each_active_lane_value::<Fr>(instr, |global_lane, lane_val| {
+                            let global_index = layout.address_cycle_to_index(
+                                global_lane,
+                                chunk_cycle,
+                                k_bytecode,
+                                bytecode_T,
+                            );
+                            let row_idx = global_index / num_columns;
+                            let col_idx = global_index % num_columns;
+                            debug_assert!(row_idx < num_rows);
 
-                        let scalar = match lane_val {
-                            ActiveLaneValue::One => Fr::one(),
-                            ActiveLaneValue::Scalar(v) => v,
-                        };
-                        if scalar.is_zero() {
-                            return;
-                        }
+                            let scalar = match lane_val {
+                                ActiveLaneValue::One => Fr::one(),
+                                ActiveLaneValue::Scalar(v) => v,
+                            };
+                            if scalar.is_zero() {
+                                return;
+                            }
 
-                        let base = setup.g1_vec[col_idx].0;
-                        let entry = acc.entry(row_idx).or_insert_with(G1Projective::zero);
-                        if scalar.is_one() {
-                            *entry += base;
-                        } else {
-                            *entry += base * scalar;
-                        }
-                    });
-                    acc
-                })
+                            let base = setup.g1_vec[col_idx].0;
+                            let entry = acc.entry(row_idx).or_insert_with(G1Projective::zero);
+                            if scalar.is_one() {
+                                *entry += base;
+                            } else {
+                                *entry += base * scalar;
+                            }
+                        });
+                        acc
+                    },
+                )
                 .reduce(HashMap::<usize, G1Projective>::new, |mut a, b| {
                     for (row_idx, row_commitment) in b.into_iter() {
                         let entry = a.entry(row_idx).or_insert_with(G1Projective::zero);
@@ -538,8 +547,7 @@ mod tests {
         let expected_bytecode_cols = 1usize << sigma_bytecode;
 
         // Bytecode dimensions are derived from bytecode only.
-        let (num_columns, bytecode_t) =
-            committed_bytecode_dimensions(bytecode_len, 1);
+        let (num_columns, bytecode_t) = committed_bytecode_dimensions(bytecode_len, 1);
         assert_eq!(bytecode_t, bytecode_len);
         assert_eq!(num_columns, expected_bytecode_cols);
         assert_ne!(num_columns, main_num_columns);

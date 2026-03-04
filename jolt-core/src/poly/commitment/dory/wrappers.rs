@@ -247,20 +247,22 @@ where
         MultilinearPolynomial::OneHot(_) | MultilinearPolynomial::RLC(_) => None,
     };
 
-    // In Main + AddressMajor, trace-dense polynomials are embedded by strided columns.
+    // In Main/Joint + AddressMajor, trace-dense polynomials are embedded by strided columns.
     // ProgramImage now follows advice-style top-left embedding, so it should use
-    // regular contiguous row-major commitments instead of the Main strided path.
+    // regular contiguous row-major commitments instead of this strided path.
     let max_trace_dense_len = DoryGlobals::get_T();
-    let is_trace_dense_addr_major = matches!(dory_context, DoryContext::Main)
+    let is_trace_dense_addr_major = matches!(dory_context, DoryContext::Main | DoryContext::Joint)
         && dory_layout == DoryLayout::AddressMajor
         && dense_len.is_some_and(|len| len <= max_trace_dense_len);
 
     let (dense_affine_bases, dense_chunk_size): (Vec<_>, usize) = if is_trace_dense_addr_major {
         let cycles_per_row = DoryGlobals::address_major_cycles_per_row();
+        tracing::info!("hereeeee cycles_per_row={cycles_per_row}");
+        let stride = row_len / cycles_per_row;
         let bases: Vec<_> = g1_slice
             .par_iter()
             .take(row_len)
-            .step_by(row_len / cycles_per_row)
+            .step_by(stride)
             .map(|g| g.0.into_affine())
             .collect();
         (bases, cycles_per_row)

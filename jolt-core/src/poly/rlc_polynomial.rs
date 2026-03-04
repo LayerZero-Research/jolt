@@ -96,8 +96,12 @@ pub fn compute_bytecode_vmp_contribution<F: JoltField>(
                 debug_assert!(cycle < bytecode_len);
                 let chunk_cycle = cycle % chunk_cycle_len;
                 for_each_active_lane_value::<F>(instr, |global_lane, lane_val| {
-                    let global_index =
-                        layout.address_cycle_to_index(global_lane, chunk_cycle, lane_capacity, index_T);
+                    let global_index = layout.address_cycle_to_index(
+                        global_lane,
+                        chunk_cycle,
+                        lane_capacity,
+                        index_T,
+                    );
                     let row_index = global_index >> col_shift;
                     if row_index >= left_vec.len() {
                         return;
@@ -433,6 +437,7 @@ impl<F: JoltField> RLCPolynomial<F> {
                 }
                 DoryLayout::AddressMajor => {
                     let cycles_per_row = DoryGlobals::address_major_cycles_per_row();
+                    tracing::info!("address_major_vector_matrix_product cycles_per_row={cycles_per_row}");
                     dense_result
                         .par_iter_mut()
                         .step_by(num_columns / cycles_per_row)
@@ -662,15 +667,18 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
         let T = DoryGlobals::get_T();
         match &ctx.trace_source {
             TraceSource::Materialized(trace) => {
+                tracing::info!("materialized_vector_matrix_product");
                 self.materialized_vector_matrix_product(left_vec, num_columns, trace, &ctx, T)
             }
-            TraceSource::Lazy(lazy_trace) => self.lazy_vector_matrix_product(
+            TraceSource::Lazy(lazy_trace) => {
+                tracing::info!("lazy_vector_matrix_product");
+                self.lazy_vector_matrix_product(
                 left_vec,
                 num_columns,
                 (**lazy_trace).clone(),
                 &ctx,
                 T,
-            ),
+            )}
         }
     }
 

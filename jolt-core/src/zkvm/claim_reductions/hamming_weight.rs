@@ -256,7 +256,24 @@ impl<F: JoltField> HammingWeightClaimReductionParams<F> {
     #[inline]
     pub fn active_r_cycle(&self) -> &[F::Challenge] {
         let active = self.active_cycle_rounds.min(self.r_cycle.len());
-        &self.r_cycle[..active]
+        let start = self.r_cycle.len().saturating_sub(active);
+        &self.r_cycle[start..]
+    }
+
+    #[inline]
+    fn cycle_dummy_prefix_len(&self) -> usize {
+        let active = self.active_cycle_rounds.min(self.r_cycle.len());
+        self.r_cycle.len().saturating_sub(active)
+    }
+
+    #[inline]
+    fn cycle_dummy_selector(&self) -> F {
+        self.r_cycle[..self.cycle_dummy_prefix_len()]
+            .iter()
+            .fold(F::one(), |acc, r_i| {
+                let r_i_f: F = (*r_i).into();
+                acc * (F::one() - r_i_f)
+            })
     }
 }
 
@@ -434,6 +451,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
         sumcheck_challenges: &[F::Challenge],
     ) {
         let N = self.params.polynomial_types.len();
+        let cycle_dummy_selector = self.params.cycle_dummy_selector();
 
         // Extract r_address portion (just the sumcheck challenges, converted to big-endian)
         let r_address: OpeningPoint<BIG_ENDIAN, F> =
@@ -442,7 +460,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
 
         for i in 0..N {
             // Final claim is G_i(ρ) where ρ is the sumcheck challenges
-            let claim = self.G[i].final_sumcheck_claim();
+            let claim = self.G[i].final_sumcheck_claim() * cycle_dummy_selector;
 
             // All three claim types (HW, Bool, Virt) collapse to this single opening
             accumulator.append_sparse(
@@ -497,6 +515,14 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         sumcheck_challenges: &[F::Challenge],
     ) -> F {
         let N = self.params.polynomial_types.len();
+        // Prover caches Ram/Instruction/Bytecode RA openings with a selector for any
+        // leading dummy cycle rounds preserved in `r_cycle`; divide that selector back
+        // out here so the Stage-7 relation remains over G_i(ρ).
+        let cycle_dummy_selector_inv = self
+            .params
+            .cycle_dummy_selector()
+            .inverse()
+            .expect("cycle dummy selector is zero");
 
         // When binding with LowToHigh, challenges[j] binds index bit j which corresponds to
         // r[n-1-j] in EqPolynomial::evals table. So after binding, the result is eq(r, reversed_challenges).
@@ -517,6 +543,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
                 self.params.polynomial_types[i],
                 SumcheckId::HammingWeightClaimReduction,
             );
+            let g_i_claim = g_i_claim * cycle_dummy_selector_inv;
 
             // γ^{3i} · G_i(ρ) + γ^{3i+1} · eq_bool(ρ) · G_i(ρ) + γ^{3i+2} · eq_virt(ρ) · G_i(ρ)
             let gamma_hw = self.params.gamma_powers[3 * i];

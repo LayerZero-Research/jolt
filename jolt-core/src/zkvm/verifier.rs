@@ -11,6 +11,7 @@ use crate::zkvm::claim_reductions::RegistersClaimReductionSumcheckVerifier;
 use crate::zkvm::config::OneHotParams;
 use crate::zkvm::config::ProgramMode;
 use crate::zkvm::bytecode::chunks::{
+    committed_lanes,
     validate_committed_bytecode_chunk_count, DEFAULT_COMMITTED_BYTECODE_CHUNK_COUNT,
 };
 use crate::zkvm::program::{
@@ -29,8 +30,8 @@ use crate::zkvm::{
     },
     claim_reductions::{
         AdviceClaimReductionVerifier, AdviceKind, BytecodeClaimReductionParams,
-        BytecodeClaimReductionVerifier, PreCommittedClaimReductionParams,
-        HammingWeightClaimReductionVerifier, IncClaimReductionSumcheckVerifier,
+        BytecodeClaimReductionVerifier, HammingWeightClaimReductionVerifier,
+        IncClaimReductionSumcheckVerifier,
         InstructionLookupsClaimReductionSumcheckVerifier, ProgramImageClaimReductionParams,
         ProgramImageClaimReductionVerifier, RamRaClaimReductionSumcheckVerifier,
     },
@@ -76,6 +77,7 @@ use crate::{
     },
     transcripts::Transcript,
     utils::{errors::ProofVerifyError, math::Math},
+    zkvm::stage8_debug::{Stage8DoryClassFilter, STAGE8_DORY_CLASSES_ENV},
     zkvm::witness::CommittedPolynomial,
 };
 use anyhow::Context;
@@ -182,12 +184,6 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
             .validate(proof.trace_length.log_2(), proof.ram_K.log_2())
             .map_err(ProofVerifyError::InvalidReadWriteConfig)?;
 
-        if proof.stage6_trace_length < proof.trace_length {
-            return Err(ProofVerifyError::InvalidBytecodeConfig(format!(
-                "stage6_trace_length ({}) must be >= trace_length ({})",
-                proof.stage6_trace_length, proof.trace_length
-            )));
-        }
         if !proof.stage6_trace_length.is_power_of_two() {
             return Err(ProofVerifyError::InvalidBytecodeConfig(format!(
                 "stage6_trace_length ({}) must be power-of-two",
@@ -233,6 +229,32 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
                     preprocessing.shared.bytecode_size()
                 )));
             }
+            let trace_log_t = proof.trace_length.log_2();
+            let bytecode_t = preprocessing.shared.bytecode_size().log_2();
+            let committed_lanes_log = committed_lanes().log_2();
+            let bytecode_chunk_count_log = committed.bytecode_chunk_count.log_2();
+            let log_k_chunk = proof.one_hot_config.log_k_chunk as usize;
+            let committed_log_t =
+                bytecode_t + committed_lanes_log - bytecode_chunk_count_log - log_k_chunk;
+            let expected_stage6_log_t = std::cmp::max(trace_log_t, committed_log_t);
+            let expected_stage6_trace_length = 1usize << expected_stage6_log_t;
+            if proof.stage6_trace_length != expected_stage6_trace_length {
+                return Err(ProofVerifyError::InvalidBytecodeConfig(format!(
+                    "stage6_trace_length mismatch: proof={}, expected={} (trace_log_t={}, bytecode_t={}, committed_lanes_log={}, bytecode_chunk_count_log={}, log_k_chunk={})",
+                    proof.stage6_trace_length,
+                    expected_stage6_trace_length,
+                    trace_log_t,
+                    bytecode_t,
+                    committed_lanes_log,
+                    bytecode_chunk_count_log,
+                    log_k_chunk
+                )));
+            }
+        } else if proof.stage6_trace_length != proof.trace_length {
+            return Err(ProofVerifyError::InvalidBytecodeConfig(format!(
+                "in full mode, stage6_trace_length ({}) must equal trace_length ({})",
+                proof.stage6_trace_length, proof.trace_length
+            )));
         }
 
         Ok(Self {
@@ -614,6 +636,9 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
         if self.proof.program_mode == ProgramMode::Committed {
             let bytecode_reduction_params = BytecodeClaimReductionParams::new(
                 &bytecode_read_raf_params,
+                stage6_log_t,
+                self.one_hot_params.log_k_chunk,
+                self.proof.trace_length.log_2(),
                 self.preprocessing.shared.bytecode_chunk_count,
                 &self.opening_accumulator,
                 &mut self.transcript,
@@ -632,6 +657,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
                 AdviceKind::Trusted,
                 &self.program_io.memory_layout,
                 self.proof.stage6_trace_length,
+                stage6_log_t,
                 &self.opening_accumulator,
                 &mut self.transcript,
                 self.proof
@@ -644,6 +670,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
                 AdviceKind::Untrusted,
                 &self.program_io.memory_layout,
                 self.proof.stage6_trace_length,
+                stage6_log_t,
                 &self.opening_accumulator,
                 &mut self.transcript,
                 self.proof
@@ -662,28 +689,15 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
                 .as_committed()
                 .expect("program commitments missing in committed mode");
             let padded_len_words = trusted.program_image_num_words;
-            let log_t = self.proof.stage6_trace_length.log_2();
-            let m = padded_len_words.log_2();
-            if m > log_t {
-                return Err(ProofVerifyError::InvalidBytecodeConfig(format!(
-                    "program-image claim reduction requires m=log2(padded_len_words) <= log_T (got m={m}, log_T={log_t})"
-                ))
-                .into());
-            }
-            let main_num_columns = DoryGlobals::try_get_main_sigma_nu()
-                .map(|(sigma, _)| 1usize << sigma)
-                .unwrap_or_else(|| {
-                    DoryGlobals::main_num_columns(self.one_hot_params.log_k_chunk, log_t)
-                });
             let params = ProgramImageClaimReductionParams::new(
                 &self.program_io,
                 self.preprocessing.shared.min_bytecode_address(),
                 padded_len_words,
                 self.proof.ram_K,
                 self.proof.stage6_trace_length,
+                stage6_log_t,
                 self.proof.trace_length.log_2(),
                 self.one_hot_params.log_k_chunk,
-                main_num_columns,
                 &self.proof.rw_config,
                 &self.opening_accumulator,
                 &mut self.transcript,
@@ -795,31 +809,59 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
 
     /// Stage 8: Dory batch opening verification.
     fn verify_stage8(&mut self) -> Result<(), anyhow::Error> {
-        // Initialize Main Dory context from runtime `(K, T)` and the proof-provided layout.
-        let _guard = DoryGlobals::initialize_context(
-            1 << self.one_hot_params.log_k_chunk,
-            self.proof.stage6_trace_length,
-            DoryContext::Main,
-            Some(self.proof.dory_layout),
+        let class_filter = Stage8DoryClassFilter::from_env();
+        assert!(
+            class_filter.any_enabled(),
+            "{STAGE8_DORY_CLASSES_ENV} disables all Stage-8 polynomial classes"
+        );
+        tracing::info!(
+            "Stage-8 Dory class filter: dense={}, ra={}, advice={}, bytecode={}, program_image={}",
+            class_filter.dense,
+            class_filter.ra,
+            class_filter.advice,
+            class_filter.bytecode,
+            class_filter.program_image
         );
 
-        let (hamming_point, _) = self.opening_accumulator.get_committed_polynomial_opening(
-            CommittedPolynomial::InstructionRa(0),
-            SumcheckId::HammingWeightClaimReduction,
-        );
-        let r_address_stage7 = hamming_point.r[..self.one_hot_params.log_k_chunk].to_vec();
-        let stage6_cycle_challenges_le = self
-            .stage6_cycle_challenges
-            .clone()
-            .expect("Stage 6b cycle challenges must be available before Stage 8");
-        let mut r_cycle_stage6 = stage6_cycle_challenges_le.clone();
-        // Stage-6 sumcheck challenges are stored in little-endian round order.
-        // Stage 8 uses big-endian opening points.
-        r_cycle_stage6.reverse();
-        let opening_point = OpeningPoint::<BIG_ENDIAN, F>::new(
-            [r_address_stage7.as_slice(), r_cycle_stage6.as_slice()].concat(),
-        );
         let committed_program = self.preprocessing.program.as_committed().ok();
+        // In committed mode, construct Stage-8 opening point groups as:
+        // [Stage7 bytecode vars || Stage6b bytecode-only vars || Stage6b increments vars] (BE).
+        // We build directly in BE as [increments || bytecode-only || stage7].
+        let opening_point = if self.proof.program_mode == ProgramMode::Committed {
+            let bytecode_point = self
+                .opening_accumulator
+                .get_committed_polynomial_opening(
+                    CommittedPolynomial::BytecodeChunk(0),
+                    SumcheckId::BytecodeClaimReduction,
+                )
+                .0;
+            OpeningPoint::<BIG_ENDIAN, F>::new(bytecode_point.r.clone())
+        } else {
+            let (hamming_point, _) = self.opening_accumulator.get_committed_polynomial_opening(
+                CommittedPolynomial::InstructionRa(0),
+                SumcheckId::HammingWeightClaimReduction,
+            );
+            let r_address_stage7 = hamming_point.r[..self.one_hot_params.log_k_chunk].to_vec();
+            let stage6_cycle_challenges_le = self
+                .stage6_cycle_challenges
+                .clone()
+                .expect("Stage 6b cycle challenges must be available before Stage 8");
+            let mut r_cycle_stage6 = stage6_cycle_challenges_le.clone();
+            // Stage-6 sumcheck challenges are stored in little-endian round order.
+            // Stage 8 uses big-endian opening points.
+            r_cycle_stage6.reverse();
+            OpeningPoint::<BIG_ENDIAN, F>::new(
+                [r_address_stage7.as_slice(), r_cycle_stage6.as_slice()].concat(),
+            )
+        };
+        let _ = DoryGlobals::initialize_context_with_trace_t(
+            self.one_hot_params.k_chunk,
+            self.proof.stage6_trace_length,
+            self.proof.trace_length,
+            DoryContext::Joint,
+            Some(self.proof.dory_layout),
+        );
+        DoryGlobals::with_context(DoryContext::Joint);
         // 1. Collect all (polynomial, claim) pairs
         let mut polynomial_claims = Vec::new();
 
@@ -832,10 +874,20 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
             CommittedPolynomial::RdInc,
             SumcheckId::IncClaimReduction,
         );
-        let ram_inc_lagrange =
-            compute_advice_lagrange_factor::<F>(&opening_point.r, &_ram_inc_point.r);
-        let rd_inc_lagrange =
-            compute_advice_lagrange_factor::<F>(&opening_point.r, &_rd_inc_point.r);
+        let ram_inc_lagrange = if self.proof.program_mode == ProgramMode::Committed {
+            opening_point.r[_ram_inc_point.r.len()..]
+                .iter()
+                .fold(F::one(), |acc, r| acc * (F::one() - *r))
+        } else {
+            compute_advice_lagrange_factor::<F>(&opening_point.r, &_ram_inc_point.r)
+        };
+        let rd_inc_lagrange = if self.proof.program_mode == ProgramMode::Committed {
+            opening_point.r[_rd_inc_point.r.len()..]
+                .iter()
+                .fold(F::one(), |acc, r| acc * (F::one() - *r))
+        } else {
+            compute_advice_lagrange_factor::<F>(&opening_point.r, &_rd_inc_point.r)
+        };
         polynomial_claims.push((CommittedPolynomial::RamInc, ram_inc_claim * ram_inc_lagrange));
         polynomial_claims.push((CommittedPolynomial::RdInc, rd_inc_claim * rd_inc_lagrange));
 
@@ -943,6 +995,11 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
                 prog_claim * lagrange_factor,
             ));
         }
+        polynomial_claims.retain(|(poly, _)| class_filter.includes_poly(*poly));
+        assert!(
+            !polynomial_claims.is_empty(),
+            "{STAGE8_DORY_CLASSES_ENV} removed all Stage-8 claims"
+        );
 
         // 2. Sample gamma and compute powers for RLC
         let claims: Vec<F> = polynomial_claims.iter().map(|(_, c)| *c).collect();

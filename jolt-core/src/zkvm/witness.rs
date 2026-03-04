@@ -7,6 +7,7 @@ use rayon::prelude::*;
 use tracer::instruction::Cycle;
 
 use crate::poly::commitment::commitment_scheme::StreamingCommitmentScheme;
+use crate::poly::commitment::dory::{DoryContext, DoryGlobals, DoryLayout};
 use crate::zkvm::config::OneHotParams;
 use crate::zkvm::instruction::InstructionFlags;
 use crate::zkvm::verifier::JoltSharedPreprocessing;
@@ -84,6 +85,77 @@ impl CommittedPolynomial {
         F: JoltField,
         PCS: StreamingCommitmentScheme<Field = F>,
     {
+        let is_main_address_major = DoryGlobals::get_layout() == DoryLayout::AddressMajor
+            && matches!(DoryGlobals::current_context(), DoryContext::Main);
+        if is_main_address_major {
+            let row_len = DoryGlobals::get_num_columns();
+            let cycles_per_row = DoryGlobals::address_major_cycles_per_row();
+            tracing::info!("stream_witness address_major cycles_per_row={cycles_per_row}");
+            // let cycles_per_row = row_len / (one_hot_params.k_chunk * 4);
+            // tracing::info!("stream_witness adjusted cycles_per_row={cycles_per_row}");
+            debug_assert_eq!(
+                row_cycles.len(),
+                cycles_per_row,
+                "AddressMajor streaming rows must span cycles_per_row cycles"
+            );
+            let stride = row_len / cycles_per_row;
+            let mut row: Vec<i128> = vec![0; row_len];
+            match self {
+                CommittedPolynomial::RdInc => {
+                    for (cycle_idx, cycle) in row_cycles.iter().enumerate() {
+                        let (_, pre_value, post_value) = cycle.rd_write().unwrap_or_default();
+                        row[cycle_idx * stride] = post_value as i128 - pre_value as i128;
+                    }
+                }
+                CommittedPolynomial::RamInc => {
+                    for (cycle_idx, cycle) in row_cycles.iter().enumerate() {
+                        let value = match cycle.ram_access() {
+                            tracer::instruction::RAMAccess::Write(write) => {
+                                write.post_value as i128 - write.pre_value as i128
+                            }
+                            _ => 0,
+                        };
+                        row[cycle_idx * stride] = value;
+                    }
+                }
+                CommittedPolynomial::InstructionRa(idx) => {
+                    for (cycle_idx, cycle) in row_cycles.iter().enumerate() {
+                        let lookup_index = LookupQuery::<XLEN>::to_lookup_index(cycle);
+                        let k = one_hot_params.lookup_index_chunk(lookup_index, *idx) as usize;
+                        row[cycle_idx * stride + k] = 1;
+                    }
+                }
+                CommittedPolynomial::BytecodeRa(idx) => {
+                    for (cycle_idx, cycle) in row_cycles.iter().enumerate() {
+                        let pc = program.get_pc(cycle);
+                        let k = one_hot_params.bytecode_pc_chunk(pc, *idx) as usize;
+                        row[cycle_idx * stride + k] = 1;
+                    }
+                }
+                CommittedPolynomial::RamRa(idx) => {
+                    for (cycle_idx, cycle) in row_cycles.iter().enumerate() {
+                        if let Some(address) = remap_address(
+                            cycle.ram_access().address() as u64,
+                            &preprocessing.memory_layout,
+                        ) {
+                            let k = one_hot_params.ram_address_chunk(address, *idx) as usize;
+                            row[cycle_idx * stride + k] = 1;
+                        }
+                    }
+                }
+                CommittedPolynomial::BytecodeChunk(_) => {
+                    panic!("Committed bytecode polynomial is not stream-committed from trace")
+                }
+                CommittedPolynomial::TrustedAdvice
+                | CommittedPolynomial::UntrustedAdvice
+                | CommittedPolynomial::ProgramImageInit => {
+                    panic!("Advice polynomials should not use streaming witness generation")
+                }
+            }
+            return PCS::process_chunk(setup, &row);
+        }
+
+        tracing::info!("non-streaming address_major");
         match self {
             CommittedPolynomial::RdInc => {
                 let row: Vec<i128> = row_cycles

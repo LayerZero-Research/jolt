@@ -356,23 +356,9 @@ impl StreamingCommitmentScheme for DoryCommitmentScheme {
     }
 }
 
-/// Reorders opening_point for AddressMajor layout.
-///
-/// For AddressMajor layout, reorders opening_point from [r_address, r_cycle] to [r_cycle, r_address].
-/// This ensures that after Dory's reversal and splitting:
-/// - Column (right) vector gets address variables (matching AddressMajor column indexing)
-/// - Row (left) vector gets cycle variables (matching AddressMajor row indexing)
-///
-/// For CycleMajor layout, returns the point unchanged.
+/// Returns the opening point unchanged.
 fn reorder_opening_point_for_layout<F: JoltField>(
     opening_point: &[F::Challenge],
 ) -> Vec<F::Challenge> {
-    if DoryGlobals::get_layout() == DoryLayout::AddressMajor {
-        let log_T = DoryGlobals::get_T().log_2();
-        let log_K = opening_point.len().saturating_sub(log_T);
-        let (r_address, r_cycle) = opening_point.split_at(log_K);
-        [r_cycle, r_address].concat()
-    } else {
-        opening_point.to_vec()
-    }
+    opening_point.to_vec()
 }

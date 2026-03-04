@@ -1,8 +1,6 @@
-//! Two-phase bytecode claim reduction (Stage 6b cycle -> Stage 7 address),
-//! implemented with the shared pre-committed reduction parent.
+//! Two-phase bytecode claim reduction (Stage 6b cycle -> Stage 7 address).
 
 use std::cell::RefCell;
-use std::cmp::Ordering;
 use std::ops::Range;
 
 use allocative::Allocative;
@@ -11,25 +9,18 @@ use rayon::prelude::*;
 use crate::field::JoltField;
 use crate::poly::commitment::dory::{DoryGlobals, DoryLayout};
 use crate::poly::eq_poly::EqPolynomial;
-use crate::poly::multilinear_polynomial::{
-    BindingOrder, MultilinearPolynomial, PolynomialBinding,
-};
+use crate::poly::multilinear_polynomial::{BindingOrder, MultilinearPolynomial, PolynomialBinding};
 use crate::poly::opening_proof::{
     OpeningAccumulator, OpeningPoint, ProverOpeningAccumulator, SumcheckId,
-    VerifierOpeningAccumulator, BIG_ENDIAN,
+    VerifierOpeningAccumulator, BIG_ENDIAN, LITTLE_ENDIAN,
 };
+use crate::poly::unipoly::UniPoly;
+use crate::subprotocols::sumcheck_prover::SumcheckInstanceProver;
 use crate::subprotocols::sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier};
 use crate::transcripts::Transcript;
 use crate::utils::math::Math;
 use crate::zkvm::bytecode::chunks::committed_lanes;
 use crate::zkvm::bytecode::read_raf_checking::BytecodeReadRafSumcheckParams;
-use crate::zkvm::claim_reductions::precommitted::sealed;
-use crate::zkvm::claim_reductions::{
-    cycle_phase_round_schedule, internal_dummy_gap_len, PreCommittedClaimReductionParams,
-    PreCommitted, PreCommittedPolyClaimReduction, PreCommittedPolyClaimReductionState,
-    PreCommittedPolyReductionCore,
-    PreCommittedSumcheckInstanceParams, PreCommittedSumcheckInstanceProver,
-};
 use crate::zkvm::instruction::{
     CircuitFlags, InstructionFlags, NUM_CIRCUIT_FLAGS, NUM_INSTRUCTION_FLAGS,
 };
@@ -41,21 +32,62 @@ use strum::EnumCount;
 const DEGREE_BOUND: usize = 2;
 const NUM_VAL_STAGES: usize = 5;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Allocative)]
+pub enum PreCommitted {
+    CycleVariables,
+    AddressVariables,
+}
+
+fn cycle_phase_round_schedule(
+    log_t: usize,
+    log_k_chunk: usize,
+    joint_col_vars: usize,
+    poly_row_vars: usize,
+    poly_col_vars: usize,
+) -> (Range<usize>, Range<usize>) {
+    match DoryGlobals::get_layout() {
+        DoryLayout::CycleMajor => {
+            let col_end = std::cmp::min(log_t, poly_col_vars);
+            let col_binding_rounds = 0..col_end;
+            let row_start = std::cmp::min(
+                log_t,
+                std::cmp::max(std::cmp::min(log_t, joint_col_vars), col_end),
+            );
+            let row_end = std::cmp::min(log_t, row_start + poly_row_vars);
+            let row_binding_rounds = row_start..row_end;
+            (col_binding_rounds, row_binding_rounds)
+        }
+        DoryLayout::AddressMajor => {
+            let col_end = std::cmp::min(log_t, poly_col_vars.saturating_sub(log_k_chunk));
+            let col_binding_rounds = 0..col_end;
+            let row_start_unclamped = joint_col_vars.saturating_sub(log_k_chunk);
+            let row_start = std::cmp::min(log_t, std::cmp::max(row_start_unclamped, col_end));
+            let row_end = std::cmp::min(log_t, row_start + poly_row_vars);
+            let row_binding_rounds = row_start..row_end;
+            (col_binding_rounds, row_binding_rounds)
+        }
+    }
+}
+
 #[derive(Clone, Allocative)]
 pub struct BytecodeClaimReductionParams<F: JoltField> {
-    pub reduction: PreCommittedPolyClaimReductionState<F, PreCommitted>,
+    pub phase: PreCommitted,
+    pub cycle_var_challenges: Vec<F::Challenge>,
     pub eta: F,
     pub eta_powers: [F; NUM_VAL_STAGES],
     /// Eq weights over high bytecode address bits (one per committed chunk).
     pub chunk_rbc_weights: Vec<F>,
-    pub log_k: usize,
+    pub bytecode_T: usize,
+    pub main_log_k: usize,
+    pub main_log_t: usize,
     pub log_t: usize,
     pub log_k_chunk: usize,
+    /// Number of initial cycle rounds that must follow IncClaimReduction ordering.
+    pub dense_cycle_prefix_vars: usize,
     pub bytecode_chunk_count: usize,
     pub bytecode_col_vars: usize,
     pub bytecode_row_vars: usize,
-    pub main_col_vars: usize,
-    pub main_row_vars: usize,
+    pub joint_col_vars: usize,
     #[allocative(skip)]
     pub cycle_phase_row_rounds: Range<usize>,
     #[allocative(skip)]
@@ -65,21 +97,27 @@ pub struct BytecodeClaimReductionParams<F: JoltField> {
 }
 
 impl<F: JoltField> BytecodeClaimReductionParams<F> {
+    #[inline(always)]
+    fn bytecode_exceeds_main_domain(&self) -> bool {
+        self.total_poly_vars() > (self.main_log_t + self.main_log_k)
+    }
+
     pub fn new(
         bytecode_read_raf_params: &BytecodeReadRafSumcheckParams<F>,
+        main_log_t: usize,
+        main_log_k: usize,
+        dense_cycle_prefix_vars: usize,
         bytecode_chunk_count: usize,
         accumulator: &dyn OpeningAccumulator<F>,
         transcript: &mut impl Transcript,
     ) -> Self {
-        let log_k_full = bytecode_read_raf_params.log_K;
-        let log_t = bytecode_read_raf_params.target_log_T;
-        let log_k_chunk = bytecode_read_raf_params.one_hot_params.log_k_chunk;
-        let full_bytecode_len = 1usize << log_k_full;
+        let log_t_full = bytecode_read_raf_params.bytecode_T;
+        let full_bytecode_len = 1usize << log_t_full;
         assert!(
             full_bytecode_len.is_multiple_of(bytecode_chunk_count),
             "bytecode chunk count ({bytecode_chunk_count}) must divide bytecode_len ({full_bytecode_len})"
         );
-        let log_k = (full_bytecode_len / bytecode_chunk_count).log_2();
+        let bytecode_t = (full_bytecode_len / bytecode_chunk_count).log_2();
 
         let eta: F = transcript.challenge_scalar();
         let mut eta_powers = [F::one(); NUM_VAL_STAGES];
@@ -91,8 +129,8 @@ impl<F: JoltField> BytecodeClaimReductionParams<F> {
             VirtualPolynomial::BytecodeReadRafAddrClaim,
             SumcheckId::BytecodeReadRafAddressPhase,
         );
-        debug_assert_eq!(r_bc_full.r.len(), log_k_full);
-        let dropped_bits = log_k_full - log_k;
+        debug_assert_eq!(r_bc_full.r.len(), log_t_full);
+        let dropped_bits = log_t_full - bytecode_t;
         let chunk_rbc_weights = if dropped_bits == 0 {
             vec![F::one()]
         } else {
@@ -103,35 +141,49 @@ impl<F: JoltField> BytecodeClaimReductionParams<F> {
 
         let lane_weights = compute_lane_weights(bytecode_read_raf_params, accumulator, &eta_powers);
 
-        let (main_col_vars, main_row_vars) = DoryGlobals::try_get_main_sigma_nu()
-            .unwrap_or_else(|| DoryGlobals::main_sigma_nu(log_k_chunk, log_t));
-        let total_vars = committed_lanes().log_2() + log_k;
+        // bytecode_K is the committed lane capacity (already next-power-of-two padded).
+        let bytecode_k = committed_lanes();
+        let total_vars = bytecode_k.log_2() + bytecode_t;
         // Bytecode uses its own balanced dimensions (independent from Main).
-        // In Stage 8 it is embedded as a top-left block in Main.
+        // In Stage 8 it is embedded as a top-left block in Joint.
         let (bytecode_col_vars, bytecode_row_vars) = DoryGlobals::balanced_sigma_nu(total_vars);
+        // When bytecode is wider than the Main opening domain, anchor Stage-6 cycle alignment
+        // on bytecode itself and leave Stage-7 at the shared address window.
+        let cycle_alignment_rounds = if total_vars > (main_log_t + main_log_k) {
+            total_vars.saturating_sub(main_log_k)
+        } else {
+            main_log_t
+        };
+        // Align pre-committed scheduling/permutation to Joint geometry and ensure width can embed
+        // this bytecode block without column aliasing.
+        let joint_col_vars = std::cmp::max(
+            DoryGlobals::balanced_sigma_nu(cycle_alignment_rounds + main_log_k).0,
+            bytecode_col_vars,
+        );
         let (cycle_phase_col_rounds, cycle_phase_row_rounds) = cycle_phase_round_schedule(
-            log_t,
-            log_k_chunk,
-            main_col_vars,
+            cycle_alignment_rounds,
+            main_log_k,
+            joint_col_vars,
             bytecode_row_vars,
             bytecode_col_vars,
         );
 
         Self {
-            reduction: PreCommittedPolyClaimReductionState::new(
-                PreCommitted::CycleVariables,
-            ),
+            phase: PreCommitted::CycleVariables,
+            cycle_var_challenges: vec![],
             eta,
             eta_powers,
             chunk_rbc_weights,
-            log_k,
-            log_t,
-            log_k_chunk,
+            bytecode_T: bytecode_t,
+            main_log_k,
+            main_log_t,
+            log_t: main_log_t,
+            log_k_chunk: main_log_k,
+            dense_cycle_prefix_vars: dense_cycle_prefix_vars.min(cycle_alignment_rounds),
             bytecode_chunk_count,
             bytecode_col_vars,
             bytecode_row_vars,
-            main_col_vars,
-            main_row_vars,
+            joint_col_vars,
             cycle_phase_row_rounds,
             cycle_phase_col_rounds,
             r_bc,
@@ -145,11 +197,57 @@ impl<F: JoltField> BytecodeClaimReductionParams<F> {
     }
 }
 
-impl<F: JoltField> sealed::Sealed for BytecodeClaimReductionParams<F> {}
+impl<F: JoltField> BytecodeClaimReductionParams<F> {
+    fn total_poly_vars(&self) -> usize {
+        self.bytecode_col_vars + self.bytecode_row_vars
+    }
 
-impl<F: JoltField> PreCommittedSumcheckInstanceParams<F> for BytecodeClaimReductionParams<F> {
-    fn precommitted_input_claim(&self, accumulator: &dyn OpeningAccumulator<F>) -> F {
-        match self.reduction.phase {
+    fn is_cycle_phase(&self) -> bool {
+        self.phase == PreCommitted::CycleVariables
+    }
+
+    fn cycle_alignment_rounds(&self) -> usize {
+        if self.bytecode_exceeds_main_domain() {
+            self.total_poly_vars().saturating_sub(self.main_log_k)
+        } else {
+            self.main_log_t
+        }
+    }
+
+    fn address_alignment_rounds(&self) -> usize {
+        self.main_log_k
+    }
+
+    pub fn transition_to_address_phase(&mut self) {
+        self.phase = PreCommitted::AddressVariables;
+    }
+
+    fn num_rounds_for_current_phase(&self) -> usize {
+        if self.phase == PreCommitted::CycleVariables {
+            if !self.cycle_phase_row_rounds.is_empty() {
+                self.cycle_phase_row_rounds.end - self.cycle_phase_col_rounds.start
+            } else {
+                self.cycle_phase_col_rounds.len()
+            }
+        } else {
+            let first_phase_rounds =
+                self.cycle_phase_col_rounds.len() + self.cycle_phase_row_rounds.len();
+            self.total_poly_vars() - first_phase_rounds
+        }
+    }
+
+    pub fn round_offset(&self, max_num_rounds: usize) -> usize {
+        if self.is_cycle_phase() {
+            max_num_rounds.saturating_sub(self.cycle_alignment_rounds())
+        } else {
+            max_num_rounds.saturating_sub(self.num_rounds_for_current_phase())
+        }
+    }
+}
+
+impl<F: JoltField> SumcheckInstanceParams<F> for BytecodeClaimReductionParams<F> {
+    fn input_claim(&self, accumulator: &dyn OpeningAccumulator<F>) -> F {
+        match self.phase {
             PreCommitted::CycleVariables => (0..NUM_VAL_STAGES)
                 .map(|stage| {
                     let (_, val_claim) = accumulator.get_virtual_polynomial_opening(
@@ -170,50 +268,113 @@ impl<F: JoltField> PreCommittedSumcheckInstanceParams<F> for BytecodeClaimReduct
         }
     }
 
-    fn precommitted_degree(&self) -> usize {
+    fn degree(&self) -> usize {
         DEGREE_BOUND
     }
-}
 
-impl<F: JoltField> PreCommittedClaimReductionParams<F> for BytecodeClaimReductionParams<F> {
-    fn reduction(&self) -> &PreCommittedPolyClaimReductionState<F, PreCommitted> {
-        &self.reduction
+    fn num_rounds(&self) -> usize {
+        self.num_rounds_for_current_phase()
     }
 
-    fn reduction_mut(&mut self) -> &mut PreCommittedPolyClaimReductionState<F, PreCommitted> {
-        &mut self.reduction
-    }
+    fn normalize_opening_point(&self, challenges: &[F::Challenge]) -> OpeningPoint<BIG_ENDIAN, F> {
+        if self.phase == PreCommitted::CycleVariables {
+            let compact_offset = self.cycle_phase_col_rounds.start;
+            let compact_col_rounds = 0..self.cycle_phase_col_rounds.len();
+            let compact_row_rounds = self
+                .cycle_phase_row_rounds
+                .start
+                .saturating_sub(compact_offset)
+                ..self
+                    .cycle_phase_row_rounds
+                    .end
+                    .saturating_sub(compact_offset);
+            let mut cycle_var_challenges: Vec<F::Challenge> = Vec::with_capacity(
+                self.cycle_phase_col_rounds.len() + self.cycle_phase_row_rounds.len(),
+            );
+            cycle_var_challenges.extend_from_slice(&challenges[compact_col_rounds]);
+            if !self.cycle_phase_row_rounds.is_empty() {
+                cycle_var_challenges.extend_from_slice(&challenges[compact_row_rounds]);
+            }
+            return OpeningPoint::<LITTLE_ENDIAN, F>::new(cycle_var_challenges).match_endianness();
+        }
 
-    fn cycle_phase_col_rounds(&self) -> &Range<usize> {
-        &self.cycle_phase_col_rounds
-    }
+        match DoryGlobals::get_layout() {
+            DoryLayout::CycleMajor => OpeningPoint::<LITTLE_ENDIAN, F>::new(
+                [self.cycle_var_challenges.as_slice(), challenges].concat(),
+            )
+            .match_endianness(),
+            DoryLayout::AddressMajor => {
+                // Sumcheck binds over the rotated bytecode variable order. For committed opening
+                // points we must map back to the native bytecode point ordering.
+                let mut opening_point_le =
+                    [self.cycle_var_challenges.as_slice(), challenges].concat();
+                let shift = low_var_rotation_shift(
+                    opening_point_le.len(),
+                    self.dense_cycle_prefix_vars,
+                );
+                if shift != 0 {
+                    opening_point_le.rotate_left(shift);
+                }
+                let opening_point_be: OpeningPoint<BIG_ENDIAN, F> =
+                    OpeningPoint::<LITTLE_ENDIAN, F>::new(opening_point_le).match_endianness();
 
-    fn cycle_phase_row_rounds(&self) -> &Range<usize> {
-        &self.cycle_phase_row_rounds
-    }
+                // Reorder serialized opening-point segments to:
+                // [inc_point || bytecode_stage7(col||row) || bytecode_cycle_after_inc_point] (BE).
+                let total_rounds = opening_point_be.r.len();
+                let inc_rounds = self.dense_cycle_prefix_vars.min(total_rounds);
+                let stage7_rounds = self
+                    .address_alignment_rounds()
+                    .min(total_rounds.saturating_sub(inc_rounds));
+                let cycle_after_inc_rounds = total_rounds.saturating_sub(inc_rounds + stage7_rounds);
 
-    fn total_poly_vars(&self) -> usize {
-        self.bytecode_col_vars + self.bytecode_row_vars
-    }
+                // In AddressMajor, Stage-7 address vars can be split between column-side and row-side
+                // positions around the cycle-after-inc suffix. Keep inc fixed, then stitch stage7
+                // together as [col || row], and move cycle-after-inc to the end.
+                let stage7_row_rounds = self
+                    .bytecode_row_vars
+                    .saturating_sub(self.cycle_phase_row_rounds.len())
+                    .min(stage7_rounds);
+                let stage7_col_rounds = stage7_rounds.saturating_sub(stage7_row_rounds);
 
-    fn cycle_alignment_rounds(&self) -> usize {
-        self.log_t
-    }
+                let col_start = inc_rounds;
+                let col_end = col_start + stage7_col_rounds;
+                let cycle_start = col_end;
+                let cycle_end = cycle_start + cycle_after_inc_rounds;
+                let row_start = cycle_end;
+                let row_end = row_start + stage7_row_rounds;
 
-    fn address_alignment_rounds(&self) -> usize {
-        self.log_k_chunk
+                debug_assert_eq!(row_end, total_rounds);
+
+                let mut reordered = Vec::with_capacity(total_rounds);
+                reordered.extend_from_slice(&opening_point_be.r[..inc_rounds]); // inc
+                reordered.extend_from_slice(&opening_point_be.r[col_start..col_end]); // stage7 col
+                reordered.extend_from_slice(&opening_point_be.r[row_start..row_end]); // stage7 row
+                reordered.extend_from_slice(&opening_point_be.r[cycle_start..cycle_end]); // cycle extra
+
+                OpeningPoint::<BIG_ENDIAN, F>::new(reordered)
+            }
+        }
     }
 }
 
 #[derive(Allocative)]
 pub struct BytecodeClaimReductionProver<F: JoltField> {
-    core: PreCommittedPolyReductionCore<F, BytecodeClaimReductionParams<F>>,
+    params: BytecodeClaimReductionParams<F>,
+    value_poly: MultilinearPolynomial<F>,
+    eq_poly: MultilinearPolynomial<F>,
+    scale: F,
     chunk_value_polys: Vec<MultilinearPolynomial<F>>,
 }
 
-impl<F: JoltField> sealed::Sealed for BytecodeClaimReductionProver<F> {}
-
 impl<F: JoltField> BytecodeClaimReductionProver<F> {
+    pub fn params(&self) -> &BytecodeClaimReductionParams<F> {
+        &self.params
+    }
+
+    pub fn transition_to_address_phase(&mut self) {
+        self.params.transition_to_address_phase();
+    }
+
     pub fn initialize(
         params: BytecodeClaimReductionParams<F>,
         raw_chunk_polys: &[MultilinearPolynomial<F>],
@@ -236,21 +397,12 @@ impl<F: JoltField> BytecodeClaimReductionProver<F> {
             .collect();
 
         Self {
-            core: PreCommittedPolyReductionCore::new(params, value_poly, eq_poly),
+            params,
+            value_poly,
+            eq_poly,
+            scale: F::one(),
             chunk_value_polys,
         }
-    }
-}
-
-impl<F: JoltField> PreCommittedPolyClaimReduction<F> for BytecodeClaimReductionProver<F> {
-    type Params = BytecodeClaimReductionParams<F>;
-
-    fn precommitted_core(&self) -> &PreCommittedPolyReductionCore<F, Self::Params> {
-        &self.core
-    }
-
-    fn precommitted_core_mut(&mut self) -> &mut PreCommittedPolyReductionCore<F, Self::Params> {
-        &mut self.core
     }
 
     fn bind_aux_polys(&mut self, r_j: F::Challenge) {
@@ -258,22 +410,115 @@ impl<F: JoltField> PreCommittedPolyClaimReduction<F> for BytecodeClaimReductionP
             poly.bind_parallel(r_j, BindingOrder::LowToHigh);
         }
     }
+
+    fn compute_message_unscaled(&self, previous_claim_unscaled: F) -> UniPoly<F> {
+        let half = self.value_poly.len() / 2;
+        let evals: [F; DEGREE_BOUND] = (0..half)
+            .into_par_iter()
+            .map(|j| {
+                let value_evals = self
+                    .value_poly
+                    .sumcheck_evals_array::<DEGREE_BOUND>(j, BindingOrder::LowToHigh);
+                let eq_evals = self
+                    .eq_poly
+                    .sumcheck_evals_array::<DEGREE_BOUND>(j, BindingOrder::LowToHigh);
+                let mut out = [F::zero(); DEGREE_BOUND];
+                for i in 0..DEGREE_BOUND {
+                    out[i] = value_evals[i] * eq_evals[i];
+                }
+                out
+            })
+            .reduce(
+                || [F::zero(); DEGREE_BOUND],
+                |mut acc, arr| {
+                    acc.iter_mut().zip(arr.iter()).for_each(|(a, b)| *a += *b);
+                    acc
+                },
+            );
+        UniPoly::from_evals_and_hint(previous_claim_unscaled, &evals)
+    }
+
+    fn cycle_intermediate_claim(&self) -> F {
+        let len = self.value_poly.len();
+        debug_assert_eq!(len, self.eq_poly.len());
+        let mut sum = F::zero();
+        for i in 0..len {
+            sum += self.value_poly.get_bound_coeff(i) * self.eq_poly.get_bound_coeff(i);
+        }
+        sum * self.scale
+    }
+
+    fn final_claim_if_ready(&self) -> Option<F> {
+        if self.value_poly.len() == 1 {
+            Some(self.value_poly.final_sumcheck_claim())
+        } else {
+            None
+        }
+    }
 }
 
-impl<F: JoltField, T: Transcript> PreCommittedSumcheckInstanceProver<F, T>
-    for BytecodeClaimReductionProver<F>
-{
-    fn precommitted_cache_openings(
+impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for BytecodeClaimReductionProver<F> {
+    fn get_params(&self) -> &dyn SumcheckInstanceParams<F> {
+        &self.params
+    }
+
+    fn round_offset(&self, max_num_rounds: usize) -> usize {
+        self.params.round_offset(max_num_rounds)
+    }
+
+    fn compute_message(&mut self, round: usize, previous_claim: F) -> UniPoly<F> {
+        if self.params.is_cycle_phase()
+            && !self.params.cycle_phase_col_rounds.contains(&round)
+            && !self.params.cycle_phase_row_rounds.contains(&round)
+        {
+            return UniPoly::from_coeff(vec![previous_claim * F::from_u64(2).inverse().unwrap()]);
+        }
+
+        let trailing_cap = if self.params.is_cycle_phase() {
+            self.params.cycle_alignment_rounds()
+        } else {
+            self.params.address_alignment_rounds()
+        };
+        let num_trailing_variables =
+            trailing_cap.saturating_sub(self.params.num_rounds_for_current_phase());
+        let scaling_factor = self.scale * F::one().mul_pow_2(num_trailing_variables);
+        let prev_unscaled = previous_claim * scaling_factor.inverse().unwrap();
+        let poly_unscaled = self.compute_message_unscaled(prev_unscaled);
+        poly_unscaled * scaling_factor
+    }
+
+    fn ingest_challenge(&mut self, r_j: F::Challenge, round: usize) {
+        tracing::info!("BYTECODE: ingest_challenge round={} r_j={:?}, phase={:?}", round, r_j, self.params.phase);
+        if self.params.is_cycle_phase() {
+            let is_dummy_round = !self.params.cycle_phase_col_rounds.contains(&round)
+                && !self.params.cycle_phase_row_rounds.contains(&round);
+            if is_dummy_round {
+                self.scale *= F::from_u64(2).inverse().unwrap();
+            } else {
+                self.value_poly.bind_parallel(r_j, BindingOrder::LowToHigh);
+                self.eq_poly.bind_parallel(r_j, BindingOrder::LowToHigh);
+                self.bind_aux_polys(r_j);
+                self.params.cycle_var_challenges.push(r_j);
+            }
+            return;
+        }
+
+        self.value_poly.bind_parallel(r_j, BindingOrder::LowToHigh);
+        self.eq_poly.bind_parallel(r_j, BindingOrder::LowToHigh);
+        self.bind_aux_polys(r_j);
+    }
+
+    fn cache_openings(
         &self,
         accumulator: &mut ProverOpeningAccumulator<F>,
         transcript: &mut T,
         sumcheck_challenges: &[F::Challenge],
     ) {
-        let params = self.params();
+        let params = &self.params;
         let opening_point = params.normalize_opening_point(sumcheck_challenges);
 
-        if params.reduction.phase == PreCommitted::CycleVariables {
-            let c_mid = <Self as PreCommittedPolyClaimReduction<F>>::cycle_intermediate_claim(self);
+        if params.phase == PreCommitted::CycleVariables {
+            let c_mid = self.cycle_intermediate_claim();
             accumulator.append_virtual(
                 transcript,
                 VirtualPolynomial::BytecodeClaimReductionIntermediate,
@@ -283,9 +528,7 @@ impl<F: JoltField, T: Transcript> PreCommittedSumcheckInstanceProver<F, T>
             );
         }
 
-        if let Some(bytecode_claim) =
-            <Self as PreCommittedPolyClaimReduction<F>>::final_claim_if_ready(self)
-        {
+        if let Some(bytecode_claim) = self.final_claim_if_ready() {
             let chunk_claims: Vec<F> = self
                 .chunk_value_polys
                 .iter()
@@ -310,7 +553,7 @@ impl<F: JoltField, T: Transcript> PreCommittedSumcheckInstanceProver<F, T>
     }
 
     #[cfg(feature = "allocative")]
-    fn precommitted_update_flamegraph(&self, flamegraph: &mut allocative::FlameGraphBuilder) {
+    fn update_flamegraph(&self, flamegraph: &mut allocative::FlameGraphBuilder) {
         flamegraph.visit_root(self);
     }
 }
@@ -348,7 +591,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         sumcheck_challenges: &[F::Challenge],
     ) -> F {
         let params = self.params.borrow();
-        match params.reduction.phase {
+        match params.phase {
             PreCommitted::CycleVariables => {
                 accumulator
                     .get_virtual_polynomial_opening(
@@ -362,18 +605,16 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
                     .map(|chunk_idx| {
                         params.chunk_rbc_weights[chunk_idx]
                             * accumulator
-                            .get_committed_polynomial_opening(
-                                CommittedPolynomial::BytecodeChunk(chunk_idx),
-                                SumcheckId::BytecodeClaimReduction,
-                            )
-                            .1
+                                .get_committed_polynomial_opening(
+                                    CommittedPolynomial::BytecodeChunk(chunk_idx),
+                                    SumcheckId::BytecodeClaimReduction,
+                                )
+                                .1
                     })
                     .sum();
-                // Sumcheck binding order is always:
-                //   1) cycle-phase variables, then
-                //   2) address-phase variables.
-                // This differs from AddressMajor opening-point serialization.
-                let mut binding_challenges = params.reduction.cycle_var_challenges.clone();
+                // Sumcheck binding order is always cycle-phase variables first,
+                // then address-phase variables (independent of opening-point serialization).
+                let mut binding_challenges = params.cycle_var_challenges.clone();
                 binding_challenges.extend_from_slice(sumcheck_challenges);
                 let mut eq_poly = self.eq_poly.clone();
                 for r_j in binding_challenges.iter() {
@@ -381,10 +622,13 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
                 }
                 let eq_eval = eq_poly.final_sumcheck_claim();
 
-                let gap_len = internal_dummy_gap_len(
-                    &params.cycle_phase_col_rounds,
-                    &params.cycle_phase_row_rounds,
-                );
+                let cycle_phase_total_rounds = if !params.cycle_phase_row_rounds.is_empty() {
+                    params.cycle_phase_row_rounds.end - params.cycle_phase_col_rounds.start
+                } else {
+                    params.cycle_phase_col_rounds.len()
+                };
+                let gap_len = cycle_phase_total_rounds
+                    - (params.cycle_phase_col_rounds.len() + params.cycle_phase_row_rounds.len());
                 let two_inv = F::from_u64(2).inverse().unwrap();
                 let scale = (0..gap_len).fold(F::one(), |acc, _| acc * two_inv);
 
@@ -400,7 +644,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         sumcheck_challenges: &[F::Challenge],
     ) {
         let mut params = self.params.borrow_mut();
-        if params.reduction.phase == PreCommitted::CycleVariables {
+        if params.phase == PreCommitted::CycleVariables {
             let opening_point = params.normalize_opening_point(sumcheck_challenges);
             accumulator.append_virtual(
                 transcript,
@@ -408,13 +652,12 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
                 SumcheckId::BytecodeClaimReductionCyclePhase,
                 opening_point.clone(),
             );
-            params
-                .reduction
-                .set_cycle_challenges_from_opening_point(&opening_point);
+            let opening_point_le: OpeningPoint<LITTLE_ENDIAN, F> = opening_point.match_endianness();
+            params.cycle_var_challenges = opening_point_le.r;
         }
 
         if params.num_address_phase_rounds() == 0
-            || params.reduction.phase == PreCommitted::AddressVariables
+            || params.phase == PreCommitted::AddressVariables
         {
             let opening_point = params.normalize_opening_point(sumcheck_challenges);
             for chunk_idx in 0..params.bytecode_chunk_count {
@@ -434,26 +677,29 @@ fn build_permuted_value_and_eq_polys<F: JoltField>(
     raw_value_poly: &MultilinearPolynomial<F>,
 ) -> (MultilinearPolynomial<F>, MultilinearPolynomial<F>) {
     let eq_cycle = EqPolynomial::<F>::evals(&params.r_bc.r);
-    let mut indexed: Vec<(usize, (F, F))> = (0..raw_value_poly.len())
+    let value_coeffs: Vec<F> = (0..raw_value_poly.len())
+        .map(|idx| raw_value_poly.get_coeff(idx))
+        .collect();
+    let eq_coeffs: Vec<F> = (0..raw_value_poly.len())
         .map(|idx| {
             let (lane, cycle) = native_index_to_lane_cycle(params, idx);
-            let eq = params.lane_weights[lane] * eq_cycle[cycle];
-            (idx, (raw_value_poly.get_coeff(idx), eq))
+            params.lane_weights[lane] * eq_cycle[cycle]
         })
         .collect();
+    let num_vars = params.total_poly_vars();
+    let shift = low_var_rotation_shift(num_vars, params.dense_cycle_prefix_vars);
+    if shift == 0 {
+        return (value_coeffs.into(), eq_coeffs.into());
+    }
 
-    indexed.par_sort_by(|(a, _), (b, _)| {
-        let (addr_a, cycle_a) = index_to_main_address_cycle(params, *a);
-        let (addr_b, cycle_b) = index_to_main_address_cycle(params, *b);
-        match addr_a.cmp(&addr_b) {
-            Ordering::Less => Ordering::Less,
-            Ordering::Greater => Ordering::Greater,
-            Ordering::Equal => cycle_a.cmp(&cycle_b),
-        }
-    });
-
-    let (value_coeffs, eq_coeffs): (Vec<F>, Vec<F>) = indexed.into_iter().map(|(_, p)| p).unzip();
-    (value_coeffs.into(), eq_coeffs.into())
+    let mut permuted_values = vec![F::zero(); value_coeffs.len()];
+    let mut permuted_eq = vec![F::zero(); eq_coeffs.len()];
+    for old_idx in 0..value_coeffs.len() {
+        let new_idx = rotate_index_left(old_idx, num_vars, shift);
+        permuted_values[new_idx] = value_coeffs[old_idx];
+        permuted_eq[new_idx] = eq_coeffs[old_idx];
+    }
+    (permuted_values.into(), permuted_eq.into())
 }
 
 fn build_permuted_eq_poly<F: JoltField>(
@@ -461,25 +707,24 @@ fn build_permuted_eq_poly<F: JoltField>(
 ) -> MultilinearPolynomial<F> {
     let eq_cycle = EqPolynomial::<F>::evals(&params.r_bc.r);
     let total_size = 1usize << (params.bytecode_col_vars + params.bytecode_row_vars);
-    let mut indexed: Vec<(usize, F)> = (0..total_size)
+    let eq_coeffs: Vec<F> = (0..total_size)
         .map(|idx| {
             let (lane, cycle) = native_index_to_lane_cycle(params, idx);
-            (idx, params.lane_weights[lane] * eq_cycle[cycle])
+            params.lane_weights[lane] * eq_cycle[cycle]
         })
         .collect();
+    let num_vars = params.total_poly_vars();
+    let shift = low_var_rotation_shift(num_vars, params.dense_cycle_prefix_vars);
+    if shift == 0 {
+        return eq_coeffs.into();
+    }
 
-    indexed.par_sort_by(|(a, _), (b, _)| {
-        let (addr_a, cycle_a) = index_to_main_address_cycle(params, *a);
-        let (addr_b, cycle_b) = index_to_main_address_cycle(params, *b);
-        match addr_a.cmp(&addr_b) {
-            Ordering::Less => Ordering::Less,
-            Ordering::Greater => Ordering::Greater,
-            Ordering::Equal => cycle_a.cmp(&cycle_b),
-        }
-    });
-
-    let eq_coeffs: Vec<F> = indexed.into_iter().map(|(_, e)| e).collect();
-    eq_coeffs.into()
+    let mut permuted_eq = vec![F::zero(); eq_coeffs.len()];
+    for old_idx in 0..eq_coeffs.len() {
+        let new_idx = rotate_index_left(old_idx, num_vars, shift);
+        permuted_eq[new_idx] = eq_coeffs[old_idx];
+    }
+    permuted_eq.into()
 }
 
 #[inline(always)]
@@ -487,7 +732,7 @@ fn native_index_to_lane_cycle<F: JoltField>(
     params: &BytecodeClaimReductionParams<F>,
     index: usize,
 ) -> (usize, usize) {
-    let bytecode_len = 1usize << params.log_k;
+    let bytecode_len = 1usize << params.bytecode_T;
     match DoryGlobals::get_layout() {
         DoryLayout::CycleMajor => (index / bytecode_len, index % bytecode_len),
         DoryLayout::AddressMajor => (index % committed_lanes(), index / committed_lanes()),
@@ -495,27 +740,23 @@ fn native_index_to_lane_cycle<F: JoltField>(
 }
 
 #[inline(always)]
-fn index_to_main_address_cycle<F: JoltField>(
-    params: &BytecodeClaimReductionParams<F>,
-    index: usize,
-) -> (usize, usize) {
-    let bytecode_cols = 1usize << params.bytecode_col_vars;
-    let row = index / bytecode_cols;
-    let col = index % bytecode_cols;
-    let main_cols = 1usize << params.main_col_vars;
-    let global_index = row * main_cols + col;
-    match DoryGlobals::get_layout() {
-        DoryLayout::CycleMajor => {
-            let address = global_index / (1usize << params.log_t);
-            let cycle = global_index % (1usize << params.log_t);
-            (address, cycle)
-        }
-        DoryLayout::AddressMajor => {
-            let address = global_index % (1usize << params.log_k_chunk);
-            let cycle = global_index / (1usize << params.log_k_chunk);
-            (address, cycle)
-        }
+fn low_var_rotation_shift(num_vars: usize, dense_prefix_vars: usize) -> usize {
+    let x = dense_prefix_vars.min(num_vars);
+    if num_vars > x {
+        x
+    } else {
+        0
     }
+}
+
+#[inline(always)]
+fn rotate_index_left(index: usize, num_vars: usize, shift: usize) -> usize {
+    if shift == 0 || num_vars == 0 {
+        return index;
+    }
+    debug_assert!(num_vars < usize::BITS as usize);
+    let mask = (1usize << num_vars) - 1;
+    ((index << shift) | (index >> (num_vars - shift))) & mask
 }
 
 fn compute_lane_weights<F: JoltField>(

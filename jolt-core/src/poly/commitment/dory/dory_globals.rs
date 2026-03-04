@@ -138,31 +138,43 @@ impl From<DoryLayout> for u8 {
 
 // Main polynomial globals
 static mut GLOBAL_T: OnceLock<usize> = OnceLock::new();
+static mut GLOBAL_TRACE_T: OnceLock<usize> = OnceLock::new();
 static mut MAX_NUM_ROWS: OnceLock<usize> = OnceLock::new();
 static mut NUM_COLUMNS: OnceLock<usize> = OnceLock::new();
 
 // Trusted advice globals
 static mut TRUSTED_ADVICE_T: OnceLock<usize> = OnceLock::new();
+static mut TRUSTED_ADVICE_TRACE_T: OnceLock<usize> = OnceLock::new();
 static mut TRUSTED_ADVICE_MAX_NUM_ROWS: OnceLock<usize> = OnceLock::new();
 static mut TRUSTED_ADVICE_NUM_COLUMNS: OnceLock<usize> = OnceLock::new();
 
 // Untrusted advice globals
 static mut UNTRUSTED_ADVICE_T: OnceLock<usize> = OnceLock::new();
+static mut UNTRUSTED_ADVICE_TRACE_T: OnceLock<usize> = OnceLock::new();
 static mut UNTRUSTED_ADVICE_MAX_NUM_ROWS: OnceLock<usize> = OnceLock::new();
 static mut UNTRUSTED_ADVICE_NUM_COLUMNS: OnceLock<usize> = OnceLock::new();
 
 // Bytecode globals
 static mut BYTECODE_T: OnceLock<usize> = OnceLock::new();
+static mut BYTECODE_TRACE_T: OnceLock<usize> = OnceLock::new();
 static mut BYTECODE_MAX_NUM_ROWS: OnceLock<usize> = OnceLock::new();
 static mut BYTECODE_NUM_COLUMNS: OnceLock<usize> = OnceLock::new();
 
 // Program image globals (committed initial RAM image)
 static mut PROGRAM_IMAGE_T: OnceLock<usize> = OnceLock::new();
+static mut PROGRAM_IMAGE_TRACE_T: OnceLock<usize> = OnceLock::new();
 static mut PROGRAM_IMAGE_MAX_NUM_ROWS: OnceLock<usize> = OnceLock::new();
 static mut PROGRAM_IMAGE_NUM_COLUMNS: OnceLock<usize> = OnceLock::new();
 static mut PROGRAM_IMAGE_K_CHUNK: OnceLock<usize> = OnceLock::new();
 
-// Context tracking: 0=Main, 1=TrustedAdvice, 2=UntrustedAdvice, 3=Bytecode, 4=ProgramImage
+// Joint-opening globals (Stage 8 only)
+static mut JOINT_T: OnceLock<usize> = OnceLock::new();
+static mut JOINT_TRACE_T: OnceLock<usize> = OnceLock::new();
+static mut JOINT_MAX_NUM_ROWS: OnceLock<usize> = OnceLock::new();
+static mut JOINT_NUM_COLUMNS: OnceLock<usize> = OnceLock::new();
+
+// Context tracking:
+// 0=Main, 1=TrustedAdvice, 2=UntrustedAdvice, 3=Bytecode, 4=ProgramImage, 5=Joint
 static CURRENT_CONTEXT: AtomicU8 = AtomicU8::new(0);
 
 // Layout tracking: 0=CycleMajor, 1=AddressMajor
@@ -176,6 +188,8 @@ pub enum DoryContext {
     UntrustedAdvice = 2,
     Bytecode = 3,
     ProgramImage = 4,
+    /// Stage 8 joint-opening context. Keeps Main commitment dimensions unchanged.
+    Joint = 5,
 }
 
 impl From<u8> for DoryContext {
@@ -186,6 +200,7 @@ impl From<u8> for DoryContext {
             2 => DoryContext::UntrustedAdvice,
             3 => DoryContext::Bytecode,
             4 => DoryContext::ProgramImage,
+            5 => DoryContext::Joint,
             _ => panic!("Invalid DoryContext value: {value}"),
         }
     }
@@ -255,6 +270,7 @@ impl DoryGlobals {
 
         Self::set_num_columns_for_context(num_columns, DoryContext::Bytecode);
         Self::set_T_for_context(bytecode_t, DoryContext::Bytecode);
+        Self::set_trace_T_for_context(bytecode_t, DoryContext::Bytecode);
         Self::set_max_num_rows_for_context(num_rows, DoryContext::Bytecode);
         Some(())
     }
@@ -303,6 +319,7 @@ impl DoryGlobals {
 
             Self::set_num_columns_for_context(num_columns, DoryContext::ProgramImage);
             Self::set_T_for_context(padded_len_words, DoryContext::ProgramImage);
+            Self::set_trace_T_for_context(padded_len_words, DoryContext::ProgramImage);
             Self::set_max_num_rows_for_context(num_rows, DoryContext::ProgramImage);
             #[allow(static_mut_refs)]
             unsafe {
@@ -376,6 +393,7 @@ impl DoryGlobals {
 
         Self::set_num_columns_for_context(num_columns, DoryContext::ProgramImage);
         Self::set_T_for_context(padded_len_words, DoryContext::ProgramImage);
+        Self::set_trace_T_for_context(padded_len_words, DoryContext::ProgramImage);
         Self::set_max_num_rows_for_context(num_rows, DoryContext::ProgramImage);
         #[allow(static_mut_refs)]
         unsafe {
@@ -430,12 +448,61 @@ impl DoryGlobals {
 
         Self::set_num_columns_for_context(num_columns, DoryContext::Main);
         Self::set_T_for_context(T, DoryContext::Main);
+        Self::set_trace_T_for_context(T, DoryContext::Main);
         Self::set_max_num_rows_for_context(num_rows, DoryContext::Main);
 
         if let Some(l) = layout {
             CURRENT_LAYOUT.store(l as u8, Ordering::SeqCst);
         }
         CURRENT_CONTEXT.store(DoryContext::Main as u8, Ordering::SeqCst);
+        Some(())
+    }
+
+    /// Initialize the **Joint** context with an explicit `num_columns`.
+    pub fn initialize_joint_context_with_num_columns(
+        K: usize,
+        T: usize,
+        num_columns: usize,
+        layout: Option<DoryLayout>,
+    ) -> Option<()> {
+        assert!(
+            num_columns.is_power_of_two(),
+            "num_columns must be a power of two"
+        );
+        let total_size = K * T;
+        assert!(
+            total_size % num_columns == 0,
+            "joint matrix width {num_columns} must divide total_size {total_size}"
+        );
+        let num_rows = total_size / num_columns;
+
+        #[allow(static_mut_refs)]
+        unsafe {
+            if let (Some(existing_cols), Some(existing_rows), Some(existing_t)) = (
+                JOINT_NUM_COLUMNS.get(),
+                JOINT_MAX_NUM_ROWS.get(),
+                JOINT_T.get(),
+            ) {
+                assert_eq!(*existing_cols, num_columns);
+                assert_eq!(*existing_rows, num_rows);
+                assert_eq!(*existing_t, T);
+                if let Some(l) = layout {
+                    CURRENT_LAYOUT.store(l as u8, Ordering::SeqCst);
+                }
+                CURRENT_CONTEXT.store(DoryContext::Joint as u8, Ordering::SeqCst);
+                return Some(());
+            }
+        }
+
+        Self::set_num_columns_for_context(num_columns, DoryContext::Joint);
+        Self::set_T_for_context(T, DoryContext::Joint);
+        Self::set_trace_T_for_context(T, DoryContext::Joint);
+        Self::set_max_num_rows_for_context(num_rows, DoryContext::Joint);
+
+        if let Some(l) = layout {
+            CURRENT_LAYOUT.store(l as u8, Ordering::SeqCst);
+        }
+        CURRENT_CONTEXT.store(DoryContext::Joint as u8, Ordering::SeqCst);
         Some(())
     }
 
@@ -540,7 +607,9 @@ impl DoryGlobals {
 
     /// For `AddressMajor`, each Dory matrix row corresponds to this many cycles.
     ///
-    /// Equivalent to `T / num_rows` and to `num_cols / K`.
+    /// Uses the stored per-context trace domain `trace_T` when available. This lets dense
+    /// trace-domain embeddings in larger Joint/Main matrices derive the correct cycles-per-row
+    /// without caller-side length plumbing.
     pub fn address_major_cycles_per_row() -> usize {
         let (num_rows, num_cols) = Self::matrix_shape();
         let k = match Self::current_context() {
@@ -555,6 +624,7 @@ impl DoryGlobals {
             }
             _ => Self::k_from_matrix_shape(),
         };
+        tracing::info!("num_rows={num_rows}, num_cols={num_cols}, k={k}");
         debug_assert!(k > 0);
         debug_assert_eq!(num_cols % k, 0, "Expected num_cols to be divisible by K");
         debug_assert_eq!(
@@ -562,6 +632,13 @@ impl DoryGlobals {
             0,
             "Expected T to be divisible by num_rows"
         );
+        let trace_t = Self::get_trace_T();
+        if trace_t > 0 && trace_t % num_rows == 0 {
+            let embedded = trace_t / num_rows;
+            if embedded > 0 {
+                return embedded;
+            }
+        }
         num_cols / k
     }
 
@@ -583,6 +660,9 @@ impl DoryGlobals {
                 }
                 DoryContext::ProgramImage => {
                     let _ = PROGRAM_IMAGE_MAX_NUM_ROWS.set(max_num_rows);
+                }
+                DoryContext::Joint => {
+                    let _ = JOINT_MAX_NUM_ROWS.set(max_num_rows);
                 }
             }
         }
@@ -606,6 +686,9 @@ impl DoryGlobals {
                 DoryContext::ProgramImage => *PROGRAM_IMAGE_MAX_NUM_ROWS
                     .get()
                     .expect("program_image max_num_rows not initialized"),
+                DoryContext::Joint => *JOINT_MAX_NUM_ROWS
+                    .get()
+                    .expect("joint max_num_rows not initialized"),
             }
         }
     }
@@ -629,6 +712,9 @@ impl DoryGlobals {
                 DoryContext::ProgramImage => {
                     let _ = PROGRAM_IMAGE_NUM_COLUMNS.set(num_columns);
                 }
+                DoryContext::Joint => {
+                    let _ = JOINT_NUM_COLUMNS.set(num_columns);
+                }
             }
         }
     }
@@ -651,6 +737,9 @@ impl DoryGlobals {
                 DoryContext::ProgramImage => *PROGRAM_IMAGE_NUM_COLUMNS
                     .get()
                     .expect("program_image num_columns not initialized"),
+                DoryContext::Joint => *JOINT_NUM_COLUMNS
+                    .get()
+                    .expect("joint num_columns not initialized"),
             }
         }
     }
@@ -674,6 +763,35 @@ impl DoryGlobals {
                 DoryContext::ProgramImage => {
                     let _ = PROGRAM_IMAGE_T.set(t);
                 }
+                DoryContext::Joint => {
+                    let _ = JOINT_T.set(t);
+                }
+            }
+        }
+    }
+
+    fn set_trace_T_for_context(t: usize, context: DoryContext) {
+        #[allow(static_mut_refs)]
+        unsafe {
+            match context {
+                DoryContext::Main => {
+                    let _ = GLOBAL_TRACE_T.set(t);
+                }
+                DoryContext::TrustedAdvice => {
+                    let _ = TRUSTED_ADVICE_TRACE_T.set(t);
+                }
+                DoryContext::UntrustedAdvice => {
+                    let _ = UNTRUSTED_ADVICE_TRACE_T.set(t);
+                }
+                DoryContext::Bytecode => {
+                    let _ = BYTECODE_TRACE_T.set(t);
+                }
+                DoryContext::ProgramImage => {
+                    let _ = PROGRAM_IMAGE_TRACE_T.set(t);
+                }
+                DoryContext::Joint => {
+                    let _ = JOINT_TRACE_T.set(t);
+                }
             }
         }
     }
@@ -694,6 +812,34 @@ impl DoryGlobals {
                 DoryContext::ProgramImage => *PROGRAM_IMAGE_T
                     .get()
                     .expect("program_image t not initialized"),
+                DoryContext::Joint => *JOINT_T.get().expect("joint t not initialized"),
+            }
+        }
+    }
+
+    pub fn get_trace_T() -> usize {
+        let context = Self::current_context();
+        #[allow(static_mut_refs)]
+        unsafe {
+            match context {
+                DoryContext::Main => *GLOBAL_TRACE_T
+                    .get()
+                    .unwrap_or_else(|| GLOBAL_T.get().expect("main t not initialized")),
+                DoryContext::TrustedAdvice => *TRUSTED_ADVICE_TRACE_T
+                    .get()
+                    .unwrap_or_else(|| TRUSTED_ADVICE_T.get().expect("trusted advice t not initialized")),
+                DoryContext::UntrustedAdvice => *UNTRUSTED_ADVICE_TRACE_T
+                    .get()
+                    .unwrap_or_else(|| UNTRUSTED_ADVICE_T.get().expect("untrusted advice t not initialized")),
+                DoryContext::Bytecode => *BYTECODE_TRACE_T
+                    .get()
+                    .unwrap_or_else(|| BYTECODE_T.get().expect("bytecode t not initialized")),
+                DoryContext::ProgramImage => *PROGRAM_IMAGE_TRACE_T
+                    .get()
+                    .unwrap_or_else(|| PROGRAM_IMAGE_T.get().expect("program image t not initialized")),
+                DoryContext::Joint => *JOINT_TRACE_T
+                    .get()
+                    .unwrap_or_else(|| JOINT_T.get().expect("joint t not initialized")),
             }
         }
     }
@@ -721,8 +867,8 @@ impl DoryGlobals {
     /// # Arguments
     /// * `K` - Maximum address space size (K in OneHot polynomials)
     /// * `T` - Maximum trace length (cycle count)
-    /// * `context` - The Dory context to initialize (Main, TrustedAdvice, UntrustedAdvice, Bytecode, ProgramImage)
-    /// * `layout` - Optional layout for the Dory matrix. Only applies to Main context.
+    /// * `context` - The Dory context to initialize (Main, TrustedAdvice, UntrustedAdvice, Bytecode, ProgramImage, Joint)
+    /// * `layout` - Optional layout for the Dory matrix. Applies to Main/Joint contexts.
     ///   If `Some(layout)`, sets the layout. If `None`, leaves the existing layout
     ///   unchanged (defaults to `CycleMajor` after `reset()`). Ignored for advice contexts.
     ///
@@ -735,17 +881,29 @@ impl DoryGlobals {
         context: DoryContext,
         layout: Option<DoryLayout>,
     ) -> Option<()> {
+        Self::initialize_context_with_trace_t(K, T, T, context, layout)
+    }
+
+    /// Initialize context with separate matrix `T` and effective trace-domain `trace_t`.
+    pub fn initialize_context_with_trace_t(
+        K: usize,
+        T: usize,
+        trace_t: usize,
+        context: DoryContext,
+        layout: Option<DoryLayout>,
+    ) -> Option<()> {
         let (num_columns, num_rows, t) = Self::calculate_dimensions(K, T);
         Self::set_num_columns_for_context(num_columns, context);
         Self::set_T_for_context(t, context);
+        Self::set_trace_T_for_context(trace_t, context);
         Self::set_max_num_rows_for_context(num_rows, context);
 
-        // For Main context, set layout (if provided) and ensure subsequent uses of `get_*` read from it
-        if context == DoryContext::Main {
+        // For Main/Joint contexts, set layout (if provided) and make the context active.
+        if context == DoryContext::Main || context == DoryContext::Joint {
             if let Some(l) = layout {
                 CURRENT_LAYOUT.store(l as u8, Ordering::SeqCst);
             }
-            CURRENT_CONTEXT.store(DoryContext::Main as u8, Ordering::SeqCst);
+            CURRENT_CONTEXT.store(context as u8, Ordering::SeqCst);
         }
 
         Some(())
@@ -758,6 +916,7 @@ impl DoryGlobals {
         unsafe {
             // Reset main globals
             let _ = GLOBAL_T.take();
+            let _ = GLOBAL_TRACE_T.take();
             let _ = MAX_NUM_ROWS.take();
             let _ = NUM_COLUMNS.take();
 
@@ -766,24 +925,34 @@ impl DoryGlobals {
 
             // Reset trusted advice globals
             let _ = TRUSTED_ADVICE_T.take();
+            let _ = TRUSTED_ADVICE_TRACE_T.take();
             let _ = TRUSTED_ADVICE_MAX_NUM_ROWS.take();
             let _ = TRUSTED_ADVICE_NUM_COLUMNS.take();
 
             // Reset untrusted advice globals
             let _ = UNTRUSTED_ADVICE_T.take();
+            let _ = UNTRUSTED_ADVICE_TRACE_T.take();
             let _ = UNTRUSTED_ADVICE_MAX_NUM_ROWS.take();
             let _ = UNTRUSTED_ADVICE_NUM_COLUMNS.take();
 
             // Reset bytecode globals
             let _ = BYTECODE_T.take();
+            let _ = BYTECODE_TRACE_T.take();
             let _ = BYTECODE_MAX_NUM_ROWS.take();
             let _ = BYTECODE_NUM_COLUMNS.take();
 
             // Reset program image globals
             let _ = PROGRAM_IMAGE_T.take();
+            let _ = PROGRAM_IMAGE_TRACE_T.take();
             let _ = PROGRAM_IMAGE_MAX_NUM_ROWS.take();
             let _ = PROGRAM_IMAGE_NUM_COLUMNS.take();
             let _ = PROGRAM_IMAGE_K_CHUNK.take();
+
+            // Reset Stage-8 joint globals
+            let _ = JOINT_T.take();
+            let _ = JOINT_TRACE_T.take();
+            let _ = JOINT_MAX_NUM_ROWS.take();
+            let _ = JOINT_NUM_COLUMNS.take();
         }
 
         // Reset context to Main

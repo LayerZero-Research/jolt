@@ -71,6 +71,12 @@ use crate::utils::thread::unsafe_allocate_zero_vec;
 use crate::zkvm::witness::CommittedPolynomial;
 
 const DEGREE_BOUND: usize = 2;
+const DEBUG_INC_BINDINGS_ENV: &str = "JOLT_DEBUG_INC_BINDINGS";
+
+#[inline]
+fn debug_inc_bindings_enabled() -> bool {
+    std::env::var(DEBUG_INC_BINDINGS_ENV).is_ok()
+}
 
 #[derive(Allocative, Clone)]
 pub struct IncClaimReductionSumcheckParams<F: JoltField> {
@@ -84,6 +90,7 @@ pub struct IncClaimReductionSumcheckParams<F: JoltField> {
     pub r_cycle_stage4: OpeningPoint<BIG_ENDIAN, F>, // RamInc from RamValEvaluation/RamValFinal
     pub s_cycle_stage4: OpeningPoint<BIG_ENDIAN, F>, // RdInc from RegistersReadWriteChecking
     pub s_cycle_stage5: OpeningPoint<BIG_ENDIAN, F>, // RdInc from RegistersValEvaluation
+    pub ingested_challenges: Vec<F::Challenge>,
 }
 
 impl<F: JoltField> IncClaimReductionSumcheckParams<F> {
@@ -97,10 +104,9 @@ impl<F: JoltField> IncClaimReductionSumcheckParams<F> {
         let gamma_sqr = gamma.square();
         let gamma_cub = gamma_sqr * gamma;
         let n_cycle_vars = trace_len.log_2();
-        assert!(
-            cycle_alignment_rounds >= n_cycle_vars,
-            "cycle alignment rounds ({cycle_alignment_rounds}) must be >= dense cycle vars ({n_cycle_vars})"
-        );
+        // Keep dense Inc on its native cycle width and let front-loaded batching offsets align
+        // this instance relative to wider Stage-6 windows.
+        let cycle_alignment_rounds = cycle_alignment_rounds.max(n_cycle_vars);
 
         // Fetch opening points from accumulator
         let (r_cycle_stage2, _) = accumulator.get_committed_polynomial_opening(
@@ -142,6 +148,7 @@ impl<F: JoltField> IncClaimReductionSumcheckParams<F> {
             r_cycle_stage4,
             s_cycle_stage4,
             s_cycle_stage5,
+            ingested_challenges: Vec::new(),
         }
     }
 }
@@ -149,7 +156,6 @@ impl<F: JoltField> IncClaimReductionSumcheckParams<F> {
 impl<F: JoltField> SumcheckInstanceParams<F> for IncClaimReductionSumcheckParams<F> {
     fn input_claim(&self, accumulator: &dyn OpeningAccumulator<F>) -> F {
         let [gamma, gamma_sqr, gamma_cub] = self.gamma_powers;
-
         let (_, v_1) = accumulator.get_committed_polynomial_opening(
             CommittedPolynomial::RamInc,
             SumcheckId::RamReadWriteChecking,
@@ -177,7 +183,7 @@ impl<F: JoltField> SumcheckInstanceParams<F> for IncClaimReductionSumcheckParams
     }
 
     fn num_rounds(&self) -> usize {
-        self.n_cycle_vars
+        self.cycle_alignment_rounds
     }
 
     fn normalize_opening_point(
@@ -188,10 +194,39 @@ impl<F: JoltField> SumcheckInstanceParams<F> for IncClaimReductionSumcheckParams
     }
 }
 
+impl<F: JoltField> IncClaimReductionSumcheckParams<F> {
+    #[inline]
+    fn cycle_dummy_rounds(&self) -> usize {
+        self.cycle_alignment_rounds
+            .saturating_sub(self.n_cycle_vars)
+    }
+
+    #[inline]
+    fn cycle_dummy_scale(&self) -> F {
+        let two_inv = F::from_u64(2).inverse().unwrap();
+        (0..self.cycle_dummy_rounds()).fold(F::one(), |acc, _| acc * two_inv)
+    }
+
+    #[inline]
+    fn is_cycle_dummy_round(&self, round: usize) -> bool {
+        round >= self.n_cycle_vars
+    }
+
+    #[inline]
+    fn compact_cycle_challenges(
+        &self,
+        sumcheck_challenges: &[F::Challenge],
+    ) -> Vec<F::Challenge> {
+        let active = self.n_cycle_vars.min(sumcheck_challenges.len());
+        sumcheck_challenges[..active].to_vec()
+    }
+}
+
 #[derive(Allocative)]
 pub struct IncClaimReductionSumcheckProver<F: JoltField> {
     phase: IncClaimReductionPhase<F>,
     pub params: IncClaimReductionSumcheckParams<F>,
+    scale: F,
 }
 
 #[derive(Allocative)]
@@ -207,7 +242,11 @@ impl<F: JoltField> IncClaimReductionSumcheckProver<F> {
         let phase = IncClaimReductionPhase::Phase1(IncClaimReductionPhase1State::initialize(
             trace, &params,
         ));
-        Self { params, phase }
+        Self {
+            params,
+            phase,
+            scale: F::one(),
+        }
     }
 }
 
@@ -215,8 +254,6 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
     for IncClaimReductionSumcheckProver<F>
 {
     fn round_offset(&self, max_num_rounds: usize) -> usize {
-        // Align dense-cycle rounds to the shared Stage-6 cycle window (front), and let
-        // trailing dummy rounds be handled by compute_message scaling.
         max_num_rounds.saturating_sub(self.params.cycle_alignment_rounds)
     }
 
@@ -225,33 +262,37 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
     }
 
     #[tracing::instrument(skip_all, name = "IncClaimReductionSumcheckProver::compute_message")]
-    fn compute_message(&mut self, _round: usize, previous_claim: F) -> UniPoly<F> {
-        // BatchedSumcheck pre-scales shorter instances by 2^(max_rounds - num_rounds)
-        // under front-loaded scheduling. Since we align dense rounds to the Stage-6
-        // cycle window (and therefore leave trailing dummy rounds), unscale before
-        // producing the active-round message and rescale afterwards.
-        let trailing_dummy_rounds = self
-            .params
-            .cycle_alignment_rounds
-            .saturating_sub(self.params.n_cycle_vars);
-        let scaling_factor = F::one().mul_pow_2(trailing_dummy_rounds);
-        let previous_claim_unscaled = previous_claim * scaling_factor.inverse().unwrap();
-        let unscaled_poly = match &self.phase {
+    fn compute_message(&mut self, round: usize, previous_claim: F) -> UniPoly<F> {
+        if self.params.is_cycle_dummy_round(round) {
+            let two_inv = F::from_u64(2).inverse().unwrap();
+            return UniPoly::from_coeff(vec![previous_claim * two_inv, F::zero()]);
+        }
+
+        let inv_scale = self.scale.inverse().unwrap();
+        let unscaled_previous_claim = previous_claim * inv_scale;
+        let poly_unscaled = match &self.phase {
             IncClaimReductionPhase::Phase1(state) => {
-                state.compute_message(&self.params, previous_claim_unscaled)
+                state.compute_message(&self.params, unscaled_previous_claim)
             }
             IncClaimReductionPhase::Phase2(state) => {
-                state.compute_message(&self.params, previous_claim_unscaled)
+                state.compute_message(&self.params, unscaled_previous_claim)
             }
         };
-        unscaled_poly * scaling_factor
+        poly_unscaled * self.scale
     }
 
     #[tracing::instrument(skip_all, name = "IncClaimReductionSumcheckProver::ingest_challenge")]
-    fn ingest_challenge(&mut self, r_j: F::Challenge, _round: usize) {
+    fn ingest_challenge(&mut self, r_j: F::Challenge, round: usize) {
+        if self.params.is_cycle_dummy_round(round) {
+            let two_inv = F::from_u64(2).inverse().unwrap();
+            self.scale *= two_inv;
+            return;
+        }
+
         match &mut self.phase {
             IncClaimReductionPhase::Phase1(state) => {
                 if state.should_transition_to_phase2() {
+                    tracing::info!("increment phase 1 should transition to phase 2 {:?}, r_j={:?}", round, r_j);
                     let mut sumcheck_challenges = state.sumcheck_challenges.clone();
                     sumcheck_challenges.push(r_j);
                     self.phase = IncClaimReductionPhase::Phase2(IncClaimReductionPhase2State::gen(
@@ -261,9 +302,13 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
                     ));
                     return;
                 }
+                self.params.ingested_challenges.push(r_j);
                 state.bind(r_j);
             }
-            IncClaimReductionPhase::Phase2(state) => state.bind(r_j),
+            IncClaimReductionPhase::Phase2(state) => {
+                self.params.ingested_challenges.push(r_j);
+                state.bind(r_j);
+            }
         }
     }
 
@@ -277,8 +322,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
             panic!("Should finish sumcheck on phase 2");
         };
 
+        let active_cycle_challenges = self.params.compact_cycle_challenges(sumcheck_challenges);
         let opening_point = SumcheckInstanceProver::<F, T>::get_params(self)
-            .normalize_opening_point(sumcheck_challenges);
+            .normalize_opening_point(&active_cycle_challenges);
+
 
         let ram_inc_claim = state.ram_inc.final_sumcheck_claim();
         let rd_inc_claim = state.rd_inc.final_sumcheck_claim();
@@ -704,8 +751,30 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
     ) -> F {
         let [gamma, gamma_sqr, _] = self.params.gamma_powers;
 
+        let active_cycle_challenges = self.params.compact_cycle_challenges(sumcheck_challenges);
         let opening_point = SumcheckInstanceVerifier::<F, T>::get_params(self)
-            .normalize_opening_point(sumcheck_challenges);
+            .normalize_opening_point(&active_cycle_challenges);
+        if debug_inc_bindings_enabled() {
+            let opening_point_le: OpeningPoint<LITTLE_ENDIAN, F> =
+                opening_point.clone().match_endianness();
+            let order_match = active_cycle_challenges == opening_point_le.r;
+            tracing::info!(
+                "IncClaimReduction cache_openings verifier: active_challenges={:?}",
+                active_cycle_challenges
+            );
+            tracing::info!(
+                "IncClaimReduction cache_openings verifier: opening_point_be={:?}",
+                opening_point.r
+            );
+            tracing::info!(
+                "IncClaimReduction cache_openings verifier: opening_point_le={:?}",
+                opening_point_le.r
+            );
+            tracing::info!(
+                "IncClaimReduction cache_openings verifier: challenge_order_match={}",
+                order_match
+            );
+        }
 
         // Compute eq evaluations at final point
         let eq_r2 = EqPolynomial::mle(&opening_point.r, &self.params.r_cycle_stage2.r);
@@ -726,7 +795,8 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
             SumcheckId::IncClaimReduction,
         );
 
-        ram_inc_claim * eq_ram_combined + gamma_sqr * rd_inc_claim * eq_rd_combined
+        self.params.cycle_dummy_scale()
+            * (ram_inc_claim * eq_ram_combined + gamma_sqr * rd_inc_claim * eq_rd_combined)
     }
 
     fn cache_openings(
@@ -735,8 +805,9 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         transcript: &mut T,
         sumcheck_challenges: &[F::Challenge],
     ) {
+        let active_cycle_challenges = self.params.compact_cycle_challenges(sumcheck_challenges);
         let opening_point = SumcheckInstanceVerifier::<F, T>::get_params(self)
-            .normalize_opening_point(sumcheck_challenges);
+            .normalize_opening_point(&active_cycle_challenges);
 
         accumulator.append_dense(
             transcript,

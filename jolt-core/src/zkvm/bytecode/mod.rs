@@ -8,14 +8,12 @@ use common::constants::{ALIGNMENT_FACTOR_BYTECODE, RAM_START_ADDRESS};
 use tracer::instruction::{Cycle, Instruction};
 
 use crate::poly::commitment::commitment_scheme::CommitmentScheme;
-use crate::poly::commitment::dory::{
-    ArkworksProverSetup, DoryContext, DoryGlobals,
-};
+use crate::poly::commitment::dory::{ArkworksProverSetup, DoryContext, DoryGlobals};
 use crate::utils::errors::ProofVerifyError;
 use crate::utils::math::Math;
 use crate::zkvm::bytecode::chunks::{
-    build_committed_bytecode_chunk_polynomials,
-    committed_bytecode_chunk_cycle_len, committed_lanes, validate_committed_bytecode_chunk_count,
+    build_committed_bytecode_chunk_polynomials, committed_bytecode_chunk_cycle_len,
+    committed_lanes, validate_committed_bytecode_chunk_count,
 };
 
 pub(crate) mod chunks;
@@ -59,10 +57,7 @@ impl<PCS: CommitmentScheme> TrustedBytecodeCommitments<PCS> {
     ///
     /// This must be run honestly by whoever prepares committed bytecode artifacts.
     /// Returns trusted commitments + hints for opening proofs.
-    #[tracing::instrument(
-        skip_all,
-        name = "TrustedBytecodeCommitments::derive"
-    )]
+    #[tracing::instrument(skip_all, name = "TrustedBytecodeCommitments::derive")]
     pub fn derive(
         bytecode: &BytecodePreprocessing,
         generators: &PCS::ProverSetup,
@@ -99,9 +94,10 @@ impl<PCS: CommitmentScheme> TrustedBytecodeCommitments<PCS> {
         );
         let _ctx = DoryGlobals::with_context(DoryContext::Bytecode);
 
-        let bytecode_polys = build_committed_bytecode_chunk_polynomials::<
-            PCS::Field,
-        >(&bytecode.bytecode, bytecode_chunk_count);
+        let bytecode_polys = build_committed_bytecode_chunk_polynomials::<PCS::Field>(
+            &bytecode.bytecode,
+            bytecode_chunk_count,
+        );
         let mut commitments = Vec::with_capacity(bytecode_polys.len());
         let mut hints = Vec::with_capacity(bytecode_polys.len());
         for bytecode_poly in bytecode_polys.iter() {

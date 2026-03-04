@@ -961,8 +961,9 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
         let mut r_address_le = r_address_point.r;
         r_address_le.reverse();
         let mut full_challenges = r_address_le;
-        let compact_cycle_challenges = self.params.compact_cycle_challenges(sumcheck_challenges);
-        full_challenges.extend_from_slice(&compact_cycle_challenges);
+        // Preserve full Stage-6 cycle rounds (including dummy rounds) in cached openings so
+        // downstream Stage-7/8 consumers can recover joint-aligned points.
+        full_challenges.extend_from_slice(sumcheck_challenges);
         let opening_point = self.params.normalize_opening_point(&full_challenges);
 
         // H is scaled by rho_i; unscale so cached openings match the committed polynomials.
@@ -1200,8 +1201,8 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         let mut r_address_le = r_address_point.r;
         r_address_le.reverse();
         let mut full_challenges = r_address_le;
-        let compact_cycle_challenges = self.params.compact_cycle_challenges(sumcheck_challenges);
-        full_challenges.extend_from_slice(&compact_cycle_challenges);
+        // Mirror prover behavior: cache full cycle rounds (dummy + active).
+        full_challenges.extend_from_slice(sumcheck_challenges);
         let opening_point = self.params.normalize_opening_point(&full_challenges);
         accumulator.append_sparse(
             transcript,
