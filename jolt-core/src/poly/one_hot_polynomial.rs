@@ -76,6 +76,17 @@ impl<F: JoltField> OneHotPolynomial<F> {
         }
     }
 
+    #[inline]
+    fn column_stride() -> usize {
+        let trace_t = DoryGlobals::get_trace_T();
+        let matrix_t = DoryGlobals::get_T();
+        if trace_t > 0 && matrix_t >= trace_t && matrix_t % trace_t == 0 {
+            matrix_t / trace_t
+        } else {
+            1
+        }
+    }
+
     pub fn get_num_vars(&self) -> usize {
         self.K.log_2() + self.nonzero_indices.len().log_2()
     }
@@ -133,14 +144,23 @@ impl<F: JoltField> OneHotPolynomial<F> {
         bases: &[G::Affine],
     ) -> Vec<G> {
         let layout = DoryGlobals::get_layout();
+        let column_stride = Self::column_stride();
         let num_rows = self.num_rows();
         let row_len = DoryGlobals::get_num_columns();
         let t = self.nonzero_indices.len();
-        let effective_t = self.effective_t_for_layout();
+        let effective_t = if column_stride == 1 {
+            self.effective_t_for_layout()
+        } else {
+            t
+        };
 
         debug_assert!(
             bases.len() >= row_len,
             "Expected at least row_len bases for Dory row commitments"
+        );
+        debug_assert!(
+            row_len % column_stride == 0,
+            "row_len ({row_len}) must be divisible by column_stride ({column_stride})"
         );
 
         // Safety: This function is only called with G1Affine
@@ -148,7 +168,8 @@ impl<F: JoltField> OneHotPolynomial<F> {
 
         // CycleMajor optimization for T >> K: process by cycle chunks, group by address
         let rows_per_k = t / row_len;
-        if layout == DoryLayout::CycleMajor
+        if column_stride == 1
+            && layout == DoryLayout::CycleMajor
             && effective_t == t
             && rows_per_k >= rayon::current_num_threads()
         {
@@ -193,8 +214,13 @@ impl<F: JoltField> OneHotPolynomial<F> {
             if let Some(k) = k {
                 let global_index =
                     layout.address_cycle_to_index(*k as usize, cycle, self.K, effective_t);
-                let row_index = global_index / row_len;
-                let col_index = global_index % row_len;
+                let scaled_index = if column_stride == 1 {
+                    global_index
+                } else {
+                    global_index * column_stride
+                };
+                let row_index = scaled_index / row_len;
+                let col_index = scaled_index % row_len;
                 if row_index < num_rows {
                     row_indices[row_index].push(col_index);
                 }

@@ -1,6 +1,7 @@
 use crate::field::{BarrettReduce, FMAdd, JoltField};
-use crate::poly::commitment::dory::{DoryGlobals, DoryLayout};
+use crate::poly::commitment::dory::{DoryContext, DoryGlobals, DoryLayout};
 use crate::poly::multilinear_polynomial::MultilinearPolynomial;
+use crate::poly::one_hot_polynomial::OneHotPolynomial;
 use crate::utils::accumulation::Acc6S;
 use crate::utils::math::{s64_from_diff_u64s, Math};
 use crate::utils::thread::unsafe_allocate_zero_vec;
@@ -457,17 +458,107 @@ impl<F: JoltField> RLCPolynomial<F> {
             dense_result
         };
 
+        let one_hot_column_stride = Self::one_hot_column_stride();
         // Compute the **linear space** vector-matrix product for one-hot polynomials
         for (coeff, poly) in self.one_hot_rlc.iter() {
             match poly.as_ref() {
                 MultilinearPolynomial::OneHot(one_hot) => {
-                    one_hot.vector_matrix_product(left_vec, *coeff, &mut result);
+                    if one_hot_column_stride == 1 {
+                        one_hot.vector_matrix_product(left_vec, *coeff, &mut result);
+                    } else {
+                        Self::one_hot_vector_matrix_product_with_stride(
+                            one_hot,
+                            left_vec,
+                            *coeff,
+                            &mut result,
+                            one_hot_column_stride,
+                        );
+                    }
                 }
                 _ => panic!("Expected OneHot polynomial in one_hot_rlc"),
             }
         }
 
         result
+    }
+
+    #[inline]
+    fn one_hot_column_stride() -> usize {
+        let trace_t = DoryGlobals::get_trace_T();
+        let matrix_t = DoryGlobals::get_T();
+        if trace_t > 0 && matrix_t >= trace_t && matrix_t % trace_t == 0 {
+            matrix_t / trace_t
+        } else {
+            1
+        }
+    }
+
+    fn one_hot_vector_matrix_product_with_stride(
+        one_hot: &OneHotPolynomial<F>,
+        left_vec: &[F],
+        coeff: F,
+        result: &mut [F],
+        column_stride: usize,
+    ) {
+        if column_stride == 1 {
+            one_hot.vector_matrix_product(left_vec, coeff, result);
+            return;
+        }
+
+        let layout = DoryGlobals::get_layout();
+        let t = one_hot.nonzero_indices.len();
+        let effective_t = if column_stride == 1
+            && layout == DoryLayout::CycleMajor
+            && matches!(DoryGlobals::current_context(), DoryContext::Main)
+            && t < DoryGlobals::get_T()
+        {
+            DoryGlobals::get_T()
+        } else {
+            t
+        };
+        let num_columns = DoryGlobals::get_num_columns();
+        debug_assert_eq!(result.len(), num_columns);
+        debug_assert!(num_columns % column_stride == 0);
+        let base_num_columns = num_columns / column_stride;
+
+        // CycleMajor optimization for T >= row_len (typical case where T >= K)
+        if layout == DoryLayout::CycleMajor && t >= base_num_columns {
+            let rows_per_k = effective_t / base_num_columns;
+            result
+                .par_iter_mut()
+                .enumerate()
+                .for_each(|(col_index, dest)| {
+                    if col_index % column_stride != 0 {
+                        return;
+                    }
+                    let base_col = col_index / column_stride;
+                    let mut col_dot_product = F::zero();
+                    for (row_offset, cycle) in
+                        (base_col..t).step_by(base_num_columns).enumerate()
+                    {
+                        if let Some(k) = one_hot.nonzero_indices[cycle] {
+                            let row_index = k as usize * rows_per_k + row_offset;
+                            col_dot_product += left_vec[row_index];
+                        }
+                    }
+                    *dest += coeff * col_dot_product;
+                });
+            return;
+        }
+
+        // General path: iterate through nonzero indices and compute contributions
+        for (cycle, k) in one_hot.nonzero_indices.iter().enumerate() {
+            if let Some(k) = k {
+                let global_index =
+                    layout.address_cycle_to_index(*k as usize, cycle, one_hot.K, effective_t);
+                let scaled_index = global_index * column_stride;
+                let row_index = scaled_index / num_columns;
+                let col_index = scaled_index % num_columns;
+                if row_index < left_vec.len() && col_index < result.len() {
+                    result[col_index] += coeff * left_vec[row_index];
+                }
+            }
+        }
     }
 
     /// Adds pre-committed polynomial contributions to the vector-matrix-vector product result.

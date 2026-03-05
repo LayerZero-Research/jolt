@@ -174,7 +174,7 @@ impl<F: JoltField> SumcheckInstanceParams<F> for InstructionRaSumcheckParams<F> 
 impl<F: JoltField> InstructionRaSumcheckParams<F> {
     #[inline]
     fn active_cycle_rounds(&self) -> usize {
-        self.cycle_phase_col_rounds.len() + self.cycle_phase_row_rounds.len()
+        self.r_cycle.len()
     }
 
     #[inline]
@@ -190,18 +190,13 @@ impl<F: JoltField> InstructionRaSumcheckParams<F> {
 
     #[inline]
     fn is_cycle_dummy_round(&self, round: usize) -> bool {
-        !self.cycle_phase_col_rounds.contains(&round) && !self.cycle_phase_row_rounds.contains(&round)
+        round >= self.active_cycle_rounds()
     }
 
     #[inline]
     fn compact_cycle_challenges(&self, sumcheck_challenges: &[F::Challenge]) -> Vec<F::Challenge> {
-        let mut compact =
-            Vec::with_capacity(self.cycle_phase_col_rounds.len() + self.cycle_phase_row_rounds.len());
-        compact.extend_from_slice(&sumcheck_challenges[self.cycle_phase_col_rounds.clone()]);
-        if !self.cycle_phase_row_rounds.is_empty() {
-            compact.extend_from_slice(&sumcheck_challenges[self.cycle_phase_row_rounds.clone()]);
-        }
-        compact
+        let active = self.active_cycle_rounds().min(sumcheck_challenges.len());
+        sumcheck_challenges[..active].to_vec()
     }
 }
 
@@ -319,6 +314,8 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for InstructionRa
             self.scale *= two_inv;
             return;
         }
+        tracing::info!("r_j={:?}, round={round}", r_j);
+
         self.ra_i_polys
             .iter_mut()
             .for_each(|p| p.bind_parallel(r_j, BindingOrder::LowToHigh));

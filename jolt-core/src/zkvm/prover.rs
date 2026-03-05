@@ -1803,6 +1803,28 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             let start = stage8_opening_point.r.len() - num_vars;
             OpeningPoint::<BIG_ENDIAN, F>::new(stage8_opening_point.r[start..].to_vec())
         };
+        let derive_ra_from_prefix_rotated = |num_vars: usize| -> OpeningPoint<BIG_ENDIAN, F> {
+            assert!(
+                num_vars <= stage8_opening_point.r.len(),
+                "cannot derive source point of len {} from stage8 point len {}",
+                num_vars,
+                stage8_opening_point.r.len()
+            );
+            let k = self.one_hot_params.log_k_chunk;
+            assert!(
+                k <= num_vars,
+                "ra opening point shorter than log_k_chunk (len={}, log_k_chunk={})",
+                num_vars,
+                k
+            );
+            let t = num_vars - k;
+            let prefix = &stage8_opening_point.r[..num_vars];
+            let mut rotated = Vec::with_capacity(num_vars);
+            // Move the last k address variables to the front: [t | k] -> [k | t].
+            rotated.extend_from_slice(&prefix[t..]);
+            rotated.extend_from_slice(&prefix[..t]);
+            OpeningPoint::<BIG_ENDIAN, F>::new(rotated)
+        };
         match poly {
             CommittedPolynomial::RdInc | CommittedPolynomial::RamInc => {
                 let witness = poly.generate_witness(
@@ -1830,7 +1852,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                     stage8_trace,
                     Some(&self.one_hot_params),
                 );
-                let derived_source_point = derive_from_suffix(witness.get_num_vars());
+                let derived_source_point = derive_ra_from_prefix_rotated(witness.get_num_vars());
                 Some((
                     derived_source_point.clone(),
                     witness.evaluate(&derived_source_point.r),
@@ -2076,6 +2098,11 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 &opening_point,
             );
         }
+        let (ra_point, _) = self.opening_accumulator.get_committed_polynomial_opening(
+            CommittedPolynomial::InstructionRa(0),
+            SumcheckId::HammingWeightClaimReduction,
+        );
+        tracing::info!("ra_point={:?}", ra_point.r);
 
         // Sparse polynomials: all RA polys (from HammingWeightClaimReduction)
         // These can also be lower-dimensional than the unified Stage 8 point when
