@@ -222,7 +222,6 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
 
     #[tracing::instrument(skip_all, name = "IncClaimReductionSumcheckProver::ingest_challenge")]
     fn ingest_challenge(&mut self, r_j: F::Challenge, _round: usize) {
-        tracing::info!(?r_j, "ingesting challenge");
         match &mut self.phase {
             IncClaimReductionPhase::Phase1(state) => {
                 if state.should_transition_to_phase2() {

@@ -512,7 +512,6 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for BytecodeClaim
             }
             return;
         }
-
         self.value_poly.bind_parallel(r_j, BindingOrder::LowToHigh);
         self.eq_poly.bind_parallel(r_j, BindingOrder::LowToHigh);
         self.bind_aux_polys(r_j);
@@ -697,15 +696,14 @@ fn build_permuted_value_and_eq_polys<F: JoltField>(
         })
         .collect();
     let num_vars = params.total_poly_vars();
-    let shift = low_var_rotation_shift(num_vars, params.dense_cycle_prefix_vars);
-    if shift == 0 {
+    if !needs_sumcheck_permutation(params) {
         return (value_coeffs.into(), eq_coeffs.into());
     }
 
     let mut permuted_values = vec![F::zero(); value_coeffs.len()];
     let mut permuted_eq = vec![F::zero(); eq_coeffs.len()];
     for old_idx in 0..value_coeffs.len() {
-        let new_idx = rotate_index_left(old_idx, num_vars, shift);
+        let new_idx = permute_sumcheck_index(params, old_idx, num_vars);
         permuted_values[new_idx] = value_coeffs[old_idx];
         permuted_eq[new_idx] = eq_coeffs[old_idx];
     }
@@ -724,14 +722,13 @@ fn build_permuted_eq_poly<F: JoltField>(
         })
         .collect();
     let num_vars = params.total_poly_vars();
-    let shift = low_var_rotation_shift(num_vars, params.dense_cycle_prefix_vars);
-    if shift == 0 {
+    if !needs_sumcheck_permutation(params) {
         return eq_coeffs.into();
     }
 
     let mut permuted_eq = vec![F::zero(); eq_coeffs.len()];
     for old_idx in 0..eq_coeffs.len() {
-        let new_idx = rotate_index_left(old_idx, num_vars, shift);
+        let new_idx = permute_sumcheck_index(params, old_idx, num_vars);
         permuted_eq[new_idx] = eq_coeffs[old_idx];
     }
     permuted_eq.into()
@@ -750,23 +747,94 @@ fn native_index_to_lane_cycle<F: JoltField>(
 }
 
 #[inline(always)]
-fn low_var_rotation_shift(num_vars: usize, dense_prefix_vars: usize) -> usize {
-    let x = dense_prefix_vars.min(num_vars);
-    if num_vars > x {
-        x
-    } else {
-        0
+fn needs_sumcheck_permutation<F: JoltField>(params: &BytecodeClaimReductionParams<F>) -> bool {
+    let num_vars = params.total_poly_vars();
+    match DoryGlobals::get_layout() {
+        // CycleMajor: explicit block permutation that cancels normalize_opening_point's
+        // [k || T || c] -> [c || k || T] opening-point reordering.
+        DoryLayout::CycleMajor => {
+            let k = params.main_log_k.min(num_vars);
+            let t = params.dense_cycle_prefix_vars.min(num_vars.saturating_sub(k));
+            let c = num_vars.saturating_sub(k + t);
+            c > 0
+        }
+        // AddressMajor also needs an explicit block permutation to invert the
+        // normalization impact on bytecode reduction coordinates.
+        DoryLayout::AddressMajor => {
+            // Use BE block semantics here (matching opening-point discussions):
+            // raw committed chunk coordinates are `[T | k | c]`,
+            // while bytecode sumcheck semantics are `[k | T | c]`.
+            //
+            // So we swap only the top BE blocks `T` and `k`, and keep `c` fixed.
+            //
+            // (Equivalent LE view: `[c | k | T] -> [c | T | k]`.)
+            //
+            // where:
+            // - `c`: bytecode-only Stage-6 prefix vars,
+            // - `k`: Stage-7 address vars,
+            // - `T`: shared dense Stage-6 suffix vars.
+            let k = params.address_alignment_rounds().min(num_vars);
+            let t = params.dense_cycle_prefix_vars.min(num_vars.saturating_sub(k));
+            k > 0 && t > 0
+        }
     }
 }
 
 #[inline(always)]
-fn rotate_index_left(index: usize, num_vars: usize, shift: usize) -> usize {
-    if shift == 0 || num_vars == 0 {
-        return index;
+fn permute_sumcheck_index<F: JoltField>(
+    params: &BytecodeClaimReductionParams<F>,
+    index: usize,
+    num_vars: usize,
+) -> usize {
+    match DoryGlobals::get_layout() {
+        DoryLayout::CycleMajor => {
+            // BE block order conversion:
+            //   raw:      [c | T | k]
+            //   sumcheck: [T | k | c]
+            //
+            // (Equivalent LE view: `[k | T | c] -> [c | k | T]`.)
+            let k = params.main_log_k.min(num_vars);
+            let t = params.dense_cycle_prefix_vars.min(num_vars.saturating_sub(k));
+            let c = num_vars.saturating_sub(k + t);
+            if c == 0 {
+                return index;
+            }
+            debug_assert!(num_vars < usize::BITS as usize);
+            let c_mask = if c == 0 { 0 } else { (1usize << c) - 1 };
+            let t_mask = if t == 0 { 0 } else { (1usize << t) - 1 };
+            let k_mask = if k == 0 { 0 } else { (1usize << k) - 1 };
+
+            // Parse raw `[c | T | k]` in BE block order.
+            let c_bits = (index >> (t + k)) & c_mask;
+            let t_bits = (index >> k) & t_mask;
+            let k_bits = index & k_mask;
+
+            // Emit sumcheck `[T | k | c]` in BE block order.
+            (t_bits << (k + c)) | (k_bits << c) | c_bits
+        }
+        DoryLayout::AddressMajor => {
+            // BE block order conversion:
+            //   raw:      [T | k | c]
+            //   sumcheck: [k | T | c]
+            //
+            // (Equivalent LE view: `[c | k | T] -> [c | T | k]`.)
+            let k = params.address_alignment_rounds().min(num_vars);
+            let t = params.dense_cycle_prefix_vars.min(num_vars.saturating_sub(k));
+            let c = num_vars.saturating_sub(k + t);
+
+            let t_mask = if t == 0 { 0 } else { (1usize << t) - 1 };
+            let k_mask = if k == 0 { 0 } else { (1usize << k) - 1 };
+            let c_mask = if c == 0 { 0 } else { (1usize << c) - 1 };
+
+            // Parse raw `[T | k | c]` in BE block order.
+            let t_bits = (index >> (k + c)) & t_mask;
+            let k_bits = (index >> c) & k_mask;
+            let c_bits = index & c_mask;
+
+            // Emit sumcheck `[k | T | c]` in BE block order.
+            (k_bits << (t + c)) | (t_bits << c) | c_bits
+        }
     }
-    debug_assert!(num_vars < usize::BITS as usize);
-    let mask = (1usize << num_vars) - 1;
-    ((index << shift) | (index >> (num_vars - shift))) & mask
 }
 
 fn compute_lane_weights<F: JoltField>(
