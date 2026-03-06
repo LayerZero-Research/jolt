@@ -684,7 +684,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
                 padded_len_words,
                 self.proof.ram_K,
                 self.proof.trace_length,
-                trace_log_t,
+                stage6_log_t_padded,
                 trace_log_t,
                 self.one_hot_params.log_k_chunk,
                 &self.proof.rw_config,

@@ -43,15 +43,16 @@ fn internal_dummy_gap_len(
     cycle_phase_row_rounds: &Range<usize>,
 ) -> usize {
     let cycle_phase_total_rounds = if !cycle_phase_row_rounds.is_empty() {
-        cycle_phase_row_rounds.end - cycle_phase_col_rounds.start
+        cycle_phase_row_rounds.end
     } else {
-        cycle_phase_col_rounds.len()
+        cycle_phase_col_rounds.end
     };
     cycle_phase_total_rounds - (cycle_phase_col_rounds.len() + cycle_phase_row_rounds.len())
 }
 
 fn cycle_phase_round_schedule(
-    log_t: usize,
+    main_cycle_rounds: usize,
+    cycle_rounds: usize,
     log_k_chunk: usize,
     joint_col_vars: usize,
     poly_row_vars: usize,
@@ -59,22 +60,34 @@ fn cycle_phase_round_schedule(
 ) -> (Range<usize>, Range<usize>) {
     match DoryGlobals::get_layout() {
         DoryLayout::CycleMajor => {
-            let col_end = std::cmp::min(log_t, poly_col_vars);
-            let col_binding_rounds = 0..col_end;
-            let row_start = std::cmp::min(
-                log_t,
-                std::cmp::max(std::cmp::min(log_t, joint_col_vars), col_end),
+            let cycle_prefix = cycle_rounds.saturating_sub(main_cycle_rounds);
+            let col_len = std::cmp::min(main_cycle_rounds, poly_col_vars);
+            let col_start = cycle_prefix;
+            let col_end = std::cmp::min(cycle_rounds, col_start + col_len);
+            let col_binding_rounds = col_start..col_end;
+            let row_start_base = std::cmp::min(
+                main_cycle_rounds,
+                std::cmp::max(std::cmp::min(main_cycle_rounds, joint_col_vars), col_len),
             );
-            let row_end = std::cmp::min(log_t, row_start + poly_row_vars);
+            let row_start = std::cmp::min(cycle_rounds, cycle_prefix + row_start_base);
+            let row_end = std::cmp::min(cycle_rounds, row_start + poly_row_vars);
             let row_binding_rounds = row_start..row_end;
             (col_binding_rounds, row_binding_rounds)
         }
         DoryLayout::AddressMajor => {
-            let col_end = std::cmp::min(log_t, poly_col_vars.saturating_sub(log_k_chunk));
+            let (prefix_col_bits, _address_col_bits, dense_col_bits) = address_major_col_bit_partition(
+                main_cycle_rounds,
+                cycle_rounds,
+                log_k_chunk,
+                poly_col_vars,
+            );
+            let col_end =
+                std::cmp::min(cycle_rounds, prefix_col_bits.saturating_add(dense_col_bits));
             let col_binding_rounds = 0..col_end;
             let row_start_unclamped = joint_col_vars.saturating_sub(log_k_chunk);
-            let row_start = std::cmp::min(log_t, std::cmp::max(row_start_unclamped, col_end));
-            let row_end = std::cmp::min(log_t, row_start + poly_row_vars);
+            let row_start =
+                std::cmp::min(cycle_rounds, std::cmp::max(row_start_unclamped, col_end));
+            let row_end = std::cmp::min(cycle_rounds, row_start + poly_row_vars);
             let row_binding_rounds = row_start..row_end;
             (col_binding_rounds, row_binding_rounds)
         }
@@ -86,6 +99,27 @@ fn joint_col_vars_for_precommitted(cycle_rounds: usize, address_rounds: usize) -
     DoryGlobals::balanced_sigma_nu(cycle_rounds + address_rounds).0
 }
 
+#[inline]
+fn address_major_col_bit_partition(
+    main_cycle_rounds: usize,
+    cycle_rounds: usize,
+    log_k_chunk: usize,
+    poly_col_vars: usize,
+) -> (usize, usize, usize) {
+    // AddressMajor Stage-8 anchor shape in BE blocks:
+    //   [dense-cycle-cols || address-cols || cycle-prefix-cols]
+    // where `cycle-prefix-cols` has width `c = cycle_rounds - main_cycle_rounds`.
+    // For top-left projection with `poly_col_vars` columns, selected col bits in LE are:
+    //   [cycle-prefix || address || dense-cycle]
+    // This helper returns (cycle-prefix, address, dense-cycle) bit counts.
+    let cycle_prefix_cols = cycle_rounds.saturating_sub(main_cycle_rounds);
+    let prefix_bits = std::cmp::min(poly_col_vars, cycle_prefix_cols);
+    let remaining = poly_col_vars.saturating_sub(prefix_bits);
+    let address_bits = std::cmp::min(remaining, log_k_chunk);
+    let dense_bits = remaining.saturating_sub(address_bits);
+    (prefix_bits, address_bits, dense_bits)
+}
+
 fn precommitted_num_rounds<Phase: Copy + Eq>(
     phase: Phase,
     cycle_phase: Phase,
@@ -95,9 +129,9 @@ fn precommitted_num_rounds<Phase: Copy + Eq>(
 ) -> usize {
     if phase == cycle_phase {
         if !cycle_phase_row_rounds.is_empty() {
-            cycle_phase_row_rounds.end - cycle_phase_col_rounds.start
+            cycle_phase_row_rounds.end
         } else {
-            cycle_phase_col_rounds.len()
+            cycle_phase_col_rounds.end
         }
     } else {
         let first_phase_rounds = cycle_phase_col_rounds.len() + cycle_phase_row_rounds.len();
@@ -111,18 +145,18 @@ fn normalize_two_phase_opening_point<F: JoltField, Phase: Copy + Eq>(
     cycle_phase: Phase,
     cycle_phase_col_rounds: &Range<usize>,
     cycle_phase_row_rounds: &Range<usize>,
+    main_cycle_rounds: usize,
+    cycle_rounds: usize,
+    log_k_chunk: usize,
+    poly_col_vars: usize,
     challenges: &[F::Challenge],
 ) -> OpeningPoint<BIG_ENDIAN, F> {
     if phase == cycle_phase {
-        let compact_offset = cycle_phase_col_rounds.start;
-        let compact_col_rounds = 0..cycle_phase_col_rounds.len();
-        let compact_row_rounds = cycle_phase_row_rounds.start.saturating_sub(compact_offset)
-            ..cycle_phase_row_rounds.end.saturating_sub(compact_offset);
         let mut cycle_var_challenges: Vec<F::Challenge> =
             Vec::with_capacity(cycle_phase_col_rounds.len() + cycle_phase_row_rounds.len());
-        cycle_var_challenges.extend_from_slice(&challenges[compact_col_rounds]);
+        cycle_var_challenges.extend_from_slice(&challenges[cycle_phase_col_rounds.clone()]);
         if !cycle_phase_row_rounds.is_empty() {
-            cycle_var_challenges.extend_from_slice(&challenges[compact_row_rounds]);
+            cycle_var_challenges.extend_from_slice(&challenges[cycle_phase_row_rounds.clone()]);
         }
         return OpeningPoint::<LITTLE_ENDIAN, F>::new(cycle_var_challenges).match_endianness();
     }
@@ -132,10 +166,27 @@ fn normalize_two_phase_opening_point<F: JoltField, Phase: Copy + Eq>(
             [cycle_var_challenges, challenges].concat(),
         )
         .match_endianness(),
-        DoryLayout::AddressMajor => OpeningPoint::<LITTLE_ENDIAN, F>::new(
-            [challenges, cycle_var_challenges].concat(),
-        )
-        .match_endianness(),
+        DoryLayout::AddressMajor => {
+            // For AddressMajor with Stage-6 padding (`c > 0`), top-left projection selects
+            // col bits in LE as `[cycle-prefix || address || dense-cycle]`, while cycle-phase
+            // challenges are accumulated as `[cycle-prefix || dense-cycle || row-cycle]`.
+            // Reorder to natural projected LE order:
+            //   [cycle-prefix || address || dense-cycle || row-cycle]
+            let (prefix_bits, _address_bits, _dense_bits) = address_major_col_bit_partition(
+                main_cycle_rounds,
+                cycle_rounds,
+                log_k_chunk,
+                poly_col_vars,
+            );
+            let col_cycle_len = cycle_phase_col_rounds.len();
+            let (col_cycle, row_cycle) = cycle_var_challenges.split_at(col_cycle_len);
+            let prefix_len = std::cmp::min(prefix_bits, col_cycle.len());
+            let (prefix_cycle, dense_cycle) = col_cycle.split_at(prefix_len);
+            OpeningPoint::<LITTLE_ENDIAN, F>::new(
+                [prefix_cycle, challenges, dense_cycle, row_cycle].concat(),
+            )
+            .match_endianness()
+        }
     }
 }
 
@@ -198,6 +249,7 @@ impl<F: JoltField> ProgramImageClaimReductionParams<F> {
         let (prog_col_vars, prog_row_vars) = DoryGlobals::balanced_sigma_nu(m);
         let joint_col_vars = joint_col_vars_for_precommitted(cycle_alignment_rounds, log_k_chunk);
         let (cycle_phase_col_rounds, cycle_phase_row_rounds) = cycle_phase_round_schedule(
+            log_t,
             cycle_alignment_rounds,
             log_k_chunk,
             joint_col_vars,
@@ -308,7 +360,12 @@ impl<F: JoltField> ProgramImageClaimReductionParams<F> {
         if self.is_cycle_phase() {
             max_num_rounds.saturating_sub(self.cycle_alignment_rounds())
         } else {
-            max_num_rounds.saturating_sub(self.num_rounds_for_current_phase())
+            match DoryGlobals::get_layout() {
+                DoryLayout::AddressMajor => 0,
+                DoryLayout::CycleMajor => {
+                    max_num_rounds.saturating_sub(self.num_rounds_for_current_phase())
+                }
+            }
         }
     }
 }
@@ -358,6 +415,10 @@ impl<F: JoltField> SumcheckInstanceParams<F> for ProgramImageClaimReductionParam
             PreCommitted::CycleVariables,
             &self.cycle_phase_col_rounds,
             &self.cycle_phase_row_rounds,
+            self.log_t,
+            self.cycle_alignment_rounds,
+            self.log_k_chunk,
+            self.prog_col_vars,
             challenges,
         )
     }
@@ -409,6 +470,57 @@ fn top_left_program_image_point_and_selector<F: JoltField>(
     (r_addr[prefix_len..].to_vec(), selector)
 }
 
+#[inline(always)]
+fn permute_sumcheck_index_address_major<F: JoltField>(
+    params: &ProgramImageClaimReductionParams<F>,
+    index: usize,
+) -> usize {
+    // Natural projected LE order for top-left ProgramImage cols in AddressMajor:
+    //   [cycle-prefix || address || dense-cycle || row]
+    // Sumcheck binding order used by this two-phase reduction:
+    //   [cycle-prefix || dense-cycle || row || address]
+    // This remap makes low-to-high binds follow the sumcheck order while preserving
+    // equality with the committed polynomial evaluation at the projected opening point.
+    let (prefix_bits, address_bits, dense_bits) = address_major_col_bit_partition(
+        params.log_t,
+        params.cycle_alignment_rounds,
+        params.log_k_chunk,
+        params.prog_col_vars,
+    );
+    let row_bits = params.prog_row_vars;
+
+    let prefix_mask = if prefix_bits == 0 {
+        0
+    } else {
+        (1usize << prefix_bits) - 1
+    };
+    let address_mask = if address_bits == 0 {
+        0
+    } else {
+        (1usize << address_bits) - 1
+    };
+    let dense_mask = if dense_bits == 0 {
+        0
+    } else {
+        (1usize << dense_bits) - 1
+    };
+    let row_mask = if row_bits == 0 {
+        0
+    } else {
+        (1usize << row_bits) - 1
+    };
+
+    let prefix = index & prefix_mask;
+    let address = (index >> prefix_bits) & address_mask;
+    let dense = (index >> (prefix_bits + address_bits)) & dense_mask;
+    let row = (index >> (prefix_bits + address_bits + dense_bits)) & row_mask;
+
+    prefix
+        | (dense << prefix_bits)
+        | (row << (prefix_bits + dense_bits))
+        | (address << (prefix_bits + dense_bits + row_bits))
+}
+
 impl<F: JoltField> ProgramImageClaimReductionProver<F> {
     pub fn params(&self) -> &ProgramImageClaimReductionParams<F> {
         &self.params
@@ -453,53 +565,61 @@ impl<F: JoltField> ProgramImageClaimReductionProver<F> {
                 .collect()
         };
 
-        // Permute ProgramWord and eq_slice by (address, cycle) so binding low-to-high is
-        // equivalent to binding cycle vars first, then address vars.
-        let joint_cols = 1usize << params.joint_col_vars;
-        let row_col_to_address_cycle = |row: usize, col: usize| -> (usize, usize) {
-            match DoryGlobals::get_layout() {
-                DoryLayout::CycleMajor => {
+        // Permute ProgramWord and eq_slice so low-to-high binding follows the two-phase
+        // schedule while preserving top-left projection semantics against the joint point.
+        let (program_word, eq_slice) = match DoryGlobals::get_layout() {
+            DoryLayout::AddressMajor => {
+                let mut permuted_word = vec![0u64; program_image_words_padded.len()];
+                let mut permuted_eq = vec![F::zero(); eq_evals.len()];
+                for old_idx in 0..program_image_words_padded.len() {
+                    let new_idx = permute_sumcheck_index_address_major(&params, old_idx);
+                    permuted_word[new_idx] = program_image_words_padded[old_idx];
+                    permuted_eq[new_idx] = eq_evals[old_idx];
+                }
+                (
+                    MultilinearPolynomial::from(permuted_word),
+                    MultilinearPolynomial::from(permuted_eq),
+                )
+            }
+            DoryLayout::CycleMajor => {
+                let joint_cols = 1usize << params.joint_col_vars;
+                let row_col_to_address_cycle = |row: usize, col: usize| -> (usize, usize) {
                     let global_index = row as u128 * joint_cols as u128 + col as u128;
                     let address = global_index / (1u128 << params.log_t);
                     let cycle = global_index % (1u128 << params.log_t);
                     (address as usize, cycle as usize)
-                }
-                DoryLayout::AddressMajor => {
-                    let global_index = row as u128 * joint_cols as u128 + col as u128;
-                    let address = global_index % (1u128 << params.log_k_chunk);
-                    let cycle = global_index / (1u128 << params.log_k_chunk);
-                    (address as usize, cycle as usize)
-                }
-            }
-        };
-        let prog_cols = 1usize << params.prog_col_vars;
-        let prog_index_to_address_cycle = |index: usize| -> (usize, usize) {
-            let row = index / prog_cols;
-            let col = index % prog_cols;
-            row_col_to_address_cycle(row, col)
-        };
+                };
+                let prog_cols = 1usize << params.prog_col_vars;
+                let prog_index_to_address_cycle = |index: usize| -> (usize, usize) {
+                    let row = index / prog_cols;
+                    let col = index % prog_cols;
+                    row_col_to_address_cycle(row, col)
+                };
 
-        let mut permuted_coeffs: Vec<(usize, (u64, F))> = program_image_words_padded
-            .into_par_iter()
-            .zip(eq_evals.into_par_iter())
-            .enumerate()
-            .collect();
-        permuted_coeffs.par_sort_by(|&(index_a, _), &(index_b, _)| {
-            let (address_a, cycle_a) = prog_index_to_address_cycle(index_a);
-            let (address_b, cycle_b) = prog_index_to_address_cycle(index_b);
-            match address_a.cmp(&address_b) {
-                Ordering::Less => Ordering::Less,
-                Ordering::Greater => Ordering::Greater,
-                Ordering::Equal => cycle_a.cmp(&cycle_b),
+                let mut permuted_coeffs: Vec<(usize, (u64, F))> = program_image_words_padded
+                    .into_par_iter()
+                    .zip(eq_evals.into_par_iter())
+                    .enumerate()
+                    .collect();
+                permuted_coeffs.par_sort_by(|&(index_a, _), &(index_b, _)| {
+                    let (address_a, cycle_a) = prog_index_to_address_cycle(index_a);
+                    let (address_b, cycle_b) = prog_index_to_address_cycle(index_b);
+                    match address_a.cmp(&address_b) {
+                        Ordering::Less => Ordering::Less,
+                        Ordering::Greater => Ordering::Greater,
+                        Ordering::Equal => cycle_a.cmp(&cycle_b),
+                    }
+                });
+                let (program_word_coeffs, eq_coeffs): (Vec<_>, Vec<_>) = permuted_coeffs
+                    .into_par_iter()
+                    .map(|(_, coeffs)| coeffs)
+                    .unzip();
+                (
+                    MultilinearPolynomial::from(program_word_coeffs),
+                    MultilinearPolynomial::from(eq_coeffs),
+                )
             }
-        });
-        let (program_word_coeffs, eq_coeffs): (Vec<_>, Vec<_>) = permuted_coeffs
-            .into_par_iter()
-            .map(|(_, coeffs)| coeffs)
-            .unzip();
-        let program_word: MultilinearPolynomial<F> =
-            MultilinearPolynomial::from(program_word_coeffs);
-        let eq_slice: MultilinearPolynomial<F> = MultilinearPolynomial::from(eq_coeffs);
+        };
 
         Self {
             params,

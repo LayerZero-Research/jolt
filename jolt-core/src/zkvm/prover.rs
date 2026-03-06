@@ -132,7 +132,8 @@ use crate::{
             shift::ShiftSumcheckProver,
         },
         stage8_debug::{
-            report_stage8_direct_claim_check, Stage8DoryClassFilter, STAGE8_DORY_CLASSES_ENV,
+            derive_poly_source_point_from_dory_dims, report_stage8_direct_claim_check,
+            Stage8DoryClassFilter, STAGE8_DORY_CLASSES_ENV,
         },
         witness::CommittedPolynomial,
         ProverDebugInfo,
@@ -1604,7 +1605,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 padded_len_words,
                 self.one_hot_params.ram_k,
                 trace_len,
-                trace_log_t,
+                stage6_log_t_padded,
                 trace_log_t,
                 self.one_hot_params.log_k_chunk,
                 &self.rw_config,
@@ -1900,7 +1901,8 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                         &self.preprocessing.program,
                         trusted.program_image_num_words,
                     );
-                    let derived_source_point = derive_from_suffix(poly.get_num_vars());
+                    let derived_source_point =
+                        derive_poly_source_point_from_dory_dims(stage8_opening_point, poly.get_num_vars());
                     (
                         derived_source_point.clone(),
                         poly.evaluate(&derived_source_point.r),
