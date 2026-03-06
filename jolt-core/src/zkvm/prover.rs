@@ -1474,7 +1474,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 AdviceKind::Trusted,
                 &self.program_io.memory_layout,
                 trace_len,
-                trace_log_t,
+                stage6_log_t_padded,
                 &self.opening_accumulator,
                 &mut self.transcript,
                 self.rw_config
@@ -1500,7 +1500,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 AdviceKind::Untrusted,
                 &self.program_io.memory_layout,
                 trace_len,
-                trace_log_t,
+                stage6_log_t_padded,
                 &self.opening_accumulator,
                 &mut self.transcript,
                 self.rw_config
@@ -1863,7 +1863,8 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             }
             CommittedPolynomial::TrustedAdvice => self.advice.trusted_advice_polynomial.as_ref().map(
                 |poly| {
-                    let derived_source_point = derive_from_suffix(poly.get_num_vars());
+                    let derived_source_point =
+                        derive_poly_source_point_from_dory_dims(stage8_opening_point, poly.get_num_vars());
                     (
                         derived_source_point.clone(),
                         poly.evaluate(&derived_source_point.r),
@@ -1875,7 +1876,8 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 .untrusted_advice_polynomial
                 .as_ref()
                 .map(|poly| {
-                    let derived_source_point = derive_from_suffix(poly.get_num_vars());
+                    let derived_source_point =
+                        derive_poly_source_point_from_dory_dims(stage8_opening_point, poly.get_num_vars());
                     (
                         derived_source_point.clone(),
                         poly.evaluate(&derived_source_point.r),

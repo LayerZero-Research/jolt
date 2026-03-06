@@ -646,7 +646,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
                 AdviceKind::Trusted,
                 &self.program_io.memory_layout,
                 self.proof.trace_length,
-                trace_log_t,
+                stage6_log_t_padded,
                 &self.opening_accumulator,
                 &mut self.transcript,
                 self.proof
@@ -659,7 +659,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
                 AdviceKind::Untrusted,
                 &self.program_io.memory_layout,
                 self.proof.trace_length,
-                trace_log_t,
+                stage6_log_t_padded,
                 &self.opening_accumulator,
                 &mut self.transcript,
                 self.proof

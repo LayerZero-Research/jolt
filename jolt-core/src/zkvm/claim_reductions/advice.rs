@@ -65,15 +65,16 @@ fn internal_dummy_gap_len(
     cycle_phase_row_rounds: &Range<usize>,
 ) -> usize {
     let cycle_phase_total_rounds = if !cycle_phase_row_rounds.is_empty() {
-        cycle_phase_row_rounds.end - cycle_phase_col_rounds.start
+        cycle_phase_row_rounds.end
     } else {
-        cycle_phase_col_rounds.len()
+        cycle_phase_col_rounds.end
     };
     cycle_phase_total_rounds - (cycle_phase_col_rounds.len() + cycle_phase_row_rounds.len())
 }
 
 fn cycle_phase_round_schedule(
-    log_t: usize,
+    main_cycle_rounds: usize,
+    cycle_rounds: usize,
     log_k_chunk: usize,
     joint_col_vars: usize,
     poly_row_vars: usize,
@@ -81,22 +82,34 @@ fn cycle_phase_round_schedule(
 ) -> (Range<usize>, Range<usize>) {
     match DoryGlobals::get_layout() {
         DoryLayout::CycleMajor => {
-            let col_end = std::cmp::min(log_t, poly_col_vars);
-            let col_binding_rounds = 0..col_end;
-            let row_start = std::cmp::min(
-                log_t,
-                std::cmp::max(std::cmp::min(log_t, joint_col_vars), col_end),
+            let cycle_prefix = cycle_rounds.saturating_sub(main_cycle_rounds);
+            let col_len = std::cmp::min(main_cycle_rounds, poly_col_vars);
+            let col_start = cycle_prefix;
+            let col_end = std::cmp::min(cycle_rounds, col_start + col_len);
+            let col_binding_rounds = col_start..col_end;
+            let row_start_base = std::cmp::min(
+                main_cycle_rounds,
+                std::cmp::max(std::cmp::min(main_cycle_rounds, joint_col_vars), col_len),
             );
-            let row_end = std::cmp::min(log_t, row_start + poly_row_vars);
+            let row_start = std::cmp::min(cycle_rounds, cycle_prefix + row_start_base);
+            let row_end = std::cmp::min(cycle_rounds, row_start + poly_row_vars);
             let row_binding_rounds = row_start..row_end;
             (col_binding_rounds, row_binding_rounds)
         }
         DoryLayout::AddressMajor => {
-            let col_end = std::cmp::min(log_t, poly_col_vars.saturating_sub(log_k_chunk));
+            let (prefix_col_bits, _address_col_bits, dense_col_bits) = address_major_col_bit_partition(
+                main_cycle_rounds,
+                cycle_rounds,
+                log_k_chunk,
+                poly_col_vars,
+            );
+            let col_end =
+                std::cmp::min(cycle_rounds, prefix_col_bits.saturating_add(dense_col_bits));
             let col_binding_rounds = 0..col_end;
             let row_start_unclamped = joint_col_vars.saturating_sub(log_k_chunk);
-            let row_start = std::cmp::min(log_t, std::cmp::max(row_start_unclamped, col_end));
-            let row_end = std::cmp::min(log_t, row_start + poly_row_vars);
+            let row_start =
+                std::cmp::min(cycle_rounds, std::cmp::max(row_start_unclamped, col_end));
+            let row_end = std::cmp::min(cycle_rounds, row_start + poly_row_vars);
             let row_binding_rounds = row_start..row_end;
             (col_binding_rounds, row_binding_rounds)
         }
@@ -108,6 +121,27 @@ fn joint_col_vars_for_precommitted(cycle_rounds: usize, address_rounds: usize) -
     DoryGlobals::balanced_sigma_nu(cycle_rounds + address_rounds).0
 }
 
+#[inline]
+fn address_major_col_bit_partition(
+    main_cycle_rounds: usize,
+    cycle_rounds: usize,
+    log_k_chunk: usize,
+    poly_col_vars: usize,
+) -> (usize, usize, usize) {
+    // AddressMajor Stage-8 anchor shape in BE blocks:
+    //   [dense-cycle-cols || address-cols || cycle-prefix-cols]
+    // where `cycle-prefix-cols` has width `c = cycle_rounds - main_cycle_rounds`.
+    // For top-left projection with `poly_col_vars` columns, selected col bits in LE are:
+    //   [cycle-prefix || address || dense-cycle]
+    // This helper returns (cycle-prefix, address, dense-cycle) bit counts.
+    let cycle_prefix_cols = cycle_rounds.saturating_sub(main_cycle_rounds);
+    let prefix_bits = std::cmp::min(poly_col_vars, cycle_prefix_cols);
+    let remaining = poly_col_vars.saturating_sub(prefix_bits);
+    let address_bits = std::cmp::min(remaining, log_k_chunk);
+    let dense_bits = remaining.saturating_sub(address_bits);
+    (prefix_bits, address_bits, dense_bits)
+}
+
 fn precommitted_num_rounds<Phase: Copy + Eq>(
     phase: Phase,
     cycle_phase: Phase,
@@ -117,9 +151,9 @@ fn precommitted_num_rounds<Phase: Copy + Eq>(
 ) -> usize {
     if phase == cycle_phase {
         if !cycle_phase_row_rounds.is_empty() {
-            cycle_phase_row_rounds.end - cycle_phase_col_rounds.start
+            cycle_phase_row_rounds.end
         } else {
-            cycle_phase_col_rounds.len()
+            cycle_phase_col_rounds.end
         }
     } else {
         let first_phase_rounds = cycle_phase_col_rounds.len() + cycle_phase_row_rounds.len();
@@ -133,18 +167,18 @@ fn normalize_two_phase_opening_point<F: JoltField, Phase: Copy + Eq>(
     cycle_phase: Phase,
     cycle_phase_col_rounds: &Range<usize>,
     cycle_phase_row_rounds: &Range<usize>,
+    main_cycle_rounds: usize,
+    cycle_rounds: usize,
+    log_k_chunk: usize,
+    poly_col_vars: usize,
     challenges: &[F::Challenge],
 ) -> OpeningPoint<BIG_ENDIAN, F> {
     if phase == cycle_phase {
-        let compact_offset = cycle_phase_col_rounds.start;
-        let compact_col_rounds = 0..cycle_phase_col_rounds.len();
-        let compact_row_rounds = cycle_phase_row_rounds.start.saturating_sub(compact_offset)
-            ..cycle_phase_row_rounds.end.saturating_sub(compact_offset);
         let mut cycle_var_challenges: Vec<F::Challenge> =
             Vec::with_capacity(cycle_phase_col_rounds.len() + cycle_phase_row_rounds.len());
-        cycle_var_challenges.extend_from_slice(&challenges[compact_col_rounds]);
+        cycle_var_challenges.extend_from_slice(&challenges[cycle_phase_col_rounds.clone()]);
         if !cycle_phase_row_rounds.is_empty() {
-            cycle_var_challenges.extend_from_slice(&challenges[compact_row_rounds]);
+            cycle_var_challenges.extend_from_slice(&challenges[cycle_phase_row_rounds.clone()]);
         }
         return OpeningPoint::<LITTLE_ENDIAN, F>::new(cycle_var_challenges).match_endianness();
     }
@@ -154,10 +188,22 @@ fn normalize_two_phase_opening_point<F: JoltField, Phase: Copy + Eq>(
             [cycle_var_challenges, challenges].concat(),
         )
         .match_endianness(),
-        DoryLayout::AddressMajor => OpeningPoint::<LITTLE_ENDIAN, F>::new(
-            [challenges, cycle_var_challenges].concat(),
-        )
-        .match_endianness(),
+        DoryLayout::AddressMajor => {
+            let (prefix_bits, _address_bits, _dense_bits) = address_major_col_bit_partition(
+                main_cycle_rounds,
+                cycle_rounds,
+                log_k_chunk,
+                poly_col_vars,
+            );
+            let col_cycle_len = cycle_phase_col_rounds.len();
+            let (col_cycle, row_cycle) = cycle_var_challenges.split_at(col_cycle_len);
+            let prefix_len = std::cmp::min(prefix_bits, col_cycle.len());
+            let (prefix_cycle, dense_cycle) = col_cycle.split_at(prefix_len);
+            OpeningPoint::<LITTLE_ENDIAN, F>::new(
+                [prefix_cycle, challenges, dense_cycle, row_cycle].concat(),
+            )
+            .match_endianness()
+        }
     }
 }
 
@@ -226,6 +272,7 @@ impl<F: JoltField> AdviceClaimReductionParams<F> {
         let (advice_col_vars, advice_row_vars) =
             DoryGlobals::advice_sigma_nu_from_max_bytes(max_advice_size_bytes);
         let (col_binding_rounds, row_binding_rounds) = cycle_phase_round_schedule(
+            log_t,
             cycle_alignment_rounds,
             log_k_chunk,
             joint_col_vars,
@@ -294,7 +341,12 @@ impl<F: JoltField> AdviceClaimReductionParams<F> {
         if self.is_cycle_phase() {
             max_num_rounds.saturating_sub(self.cycle_alignment_rounds())
         } else {
-            max_num_rounds.saturating_sub(self.num_rounds_for_current_phase())
+            match DoryGlobals::get_layout() {
+                DoryLayout::AddressMajor => 0,
+                DoryLayout::CycleMajor => {
+                    max_num_rounds.saturating_sub(self.num_rounds_for_current_phase())
+                }
+            }
         }
     }
 }
@@ -343,6 +395,10 @@ impl<F: JoltField> SumcheckInstanceParams<F> for AdviceClaimReductionParams<F> {
             PreCommitted::CycleVariables,
             &self.cycle_phase_col_rounds,
             &self.cycle_phase_row_rounds,
+            self.log_t,
+            self.cycle_alignment_rounds,
+            self.log_k_chunk,
+            self.advice_col_vars,
             challenges,
         )
     }
@@ -354,6 +410,57 @@ pub struct AdviceClaimReductionProver<F: JoltField> {
     advice_poly: MultilinearPolynomial<F>,
     eq_poly: MultilinearPolynomial<F>,
     scale: F,
+}
+
+#[inline(always)]
+fn permute_sumcheck_index_address_major<F: JoltField>(
+    params: &AdviceClaimReductionParams<F>,
+    index: usize,
+) -> usize {
+    // Natural projected LE order for top-left Advice cols in AddressMajor:
+    //   [cycle-prefix || address || dense-cycle || row]
+    // Sumcheck binding order used by this two-phase reduction:
+    //   [cycle-prefix || dense-cycle || row || address]
+    // This remap makes low-to-high binds follow the sumcheck order while preserving
+    // equality with the committed polynomial evaluation at the projected opening point.
+    let (prefix_bits, address_bits, dense_bits) = address_major_col_bit_partition(
+        params.log_t,
+        params.cycle_alignment_rounds,
+        params.log_k_chunk,
+        params.advice_col_vars,
+    );
+    let row_bits = params.advice_row_vars;
+
+    let prefix_mask = if prefix_bits == 0 {
+        0
+    } else {
+        (1usize << prefix_bits) - 1
+    };
+    let address_mask = if address_bits == 0 {
+        0
+    } else {
+        (1usize << address_bits) - 1
+    };
+    let dense_mask = if dense_bits == 0 {
+        0
+    } else {
+        (1usize << dense_bits) - 1
+    };
+    let row_mask = if row_bits == 0 {
+        0
+    } else {
+        (1usize << row_bits) - 1
+    };
+
+    let prefix = index & prefix_mask;
+    let address = (index >> prefix_bits) & address_mask;
+    let dense = (index >> (prefix_bits + address_bits)) & dense_mask;
+    let row = (index >> (prefix_bits + address_bits + dense_bits)) & row_mask;
+
+    prefix
+        | (dense << prefix_bits)
+        | (row << (prefix_bits + dense_bits))
+        | (address << (prefix_bits + dense_bits + row_bits))
 }
 
 impl<F: JoltField> AdviceClaimReductionProver<F> {
@@ -384,65 +491,71 @@ impl<F: JoltField> AdviceClaimReductionProver<F> {
                 .map(|(e1, e2)| *e1 + e2)
                 .collect()
         };
-
-        let joint_cols = 1 << params.joint_col_vars;
-        // Maps a (row, col) position in the Dory matrix layout to its
-        // implied (address, cycle).
-        let row_col_to_address_cycle = |row: usize, col: usize| -> (usize, usize) {
+        let (advice_poly, eq_poly): (MultilinearPolynomial<F>, MultilinearPolynomial<F>) =
             match DoryGlobals::get_layout() {
-                DoryLayout::CycleMajor => {
-                    let global_index = row as u128 * joint_cols + col as u128;
-                    let address = global_index / (1 << params.log_t);
-                    let cycle = global_index % (1 << params.log_t);
-                    (address as usize, cycle as usize)
-                }
                 DoryLayout::AddressMajor => {
-                    let global_index = row as u128 * joint_cols + col as u128;
-                    let address = global_index % (1 << params.log_k_chunk);
-                    let cycle = global_index / (1 << params.log_k_chunk);
-                    (address as usize, cycle as usize)
+                    let MultilinearPolynomial::U64Scalars(poly) = advice_poly else {
+                        panic!("Advice should have u64 coefficients");
+                    };
+                    let mut permuted_advice = vec![0u64; poly.coeffs.len()];
+                    let mut permuted_eq = vec![F::zero(); eq_evals.len()];
+                    for old_idx in 0..poly.coeffs.len() {
+                        let new_idx = permute_sumcheck_index_address_major(&params, old_idx);
+                        permuted_advice[new_idx] = poly.coeffs[old_idx];
+                        permuted_eq[new_idx] = eq_evals[old_idx];
+                    }
+                    (permuted_advice.into(), permuted_eq.into())
                 }
-            }
-        };
+                DoryLayout::CycleMajor => {
+                    let joint_cols = 1 << params.joint_col_vars;
+                    // Maps a (row, col) position in the Dory matrix layout to its
+                    // implied (address, cycle).
+                    let row_col_to_address_cycle = |row: usize, col: usize| -> (usize, usize) {
+                        let global_index = row as u128 * joint_cols + col as u128;
+                        let address = global_index / (1 << params.log_t);
+                        let cycle = global_index % (1 << params.log_t);
+                        (address as usize, cycle as usize)
+                    };
 
-        let advice_cols = 1 << params.advice_col_vars;
-        // Maps an index in the advice vector to its implied (address, cycle), based
-        // on the position the index maps to in the Dory matrix layout.
-        let advice_index_to_address_cycle = |index: usize| -> (usize, usize) {
-            let row = index / advice_cols;
-            let col = index % advice_cols;
-            row_col_to_address_cycle(row, col)
-        };
+                    let advice_cols = 1 << params.advice_col_vars;
+                    // Maps an index in the advice vector to its implied (address, cycle), based
+                    // on the position the index maps to in the Dory matrix layout.
+                    let advice_index_to_address_cycle = |index: usize| -> (usize, usize) {
+                        let row = index / advice_cols;
+                        let col = index % advice_cols;
+                        row_col_to_address_cycle(row, col)
+                    };
 
-        let mut permuted_coeffs: Vec<(usize, (u64, F))> = match advice_poly {
-            MultilinearPolynomial::U64Scalars(poly) => poly
-                .coeffs
-                .into_par_iter()
-                .zip(eq_evals.into_par_iter())
-                .enumerate()
-                .collect(),
-            _ => panic!("Advice should have u64 coefficients"),
-        };
-        // Sort the advice and EQ polynomial coefficients by (address, cycle).
-        // By sorting this way, binding the resulting polynomials in low-to-high
-        // order is equivalent to binding the original polynomials' "cycle" variables
-        // low-to-high, then their "address" variables low-to-high.
-        permuted_coeffs.par_sort_by(|&(index_a, _), &(index_b, _)| {
-            let (address_a, cycle_a) = advice_index_to_address_cycle(index_a);
-            let (address_b, cycle_b) = advice_index_to_address_cycle(index_b);
-            match address_a.cmp(&address_b) {
-                Ordering::Less => Ordering::Less,
-                Ordering::Greater => Ordering::Greater,
-                Ordering::Equal => cycle_a.cmp(&cycle_b),
-            }
-        });
+                    let mut permuted_coeffs: Vec<(usize, (u64, F))> = match advice_poly {
+                        MultilinearPolynomial::U64Scalars(poly) => poly
+                            .coeffs
+                            .into_par_iter()
+                            .zip(eq_evals.into_par_iter())
+                            .enumerate()
+                            .collect(),
+                        _ => panic!("Advice should have u64 coefficients"),
+                    };
+                    // Sort the advice and EQ polynomial coefficients by (address, cycle).
+                    // By sorting this way, binding the resulting polynomials in low-to-high
+                    // order is equivalent to binding the original polynomials' "cycle" variables
+                    // low-to-high, then their "address" variables low-to-high.
+                    permuted_coeffs.par_sort_by(|&(index_a, _), &(index_b, _)| {
+                        let (address_a, cycle_a) = advice_index_to_address_cycle(index_a);
+                        let (address_b, cycle_b) = advice_index_to_address_cycle(index_b);
+                        match address_a.cmp(&address_b) {
+                            Ordering::Less => Ordering::Less,
+                            Ordering::Greater => Ordering::Greater,
+                            Ordering::Equal => cycle_a.cmp(&cycle_b),
+                        }
+                    });
 
-        let (advice_coeffs, eq_coeffs): (Vec<_>, Vec<_>) = permuted_coeffs
-            .into_par_iter()
-            .map(|(_, coeffs)| coeffs)
-            .unzip();
-        let advice_poly: MultilinearPolynomial<F> = advice_coeffs.into();
-        let eq_poly: MultilinearPolynomial<F> = eq_coeffs.into();
+                    let (advice_coeffs, eq_coeffs): (Vec<_>, Vec<_>) = permuted_coeffs
+                        .into_par_iter()
+                        .map(|(_, coeffs)| coeffs)
+                        .unzip();
+                    (advice_coeffs.into(), eq_coeffs.into())
+                }
+            };
 
         Self {
             params,
