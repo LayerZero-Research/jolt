@@ -23,7 +23,6 @@ use allocative::FlameGraphBuilder;
 use ark_std::Zero;
 use rayon::prelude::*;
 use std::iter::zip;
-use std::ops::Range;
 
 use common::jolt_device::MemoryLayout;
 use tracer::instruction::Cycle;
@@ -31,7 +30,6 @@ use tracer::instruction::Cycle;
 use crate::{
     field::JoltField,
     poly::{
-        commitment::dory::{DoryGlobals, DoryLayout},
         eq_poly::EqPolynomial,
         multilinear_polynomial::BindingOrder,
         opening_proof::{
@@ -68,15 +66,6 @@ pub struct BooleanitySumcheckParams<F: JoltField> {
     pub log_k_chunk: usize,
     /// Log of trace length
     pub log_t: usize,
-    /// Target cycle-round count used in Stage 6b batching.
-    /// This can exceed `log_t`, in which case the extra rounds are dummy rounds.
-    pub target_log_t: usize,
-    /// Cycle-phase rounds that bind column variables for top-left embedding.
-    #[allocative(skip)]
-    pub cycle_phase_col_rounds: Range<usize>,
-    /// Cycle-phase rounds that bind row variables for top-left embedding.
-    #[allocative(skip)]
-    pub cycle_phase_row_rounds: Range<usize>,
     /// Single batching challenge γ.
     /// We derive per-polynomial batching coefficients as \( \gamma^{2i} \) for i = 0, 1, ...
     pub gamma: F::Challenge,
@@ -98,7 +87,7 @@ impl<F: JoltField> SumcheckInstanceParams<F> for BooleanitySumcheckParams<F> {
     }
 
     fn num_rounds(&self) -> usize {
-        self.log_k_chunk + self.target_log_t
+        self.log_k_chunk + self.log_t
     }
 
     fn input_claim(&self, _accumulator: &dyn OpeningAccumulator<F>) -> F {
@@ -124,8 +113,6 @@ impl<F: JoltField> BooleanitySumcheckParams<F> {
     /// (this is a somewhat arbitrary choice; any prior randomness would work)
     pub fn new(
         log_t: usize,
-        target_log_t: usize,
-        dory_layout: DoryLayout,
         one_hot_params: &OneHotParams,
         accumulator: &dyn OpeningAccumulator<F>,
         transcript: &mut impl Transcript,
@@ -208,48 +195,9 @@ impl<F: JoltField> BooleanitySumcheckParams<F> {
             gamma2_i *= gamma_sq;
         }
 
-        let target_log_t = target_log_t.max(log_t);
-        let (sigma_main, _) = DoryGlobals::main_sigma_nu(log_k_chunk, target_log_t);
-        let main_col_vars = sigma_main;
-        let (poly_col_vars, poly_row_vars) = DoryGlobals::balanced_sigma_nu(log_t);
-        let (cycle_phase_col_rounds, cycle_phase_row_rounds) = match dory_layout {
-            DoryLayout::CycleMajor => {
-                let col_end = std::cmp::min(target_log_t, poly_col_vars);
-                let col_binding_rounds = 0..col_end;
-                let row_start_unclamped = main_col_vars.saturating_sub(log_k_chunk);
-                let row_start = std::cmp::min(
-                    target_log_t,
-                    std::cmp::max(row_start_unclamped, col_end),
-                );
-                let row_end = std::cmp::min(target_log_t, row_start + poly_row_vars);
-                (col_binding_rounds, row_start..row_end)
-            }
-            DoryLayout::AddressMajor => {
-                let col_end = std::cmp::min(target_log_t, poly_col_vars);
-                let col_binding_rounds = 0..col_end;
-                let row_start_unclamped = main_col_vars.saturating_sub(log_k_chunk);
-                let row_start = std::cmp::min(
-                    target_log_t,
-                    std::cmp::max(row_start_unclamped, col_end),
-                );
-                let row_end = std::cmp::min(target_log_t, row_start + poly_row_vars);
-                (col_binding_rounds, row_start..row_end)
-            }
-        };
-        assert_eq!(
-            cycle_phase_col_rounds.len() + cycle_phase_row_rounds.len(),
-            log_t,
-            "booleanity cycle schedule must bind exactly log_t rounds (layout={dory_layout:?}, log_t={log_t}, target_log_t={target_log_t}, col_rounds={:?}, row_rounds={:?})",
-            cycle_phase_col_rounds,
-            cycle_phase_row_rounds
-        );
-
         Self {
             log_k_chunk,
             log_t,
-            target_log_t,
-            cycle_phase_col_rounds,
-            cycle_phase_row_rounds,
             gamma,
             gamma_powers_square,
             r_address,
@@ -257,43 +205,6 @@ impl<F: JoltField> BooleanitySumcheckParams<F> {
             polynomial_types,
             one_hot_params: one_hot_params.clone(),
         }
-    }
-
-    #[inline]
-    pub fn cycle_active_rounds(&self) -> usize {
-        self.cycle_phase_col_rounds.len() + self.cycle_phase_row_rounds.len()
-    }
-
-    #[inline]
-    pub fn cycle_num_rounds(&self) -> usize {
-        self.target_log_t
-    }
-
-    #[inline]
-    pub fn cycle_dummy_rounds(&self) -> usize {
-        self.cycle_num_rounds().saturating_sub(self.cycle_active_rounds())
-    }
-
-    #[inline]
-    pub fn cycle_dummy_scale(&self) -> F {
-        let two_inv = F::from_u64(2).inverse().unwrap();
-        (0..self.cycle_dummy_rounds()).fold(F::one(), |acc, _| acc * two_inv)
-    }
-
-    #[inline]
-    pub fn is_cycle_dummy_round(&self, round: usize) -> bool {
-        !self.cycle_phase_col_rounds.contains(&round) && !self.cycle_phase_row_rounds.contains(&round)
-    }
-
-    #[inline]
-    pub fn compact_cycle_challenges(&self, sumcheck_challenges: &[F::Challenge]) -> Vec<F::Challenge> {
-        let mut compact =
-            Vec::with_capacity(self.cycle_phase_col_rounds.len() + self.cycle_phase_row_rounds.len());
-        compact.extend_from_slice(&sumcheck_challenges[self.cycle_phase_col_rounds.clone()]);
-        if !self.cycle_phase_row_rounds.is_empty() {
-            compact.extend_from_slice(&sumcheck_challenges[self.cycle_phase_row_rounds.clone()]);
-        }
-        compact
     }
 }
 
@@ -781,8 +692,6 @@ pub struct BooleanityCycleSumcheckProver<F: JoltField> {
     gamma_powers_inv: Vec<F>,
     /// Parameters
     pub params: BooleanitySumcheckParams<F>,
-    /// Product of `2^{-1}` over leading dummy rounds.
-    scale: F,
 }
 
 impl<F: JoltField> BooleanityCycleSumcheckProver<F> {
@@ -863,7 +772,6 @@ impl<F: JoltField> BooleanityCycleSumcheckProver<F> {
             gamma_powers,
             gamma_powers_inv,
             params,
-            scale: F::one(),
         }
     }
 
@@ -914,7 +822,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
     }
 
     fn num_rounds(&self) -> usize {
-        self.params.cycle_num_rounds()
+        self.params.log_t
     }
 
     fn input_claim(&self, accumulator: &ProverOpeningAccumulator<F>) -> F {
@@ -927,24 +835,12 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
     }
 
     #[tracing::instrument(skip_all, name = "BooleanityCycleSumcheckProver::compute_message")]
-    fn compute_message(&mut self, round: usize, previous_claim: F) -> UniPoly<F> {
-        if self.params.is_cycle_dummy_round(round) {
-            let two_inv = F::from_u64(2).inverse().unwrap();
-            return UniPoly::from_coeff(vec![previous_claim * two_inv, F::zero()]);
-        }
-
-        let inv_scale = self.scale.inverse().unwrap();
-        let unscaled_previous_claim = previous_claim * inv_scale;
-        self.compute_message_impl(unscaled_previous_claim) * self.scale
+    fn compute_message(&mut self, _round: usize, previous_claim: F) -> UniPoly<F> {
+        self.compute_message_impl(previous_claim)
     }
 
     #[tracing::instrument(skip_all, name = "BooleanityCycleSumcheckProver::ingest_challenge")]
-    fn ingest_challenge(&mut self, r_j: F::Challenge, round: usize) {
-        if self.params.is_cycle_dummy_round(round) {
-            let two_inv = F::from_u64(2).inverse().unwrap();
-            self.scale *= two_inv;
-            return;
-        }
+    fn ingest_challenge(&mut self, r_j: F::Challenge, _round: usize) {
         self.ingest_challenge_impl(r_j)
     }
 
@@ -961,8 +857,6 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
         let mut r_address_le = r_address_point.r;
         r_address_le.reverse();
         let mut full_challenges = r_address_le;
-        // Preserve full Stage-6 cycle rounds (including dummy rounds) in cached openings so
-        // downstream Stage-7/8 consumers can recover joint-aligned points.
         full_challenges.extend_from_slice(sumcheck_challenges);
         let opening_point = self.params.normalize_opening_point(&full_challenges);
 
@@ -1134,7 +1028,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
     }
 
     fn num_rounds(&self) -> usize {
-        self.params.cycle_num_rounds()
+        self.params.log_t
     }
 
     fn input_claim(&self, accumulator: &VerifierOpeningAccumulator<F>) -> F {
@@ -1151,7 +1045,6 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         accumulator: &VerifierOpeningAccumulator<F>,
         sumcheck_challenges: &[F::Challenge],
     ) -> F {
-        let active_cycle_challenges = self.params.compact_cycle_challenges(sumcheck_challenges);
         let (r_address_point, _) = accumulator.get_virtual_polynomial_opening(
             VirtualPolynomial::BooleanityAddrClaim,
             SumcheckId::BooleanityAddressPhase,
@@ -1159,7 +1052,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         let mut r_address_le = r_address_point.r;
         r_address_le.reverse();
         let mut full_challenges = r_address_le;
-        full_challenges.extend_from_slice(&active_cycle_challenges);
+        full_challenges.extend_from_slice(sumcheck_challenges);
 
         let ra_claims: Vec<F> = self
             .params
@@ -1181,8 +1074,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
             .chain(self.params.r_cycle.iter().cloned().rev())
             .collect();
 
-        self.params.cycle_dummy_scale()
-            * EqPolynomial::<F>::mle(&full_challenges, &combined_r)
+        EqPolynomial::<F>::mle(&full_challenges, &combined_r)
             * zip(&self.params.gamma_powers_square, ra_claims)
                 .map(|(gamma_2i, ra)| (ra.square() - ra) * gamma_2i)
                 .sum::<F>()
@@ -1201,7 +1093,6 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         let mut r_address_le = r_address_point.r;
         r_address_le.reverse();
         let mut full_challenges = r_address_le;
-        // Mirror prover behavior: cache full cycle rounds (dummy + active).
         full_challenges.extend_from_slice(sumcheck_challenges);
         let opening_point = self.params.normalize_opening_point(&full_challenges);
         accumulator.append_sparse(

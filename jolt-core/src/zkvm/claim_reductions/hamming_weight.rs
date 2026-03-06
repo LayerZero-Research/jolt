@@ -124,9 +124,6 @@ pub struct HammingWeightClaimReductionParams<F: JoltField> {
     pub gamma_powers: Vec<F>,
     /// Shared r_cycle from Booleanity (all ra claims share this)
     pub r_cycle: Vec<F::Challenge>,
-    /// Number of cycle rounds that were actively bound by Stage 6 sumchecks.
-    /// If `r_cycle.len()` is larger, the leading rounds are dummy rounds.
-    pub active_cycle_rounds: usize,
     /// Shared r_address from Booleanity (all families share this now)
     pub r_addr_bool: Vec<F::Challenge>,
     /// r_address values from Virtualization/ReadRaf sumcheck for each ra_i (N total)
@@ -152,7 +149,6 @@ impl<F: JoltField> HammingWeightClaimReductionParams<F> {
     /// - Booleanity claims (r_addr shared across all families from Booleanity sumcheck)
     /// - Virtualization claims (r_addr different per ra_i)
     pub fn new(
-        active_cycle_rounds: usize,
         one_hot_params: &OneHotParams,
         accumulator: &dyn OpeningAccumulator<F>,
         transcript: &mut impl Transcript,
@@ -242,7 +238,6 @@ impl<F: JoltField> HammingWeightClaimReductionParams<F> {
         Self {
             gamma_powers,
             r_cycle,
-            active_cycle_rounds,
             r_addr_bool,
             r_addr_virt,
             claims_hw,
@@ -251,29 +246,6 @@ impl<F: JoltField> HammingWeightClaimReductionParams<F> {
             log_k_chunk,
             polynomial_types,
         }
-    }
-
-    #[inline]
-    pub fn active_r_cycle(&self) -> &[F::Challenge] {
-        let active = self.active_cycle_rounds.min(self.r_cycle.len());
-        let start = self.r_cycle.len().saturating_sub(active);
-        &self.r_cycle[start..]
-    }
-
-    #[inline]
-    fn cycle_dummy_prefix_len(&self) -> usize {
-        let active = self.active_cycle_rounds.min(self.r_cycle.len());
-        self.r_cycle.len().saturating_sub(active)
-    }
-
-    #[inline]
-    fn cycle_dummy_selector(&self) -> F {
-        self.r_cycle[..self.cycle_dummy_prefix_len()]
-            .iter()
-            .fold(F::one(), |acc, r_i| {
-                let r_i_f: F = (*r_i).into();
-                acc * (F::one() - r_i_f)
-            })
     }
 }
 
@@ -348,7 +320,7 @@ impl<F: JoltField> HammingWeightClaimReductionProver<F> {
             program,
             &preprocessing.memory_layout,
             one_hot_params,
-            params.active_r_cycle(),
+            &params.r_cycle,
         );
         let G: Vec<MultilinearPolynomial<F>> = G_vecs
             .into_iter()
@@ -451,7 +423,6 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
         sumcheck_challenges: &[F::Challenge],
     ) {
         let N = self.params.polynomial_types.len();
-        let cycle_dummy_selector = self.params.cycle_dummy_selector();
 
         // Extract r_address portion (just the sumcheck challenges, converted to big-endian)
         let r_address: OpeningPoint<BIG_ENDIAN, F> =
@@ -460,7 +431,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
 
         for i in 0..N {
             // Final claim is G_i(ρ) where ρ is the sumcheck challenges
-            let claim = self.G[i].final_sumcheck_claim() * cycle_dummy_selector;
+            let claim = self.G[i].final_sumcheck_claim();
 
             // All three claim types (HW, Bool, Virt) collapse to this single opening
             accumulator.append_sparse(
@@ -487,17 +458,12 @@ pub struct HammingWeightClaimReductionVerifier<F: JoltField> {
 impl<F: JoltField> HammingWeightClaimReductionVerifier<F> {
     /// Create verifier. r_cycle and r_addr_bool are extracted from Booleanity opening.
     pub fn new(
-        active_cycle_rounds: usize,
         one_hot_params: &OneHotParams,
         accumulator: &VerifierOpeningAccumulator<F>,
         transcript: &mut impl Transcript,
     ) -> Self {
-        let params = HammingWeightClaimReductionParams::new(
-            active_cycle_rounds,
-            one_hot_params,
-            accumulator,
-            transcript,
-        );
+        let params =
+            HammingWeightClaimReductionParams::new(one_hot_params, accumulator, transcript);
         Self { params }
     }
 }
@@ -515,14 +481,6 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         sumcheck_challenges: &[F::Challenge],
     ) -> F {
         let N = self.params.polynomial_types.len();
-        // Prover caches Ram/Instruction/Bytecode RA openings with a selector for any
-        // leading dummy cycle rounds preserved in `r_cycle`; divide that selector back
-        // out here so the Stage-7 relation remains over G_i(ρ).
-        let cycle_dummy_selector_inv = self
-            .params
-            .cycle_dummy_selector()
-            .inverse()
-            .expect("cycle dummy selector is zero");
 
         // When binding with LowToHigh, challenges[j] binds index bit j which corresponds to
         // r[n-1-j] in EqPolynomial::evals table. So after binding, the result is eq(r, reversed_challenges).
@@ -543,7 +501,6 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
                 self.params.polynomial_types[i],
                 SumcheckId::HammingWeightClaimReduction,
             );
-            let g_i_claim = g_i_claim * cycle_dummy_selector_inv;
 
             // γ^{3i} · G_i(ρ) + γ^{3i+1} · eq_bool(ρ) · G_i(ρ) + γ^{3i+2} · eq_virt(ρ) · G_i(ρ)
             let gamma_hw = self.params.gamma_powers[3 * i];

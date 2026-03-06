@@ -1,11 +1,10 @@
-use std::{array, iter::once, ops::Range, sync::Arc};
+use std::{array, iter::once, sync::Arc};
 
 use num_traits::Zero;
 
 use crate::{
     field::JoltField,
     poly::{
-        commitment::dory::{DoryGlobals, DoryLayout},
         eq_poly::EqPolynomial,
         identity_poly::IdentityPolynomial,
         multilinear_polynomial::{
@@ -586,21 +585,6 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
             .one_hot_params
             .compute_r_address_chunks::<F>(&r_address.r);
 
-        for ra_poly in &self.ra {
-            assert_eq!(
-                ra_poly.len(),
-                1,
-                "BytecodeReadRaf cycle phase did not fully bind RA polynomial (len={}): \
-log_T={}, col_rounds={:?}, row_rounds={:?}, active_rounds={}, dummy_rounds={}",
-                ra_poly.len(),
-                self.params.log_T,
-                self.params.cycle_phase_col_rounds,
-                self.params.cycle_phase_row_rounds,
-                self.params.cycle_active_rounds(),
-                self.params.cycle_dummy_rounds()
-            );
-        }
-
         for i in 0..self.params.d {
             accumulator.append_sparse(
                 transcript,
@@ -914,8 +898,6 @@ pub struct BytecodeReadRafCycleSumcheckProver<F: JoltField> {
     bound_val_evals: [F; N_STAGES],
     /// Parameters.
     pub params: BytecodeReadRafSumcheckParams<F>,
-    /// Product of `2^{-1}` over leading dummy rounds.
-    scale: F,
 }
 
 impl<F: JoltField> BytecodeReadRafCycleSumcheckProver<F> {
@@ -998,7 +980,6 @@ impl<F: JoltField> BytecodeReadRafCycleSumcheckProver<F> {
             gruen_eq_polys,
             bound_val_evals,
             params,
-            scale: F::one(),
         }
     }
 
@@ -1112,7 +1093,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
     }
 
     fn num_rounds(&self) -> usize {
-        self.params.cycle_num_rounds()
+        self.params.log_T
     }
 
     fn input_claim(&self, accumulator: &ProverOpeningAccumulator<F>) -> F {
@@ -1125,27 +1106,15 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
     }
 
     #[tracing::instrument(skip_all, name = "BytecodeReadRafCycleSumcheckProver::compute_message")]
-    fn compute_message(&mut self, round: usize, previous_claim: F) -> UniPoly<F> {
-        if self.params.is_cycle_dummy_round(round) {
-            let two_inv = F::from_u64(2).inverse().unwrap();
-            return UniPoly::from_coeff(vec![previous_claim * two_inv, F::zero()]);
-        }
-
-        let inv_scale = self.scale.inverse().unwrap();
-        let unscaled_previous_claim = previous_claim * inv_scale;
-        self.compute_message_impl(unscaled_previous_claim) * self.scale
+    fn compute_message(&mut self, _round: usize, previous_claim: F) -> UniPoly<F> {
+        self.compute_message_impl(previous_claim)
     }
 
     #[tracing::instrument(
         skip_all,
         name = "BytecodeReadRafCycleSumcheckProver::ingest_challenge"
     )]
-    fn ingest_challenge(&mut self, r_j: F::Challenge, round: usize) {
-        if self.params.is_cycle_dummy_round(round) {
-            let two_inv = F::from_u64(2).inverse().unwrap();
-            self.scale *= two_inv;
-            return;
-        }
+    fn ingest_challenge(&mut self, r_j: F::Challenge, _round: usize) {
         self.ingest_challenge_impl(r_j)
     }
 
@@ -1162,8 +1131,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
         let mut r_address_le = r_address_point.r;
         r_address_le.reverse();
         let mut full_challenges = r_address_le;
-        let compact_cycle_challenges = self.params.compact_cycle_challenges(sumcheck_challenges);
-        full_challenges.extend_from_slice(&compact_cycle_challenges);
+        full_challenges.extend_from_slice(sumcheck_challenges);
         let opening_point = self.params.normalize_opening_point(&full_challenges);
         let (r_address, r_cycle) = opening_point.split_at(self.params.bytecode_T);
 
@@ -1198,7 +1166,6 @@ impl<F: JoltField> BytecodeReadRafSumcheckVerifier<F> {
     pub fn gen(
         program: &ProgramPreprocessing,
         n_cycle_vars: usize,
-        dory_layout: DoryLayout,
         one_hot_params: &OneHotParams,
         opening_accumulator: &VerifierOpeningAccumulator<F>,
         transcript: &mut impl Transcript,
@@ -1207,8 +1174,6 @@ impl<F: JoltField> BytecodeReadRafSumcheckVerifier<F> {
             params: BytecodeReadRafSumcheckParams::gen(
                 program,
                 n_cycle_vars,
-                n_cycle_vars,
-                dory_layout,
                 one_hot_params,
                 opening_accumulator,
                 transcript,
@@ -1312,8 +1277,6 @@ impl<F: JoltField> BytecodeReadRafAddressSumcheckVerifier<F> {
     pub fn new(
         program: Option<&ProgramPreprocessing>,
         n_cycle_vars: usize,
-        target_cycle_vars: usize,
-        dory_layout: DoryLayout,
         one_hot_params: &OneHotParams,
         opening_accumulator: &VerifierOpeningAccumulator<F>,
         transcript: &mut impl Transcript,
@@ -1324,8 +1287,6 @@ impl<F: JoltField> BytecodeReadRafAddressSumcheckVerifier<F> {
             // relate staged Val claims to committed bytecode.
             ProgramMode::Committed => BytecodeReadRafSumcheckParams::gen_verifier(
                 n_cycle_vars,
-                target_cycle_vars,
-                dory_layout,
                 one_hot_params,
                 opening_accumulator,
                 transcript,
@@ -1338,8 +1299,6 @@ impl<F: JoltField> BytecodeReadRafAddressSumcheckVerifier<F> {
                     )
                 })?,
                 n_cycle_vars,
-                target_cycle_vars,
-                dory_layout,
                 one_hot_params,
                 opening_accumulator,
                 transcript,
@@ -1438,7 +1397,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
     }
 
     fn num_rounds(&self) -> usize {
-        self.params.cycle_num_rounds()
+        self.params.log_T
     }
 
     fn input_claim(&self, accumulator: &VerifierOpeningAccumulator<F>) -> F {
@@ -1455,7 +1414,6 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         accumulator: &VerifierOpeningAccumulator<F>,
         sumcheck_challenges: &[F::Challenge],
     ) -> F {
-        let active_cycle_challenges = self.params.compact_cycle_challenges(sumcheck_challenges);
         let (r_address_point, _) = accumulator.get_virtual_polynomial_opening(
             VirtualPolynomial::BytecodeReadRafAddrClaim,
             SumcheckId::BytecodeReadRafAddressPhase,
@@ -1463,7 +1421,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         let mut r_address_le = r_address_point.r;
         r_address_le.reverse();
         let mut full_challenges = r_address_le;
-        full_challenges.extend_from_slice(&active_cycle_challenges);
+        full_challenges.extend_from_slice(sumcheck_challenges);
         let opening_point = self.params.normalize_opening_point(&full_challenges);
         let (r_address_prime, r_cycle_prime) = opening_point.split_at(self.params.bytecode_T);
 
@@ -1520,8 +1478,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
                 .sum::<F>()
         };
 
-        self.params.cycle_dummy_scale()
-            * ra_claims.fold(val, |running, ra_claim| running * ra_claim)
+        ra_claims.fold(val, |running, ra_claim| running * ra_claim)
     }
 
     fn cache_openings(
@@ -1537,8 +1494,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         let mut r_address_le = r_address_point.r;
         r_address_le.reverse();
         let mut full_challenges = r_address_le;
-        let compact_cycle_challenges = self.params.compact_cycle_challenges(sumcheck_challenges);
-        full_challenges.extend_from_slice(&compact_cycle_challenges);
+        full_challenges.extend_from_slice(sumcheck_challenges);
         let opening_point = self.params.normalize_opening_point(&full_challenges);
         let (r_address, r_cycle) = opening_point.split_at(self.params.bytecode_T);
 
@@ -1571,17 +1527,7 @@ pub struct BytecodeReadRafSumcheckParams<F: JoltField> {
     pub K: usize,
     /// log2(K) and log2(T) used to determine round counts.
     pub bytecode_T: usize,
-    /// Active cycle-variable count from Stage 1 trace domain.
     pub log_T: usize,
-    /// Target cycle-variable count used for Stage 6b batching alignment.
-    /// May exceed `log_T`, in which case extra rounds are dummy rounds.
-    pub target_log_T: usize,
-    /// Cycle-phase rounds that bind column variables for top-left embedding.
-    #[allocative(skip)]
-    pub cycle_phase_col_rounds: Range<usize>,
-    /// Cycle-phase rounds that bind row variables for top-left embedding.
-    #[allocative(skip)]
-    pub cycle_phase_row_rounds: Range<usize>,
     /// If true, Stage 6a emits `Val_s(r_bc)` as virtual openings and Stage 6b consumes them
     /// (instead of verifier re-materializing/evaluating `val_polys`).
     pub use_staged_val_claims: bool,
@@ -1610,8 +1556,6 @@ impl<F: JoltField> BytecodeReadRafSumcheckParams<F> {
     pub fn gen(
         program: &ProgramPreprocessing,
         n_cycle_vars: usize,
-        target_cycle_vars: usize,
-        dory_layout: DoryLayout,
         one_hot_params: &OneHotParams,
         opening_accumulator: &dyn OpeningAccumulator<F>,
         transcript: &mut impl Transcript,
@@ -1619,8 +1563,6 @@ impl<F: JoltField> BytecodeReadRafSumcheckParams<F> {
         Self::gen_impl(
             Some(program),
             n_cycle_vars,
-            target_cycle_vars,
-            dory_layout,
             one_hot_params,
             opening_accumulator,
             transcript,
@@ -1632,8 +1574,6 @@ impl<F: JoltField> BytecodeReadRafSumcheckParams<F> {
     #[tracing::instrument(skip_all, name = "BytecodeReadRafSumcheckParams::gen_verifier")]
     pub fn gen_verifier(
         n_cycle_vars: usize,
-        target_cycle_vars: usize,
-        dory_layout: DoryLayout,
         one_hot_params: &OneHotParams,
         opening_accumulator: &dyn OpeningAccumulator<F>,
         transcript: &mut impl Transcript,
@@ -1641,8 +1581,6 @@ impl<F: JoltField> BytecodeReadRafSumcheckParams<F> {
         Self::gen_impl(
             None,
             n_cycle_vars,
-            target_cycle_vars,
-            dory_layout,
             one_hot_params,
             opening_accumulator,
             transcript,
@@ -1654,8 +1592,6 @@ impl<F: JoltField> BytecodeReadRafSumcheckParams<F> {
     fn gen_impl(
         program: Option<&ProgramPreprocessing>,
         n_cycle_vars: usize,
-        target_cycle_vars: usize,
-        dory_layout: DoryLayout,
         one_hot_params: &OneHotParams,
         opening_accumulator: &dyn OpeningAccumulator<F>,
         transcript: &mut impl Transcript,
@@ -1767,38 +1703,8 @@ impl<F: JoltField> BytecodeReadRafSumcheckParams<F> {
             r_cycle_5.r,
         ];
 
-        let cycle_rounds = target_cycle_vars.max(n_cycle_vars);
-        let (sigma_main, _) = DoryGlobals::main_sigma_nu(one_hot_params.log_k_chunk, cycle_rounds);
-        let main_col_vars = sigma_main;
-        let (poly_col_vars, poly_row_vars) = DoryGlobals::balanced_sigma_nu(n_cycle_vars);
-        let (cycle_phase_col_rounds, cycle_phase_row_rounds) = match dory_layout {
-            DoryLayout::CycleMajor => {
-                let col_end = std::cmp::min(cycle_rounds, poly_col_vars);
-                let col_binding_rounds = 0..col_end;
-                let row_start_unclamped = main_col_vars.saturating_sub(one_hot_params.log_k_chunk);
-                let row_start =
-                    std::cmp::min(cycle_rounds, std::cmp::max(row_start_unclamped, col_end));
-                let row_end = std::cmp::min(cycle_rounds, row_start + poly_row_vars);
-                (col_binding_rounds, row_start..row_end)
-            }
-            DoryLayout::AddressMajor => {
-                let col_end = std::cmp::min(cycle_rounds, poly_col_vars);
-                let col_binding_rounds = 0..col_end;
-                let row_start_unclamped = main_col_vars.saturating_sub(one_hot_params.log_k_chunk);
-                let row_start =
-                    std::cmp::min(cycle_rounds, std::cmp::max(row_start_unclamped, col_end));
-                let row_end = std::cmp::min(cycle_rounds, row_start + poly_row_vars);
-                (col_binding_rounds, row_start..row_end)
-            }
-        };
-        assert_eq!(
-            cycle_phase_col_rounds.len() + cycle_phase_row_rounds.len(),
-            n_cycle_vars,
-            "bytecode cycle schedule must bind exactly n_cycle_vars rounds (layout={dory_layout:?}, n_cycle_vars={n_cycle_vars}, col_rounds={:?}, row_rounds={:?})",
-            cycle_phase_col_rounds,
-            cycle_phase_row_rounds
-        );
-
+        // Note: We don't have r_address at this point (it comes from sumcheck_challenges),
+        // so we initialize r_address_chunks as empty and will compute it later
         Self {
             gamma_powers,
             input_claim,
@@ -1807,9 +1713,6 @@ impl<F: JoltField> BytecodeReadRafSumcheckParams<F> {
             bytecode_T: one_hot_params.bytecode_len.log_2(),
             d: one_hot_params.bytecode_d,
             log_T: n_cycle_vars,
-            target_log_T: cycle_rounds,
-            cycle_phase_col_rounds,
-            cycle_phase_row_rounds,
             use_staged_val_claims: false,
             val_polys,
             rv_claims,
@@ -1823,49 +1726,6 @@ impl<F: JoltField> BytecodeReadRafSumcheckParams<F> {
             stage4_gammas,
             stage5_gammas,
         }
-    }
-
-    #[inline]
-    pub fn cycle_active_rounds(&self) -> usize {
-        self.cycle_phase_col_rounds.len() + self.cycle_phase_row_rounds.len()
-    }
-
-    #[inline]
-    pub fn cycle_num_rounds(&self) -> usize {
-        self.target_log_T
-    }
-
-    #[inline]
-    pub fn cycle_dummy_rounds(&self) -> usize {
-        self.cycle_num_rounds()
-            .saturating_sub(self.cycle_active_rounds())
-    }
-
-    #[inline]
-    pub fn cycle_dummy_scale(&self) -> F {
-        let two_inv = F::from_u64(2).inverse().unwrap();
-        (0..self.cycle_dummy_rounds()).fold(F::one(), |acc, _| acc * two_inv)
-    }
-
-    #[inline]
-    pub fn is_cycle_dummy_round(&self, round: usize) -> bool {
-        !self.cycle_phase_col_rounds.contains(&round)
-            && !self.cycle_phase_row_rounds.contains(&round)
-    }
-
-    #[inline]
-    pub fn compact_cycle_challenges(
-        &self,
-        sumcheck_challenges: &[F::Challenge],
-    ) -> Vec<F::Challenge> {
-        let mut compact = Vec::with_capacity(
-            self.cycle_phase_col_rounds.len() + self.cycle_phase_row_rounds.len(),
-        );
-        compact.extend_from_slice(&sumcheck_challenges[self.cycle_phase_col_rounds.clone()]);
-        if !self.cycle_phase_row_rounds.is_empty() {
-            compact.extend_from_slice(&sumcheck_challenges[self.cycle_phase_row_rounds.clone()]);
-        }
-        compact
     }
 
     /// Fused computation of all Val polynomials in a single parallel pass over bytecode.

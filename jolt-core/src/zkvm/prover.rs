@@ -25,7 +25,7 @@ use crate::{
         multilinear_polynomial::{MultilinearPolynomial, PolynomialEvaluation},
         opening_proof::{
             compute_advice_lagrange_factor, DoryOpeningState, OpeningAccumulator, OpeningPoint,
-            ProverOpeningAccumulator, SumcheckId, BIG_ENDIAN, LITTLE_ENDIAN,
+            ProverOpeningAccumulator, SumcheckId, BIG_ENDIAN,
         },
         rlc_polynomial::{RLCStreamingData, TraceSource},
     },
@@ -1341,8 +1341,8 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         let mut bytecode_read_raf_params = BytecodeReadRafSumcheckParams::gen(
             &self.preprocessing.program,
             stage1_log_t,
-            stage6_log_t,
-            dory_layout,
+            // stage6_log_t,
+            // dory_layout,
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
@@ -1352,8 +1352,6 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
 
         let booleanity_params = BooleanitySumcheckParams::new(
             stage1_log_t,
-            stage6_log_t,
-            dory_layout,
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
@@ -1415,33 +1413,23 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             .take()
             .expect("booleanity_params must be set by prove_stage6a");
 
-        let stage6_log_t = self.stage6_log_t();
-        let stage6_trace_len = self.stage6_trace_length();
-        let dory_layout = DoryGlobals::get_layout();
-        let ram_hamming_booleanity_params = HammingBooleanitySumcheckParams::new(
-            self.trace.len(),
-            stage6_log_t,
-            dory_layout,
-            &self.one_hot_params,
-            &self.opening_accumulator,
-        );
+        let stage6_log_t_padded = self.stage6_log_t();
+        let trace_log_t = self.trace.len().log_2();
+        let trace_len = self.trace.len();
+        let ram_hamming_booleanity_params =
+            HammingBooleanitySumcheckParams::new(&self.opening_accumulator);
         let ram_ra_virtual_params = RamRaVirtualParams::new(
             self.trace.len(),
-            stage6_log_t,
-            dory_layout,
             &self.one_hot_params,
             &self.opening_accumulator,
         );
         let lookups_ra_virtual_params = InstructionRaSumcheckParams::new(
-            stage6_log_t,
-            dory_layout,
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
         );
         let inc_reduction_params = IncClaimReductionSumcheckParams::new(
             self.trace.len(),
-            stage6_log_t,
             &self.opening_accumulator,
             &mut self.transcript,
         );
@@ -1451,7 +1439,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         if self.program_mode == ProgramMode::Committed {
             let bytecode_reduction_params = BytecodeClaimReductionParams::new(
                 &bytecode_read_raf_params,
-                stage6_log_t,
+                stage6_log_t_padded,
                 self.one_hot_params.log_k_chunk,
                 self.trace.len().log_2(),
                 self.preprocessing.shared.bytecode_chunk_count,
@@ -1484,8 +1472,8 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             let trusted_advice_params = AdviceClaimReductionParams::new(
                 AdviceKind::Trusted,
                 &self.program_io.memory_layout,
-                stage6_trace_len,
-                stage6_log_t,
+                trace_len,
+                trace_log_t,
                 &self.opening_accumulator,
                 &mut self.transcript,
                 self.rw_config
@@ -1510,8 +1498,8 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             let untrusted_advice_params = AdviceClaimReductionParams::new(
                 AdviceKind::Untrusted,
                 &self.program_io.memory_layout,
-                stage6_trace_len,
-                stage6_log_t,
+                trace_len,
+                trace_log_t,
                 &self.opening_accumulator,
                 &mut self.transcript,
                 self.rw_config
@@ -1615,9 +1603,9 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 self.preprocessing.program.min_bytecode_address,
                 padded_len_words,
                 self.one_hot_params.ram_k,
-                stage6_trace_len,
-                stage6_log_t,
-                self.trace.len().log_2(),
+                trace_len,
+                trace_log_t,
+                trace_log_t,
                 self.one_hot_params.log_k_chunk,
                 &self.rw_config,
                 &self.opening_accumulator,
@@ -1642,7 +1630,6 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             &mut self.opening_accumulator,
             &mut self.transcript,
         );
-        tracing::info!("increment ingested challenges: {:?}", inc_reduction.params.ingested_challenges);
         self.stage6_cycle_challenges = Some(r_stage6b);
         #[cfg(feature = "allocative")]
         write_instance_flamegraph_svg(&instances, "stage6b_end_flamechart.svg");
@@ -1672,7 +1659,6 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         // Create params and prover for HammingWeightClaimReduction
         // (r_cycle and r_addr_bool are extracted from Booleanity opening internally)
         let hw_params = HammingWeightClaimReductionParams::new(
-            self.trace.len().log_2(),
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
@@ -1833,11 +1819,16 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                     stage8_trace,
                     Some(&self.one_hot_params),
                 );
-                let derived_source_point = if self.program_mode == ProgramMode::Committed {
-                    derive_from_prefix(witness.get_num_vars())
-                } else {
-                    derive_from_suffix(witness.get_num_vars())
+                let derived_source_point = match DoryGlobals::get_layout() {
+                    DoryLayout::AddressMajor => derive_from_prefix(witness.get_num_vars()),
+                    DoryLayout::CycleMajor => derive_from_suffix(witness.get_num_vars()),
                 };
+                if matches!(poly, CommittedPolynomial::RdInc) {
+                    tracing::info!(
+                        "dense_derived_opening_point={:?}",
+                        &derived_source_point.r
+                    );
+                }
                 Some((
                     derived_source_point.clone(),
                     witness.evaluate(&derived_source_point.r),
@@ -1852,10 +1843,21 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                     stage8_trace,
                     Some(&self.one_hot_params),
                 );
-                let derived_source_point = derive_ra_from_prefix_rotated(witness.get_num_vars());
+                let derived_source_point = match DoryGlobals::get_layout() {
+                    DoryLayout::AddressMajor => {
+                        derive_ra_from_prefix_rotated(witness.get_num_vars())
+                    }
+                    DoryLayout::CycleMajor => {
+                        derive_from_suffix(witness.get_num_vars())
+                    }
+                };
+                if matches!(poly, CommittedPolynomial::InstructionRa(0)) {
+                    tracing::info!("ra_derived_opening_point={:?}", &derived_source_point.r);
+                }
+                let direct_eval = witness.evaluate(&derived_source_point.r);
                 Some((
                     derived_source_point.clone(),
-                    witness.evaluate(&derived_source_point.r),
+                    direct_eval,
                 ))
             }
             CommittedPolynomial::TrustedAdvice => self.advice.trusted_advice_polynomial.as_ref().map(
@@ -1911,14 +1913,21 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
     fn compute_stage8_dense_lagrange_factor(
         opening_point: &[F::Challenge],
         dense_point_len: usize,
+        dense_point_is_suffix: bool,
     ) -> F {
         assert!(
             dense_point_len <= opening_point.len(),
             "dense opening point cannot be larger than joint opening point"
         );
-        opening_point[dense_point_len..]
-            .iter()
-            .fold(F::one(), |acc, r| acc * (F::one() - *r))
+        if dense_point_is_suffix {
+            opening_point[..opening_point.len() - dense_point_len]
+                .iter()
+                .fold(F::one(), |acc, r| acc * (F::one() - *r))
+        } else {
+            opening_point[dense_point_len..]
+                .iter()
+                .fold(F::one(), |acc, r| acc * (F::one() - *r))
+        }
     }
 
     #[inline]
@@ -1928,10 +1937,14 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         opening_point: &[F::Challenge],
         source_point: &[F::Challenge],
     ) -> F {
-        match (self.program_mode, poly) {
-            (ProgramMode::Committed, CommittedPolynomial::RamInc)
-            | (ProgramMode::Committed, CommittedPolynomial::RdInc) => {
-                Self::compute_stage8_dense_lagrange_factor(opening_point, source_point.len())
+        match poly {
+            CommittedPolynomial::RamInc | CommittedPolynomial::RdInc => {
+                let dense_point_is_suffix = DoryGlobals::get_layout() == DoryLayout::CycleMajor;
+                Self::compute_stage8_dense_lagrange_factor(
+                    opening_point,
+                    source_point.len(),
+                    dense_point_is_suffix,
+                )
             }
             _ => compute_advice_lagrange_factor::<F>(opening_point, source_point),
         }
@@ -1965,8 +1978,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         let stage8_trace_for_debug = Some(self.trace_for_stage6_context());
 
         // In committed mode, construct Stage-8 opening point groups as:
-        // [Stage7 bytecode vars || Stage6b bytecode-only vars || Stage6b increments vars] (BE).
-        // We build in LE as [increments || bytecode-only || stage7], then swap endianness.
+        // [Stage6b bytecode-only prefix || Stage7 vars || Stage6b shared dense suffix] (BE).
         let opening_point = if self.program_mode == ProgramMode::Committed {
             let bytecode_point = self
                 .opening_accumulator
@@ -1980,31 +1992,19 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 SumcheckId::IncClaimReduction,
             );
             tracing::info!("bytecode_point={:?}", bytecode_point.r);
-            // let inc_point_le: OpeningPoint<BIG_ENDIAN, F> = inc_point.match_endianness();
-            // let bytecode_point_le: OpeningPoint<LITTLE_ENDIAN, F> = bytecode_point.match_endianness();
             let stage7_rounds = self.one_hot_params.log_k_chunk;
-            // assert!(
-            //     stage7_rounds <= bytecode_point_le.r.len(),
-            //     "bytecode opening too short: len={}, stage7_rounds={}",
-            //     bytecode_point_le.r.len(),
-            //     stage7_rounds
-            // );
-            let cycle_rounds = bytecode_point.r.len() - stage7_rounds;
             let inc_rounds = inc_point.r.len();
             tracing::info!("inc_rounds={inc_rounds}, inc_point={:?}", inc_point.r);
             assert!(
-                inc_rounds <= cycle_rounds,
-                "increment cycle rounds ({inc_rounds}) exceed bytecode cycle rounds ({cycle_rounds})"
+                stage7_rounds + inc_rounds <= bytecode_point.r.len(),
+                "stage7+inc rounds exceed bytecode point len (stage7={}, inc={}, bytecode={})",
+                stage7_rounds,
+                inc_rounds,
+                bytecode_point.r.len()
             );
+            // Use bytecode claim-reduction normalized opening directly as Stage-8 anchor.
+            // Segment ordering is defined in BytecodeClaimReductionParams::normalize_opening_point.
             OpeningPoint::<BIG_ENDIAN, F>::new(bytecode_point.r.clone())
-            // OpeningPoint::<BIG_ENDIAN, F>::new(
-            //     [
-            //         inc_point.r.as_slice(),
-            //         bytecode_stage7,
-            //         bytecode_cycle_extra,
-            //     ]
-            //     .concat(),
-            // )
         } else {
             let (hamming_point, _) = self.opening_accumulator.get_committed_polynomial_opening(
                 CommittedPolynomial::InstructionRa(0),
@@ -2058,16 +2058,16 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             CommittedPolynomial::RdInc,
             SumcheckId::IncClaimReduction,
         );
-        let ram_inc_lagrange = if self.program_mode == ProgramMode::Committed {
-            Self::compute_stage8_dense_lagrange_factor(&opening_point.r, ram_inc_point.r.len())
-        } else {
-            compute_advice_lagrange_factor::<F>(&opening_point.r, &ram_inc_point.r)
-        };
-        let rd_inc_lagrange = if self.program_mode == ProgramMode::Committed {
-            Self::compute_stage8_dense_lagrange_factor(&opening_point.r, rd_inc_point.r.len())
-        } else {
-            compute_advice_lagrange_factor::<F>(&opening_point.r, &rd_inc_point.r)
-        };
+        let ram_inc_lagrange = self.compute_stage8_lagrange_factor(
+            CommittedPolynomial::RamInc,
+            &opening_point.r,
+            &ram_inc_point.r,
+        );
+        let rd_inc_lagrange = self.compute_stage8_lagrange_factor(
+            CommittedPolynomial::RdInc,
+            &opening_point.r,
+            &rd_inc_point.r,
+        );
         let ram_inc_staged_claim = ram_inc_claim * ram_inc_lagrange;
         let rd_inc_staged_claim = rd_inc_claim * rd_inc_lagrange;
         polynomial_claims.push((CommittedPolynomial::RamInc, ram_inc_staged_claim));

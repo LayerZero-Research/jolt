@@ -111,8 +111,8 @@ impl<F: JoltField> BytecodeClaimReductionParams<F> {
         accumulator: &dyn OpeningAccumulator<F>,
         transcript: &mut impl Transcript,
     ) -> Self {
-        let log_t_full = bytecode_read_raf_params.bytecode_T;
-        let full_bytecode_len = 1usize << log_t_full;
+        let bytecode_t_full = bytecode_read_raf_params.bytecode_T;
+        let full_bytecode_len = 1usize << bytecode_t_full;
         assert!(
             full_bytecode_len.is_multiple_of(bytecode_chunk_count),
             "bytecode chunk count ({bytecode_chunk_count}) must divide bytecode_len ({full_bytecode_len})"
@@ -129,8 +129,8 @@ impl<F: JoltField> BytecodeClaimReductionParams<F> {
             VirtualPolynomial::BytecodeReadRafAddrClaim,
             SumcheckId::BytecodeReadRafAddressPhase,
         );
-        debug_assert_eq!(r_bc_full.r.len(), log_t_full);
-        let dropped_bits = log_t_full - bytecode_t;
+        debug_assert_eq!(r_bc_full.r.len(), bytecode_t_full);
+        let dropped_bits = bytecode_t_full - bytecode_t;
         let chunk_rbc_weights = if dropped_bits == 0 {
             vec![F::one()]
         } else {
@@ -299,57 +299,67 @@ impl<F: JoltField> SumcheckInstanceParams<F> for BytecodeClaimReductionParams<F>
         }
 
         match DoryGlobals::get_layout() {
-            DoryLayout::CycleMajor => OpeningPoint::<LITTLE_ENDIAN, F>::new(
-                [self.cycle_var_challenges.as_slice(), challenges].concat(),
-            )
-            .match_endianness(),
-            DoryLayout::AddressMajor => {
-                // Sumcheck binds over the rotated bytecode variable order. For committed opening
-                // points we must map back to the native bytecode point ordering.
-                let mut opening_point_le =
-                    [self.cycle_var_challenges.as_slice(), challenges].concat();
-                let shift = low_var_rotation_shift(
-                    opening_point_le.len(),
-                    self.dense_cycle_prefix_vars,
-                );
-                if shift != 0 {
-                    opening_point_le.rotate_left(shift);
-                }
+            DoryLayout::CycleMajor => {
+                // Address phase sumcheck binds `[cycle-vars || address-vars]` in LE round order.
+                // After BE conversion this is `[rev(address) || rev(cycle)]`.
+                // For Stage-8 embedding when bytecode dominates, we want:
+                //   [rev(stage6 bytecode-only prefix) || rev(stage7 address) || rev(stage6 dense-suffix)].
+                // With front-loaded batching in Stage-6b, non-bytecode instances are active in the
+                // last `d` rounds, so BE order from normalized bytecode point is:
+                //   [stage7 || dense-suffix || bytecode-prefix].
+                // Reorder to:
+                //   [bytecode-prefix || stage7 || dense-suffix].
                 let opening_point_be: OpeningPoint<BIG_ENDIAN, F> =
-                    OpeningPoint::<LITTLE_ENDIAN, F>::new(opening_point_le).match_endianness();
+                    OpeningPoint::<LITTLE_ENDIAN, F>::new(
+                        [self.cycle_var_challenges.as_slice(), challenges].concat(),
+                    )
+                    .match_endianness();
 
-                // Reorder serialized opening-point segments to:
-                // [inc_point || bytecode_stage7(col||row) || bytecode_cycle_after_inc_point] (BE).
                 let total_rounds = opening_point_be.r.len();
-                let inc_rounds = self.dense_cycle_prefix_vars.min(total_rounds);
-                let stage7_rounds = self
-                    .address_alignment_rounds()
-                    .min(total_rounds.saturating_sub(inc_rounds));
-                let cycle_after_inc_rounds = total_rounds.saturating_sub(inc_rounds + stage7_rounds);
+                let stage7_rounds = self.address_alignment_rounds().min(total_rounds);
+                let dense_rounds =
+                    self.dense_cycle_prefix_vars.min(total_rounds.saturating_sub(stage7_rounds));
+                let bytecode_prefix_rounds =
+                    total_rounds.saturating_sub(stage7_rounds + dense_rounds);
 
-                // In AddressMajor, Stage-7 address vars can be split between column-side and row-side
-                // positions around the cycle-after-inc suffix. Keep inc fixed, then stitch stage7
-                // together as [col || row], and move cycle-after-inc to the end.
-                let stage7_row_rounds = self
-                    .bytecode_row_vars
-                    .saturating_sub(self.cycle_phase_row_rounds.len())
-                    .min(stage7_rounds);
-                let stage7_col_rounds = stage7_rounds.saturating_sub(stage7_row_rounds);
-
-                let col_start = inc_rounds;
-                let col_end = col_start + stage7_col_rounds;
-                let cycle_start = col_end;
-                let cycle_end = cycle_start + cycle_after_inc_rounds;
-                let row_start = cycle_end;
-                let row_end = row_start + stage7_row_rounds;
-
-                debug_assert_eq!(row_end, total_rounds);
+                let stage7_start = 0;
+                let stage7_end = stage7_start + stage7_rounds;
+                let dense_start = stage7_end;
+                let dense_end = dense_start + dense_rounds;
+                let bytecode_prefix_start = dense_end;
+                let bytecode_prefix_end = bytecode_prefix_start + bytecode_prefix_rounds;
+                debug_assert_eq!(bytecode_prefix_end, total_rounds);
 
                 let mut reordered = Vec::with_capacity(total_rounds);
-                reordered.extend_from_slice(&opening_point_be.r[..inc_rounds]); // inc
-                reordered.extend_from_slice(&opening_point_be.r[col_start..col_end]); // stage7 col
-                reordered.extend_from_slice(&opening_point_be.r[row_start..row_end]); // stage7 row
-                reordered.extend_from_slice(&opening_point_be.r[cycle_start..cycle_end]); // cycle extra
+                reordered.extend_from_slice(
+                    &opening_point_be.r[bytecode_prefix_start..bytecode_prefix_end],
+                );
+                reordered.extend_from_slice(&opening_point_be.r[stage7_start..stage7_end]);
+                // Keep the Stage-6b dense opening as a contiguous suffix so Stage-8
+                // embedding places the full IncClaimReduction point at the end.
+                reordered.extend_from_slice(&opening_point_be.r[dense_start..dense_end]);
+                OpeningPoint::<BIG_ENDIAN, F>::new(reordered)
+            }
+            DoryLayout::AddressMajor => {
+                // In AddressMajor, construct the Stage-8 anchor directly from Stage-6b/Stage-7
+                // challenge vectors:
+                //   [rev(last T vars of stage6b) || rev(stage7 vars) || rev(first b vars of stage6b)].
+                // where:
+                //   - stage6b vars are `cycle_var_challenges` in LE round order,
+                //   - T = dense_cycle_prefix_vars (main dense width),
+                //   - b = remaining bytecode-only Stage-6b vars.
+                let stage6_rounds = self.cycle_var_challenges.len();
+                let dense_rounds = self.dense_cycle_prefix_vars.min(stage6_rounds);
+                let bytecode_prefix_rounds = stage6_rounds.saturating_sub(dense_rounds);
+
+                let stage6_head = &self.cycle_var_challenges[..bytecode_prefix_rounds];
+                let stage6_tail = &self.cycle_var_challenges[bytecode_prefix_rounds..];
+
+                let mut reordered =
+                    Vec::with_capacity(stage6_rounds + challenges.len());
+                reordered.extend(stage6_tail.iter().rev().cloned());
+                reordered.extend(challenges.iter().rev().cloned());
+                reordered.extend(stage6_head.iter().rev().cloned());
 
                 OpeningPoint::<BIG_ENDIAN, F>::new(reordered)
             }

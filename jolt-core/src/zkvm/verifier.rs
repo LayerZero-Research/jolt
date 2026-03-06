@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::poly::commitment::commitment_scheme::CommitmentScheme;
-use crate::poly::commitment::dory::{DoryContext, DoryGlobals};
+use crate::poly::commitment::dory::{DoryContext, DoryGlobals, DoryLayout};
 use crate::subprotocols::sumcheck::BatchedSumcheck;
 use crate::zkvm::claim_reductions::RegistersClaimReductionSumcheckVerifier;
 use crate::zkvm::config::OneHotParams;
@@ -538,7 +538,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
 
     fn verify_stage6a(&mut self) -> Result<(), anyhow::Error> {
         let stage1_cycle_vars = self.proof.trace_length.log_2();
-        let stage6_cycle_vars = self.proof.stage6_trace_length.log_2();
+        let stage6_log_t = self.proof.stage6_trace_length.log_2();
         let program_preprocessing = match self.proof.program_mode {
             ProgramMode::Committed => {
                 // Ensure we have committed program commitments for committed mode.
@@ -550,8 +550,8 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
         let bytecode_read_raf = BytecodeReadRafAddressSumcheckVerifier::new(
             program_preprocessing,
             stage1_cycle_vars,
-            stage6_cycle_vars,
-            self.proof.dory_layout,
+            // stage6_log_t,
+            // self.proof.dory_layout,
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
@@ -559,8 +559,6 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
         )?;
         let booleanity_params = BooleanitySumcheckParams::new(
             stage1_cycle_vars,
-            stage6_cycle_vars,
-            self.proof.dory_layout,
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
@@ -597,33 +595,24 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
             .expect("booleanity_params must be set by verify_stage6a");
 
         // Initialize Stage 6b cycle verifiers from scratch (Option B).
-        let stage6_log_t = self.proof.stage6_trace_length.log_2();
+        let stage6_log_t_padded = self.proof.stage6_trace_length.log_2();
+        let trace_log_t = self.proof.trace_length.log_2();
         let booleanity = BooleanityCycleSumcheckVerifier::new(booleanity_params);
-        let ram_hamming_booleanity = HammingBooleanitySumcheckVerifier::new(
-            self.proof.trace_length,
-            stage6_log_t,
-            self.proof.dory_layout,
-            &self.one_hot_params,
-            &self.opening_accumulator,
-        );
+        let ram_hamming_booleanity =
+            HammingBooleanitySumcheckVerifier::new(&self.opening_accumulator);
         let ram_ra_virtual = RamRaVirtualSumcheckVerifier::new(
             self.proof.trace_length,
-            stage6_log_t,
-            self.proof.dory_layout,
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
         );
         let lookups_ra_virtual = LookupsRaSumcheckVerifier::new(
-            stage6_log_t,
-            self.proof.dory_layout,
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
         );
         let inc_reduction = IncClaimReductionSumcheckVerifier::new(
             self.proof.trace_length,
-            stage6_log_t,
             &self.opening_accumulator,
             &mut self.transcript,
         );
@@ -636,7 +625,7 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
         if self.proof.program_mode == ProgramMode::Committed {
             let bytecode_reduction_params = BytecodeClaimReductionParams::new(
                 &bytecode_read_raf_params,
-                stage6_log_t,
+                stage6_log_t_padded,
                 self.one_hot_params.log_k_chunk,
                 self.proof.trace_length.log_2(),
                 self.preprocessing.shared.bytecode_chunk_count,
@@ -656,26 +645,26 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
             self.advice_reduction_verifier_trusted = Some(AdviceClaimReductionVerifier::new(
                 AdviceKind::Trusted,
                 &self.program_io.memory_layout,
-                self.proof.stage6_trace_length,
-                stage6_log_t,
+                self.proof.trace_length,
+                trace_log_t,
                 &self.opening_accumulator,
                 &mut self.transcript,
                 self.proof
                     .rw_config
-                    .needs_single_advice_opening(self.proof.trace_length.log_2()),
+                    .needs_single_advice_opening(trace_log_t),
             ));
         }
         if self.proof.untrusted_advice_commitment.is_some() {
             self.advice_reduction_verifier_untrusted = Some(AdviceClaimReductionVerifier::new(
                 AdviceKind::Untrusted,
                 &self.program_io.memory_layout,
-                self.proof.stage6_trace_length,
-                stage6_log_t,
+                self.proof.trace_length,
+                trace_log_t,
                 &self.opening_accumulator,
                 &mut self.transcript,
                 self.proof
                     .rw_config
-                    .needs_single_advice_opening(self.proof.trace_length.log_2()),
+                    .needs_single_advice_opening(trace_log_t),
             ));
         }
 
@@ -694,9 +683,9 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
                 self.preprocessing.shared.min_bytecode_address(),
                 padded_len_words,
                 self.proof.ram_K,
-                self.proof.stage6_trace_length,
-                stage6_log_t,
-                self.proof.trace_length.log_2(),
+                self.proof.trace_length,
+                trace_log_t,
+                trace_log_t,
                 self.one_hot_params.log_k_chunk,
                 &self.proof.rw_config,
                 &self.opening_accumulator,
@@ -749,7 +738,6 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
         // Create verifier for HammingWeightClaimReduction
         // (r_cycle and r_addr_bool are extracted from Booleanity opening internally)
         let hw_verifier = HammingWeightClaimReductionVerifier::new(
-            self.proof.trace_length.log_2(),
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
@@ -874,20 +862,24 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
             CommittedPolynomial::RdInc,
             SumcheckId::IncClaimReduction,
         );
-        let ram_inc_lagrange = if self.proof.program_mode == ProgramMode::Committed {
-            opening_point.r[_ram_inc_point.r.len()..]
-                .iter()
-                .fold(F::one(), |acc, r| acc * (F::one() - *r))
-        } else {
-            compute_advice_lagrange_factor::<F>(&opening_point.r, &_ram_inc_point.r)
+        let dense_point_is_suffix = self.proof.dory_layout == DoryLayout::CycleMajor;
+        let dense_lagrange = |dense_point_len: usize| {
+            assert!(
+                dense_point_len <= opening_point.r.len(),
+                "dense opening point cannot be larger than joint opening point"
+            );
+            if dense_point_is_suffix {
+                opening_point.r[..opening_point.r.len() - dense_point_len]
+                    .iter()
+                    .fold(F::one(), |acc, r| acc * (F::one() - *r))
+            } else {
+                opening_point.r[dense_point_len..]
+                    .iter()
+                    .fold(F::one(), |acc, r| acc * (F::one() - *r))
+            }
         };
-        let rd_inc_lagrange = if self.proof.program_mode == ProgramMode::Committed {
-            opening_point.r[_rd_inc_point.r.len()..]
-                .iter()
-                .fold(F::one(), |acc, r| acc * (F::one() - *r))
-        } else {
-            compute_advice_lagrange_factor::<F>(&opening_point.r, &_rd_inc_point.r)
-        };
+        let ram_inc_lagrange = dense_lagrange(_ram_inc_point.r.len());
+        let rd_inc_lagrange = dense_lagrange(_rd_inc_point.r.len());
         polynomial_claims.push((CommittedPolynomial::RamInc, ram_inc_claim * ram_inc_lagrange));
         polynomial_claims.push((CommittedPolynomial::RdInc, rd_inc_claim * rd_inc_lagrange));
 

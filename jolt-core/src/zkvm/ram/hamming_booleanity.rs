@@ -1,5 +1,4 @@
 use crate::field::JoltField;
-use crate::poly::commitment::dory::{DoryGlobals, DoryLayout};
 use crate::poly::eq_poly::EqPolynomial;
 use crate::poly::multilinear_polynomial::{BindingOrder, MultilinearPolynomial, PolynomialBinding};
 use crate::poly::opening_proof::{
@@ -15,14 +14,11 @@ use crate::subprotocols::sumcheck_claim::{
 use crate::subprotocols::sumcheck_prover::SumcheckInstanceProver;
 use crate::subprotocols::sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier};
 use crate::transcripts::Transcript;
-use crate::utils::math::Math;
-use crate::zkvm::config::OneHotParams;
 use crate::zkvm::witness::VirtualPolynomial;
 use allocative::Allocative;
 #[cfg(feature = "allocative")]
 use allocative::FlameGraphBuilder;
 use rayon::prelude::*;
-use std::ops::Range;
 use tracer::instruction::Cycle;
 
 // RAM Hamming booleanity sumcheck
@@ -39,101 +35,16 @@ const DEGREE_BOUND: usize = 3;
 #[derive(Allocative, Clone)]
 pub struct HammingBooleanitySumcheckParams<F: JoltField> {
     pub r_cycle: OpeningPoint<BIG_ENDIAN, F>,
-    pub target_log_t: usize,
-    #[allocative(skip)]
-    pub cycle_phase_col_rounds: Range<usize>,
-    #[allocative(skip)]
-    pub cycle_phase_row_rounds: Range<usize>,
 }
 
 impl<F: JoltField> HammingBooleanitySumcheckParams<F> {
-    pub fn new(
-        trace_len: usize,
-        target_log_t: usize,
-        dory_layout: DoryLayout,
-        one_hot_params: &OneHotParams,
-        opening_accumulator: &dyn OpeningAccumulator<F>,
-    ) -> Self {
+    pub fn new(opening_accumulator: &dyn OpeningAccumulator<F>) -> Self {
         let (r_cycle, _) = opening_accumulator.get_virtual_polynomial_opening(
             VirtualPolynomial::LookupOutput,
             SumcheckId::SpartanOuter,
         );
 
-        let log_t = trace_len.log_2();
-        let target_log_t = target_log_t.max(log_t);
-        let (sigma_main, _) = DoryGlobals::main_sigma_nu(one_hot_params.log_k_chunk, target_log_t);
-        let main_col_vars = sigma_main;
-        let (poly_col_vars, poly_row_vars) = DoryGlobals::balanced_sigma_nu(log_t);
-        let (cycle_phase_col_rounds, cycle_phase_row_rounds) = match dory_layout {
-            DoryLayout::CycleMajor => {
-                let col_end = std::cmp::min(target_log_t, poly_col_vars);
-                let col_binding_rounds = 0..col_end;
-                let row_start_unclamped = main_col_vars.saturating_sub(one_hot_params.log_k_chunk);
-                let row_start = std::cmp::min(
-                    target_log_t,
-                    std::cmp::max(row_start_unclamped, col_end),
-                );
-                let row_end = std::cmp::min(target_log_t, row_start + poly_row_vars);
-                (col_binding_rounds, row_start..row_end)
-            }
-            DoryLayout::AddressMajor => {
-                let col_end = std::cmp::min(target_log_t, poly_col_vars);
-                let col_binding_rounds = 0..col_end;
-                let row_start_unclamped = main_col_vars.saturating_sub(one_hot_params.log_k_chunk);
-                let row_start = std::cmp::min(
-                    target_log_t,
-                    std::cmp::max(row_start_unclamped, col_end),
-                );
-                let row_end = std::cmp::min(target_log_t, row_start + poly_row_vars);
-                (col_binding_rounds, row_start..row_end)
-            }
-        };
-        assert_eq!(
-            cycle_phase_col_rounds.len() + cycle_phase_row_rounds.len(),
-            log_t,
-            "hamming booleanity cycle schedule must bind exactly log_t rounds (layout={dory_layout:?}, log_t={log_t}, target_log_t={target_log_t}, col_rounds={:?}, row_rounds={:?})",
-            cycle_phase_col_rounds,
-            cycle_phase_row_rounds
-        );
-
-        Self {
-            r_cycle,
-            target_log_t,
-            cycle_phase_col_rounds,
-            cycle_phase_row_rounds,
-        }
-    }
-
-    #[inline]
-    fn active_cycle_rounds(&self) -> usize {
-        self.cycle_phase_col_rounds.len() + self.cycle_phase_row_rounds.len()
-    }
-
-    #[inline]
-    fn dummy_rounds(&self) -> usize {
-        self.target_log_t.saturating_sub(self.active_cycle_rounds())
-    }
-
-    #[inline]
-    fn dummy_scale(&self) -> F {
-        let two_inv = F::from_u64(2).inverse().unwrap();
-        (0..self.dummy_rounds()).fold(F::one(), |acc, _| acc * two_inv)
-    }
-
-    #[inline]
-    fn is_cycle_dummy_round(&self, round: usize) -> bool {
-        !self.cycle_phase_col_rounds.contains(&round) && !self.cycle_phase_row_rounds.contains(&round)
-    }
-
-    #[inline]
-    fn compact_cycle_challenges(&self, sumcheck_challenges: &[F::Challenge]) -> Vec<F::Challenge> {
-        let mut compact =
-            Vec::with_capacity(self.cycle_phase_col_rounds.len() + self.cycle_phase_row_rounds.len());
-        compact.extend_from_slice(&sumcheck_challenges[self.cycle_phase_col_rounds.clone()]);
-        if !self.cycle_phase_row_rounds.is_empty() {
-            compact.extend_from_slice(&sumcheck_challenges[self.cycle_phase_row_rounds.clone()]);
-        }
-        compact
+        Self { r_cycle }
     }
 }
 
@@ -143,7 +54,7 @@ impl<F: JoltField> SumcheckInstanceParams<F> for HammingBooleanitySumcheckParams
     }
 
     fn num_rounds(&self) -> usize {
-        self.target_log_t
+        self.r_cycle.len()
     }
 
     fn input_claim(&self, _: &dyn OpeningAccumulator<F>) -> F {
@@ -163,7 +74,6 @@ pub struct HammingBooleanitySumcheckProver<F: JoltField> {
     eq_r_cycle: GruenSplitEqPolynomial<F>,
     H: MultilinearPolynomial<F>,
     pub params: HammingBooleanitySumcheckParams<F>,
-    scale: F,
 }
 
 impl<F: JoltField> HammingBooleanitySumcheckProver<F> {
@@ -181,7 +91,6 @@ impl<F: JoltField> HammingBooleanitySumcheckProver<F> {
             eq_r_cycle,
             H,
             params,
-            scale: F::one(),
         }
     }
 }
@@ -194,13 +103,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
     }
 
     #[tracing::instrument(skip_all, name = "RamHammingBooleanitySumcheckProver::compute_message")]
-    fn compute_message(&mut self, round: usize, previous_claim: F) -> UniPoly<F> {
-        if self.params.is_cycle_dummy_round(round) {
-            let two_inv = F::from_u64(2).inverse().unwrap();
-            return UniPoly::from_coeff(vec![previous_claim * two_inv, F::zero()]);
-        }
-        let inv_scale = self.scale.inverse().unwrap();
-        let previous_claim = previous_claim * inv_scale;
+    fn compute_message(&mut self, _round: usize, previous_claim: F) -> UniPoly<F> {
         let eq = &self.eq_r_cycle;
         let H = &self.H;
 
@@ -211,19 +114,14 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
             let delta = h1 - h0;
             [h0.square() - h0, delta.square()]
         });
-        eq.gruen_poly_deg_3(c0, e, previous_claim) * self.scale
+        eq.gruen_poly_deg_3(c0, e, previous_claim)
     }
 
     #[tracing::instrument(
         skip_all,
         name = "RamHammingBooleanitySumcheckProver::ingest_challenge"
     )]
-    fn ingest_challenge(&mut self, r_j: F::Challenge, round: usize) {
-        if self.params.is_cycle_dummy_round(round) {
-            let two_inv = F::from_u64(2).inverse().unwrap();
-            self.scale *= two_inv;
-            return;
-        }
+    fn ingest_challenge(&mut self, r_j: F::Challenge, _round: usize) {
         self.eq_r_cycle.bind(r_j);
         self.H.bind_parallel(r_j, BindingOrder::LowToHigh);
     }
@@ -234,12 +132,11 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
         transcript: &mut T,
         sumcheck_challenges: &[F::Challenge],
     ) {
-        let active_cycle_challenges = self.params.compact_cycle_challenges(sumcheck_challenges);
         accumulator.append_virtual(
             transcript,
             VirtualPolynomial::RamHammingWeight,
             SumcheckId::RamHammingBooleanity,
-            self.params.normalize_opening_point(&active_cycle_challenges),
+            self.params.normalize_opening_point(sumcheck_challenges),
             self.H.final_sumcheck_claim(),
         );
     }
@@ -255,21 +152,9 @@ pub struct HammingBooleanitySumcheckVerifier<F: JoltField> {
 }
 
 impl<F: JoltField> HammingBooleanitySumcheckVerifier<F> {
-    pub fn new(
-        trace_len: usize,
-        target_log_t: usize,
-        dory_layout: DoryLayout,
-        one_hot_params: &OneHotParams,
-        opening_accumulator: &dyn OpeningAccumulator<F>,
-    ) -> Self {
+    pub fn new(opening_accumulator: &dyn OpeningAccumulator<F>) -> Self {
         Self {
-            params: HammingBooleanitySumcheckParams::new(
-                trace_len,
-                target_log_t,
-                dory_layout,
-                one_hot_params,
-                opening_accumulator,
-            ),
+            params: HammingBooleanitySumcheckParams::new(opening_accumulator),
         }
     }
 }
@@ -311,18 +196,24 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
             SumcheckId::SpartanOuter,
         );
 
-        let active_cycle_challenges = self.params.compact_cycle_challenges(sumcheck_challenges);
-        let r_cycle_final = self.params.normalize_opening_point(&active_cycle_challenges);
-        let eq = EqPolynomial::<F>::mle_endian(&r_cycle, &r_cycle_final);
+        let eq = EqPolynomial::<F>::mle(
+            sumcheck_challenges,
+            &r_cycle
+                .r
+                .iter()
+                .cloned()
+                .rev()
+                .collect::<Vec<F::Challenge>>(),
+        );
 
-        let result = self.params.dummy_scale() * (H_claim.square() - H_claim) * eq;
+        let result = (H_claim.square() - H_claim) * eq;
 
         #[cfg(test)]
         {
-            let r = self.params.normalize_opening_point(&active_cycle_challenges);
+            let r = self.params.normalize_opening_point(sumcheck_challenges);
             let reference_result =
                 Self::input_output_claims().expected_output_claim(&r, &[F::one()], accumulator);
-            assert_eq!(result, self.params.dummy_scale() * reference_result);
+            assert_eq!(result, reference_result);
         }
 
         result
@@ -334,12 +225,11 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         transcript: &mut T,
         sumcheck_challenges: &[F::Challenge],
     ) {
-        let active_cycle_challenges = self.params.compact_cycle_challenges(sumcheck_challenges);
         accumulator.append_virtual(
             transcript,
             VirtualPolynomial::RamHammingWeight,
             SumcheckId::RamHammingBooleanity,
-            self.params.normalize_opening_point(&active_cycle_challenges),
+            self.params.normalize_opening_point(sumcheck_challenges),
         );
     }
 }

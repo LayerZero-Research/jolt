@@ -214,7 +214,10 @@ impl<F: JoltField> OneHotPolynomial<F> {
             if let Some(k) = k {
                 let global_index =
                     layout.address_cycle_to_index(*k as usize, cycle, self.K, effective_t);
-                let scaled_index = if column_stride == 1 {
+                // In CycleMajor, one-hot polys are always embedded as a flat prefix over the
+                // canonical (k, t) domain. Even if Joint introduces extra dimensions (e.g.
+                // from committed bytecode), we do not spread one-hot mass across those vars.
+                let scaled_index = if layout == DoryLayout::CycleMajor || column_stride == 1 {
                     global_index
                 } else {
                     global_index * column_stride

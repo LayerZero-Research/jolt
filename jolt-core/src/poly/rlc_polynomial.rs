@@ -500,6 +500,13 @@ impl<F: JoltField> RLCPolynomial<F> {
         result: &mut [F],
         column_stride: usize,
     ) {
+        // CycleMajor one-hot polys stay in the canonical flattened (k, t) prefix domain.
+        // Extra Joint-only variables must remain zero for one-hot contributions.
+        if DoryGlobals::get_layout() == DoryLayout::CycleMajor {
+            one_hot.vector_matrix_product(left_vec, coeff, result);
+            return;
+        }
+
         if column_stride == 1 {
             one_hot.vector_matrix_product(left_vec, coeff, result);
             return;
@@ -756,13 +763,23 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
         }
 
         let T = DoryGlobals::get_T();
+        let trace_t = DoryGlobals::get_trace_T();
+        let has_onehot = !ctx.onehot_polys.is_empty();
         match &ctx.trace_source {
             TraceSource::Materialized(trace) => {
-                tracing::info!("materialized_vector_matrix_product");
+                // In CycleMajor, when Joint/Main matrix T is larger than the trace-domain T,
+                // one-hot polynomials must stay in the canonical flattened prefix domain.
+                // Fall back to the canonical materialized VMV path, which uses the same
+                // indexing semantics as commitment generation.
+                if DoryGlobals::get_layout() == DoryLayout::CycleMajor
+                    && has_onehot
+                    && trace_t < T
+                {
+                    return self.address_major_vector_matrix_product(left_vec, num_columns, &ctx);
+                }
                 self.materialized_vector_matrix_product(left_vec, num_columns, trace, &ctx, T)
             }
             TraceSource::Lazy(lazy_trace) => {
-                tracing::info!("lazy_vector_matrix_product");
                 self.lazy_vector_matrix_product(
                 left_vec,
                 num_columns,
@@ -860,7 +877,10 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
         let trace_len = trace.len();
 
         // Setup: precompute coefficients, row factors, and folded one-hot tables.
-        let setup = VmvSetup::new(ctx, left_vec, num_rows);
+        // For one-hot polys we fold over the canonical trace domain rows, not the
+        // potentially larger matrix T used by Joint.
+        let onehot_rows_per_k = trace_len.div_ceil(num_columns).min(num_rows);
+        let setup = VmvSetup::new(ctx, left_vec, num_rows, onehot_rows_per_k);
 
         // Divide rows evenly among threads using par_chunks on left_vec
         // Only use first num_rows elements (left_vec may be longer due to padding)
@@ -932,7 +952,10 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
         let num_rows = T / num_columns;
 
         // Setup: precompute coefficients, row factors, and folded one-hot tables.
-        let setup = VmvSetup::new(ctx, left_vec, num_rows);
+        // Lazy trace is padded to matrix T, but one-hot support is only on the
+        // canonical trace prefix.
+        let onehot_rows_per_k = ctx.trace_source.len().div_ceil(num_columns).min(num_rows);
+        let setup = VmvSetup::new(ctx, left_vec, num_rows, onehot_rows_per_k);
 
         let (dense_accs, onehot_accs) = lazy_trace
             .pad_using(T, |_| Cycle::NoOp)
@@ -1003,19 +1026,29 @@ struct VmvSetup<'a, F: JoltField> {
 }
 
 impl<'a, F: JoltField> VmvSetup<'a, F> {
-    fn new(ctx: &'a StreamingRLCContext<F>, left_vec: &[F], num_rows: usize) -> Self {
+    fn new(
+        ctx: &'a StreamingRLCContext<F>,
+        left_vec: &[F],
+        num_rows: usize,
+        onehot_rows_per_k: usize,
+    ) -> Self {
         let one_hot_params = &ctx.one_hot_params;
         let k_chunk = one_hot_params.k_chunk;
 
         debug_assert!(
-            left_vec.len() >= k_chunk * num_rows,
+            left_vec.len() >= k_chunk * onehot_rows_per_k,
             "left_vec too short for one-hot VMV: len={} need_at_least={}",
             left_vec.len(),
-            k_chunk * num_rows
+            k_chunk * onehot_rows_per_k
         );
 
         // Compute row_factors and eq_k from left vector
-        let (row_factors, eq_k) = Self::compute_row_factors_and_eq_k(left_vec, num_rows, k_chunk);
+        let (row_factors, eq_k) = Self::compute_row_factors_and_eq_k(
+            left_vec,
+            num_rows,
+            onehot_rows_per_k,
+            k_chunk,
+        );
 
         // Extract dense coefficients
         let mut rd_inc_coeff = F::zero();
@@ -1047,16 +1080,17 @@ impl<'a, F: JoltField> VmvSetup<'a, F> {
     #[inline]
     fn compute_row_factors_and_eq_k(
         left_vec: &[F],
-        rows_per_k: usize,
+        num_rows: usize,
+        onehot_rows_per_k: usize,
         k_chunk: usize,
     ) -> (Vec<F>, Vec<F>) {
-        let mut row_factors: Vec<F> = unsafe_allocate_zero_vec(rows_per_k);
+        let mut row_factors: Vec<F> = unsafe_allocate_zero_vec(num_rows);
         let mut eq_k: Vec<F> = unsafe_allocate_zero_vec(k_chunk);
 
         for k in 0..k_chunk {
-            let base = k * rows_per_k;
+            let base = k * onehot_rows_per_k;
             let mut sum_k = F::zero();
-            for row in 0..rows_per_k {
+            for row in 0..onehot_rows_per_k {
                 let v = left_vec[base + row];
                 sum_k += v;
                 row_factors[row] += v;

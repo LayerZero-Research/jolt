@@ -1,9 +1,8 @@
-use std::{ops::Range, sync::Arc};
+use std::sync::Arc;
 
 use crate::{
     field::JoltField,
     poly::{
-        commitment::dory::{DoryGlobals, DoryLayout},
         eq_poly::EqPolynomial,
         multilinear_polynomial::{BindingOrder, PolynomialBinding},
         opening_proof::{
@@ -39,11 +38,6 @@ use tracer::instruction::Cycle;
 #[derive(Allocative, Clone)]
 pub struct InstructionRaSumcheckParams<F: JoltField> {
     pub r_cycle: OpeningPoint<BIG_ENDIAN, F>,
-    pub target_log_t: usize,
-    #[allocative(skip)]
-    pub cycle_phase_col_rounds: Range<usize>,
-    #[allocative(skip)]
-    pub cycle_phase_row_rounds: Range<usize>,
     pub r_address: OpeningPoint<BIG_ENDIAN, F>,
     pub one_hot_params: OneHotParams,
     pub gamma_powers: Vec<F>,
@@ -56,8 +50,6 @@ pub struct InstructionRaSumcheckParams<F: JoltField> {
 
 impl<F: JoltField> InstructionRaSumcheckParams<F> {
     pub fn new(
-        target_log_t: usize,
-        dory_layout: DoryLayout,
         one_hot_params: &OneHotParams,
         opening_accumulator: &dyn OpeningAccumulator<F>,
         transcript: &mut impl Transcript,
@@ -87,49 +79,10 @@ impl<F: JoltField> InstructionRaSumcheckParams<F> {
             SumcheckId::InstructionReadRaf,
         );
         let (_, r_cycle) = r.split_at(ra_virtual_log_k_chunk);
-        let cycle_rounds = r_cycle.len();
-        let target_log_t = target_log_t.max(cycle_rounds);
-        let (sigma_main, _) = DoryGlobals::main_sigma_nu(one_hot_params.log_k_chunk, target_log_t);
-        let main_col_vars = sigma_main;
-        let (poly_col_vars, poly_row_vars) = DoryGlobals::balanced_sigma_nu(cycle_rounds);
-        let (cycle_phase_col_rounds, cycle_phase_row_rounds) = match dory_layout {
-            DoryLayout::CycleMajor => {
-                let col_end = std::cmp::min(target_log_t, poly_col_vars);
-                let col_binding_rounds = 0..col_end;
-                let row_start_unclamped = main_col_vars.saturating_sub(one_hot_params.log_k_chunk);
-                let row_start = std::cmp::min(
-                    target_log_t,
-                    std::cmp::max(row_start_unclamped, col_end),
-                );
-                let row_end = std::cmp::min(target_log_t, row_start + poly_row_vars);
-                (col_binding_rounds, row_start..row_end)
-            }
-            DoryLayout::AddressMajor => {
-                let col_end = std::cmp::min(target_log_t, poly_col_vars);
-                let col_binding_rounds = 0..col_end;
-                let row_start_unclamped = main_col_vars.saturating_sub(one_hot_params.log_k_chunk);
-                let row_start = std::cmp::min(
-                    target_log_t,
-                    std::cmp::max(row_start_unclamped, col_end),
-                );
-                let row_end = std::cmp::min(target_log_t, row_start + poly_row_vars);
-                (col_binding_rounds, row_start..row_end)
-            }
-        };
-        assert_eq!(
-            cycle_phase_col_rounds.len() + cycle_phase_row_rounds.len(),
-            cycle_rounds,
-            "instruction RA cycle schedule must bind exactly cycle_rounds (layout={dory_layout:?}, cycle_rounds={cycle_rounds}, target_log_t={target_log_t}, col_rounds={:?}, row_rounds={:?})",
-            cycle_phase_col_rounds,
-            cycle_phase_row_rounds
-        );
 
         let gamma_powers = transcript.challenge_scalar_powers(n_virtual_ra_polys);
         Self {
             r_cycle,
-            target_log_t,
-            cycle_phase_col_rounds,
-            cycle_phase_row_rounds,
             one_hot_params: one_hot_params.clone(),
             r_address: OpeningPoint::new(r_address),
             gamma_powers,
@@ -142,7 +95,7 @@ impl<F: JoltField> InstructionRaSumcheckParams<F> {
 
 impl<F: JoltField> SumcheckInstanceParams<F> for InstructionRaSumcheckParams<F> {
     fn num_rounds(&self) -> usize {
-        self.target_log_t
+        self.r_cycle.len()
     }
 
     fn input_claim(&self, accumulator: &dyn OpeningAccumulator<F>) -> F {
@@ -171,41 +124,11 @@ impl<F: JoltField> SumcheckInstanceParams<F> for InstructionRaSumcheckParams<F> 
     }
 }
 
-impl<F: JoltField> InstructionRaSumcheckParams<F> {
-    #[inline]
-    fn active_cycle_rounds(&self) -> usize {
-        self.r_cycle.len()
-    }
-
-    #[inline]
-    fn dummy_rounds(&self) -> usize {
-        self.target_log_t.saturating_sub(self.active_cycle_rounds())
-    }
-
-    #[inline]
-    fn dummy_scale(&self) -> F {
-        let two_inv = F::from_u64(2).inverse().unwrap();
-        (0..self.dummy_rounds()).fold(F::one(), |acc, _| acc * two_inv)
-    }
-
-    #[inline]
-    fn is_cycle_dummy_round(&self, round: usize) -> bool {
-        round >= self.active_cycle_rounds()
-    }
-
-    #[inline]
-    fn compact_cycle_challenges(&self, sumcheck_challenges: &[F::Challenge]) -> Vec<F::Challenge> {
-        let active = self.active_cycle_rounds().min(sumcheck_challenges.len());
-        sumcheck_challenges[..active].to_vec()
-    }
-}
-
 #[derive(Allocative)]
 pub struct InstructionRaSumcheckProver<F: JoltField> {
     ra_i_polys: Vec<RaPolynomial<u8, F>>,
     eq_poly: GruenSplitEqPolynomial<F>,
     pub params: InstructionRaSumcheckParams<F>,
-    scale: F,
 }
 
 impl<F: JoltField> InstructionRaSumcheckProver<F> {
@@ -261,7 +184,6 @@ impl<F: JoltField> InstructionRaSumcheckProver<F> {
             ra_i_polys,
             eq_poly: GruenSplitEqPolynomial::new(&params.r_cycle.r, BindingOrder::LowToHigh),
             params,
-            scale: F::one(),
         }
     }
 }
@@ -272,14 +194,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for InstructionRa
     }
 
     #[tracing::instrument(skip_all, name = "InstructionRaSumcheckProver::compute_message")]
-    fn compute_message(&mut self, round: usize, previous_claim: F) -> UniPoly<F> {
-        if self.params.is_cycle_dummy_round(round) {
-            let two_inv = F::from_u64(2).inverse().unwrap();
-            return UniPoly::from_coeff(vec![previous_claim * two_inv, F::zero()]);
-        }
-
-        let inv_scale = self.scale.inverse().unwrap();
-        let previous_claim = previous_claim * inv_scale;
+    fn compute_message(&mut self, _round: usize, previous_claim: F) -> UniPoly<F> {
         let eq_poly = &self.eq_poly;
 
         // Compute q(X) = Σ_i ∏_j ra_{i,j}(X,·) on the U_D grid using a *single*
@@ -304,18 +219,11 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for InstructionRa
             n => unimplemented!("{n}"),
         };
 
-        finish_mles_product_sum_from_evals(&evals, previous_claim, eq_poly) * self.scale
+        finish_mles_product_sum_from_evals(&evals, previous_claim, eq_poly)
     }
 
     #[tracing::instrument(skip_all, name = "InstructionRaSumcheckProver::ingest_challenge")]
-    fn ingest_challenge(&mut self, r_j: F::Challenge, round: usize) {
-        if self.params.is_cycle_dummy_round(round) {
-            let two_inv = F::from_u64(2).inverse().unwrap();
-            self.scale *= two_inv;
-            return;
-        }
-        tracing::info!("r_j={:?}, round={round}", r_j);
-
+    fn ingest_challenge(&mut self, r_j: F::Challenge, _round: usize) {
         self.ra_i_polys
             .iter_mut()
             .for_each(|p| p.bind_parallel(r_j, BindingOrder::LowToHigh));
@@ -328,10 +236,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for InstructionRa
         transcript: &mut T,
         sumcheck_challenges: &[F::Challenge],
     ) {
-        let compact_cycle_challenges = self.params.compact_cycle_challenges(sumcheck_challenges);
-        let r_cycle = self
-            .params
-            .normalize_opening_point(&compact_cycle_challenges);
+        let r_cycle = self.params.normalize_opening_point(sumcheck_challenges);
 
         // Compute r_address_chunks with proper padding
         let r_address_chunks = self
@@ -391,19 +296,12 @@ pub struct RaSumcheckVerifier<F: JoltField> {
 
 impl<F: JoltField> RaSumcheckVerifier<F> {
     pub fn new(
-        target_log_t: usize,
-        dory_layout: DoryLayout,
         one_hot_params: &OneHotParams,
         opening_accumulator: &VerifierOpeningAccumulator<F>,
         transcript: &mut impl Transcript,
     ) -> Self {
-        let params = InstructionRaSumcheckParams::new(
-            target_log_t,
-            dory_layout,
-            one_hot_params,
-            opening_accumulator,
-            transcript,
-        );
+        let params =
+            InstructionRaSumcheckParams::new(one_hot_params, opening_accumulator, transcript);
         Self { params }
     }
 }
@@ -418,8 +316,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T> for RaSumcheckV
         accumulator: &VerifierOpeningAccumulator<F>,
         sumcheck_challenges: &[F::Challenge],
     ) -> F {
-        let active_cycle_challenges = self.params.compact_cycle_challenges(sumcheck_challenges);
-        let r = self.params.normalize_opening_point(&active_cycle_challenges);
+        let r = self.params.normalize_opening_point(sumcheck_challenges);
         let eq_eval = EqPolynomial::mle_endian(&self.params.r_cycle, &r);
 
         // Claims of the committed ra polynomials.
@@ -440,7 +337,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T> for RaSumcheckV
             ra_acc += self.params.gamma_powers[i] * committed_ra_prod;
         }
 
-        self.params.dummy_scale() * eq_eval * ra_acc
+        eq_eval * ra_acc
     }
 
     fn cache_openings(
@@ -449,10 +346,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T> for RaSumcheckV
         transcript: &mut T,
         sumcheck_challenges: &[F::Challenge],
     ) {
-        let compact_cycle_challenges = self.params.compact_cycle_challenges(sumcheck_challenges);
-        let r_cycle = self
-            .params
-            .normalize_opening_point(&compact_cycle_challenges);
+        let r_cycle = self.params.normalize_opening_point(sumcheck_challenges);
 
         // Compute r_address_chunks with proper padding
         let r_address_chunks = self
