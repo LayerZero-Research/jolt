@@ -1,6 +1,6 @@
 //! Dory polynomial commitment scheme implementation
 
-use super::dory_globals::{DoryGlobals, DoryLayout};
+use super::dory_globals::DoryGlobals;
 use super::jolt_dory_routines::{JoltG1Routines, JoltG2Routines};
 use super::wrappers::{
     jolt_to_ark, ArkDoryProof, ArkFr, ArkG1, ArkGT, ArkworksProverSetup, ArkworksVerifierSetup,
@@ -326,7 +326,7 @@ impl StreamingCommitmentScheme for DoryCommitmentScheme {
     ) -> (Self::Commitment, Self::OpeningProofHint) {
         if let Some(K) = onehot_k {
             let row_len = DoryGlobals::get_num_columns();
-            let T = DoryGlobals::get_T();
+            let T = DoryGlobals::get_matrix_t();
             let rows_per_k = T / row_len;
             let num_rows = K * T / row_len;
 

@@ -4,7 +4,7 @@ use crate::utils::math::Math;
 use allocative::Allocative;
 use dory::backends::arkworks::{init_cache, is_cached, ArkG1, ArkG2};
 use std::sync::{
-    atomic::{AtomicU8, Ordering},
+    atomic::{AtomicU8, AtomicUsize, Ordering},
     OnceLock,
 };
 
@@ -138,43 +138,35 @@ impl From<DoryLayout> for u8 {
 
 // Main polynomial globals
 static mut GLOBAL_T: OnceLock<usize> = OnceLock::new();
-static mut GLOBAL_TRACE_T: OnceLock<usize> = OnceLock::new();
+static mut MAIN_K_CHUNK: OnceLock<usize> = OnceLock::new();
 static mut MAX_NUM_ROWS: OnceLock<usize> = OnceLock::new();
 static mut NUM_COLUMNS: OnceLock<usize> = OnceLock::new();
 
 // Trusted advice globals
 static mut TRUSTED_ADVICE_T: OnceLock<usize> = OnceLock::new();
-static mut TRUSTED_ADVICE_TRACE_T: OnceLock<usize> = OnceLock::new();
 static mut TRUSTED_ADVICE_MAX_NUM_ROWS: OnceLock<usize> = OnceLock::new();
 static mut TRUSTED_ADVICE_NUM_COLUMNS: OnceLock<usize> = OnceLock::new();
 
 // Untrusted advice globals
 static mut UNTRUSTED_ADVICE_T: OnceLock<usize> = OnceLock::new();
-static mut UNTRUSTED_ADVICE_TRACE_T: OnceLock<usize> = OnceLock::new();
 static mut UNTRUSTED_ADVICE_MAX_NUM_ROWS: OnceLock<usize> = OnceLock::new();
 static mut UNTRUSTED_ADVICE_NUM_COLUMNS: OnceLock<usize> = OnceLock::new();
 
 // Bytecode globals
 static mut BYTECODE_T: OnceLock<usize> = OnceLock::new();
-static mut BYTECODE_TRACE_T: OnceLock<usize> = OnceLock::new();
 static mut BYTECODE_MAX_NUM_ROWS: OnceLock<usize> = OnceLock::new();
 static mut BYTECODE_NUM_COLUMNS: OnceLock<usize> = OnceLock::new();
 
 // Program image globals (committed initial RAM image)
 static mut PROGRAM_IMAGE_T: OnceLock<usize> = OnceLock::new();
-static mut PROGRAM_IMAGE_TRACE_T: OnceLock<usize> = OnceLock::new();
 static mut PROGRAM_IMAGE_MAX_NUM_ROWS: OnceLock<usize> = OnceLock::new();
 static mut PROGRAM_IMAGE_NUM_COLUMNS: OnceLock<usize> = OnceLock::new();
-static mut PROGRAM_IMAGE_K_CHUNK: OnceLock<usize> = OnceLock::new();
 
-// Joint-opening globals (Stage 8 only)
-static mut JOINT_T: OnceLock<usize> = OnceLock::new();
-static mut JOINT_TRACE_T: OnceLock<usize> = OnceLock::new();
-static mut JOINT_MAX_NUM_ROWS: OnceLock<usize> = OnceLock::new();
-static mut JOINT_NUM_COLUMNS: OnceLock<usize> = OnceLock::new();
+// Largest Main log-embedding needed for precommitted/embed calculations.
+static MAIN_LOG_EMBEDDING: AtomicUsize = AtomicUsize::new(0);
 
 // Context tracking:
-// 0=Main, 1=TrustedAdvice, 2=UntrustedAdvice, 3=Bytecode, 4=ProgramImage, 5=Joint
+// 0=Main, 1=TrustedAdvice, 2=UntrustedAdvice, 3=Bytecode, 4=ProgramImage
 static CURRENT_CONTEXT: AtomicU8 = AtomicU8::new(0);
 
 // Layout tracking: 0=CycleMajor, 1=AddressMajor
@@ -188,8 +180,6 @@ pub enum DoryContext {
     UntrustedAdvice = 2,
     Bytecode = 3,
     ProgramImage = 4,
-    /// Stage 8 joint-opening context. Keeps Main commitment dimensions unchanged.
-    Joint = 5,
 }
 
 impl From<u8> for DoryContext {
@@ -200,7 +190,6 @@ impl From<u8> for DoryContext {
             2 => DoryContext::UntrustedAdvice,
             3 => DoryContext::Bytecode,
             4 => DoryContext::ProgramImage,
-            5 => DoryContext::Joint,
             _ => panic!("Invalid DoryContext value: {value}"),
         }
     }
@@ -270,239 +259,7 @@ impl DoryGlobals {
 
         Self::set_num_columns_for_context(num_columns, DoryContext::Bytecode);
         Self::set_T_for_context(bytecode_t, DoryContext::Bytecode);
-        Self::set_trace_T_for_context(bytecode_t, DoryContext::Bytecode);
         Self::set_max_num_rows_for_context(num_rows, DoryContext::Bytecode);
-        Some(())
-    }
-
-    /// Initialize ProgramImage context so its `num_columns` matches Main's `sigma_main`.
-    ///
-    /// This is used so that tier-1 row-commitment hints can be combined into the Main-context
-    /// batch opening hint in Stage 8 (mirrors the committed-bytecode strategy).
-    pub fn initialize_program_image_context_for_main_sigma(
-        padded_len_words: usize,
-        max_log_k_chunk: usize,
-        max_log_t_any: usize,
-    ) -> Option<()> {
-        let (sigma_main, _) = Self::main_sigma_nu(max_log_k_chunk, max_log_t_any);
-        let num_columns = 1usize << sigma_main;
-        let k_chunk = 1usize << max_log_k_chunk;
-
-        if num_columns <= padded_len_words {
-            assert!(
-                padded_len_words % num_columns == 0,
-                "program-image matrix width {num_columns} must divide padded_len_words {padded_len_words}"
-            );
-            // Match the Main-context K so AddressMajor trace-dense embedding (stride-by-K columns)
-            // uses the correct `cycles_per_row`.
-            let total_size = k_chunk * padded_len_words;
-            debug_assert!(
-                total_size.is_power_of_two(),
-                "expected K*T to be power-of-two"
-            );
-            let num_rows = total_size / num_columns;
-
-            // If already initialized, ensure it matches (avoid silently ignoring OnceCell::set failures).
-            #[allow(static_mut_refs)]
-            unsafe {
-                if let (Some(existing_cols), Some(existing_rows), Some(existing_t)) = (
-                    PROGRAM_IMAGE_NUM_COLUMNS.get(),
-                    PROGRAM_IMAGE_MAX_NUM_ROWS.get(),
-                    PROGRAM_IMAGE_T.get(),
-                ) {
-                    assert_eq!(*existing_cols, num_columns);
-                    assert_eq!(*existing_rows, num_rows);
-                    assert_eq!(*existing_t, padded_len_words);
-                    return Some(());
-                }
-            }
-
-            Self::set_num_columns_for_context(num_columns, DoryContext::ProgramImage);
-            Self::set_T_for_context(padded_len_words, DoryContext::ProgramImage);
-            Self::set_trace_T_for_context(padded_len_words, DoryContext::ProgramImage);
-            Self::set_max_num_rows_for_context(num_rows, DoryContext::ProgramImage);
-            #[allow(static_mut_refs)]
-            unsafe {
-                let _ = PROGRAM_IMAGE_K_CHUNK.set(k_chunk);
-            }
-        } else {
-            // Fallback: balanced dimensions for the program image itself.
-            Self::initialize_context(1, padded_len_words, DoryContext::ProgramImage, None);
-            #[allow(static_mut_refs)]
-            unsafe {
-                let _ = PROGRAM_IMAGE_K_CHUNK.set(1);
-            }
-        }
-        Some(())
-    }
-
-    /// Initialize the **ProgramImage** context using an explicit `num_columns` (i.e. fixed sigma)
-    /// and an explicit `k_chunk` (Main's lane/address chunk size).
-    ///
-    /// This is used so program-image tier-1 row-commitment hints can be combined into the
-    /// Main-context batch opening hint in Stage 8.
-    ///
-    /// **Important**: We intentionally size the ProgramImage context so that
-    /// `k_from_matrix_shape() == k_chunk`. This makes the AddressMajor "trace-dense" embedding
-    /// (which occupies evenly-spaced columns with stride K) consistent between ProgramImage and
-    /// Main contexts.
-    ///
-    /// Requirements:
-    /// - `k_chunk` must be a power of two
-    /// - `num_columns` must be a power of two
-    /// - `padded_len_words` must be a power of two
-    /// - `k_chunk * padded_len_words >= num_columns` (so `num_rows >= 1`)
-    pub fn initialize_program_image_context_with_num_columns(
-        k_chunk: usize,
-        padded_len_words: usize,
-        num_columns: usize,
-    ) -> Option<()> {
-        assert!(padded_len_words.is_power_of_two());
-        assert!(padded_len_words > 0);
-        assert!(k_chunk.is_power_of_two());
-        assert!(k_chunk > 0);
-        assert!(num_columns.is_power_of_two());
-        let total_size = k_chunk * padded_len_words;
-        // Allow partial rows when the program image is smaller than a full row.
-        // If total_size < num_columns, we treat it as a single (partially filled) row.
-        let num_rows = if total_size >= num_columns {
-            debug_assert_eq!(
-                total_size % num_columns,
-                0,
-                "program-image K*T ({total_size}) must be divisible by num_columns ({num_columns})"
-            );
-            total_size / num_columns
-        } else {
-            1
-        };
-
-        // If already initialized, ensure it matches (avoid silently ignoring OnceCell::set failures).
-        #[allow(static_mut_refs)]
-        unsafe {
-            if let (Some(existing_cols), Some(existing_rows), Some(existing_t)) = (
-                PROGRAM_IMAGE_NUM_COLUMNS.get(),
-                PROGRAM_IMAGE_MAX_NUM_ROWS.get(),
-                PROGRAM_IMAGE_T.get(),
-            ) {
-                assert_eq!(*existing_cols, num_columns);
-                assert_eq!(*existing_rows, num_rows);
-                assert_eq!(*existing_t, padded_len_words);
-                return Some(());
-            }
-        }
-
-        Self::set_num_columns_for_context(num_columns, DoryContext::ProgramImage);
-        Self::set_T_for_context(padded_len_words, DoryContext::ProgramImage);
-        Self::set_trace_T_for_context(padded_len_words, DoryContext::ProgramImage);
-        Self::set_max_num_rows_for_context(num_rows, DoryContext::ProgramImage);
-        #[allow(static_mut_refs)]
-        unsafe {
-            let _ = PROGRAM_IMAGE_K_CHUNK.set(k_chunk);
-        }
-        Some(())
-    }
-
-    /// Initialize the **Main** context using an explicit pre-agreed `num_columns`.
-    ///
-    /// This is for callers that need a fixed Main width instead of the default balanced
-    /// `(sigma, nu)` split derived from `(K, T)`.
-    ///
-    /// # Safety / correctness notes
-    /// - Requires `num_columns` to be a power of two.
-    /// - Requires `(K * T) % num_columns == 0` so `num_rows` is integral.
-    /// - If the Main context was already initialized, this asserts the dimensions match to avoid
-    ///   silently ignoring OnceLock::set failures.
-    pub fn initialize_main_context_with_num_columns(
-        K: usize,
-        T: usize,
-        num_columns: usize,
-        layout: Option<DoryLayout>,
-    ) -> Option<()> {
-        assert!(
-            num_columns.is_power_of_two(),
-            "num_columns must be a power of two"
-        );
-        let total_size = K * T;
-        assert!(
-            total_size % num_columns == 0,
-            "main matrix width {num_columns} must divide total_size {total_size}"
-        );
-        let num_rows = total_size / num_columns;
-
-        // If already initialized, ensure it matches (avoid silently ignoring OnceCell::set failures).
-        #[allow(static_mut_refs)]
-        unsafe {
-            if let (Some(existing_cols), Some(existing_rows), Some(existing_t)) =
-                (NUM_COLUMNS.get(), MAX_NUM_ROWS.get(), GLOBAL_T.get())
-            {
-                assert_eq!(*existing_cols, num_columns);
-                assert_eq!(*existing_rows, num_rows);
-                assert_eq!(*existing_t, T);
-                if let Some(l) = layout {
-                    CURRENT_LAYOUT.store(l as u8, Ordering::SeqCst);
-                }
-                CURRENT_CONTEXT.store(DoryContext::Main as u8, Ordering::SeqCst);
-                return Some(());
-            }
-        }
-
-        Self::set_num_columns_for_context(num_columns, DoryContext::Main);
-        Self::set_T_for_context(T, DoryContext::Main);
-        Self::set_trace_T_for_context(T, DoryContext::Main);
-        Self::set_max_num_rows_for_context(num_rows, DoryContext::Main);
-
-        if let Some(l) = layout {
-            CURRENT_LAYOUT.store(l as u8, Ordering::SeqCst);
-        }
-        CURRENT_CONTEXT.store(DoryContext::Main as u8, Ordering::SeqCst);
-        Some(())
-    }
-
-    /// Initialize the **Joint** context with an explicit `num_columns`.
-    pub fn initialize_joint_context_with_num_columns(
-        K: usize,
-        T: usize,
-        num_columns: usize,
-        layout: Option<DoryLayout>,
-    ) -> Option<()> {
-        assert!(
-            num_columns.is_power_of_two(),
-            "num_columns must be a power of two"
-        );
-        let total_size = K * T;
-        assert!(
-            total_size % num_columns == 0,
-            "joint matrix width {num_columns} must divide total_size {total_size}"
-        );
-        let num_rows = total_size / num_columns;
-
-        #[allow(static_mut_refs)]
-        unsafe {
-            if let (Some(existing_cols), Some(existing_rows), Some(existing_t)) = (
-                JOINT_NUM_COLUMNS.get(),
-                JOINT_MAX_NUM_ROWS.get(),
-                JOINT_T.get(),
-            ) {
-                assert_eq!(*existing_cols, num_columns);
-                assert_eq!(*existing_rows, num_rows);
-                assert_eq!(*existing_t, T);
-                if let Some(l) = layout {
-                    CURRENT_LAYOUT.store(l as u8, Ordering::SeqCst);
-                }
-                CURRENT_CONTEXT.store(DoryContext::Joint as u8, Ordering::SeqCst);
-                return Some(());
-            }
-        }
-
-        Self::set_num_columns_for_context(num_columns, DoryContext::Joint);
-        Self::set_T_for_context(T, DoryContext::Joint);
-        Self::set_trace_T_for_context(T, DoryContext::Joint);
-        Self::set_max_num_rows_for_context(num_rows, DoryContext::Joint);
-
-        if let Some(l) = layout {
-            CURRENT_LAYOUT.store(l as u8, Ordering::SeqCst);
-        }
-        CURRENT_CONTEXT.store(DoryContext::Joint as u8, Ordering::SeqCst);
         Some(())
     }
 
@@ -559,6 +316,38 @@ impl DoryGlobals {
         log_t.saturating_sub(sigma_main)
     }
 
+    /// Tracks the largest polynomial var-count required by the Main-context proof flow.
+    ///
+    /// This is used to derive a shared "max embedding" geometry while keeping Main `T`
+    /// semantics unchanged for sumchecks.
+    pub fn set_main_log_embedding(log_embedding: usize) {
+        debug_assert_eq!(
+            MAIN_LOG_EMBEDDING.load(Ordering::SeqCst),
+            0,
+            "main_log_embedding should be initialized once"
+        );
+        MAIN_LOG_EMBEDDING.store(log_embedding, Ordering::SeqCst);
+    }
+
+    #[inline]
+    pub fn get_main_log_embedding() -> usize {
+        let stored = MAIN_LOG_EMBEDDING.load(Ordering::SeqCst);
+        if stored > 0 {
+            stored
+        } else {
+            #[allow(static_mut_refs)]
+            unsafe {
+                let main_cols = NUM_COLUMNS
+                    .get()
+                    .expect("main num_columns must be initialized before reading main_log_embedding");
+                let main_rows = MAX_NUM_ROWS
+                    .get()
+                    .expect("main max_num_rows must be initialized before reading main_log_embedding");
+                main_cols.log_2() + main_rows.log_2()
+            }
+        }
+    }
+
     /// Get the current Dory context
     pub fn current_context() -> DoryContext {
         CURRENT_CONTEXT.load(Ordering::SeqCst).into()
@@ -590,56 +379,62 @@ impl DoryGlobals {
         (Self::get_max_num_rows(), Self::get_num_columns())
     }
 
-    /// Returns the "K" used to initialize the *main* Dory matrix for OneHot polynomials.
-    ///
-    /// This is derived from the identity:
-    /// `K * T == num_rows * num_cols`  (all values are powers of two in our usage).
-    pub fn k_from_matrix_shape() -> usize {
-        let (num_rows, num_cols) = Self::matrix_shape();
-        let t = Self::get_T();
-        debug_assert_eq!(
-            (num_rows * num_cols) % t,
-            0,
-            "Invalid DoryGlobals: num_rows*num_cols must be divisible by T"
-        );
-        (num_rows * num_cols) / t
+    #[inline]
+    pub(crate) fn main_k() -> usize {
+        #[allow(static_mut_refs)]
+        unsafe {
+            *MAIN_K_CHUNK.get().expect("main k not initialized")
+        }
     }
 
-    /// For `AddressMajor`, each Dory matrix row corresponds to this many cycles.
+    #[inline]
+    fn main_embedding_extra_vars() -> usize {
+        let main_total_vars = Self::main_k().log_2() + Self::get_T().log_2();
+        Self::get_main_log_embedding().saturating_sub(main_total_vars)
+    }
+
+    /// AddressMajor column stride for one-hot embeddings in Main context.
     ///
-    /// Uses the stored per-context trace domain `trace_T` when available. This lets dense
-    /// trace-domain embeddings in larger Joint/Main matrices derive the correct cycles-per-row
-    /// without caller-side length plumbing.
-    pub fn address_major_cycles_per_row() -> usize {
-        let (num_rows, num_cols) = Self::matrix_shape();
-        let k = match Self::current_context() {
-            DoryContext::ProgramImage => {
-                #[allow(static_mut_refs)]
-                unsafe {
-                    PROGRAM_IMAGE_K_CHUNK
-                        .get()
-                        .copied()
-                        .unwrap_or_else(|| Self::k_from_matrix_shape())
-                }
-            }
-            _ => Self::k_from_matrix_shape(),
-        };
-        tracing::info!("num_rows={num_rows}, num_cols={num_cols}, k={k}");
-        debug_assert!(k > 0);
-        debug_assert_eq!(num_cols % k, 0, "Expected num_cols to be divisible by K");
-        debug_assert_eq!(
-            Self::get_T() % num_rows,
-            0,
-            "Expected T to be divisible by num_rows"
-        );
-        let trace_t = Self::get_trace_T();
-        if trace_t > 0 && trace_t % num_rows == 0 {
-            let embedded = trace_t / num_rows;
-            if embedded > 0 {
-                return embedded;
-            }
+    /// Uses `stride_log = main_log_embedding - (logK + logT)`.
+    pub fn address_major_one_hot_stride() -> usize {
+        debug_assert_eq!(Self::current_context(), DoryContext::Main);
+        debug_assert_eq!(Self::get_layout(), DoryLayout::AddressMajor);
+        1usize << Self::main_embedding_extra_vars()
+    }
+
+
+    /// AddressMajor column stride for dense trace-domain embeddings in Main context.
+    ///
+    /// Uses `stride_log = main_log_embedding - (logK + logT) + logK`.
+    pub fn address_major_dense_stride() -> usize {
+        if Self::current_context() != DoryContext::Main || Self::get_layout() != DoryLayout::AddressMajor
+        {
+            return 1;
         }
-        num_cols / k
+        let dense_stride_log = Self::main_embedding_extra_vars() + Self::main_k().log_2();
+        1usize << dense_stride_log
+    }
+
+    /// Returns the cycle-domain size used by the current matrix embedding.
+    ///
+    /// For Main, this can be larger than execution `T` when `main_log_embedding` requires extra
+    /// embedding dimensions.
+    pub fn get_matrix_t() -> usize {
+        let context = Self::current_context();
+        if context != DoryContext::Main {
+            return Self::get_T();
+        }
+
+        let k = Self::main_k();
+        let num_rows = Self::get_max_num_rows();
+        let num_cols = Self::get_num_columns();
+        let total = num_rows * num_cols;
+        debug_assert_eq!(
+            total % k,
+            0,
+            "Invalid Main DoryGlobals: num_rows*num_cols must be divisible by K"
+        );
+        total / k
     }
 
     fn set_max_num_rows_for_context(max_num_rows: usize, context: DoryContext) {
@@ -660,9 +455,6 @@ impl DoryGlobals {
                 }
                 DoryContext::ProgramImage => {
                     let _ = PROGRAM_IMAGE_MAX_NUM_ROWS.set(max_num_rows);
-                }
-                DoryContext::Joint => {
-                    let _ = JOINT_MAX_NUM_ROWS.set(max_num_rows);
                 }
             }
         }
@@ -686,9 +478,6 @@ impl DoryGlobals {
                 DoryContext::ProgramImage => *PROGRAM_IMAGE_MAX_NUM_ROWS
                     .get()
                     .expect("program_image max_num_rows not initialized"),
-                DoryContext::Joint => *JOINT_MAX_NUM_ROWS
-                    .get()
-                    .expect("joint max_num_rows not initialized"),
             }
         }
     }
@@ -712,10 +501,17 @@ impl DoryGlobals {
                 DoryContext::ProgramImage => {
                     let _ = PROGRAM_IMAGE_NUM_COLUMNS.set(num_columns);
                 }
-                DoryContext::Joint => {
-                    let _ = JOINT_NUM_COLUMNS.set(num_columns);
-                }
             }
+        }
+    }
+
+    fn set_main_k(k: usize) {
+        #[allow(static_mut_refs)]
+        unsafe {
+            if let Some(existing) = MAIN_K_CHUNK.get() {
+                assert_eq!(*existing, k);
+            }
+            let _ = MAIN_K_CHUNK.set(k);
         }
     }
 
@@ -737,9 +533,6 @@ impl DoryGlobals {
                 DoryContext::ProgramImage => *PROGRAM_IMAGE_NUM_COLUMNS
                     .get()
                     .expect("program_image num_columns not initialized"),
-                DoryContext::Joint => *JOINT_NUM_COLUMNS
-                    .get()
-                    .expect("joint num_columns not initialized"),
             }
         }
     }
@@ -763,35 +556,6 @@ impl DoryGlobals {
                 DoryContext::ProgramImage => {
                     let _ = PROGRAM_IMAGE_T.set(t);
                 }
-                DoryContext::Joint => {
-                    let _ = JOINT_T.set(t);
-                }
-            }
-        }
-    }
-
-    fn set_trace_T_for_context(t: usize, context: DoryContext) {
-        #[allow(static_mut_refs)]
-        unsafe {
-            match context {
-                DoryContext::Main => {
-                    let _ = GLOBAL_TRACE_T.set(t);
-                }
-                DoryContext::TrustedAdvice => {
-                    let _ = TRUSTED_ADVICE_TRACE_T.set(t);
-                }
-                DoryContext::UntrustedAdvice => {
-                    let _ = UNTRUSTED_ADVICE_TRACE_T.set(t);
-                }
-                DoryContext::Bytecode => {
-                    let _ = BYTECODE_TRACE_T.set(t);
-                }
-                DoryContext::ProgramImage => {
-                    let _ = PROGRAM_IMAGE_TRACE_T.set(t);
-                }
-                DoryContext::Joint => {
-                    let _ = JOINT_TRACE_T.set(t);
-                }
             }
         }
     }
@@ -812,34 +576,6 @@ impl DoryGlobals {
                 DoryContext::ProgramImage => *PROGRAM_IMAGE_T
                     .get()
                     .expect("program_image t not initialized"),
-                DoryContext::Joint => *JOINT_T.get().expect("joint t not initialized"),
-            }
-        }
-    }
-
-    pub fn get_trace_T() -> usize {
-        let context = Self::current_context();
-        #[allow(static_mut_refs)]
-        unsafe {
-            match context {
-                DoryContext::Main => *GLOBAL_TRACE_T
-                    .get()
-                    .unwrap_or_else(|| GLOBAL_T.get().expect("main t not initialized")),
-                DoryContext::TrustedAdvice => *TRUSTED_ADVICE_TRACE_T
-                    .get()
-                    .unwrap_or_else(|| TRUSTED_ADVICE_T.get().expect("trusted advice t not initialized")),
-                DoryContext::UntrustedAdvice => *UNTRUSTED_ADVICE_TRACE_T
-                    .get()
-                    .unwrap_or_else(|| UNTRUSTED_ADVICE_T.get().expect("untrusted advice t not initialized")),
-                DoryContext::Bytecode => *BYTECODE_TRACE_T
-                    .get()
-                    .unwrap_or_else(|| BYTECODE_T.get().expect("bytecode t not initialized")),
-                DoryContext::ProgramImage => *PROGRAM_IMAGE_TRACE_T
-                    .get()
-                    .unwrap_or_else(|| PROGRAM_IMAGE_T.get().expect("program image t not initialized")),
-                DoryContext::Joint => *JOINT_TRACE_T
-                    .get()
-                    .unwrap_or_else(|| JOINT_T.get().expect("joint t not initialized")),
             }
         }
     }
@@ -862,13 +598,27 @@ impl DoryGlobals {
         (num_columns, num_rows, T)
     }
 
+    fn initialize_context_common(
+        K: usize,
+        matrix_t: usize,
+        stored_t: usize,
+        context: DoryContext,
+    ) -> Option<()> {
+        let (num_columns, num_rows, _) = Self::calculate_dimensions(K, matrix_t);
+        Self::set_num_columns_for_context(num_columns, context);
+        Self::set_T_for_context(stored_t, context);
+        Self::set_max_num_rows_for_context(num_rows, context);
+
+        Some(())
+    }
+
     /// Initialize the globals for a specific Dory context
     ///
     /// # Arguments
     /// * `K` - Maximum address space size (K in OneHot polynomials)
     /// * `T` - Maximum trace length (cycle count)
-    /// * `context` - The Dory context to initialize (Main, TrustedAdvice, UntrustedAdvice, Bytecode, ProgramImage, Joint)
-    /// * `layout` - Optional layout for the Dory matrix. Applies to Main/Joint contexts.
+    /// * `context` - The Dory context to initialize (Main, TrustedAdvice, UntrustedAdvice, Bytecode, ProgramImage)
+    /// * `layout` - Optional layout for the Dory matrix. Applies to Main context.
     ///   If `Some(layout)`, sets the layout. If `None`, leaves the existing layout
     ///   unchanged (defaults to `CycleMajor` after `reset()`). Ignored for advice contexts.
     ///
@@ -881,31 +631,38 @@ impl DoryGlobals {
         context: DoryContext,
         layout: Option<DoryLayout>,
     ) -> Option<()> {
-        Self::initialize_context_with_trace_t(K, T, T, context, layout)
+        if context == DoryContext::Main {
+            return Self::initialize_main_with_log_embedding(
+                K,
+                T,
+                K.log_2() + T.log_2(),
+                layout,
+            );
+        }
+        Self::initialize_context_common(K, T, T, context)?;
+        Some(())
     }
 
-    /// Initialize context with separate matrix `T` and effective trace-domain `trace_t`.
-    pub fn initialize_context_with_trace_t(
+    /// Initialize Main context with execution `T` and explicit `main_log_embedding` for
+    /// global precommitted geometry.
+    pub fn initialize_main_with_log_embedding(
         K: usize,
         T: usize,
-        trace_t: usize,
-        context: DoryContext,
+        log_embedding: usize,
         layout: Option<DoryLayout>,
     ) -> Option<()> {
-        let (num_columns, num_rows, t) = Self::calculate_dimensions(K, T);
-        Self::set_num_columns_for_context(num_columns, context);
-        Self::set_T_for_context(t, context);
-        Self::set_trace_T_for_context(trace_t, context);
-        Self::set_max_num_rows_for_context(num_rows, context);
-
-        // For Main/Joint contexts, set layout (if provided) and make the context active.
-        if context == DoryContext::Main || context == DoryContext::Joint {
-            if let Some(l) = layout {
-                CURRENT_LAYOUT.store(l as u8, Ordering::SeqCst);
-            }
-            CURRENT_CONTEXT.store(context as u8, Ordering::SeqCst);
+        let log_k = K.log_2();
+        let log_t = T.log_2();
+        let matrix_total_vars = std::cmp::max(log_embedding, log_k + log_t);
+        let matrix_t = 1usize << matrix_total_vars.saturating_sub(log_k);
+        Self::initialize_context_common(K, matrix_t, T, DoryContext::Main)?;
+        Self::set_main_k(K);
+        if let Some(l) = layout {
+            CURRENT_LAYOUT.store(l as u8, Ordering::SeqCst);
         }
-
+        CURRENT_CONTEXT.store(DoryContext::Main as u8, Ordering::SeqCst);
+        // Never allow explicit main log-embedding to shrink below Main context dimensions.
+        Self::set_main_log_embedding(matrix_total_vars);
         Some(())
     }
 
@@ -916,7 +673,7 @@ impl DoryGlobals {
         unsafe {
             // Reset main globals
             let _ = GLOBAL_T.take();
-            let _ = GLOBAL_TRACE_T.take();
+            let _ = MAIN_K_CHUNK.take();
             let _ = MAX_NUM_ROWS.take();
             let _ = NUM_COLUMNS.take();
 
@@ -925,35 +682,26 @@ impl DoryGlobals {
 
             // Reset trusted advice globals
             let _ = TRUSTED_ADVICE_T.take();
-            let _ = TRUSTED_ADVICE_TRACE_T.take();
             let _ = TRUSTED_ADVICE_MAX_NUM_ROWS.take();
             let _ = TRUSTED_ADVICE_NUM_COLUMNS.take();
 
             // Reset untrusted advice globals
             let _ = UNTRUSTED_ADVICE_T.take();
-            let _ = UNTRUSTED_ADVICE_TRACE_T.take();
             let _ = UNTRUSTED_ADVICE_MAX_NUM_ROWS.take();
             let _ = UNTRUSTED_ADVICE_NUM_COLUMNS.take();
 
             // Reset bytecode globals
             let _ = BYTECODE_T.take();
-            let _ = BYTECODE_TRACE_T.take();
             let _ = BYTECODE_MAX_NUM_ROWS.take();
             let _ = BYTECODE_NUM_COLUMNS.take();
 
             // Reset program image globals
             let _ = PROGRAM_IMAGE_T.take();
-            let _ = PROGRAM_IMAGE_TRACE_T.take();
             let _ = PROGRAM_IMAGE_MAX_NUM_ROWS.take();
             let _ = PROGRAM_IMAGE_NUM_COLUMNS.take();
-            let _ = PROGRAM_IMAGE_K_CHUNK.take();
-
-            // Reset Stage-8 joint globals
-            let _ = JOINT_T.take();
-            let _ = JOINT_TRACE_T.take();
-            let _ = JOINT_MAX_NUM_ROWS.take();
-            let _ = JOINT_NUM_COLUMNS.take();
         }
+
+        MAIN_LOG_EMBEDDING.store(0, Ordering::SeqCst);
 
         // Reset context to Main
         CURRENT_CONTEXT.store(0, Ordering::SeqCst);

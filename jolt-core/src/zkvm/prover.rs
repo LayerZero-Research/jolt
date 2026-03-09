@@ -56,8 +56,7 @@ use crate::{
             IncClaimReductionSumcheckParams, IncClaimReductionSumcheckProver,
             InstructionLookupsClaimReductionSumcheckParams,
             InstructionLookupsClaimReductionSumcheckProver, ProgramImageClaimReductionParams,
-            ProgramImageClaimReductionProver, RaReductionParams,
-            RamRaClaimReductionSumcheckProver,
+            ProgramImageClaimReductionProver, RaReductionParams, RamRaClaimReductionSumcheckProver,
             RegistersClaimReductionSumcheckParams, RegistersClaimReductionSumcheckProver,
         },
         config::{OneHotParams, ProgramMode, ReadWriteConfig},
@@ -394,11 +393,6 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         self.stage6_trace_length().log_2()
     }
 
-    #[inline]
-    fn trace_for_stage6_context(&self) -> Arc<Vec<Cycle>> {
-        Arc::clone(&self.trace)
-    }
-
     pub fn gen_from_trace(
         preprocessing: &'a JoltProverPreprocessing<F, PCS>,
         lazy_trace: LazyTraceIterator,
@@ -663,7 +657,8 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         if self.program_mode == ProgramMode::Committed {
             if let Some(hints) = self.preprocessing.program_hints.as_ref() {
                 for (chunk_idx, hint) in hints.bytecode_chunk_hints.iter().enumerate() {
-                    opening_proof_hints.insert(CommittedPolynomial::BytecodeChunk(chunk_idx), hint.clone());
+                    opening_proof_hints
+                        .insert(CommittedPolynomial::BytecodeChunk(chunk_idx), hint.clone());
                 }
                 opening_proof_hints.insert(
                     CommittedPolynomial::ProgramImageInit,
@@ -750,29 +745,18 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         Vec<PCS::Commitment>,
         HashMap<CommittedPolynomial, PCS::OpeningProofHint>,
     ) {
-        // In committed mode, witness commitments must match Stage-8 Joint embedding semantics.
-        // In full mode, keep legacy Main-context commitments.
-        let commitment_context = if self.program_mode == ProgramMode::Committed {
-            DoryContext::Joint
-        } else {
-            DoryContext::Main
-        };
-        let commitment_t = if self.program_mode == ProgramMode::Committed {
-            self.stage6_trace_length()
-        } else {
-            self.padded_trace_len
-        };
-        let stage6_trace = self.trace_for_stage6_context();
-        let _guard = DoryGlobals::initialize_context_with_trace_t(
+        // Use Main context in both full and committed modes.
+        let stage6_main_log_embedding = self.stage6_log_t() + self.one_hot_params.log_k_chunk;
+        let trace = Arc::clone(&self.trace);
+        let _guard = DoryGlobals::initialize_main_with_log_embedding(
             1 << self.one_hot_params.log_k_chunk,
-            commitment_t,
-            stage6_trace.len(),
-            commitment_context,
+            trace.len(),
+            stage6_main_log_embedding,
             Some(DoryGlobals::get_layout()),
         );
 
         let polys = all_committed_polynomials(&self.one_hot_params);
-        let T = DoryGlobals::get_T();
+        let T = DoryGlobals::get_matrix_t();
 
         // For AddressMajor, use non-streaming commit path since streaming assumes CycleMajor layout.
         // Also use non-streaming path whenever Stage 6/8 context is larger than the Stage 1-5 trace,
@@ -792,7 +776,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                     let witness: MultilinearPolynomial<F> = poly_id.generate_witness(
                         &self.preprocessing.program,
                         &self.preprocessing.shared.memory_layout,
-                        &stage6_trace,
+                        &trace,
                         Some(&self.one_hot_params),
                     );
                     PCS::commit(&witness, &self.preprocessing.generators)
@@ -1336,14 +1320,10 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         print_current_memory_usage("Stage 6a baseline");
 
         let stage1_log_t = self.trace.len().log_2();
-        let stage6_log_t = self.stage6_log_t();
-        let dory_layout = DoryGlobals::get_layout();
 
         let mut bytecode_read_raf_params = BytecodeReadRafSumcheckParams::gen(
             &self.preprocessing.program,
             stage1_log_t,
-            // stage6_log_t,
-            // dory_layout,
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
@@ -1448,12 +1428,11 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 &mut self.transcript,
             );
             if self.committed_bytecode_chunk_polynomials.is_none() {
-                self.committed_bytecode_chunk_polynomials = Some(
-                    build_committed_bytecode_chunk_polynomials::<F>(
+                self.committed_bytecode_chunk_polynomials =
+                    Some(build_committed_bytecode_chunk_polynomials::<F>(
                         &self.preprocessing.program.instructions,
                         bytecode_reduction_params.bytecode_chunk_count,
-                    ),
-                );
+                    ));
             }
             let raw_chunk_polys = self
                 .committed_bytecode_chunk_polynomials
@@ -1681,7 +1660,11 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             vec![Box::new(hw_prover)];
 
         if let Some(mut bytecode_reduction_prover) = self.bytecode_reduction_prover.take() {
-            if bytecode_reduction_prover.params().num_address_phase_rounds() > 0 {
+            if bytecode_reduction_prover
+                .params()
+                .num_address_phase_rounds()
+                > 0
+            {
                 // Transition to address rounds only when phase-2 rounds are required.
                 bytecode_reduction_prover.transition_to_address_phase();
                 instances.push(Box::new(bytecode_reduction_prover));
@@ -1691,7 +1674,11 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         if let Some(mut advice_reduction_prover_trusted) =
             self.advice_reduction_prover_trusted.take()
         {
-            if advice_reduction_prover_trusted.params().num_address_phase_rounds() > 0 {
+            if advice_reduction_prover_trusted
+                .params()
+                .num_address_phase_rounds()
+                > 0
+            {
                 // Transition phase
                 advice_reduction_prover_trusted.transition_to_address_phase();
                 instances.push(Box::new(advice_reduction_prover_trusted));
@@ -1700,7 +1687,11 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         if let Some(mut advice_reduction_prover_untrusted) =
             self.advice_reduction_prover_untrusted.take()
         {
-            if advice_reduction_prover_untrusted.params().num_address_phase_rounds() > 0 {
+            if advice_reduction_prover_untrusted
+                .params()
+                .num_address_phase_rounds()
+                > 0
+            {
                 // Transition phase
                 advice_reduction_prover_untrusted.transition_to_address_phase();
                 instances.push(Box::new(advice_reduction_prover_untrusted));
@@ -1708,7 +1699,11 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         }
         if let Some(mut program_image_reduction_prover) = self.program_image_reduction_prover.take()
         {
-            if program_image_reduction_prover.params().num_address_phase_rounds() > 0 {
+            if program_image_reduction_prover
+                .params()
+                .num_address_phase_rounds()
+                > 0
+            {
                 // Transition phase
                 program_image_reduction_prover.transition_to_address_phase();
                 instances.push(Box::new(program_image_reduction_prover));
@@ -1825,10 +1820,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                     DoryLayout::CycleMajor => derive_from_suffix(witness.get_num_vars()),
                 };
                 if matches!(poly, CommittedPolynomial::RdInc) {
-                    tracing::info!(
-                        "dense_derived_opening_point={:?}",
-                        &derived_source_point.r
-                    );
+                    tracing::info!("dense_derived_opening_point={:?}", &derived_source_point.r);
                 }
                 Some((
                     derived_source_point.clone(),
@@ -1848,36 +1840,35 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                     DoryLayout::AddressMajor => {
                         derive_ra_from_prefix_rotated(witness.get_num_vars())
                     }
-                    DoryLayout::CycleMajor => {
-                        derive_from_suffix(witness.get_num_vars())
-                    }
+                    DoryLayout::CycleMajor => derive_from_suffix(witness.get_num_vars()),
                 };
                 if matches!(poly, CommittedPolynomial::InstructionRa(0)) {
                     tracing::info!("ra_derived_opening_point={:?}", &derived_source_point.r);
                 }
                 let direct_eval = witness.evaluate(&derived_source_point.r);
-                Some((
-                    derived_source_point.clone(),
-                    direct_eval,
-                ))
+                Some((derived_source_point.clone(), direct_eval))
             }
-            CommittedPolynomial::TrustedAdvice => self.advice.trusted_advice_polynomial.as_ref().map(
-                |poly| {
-                    let derived_source_point =
-                        derive_poly_source_point_from_dory_dims(stage8_opening_point, poly.get_num_vars());
+            CommittedPolynomial::TrustedAdvice => {
+                self.advice.trusted_advice_polynomial.as_ref().map(|poly| {
+                    let derived_source_point = derive_poly_source_point_from_dory_dims(
+                        stage8_opening_point,
+                        poly.get_num_vars(),
+                    );
                     (
                         derived_source_point.clone(),
                         poly.evaluate(&derived_source_point.r),
                     )
-                },
-            ),
+                })
+            }
             CommittedPolynomial::UntrustedAdvice => self
                 .advice
                 .untrusted_advice_polynomial
                 .as_ref()
                 .map(|poly| {
-                    let derived_source_point =
-                        derive_poly_source_point_from_dory_dims(stage8_opening_point, poly.get_num_vars());
+                    let derived_source_point = derive_poly_source_point_from_dory_dims(
+                        stage8_opening_point,
+                        poly.get_num_vars(),
+                    );
                     (
                         derived_source_point.clone(),
                         poly.evaluate(&derived_source_point.r),
@@ -1903,8 +1894,10 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                         &self.preprocessing.program,
                         trusted.program_image_num_words,
                     );
-                    let derived_source_point =
-                        derive_poly_source_point_from_dory_dims(stage8_opening_point, poly.get_num_vars());
+                    let derived_source_point = derive_poly_source_point_from_dory_dims(
+                        stage8_opening_point,
+                        poly.get_num_vars(),
+                    );
                     (
                         derived_source_point.clone(),
                         poly.evaluate(&derived_source_point.r),
@@ -1979,7 +1972,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             class_filter.program_image
         );
         let debug_stage8_direct_claims = true;
-        let stage8_trace_for_debug = Some(self.trace_for_stage6_context());
+        let stage8_trace_for_debug = Some(Arc::clone(&self.trace));
 
         // In committed mode, construct Stage-8 opening point groups as:
         // [Stage6b bytecode-only prefix || Stage7 vars || Stage6b shared dense suffix] (BE).
@@ -2028,26 +2021,6 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             )
         };
         tracing::info!("Stage8 anchor opening_point_be={:?}", opening_point.r);
-        // let _guard_ctx = if self.program_mode == ProgramMode::Committed {
-        //     let total_vars = opening_point.r.len();
-        //     let joint_num_columns = 1usize << DoryGlobals::balanced_sigma_nu(total_vars).0;
-        //     let _ = DoryGlobals::initialize_joint_context_with_num_columns(
-        //         self.one_hot_params.k_chunk,
-        //         self.stage6_trace_length(),
-        //         joint_num_columns,
-        //         Some(DoryGlobals::get_layout()),
-        //     );
-        //     DoryGlobals::with_context(DoryContext::Joint)
-        // } else {
-            let _ = DoryGlobals::initialize_context_with_trace_t(
-                self.one_hot_params.k_chunk,
-                self.stage6_trace_length(),
-                self.trace_for_stage6_context().len(),
-                DoryContext::Joint,
-                Some(DoryGlobals::get_layout()),
-            );
-            DoryGlobals::with_context(DoryContext::Joint);
-        // };
         // 1. Collect all (polynomial, claim) pairs
         let mut polynomial_claims = Vec::new();
 
@@ -2058,10 +2031,11 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 CommittedPolynomial::RamInc,
                 SumcheckId::IncClaimReduction,
             );
-        let (rd_inc_point, rd_inc_claim) = self.opening_accumulator.get_committed_polynomial_opening(
-            CommittedPolynomial::RdInc,
-            SumcheckId::IncClaimReduction,
-        );
+        let (rd_inc_point, rd_inc_claim) =
+            self.opening_accumulator.get_committed_polynomial_opening(
+                CommittedPolynomial::RdInc,
+                SumcheckId::IncClaimReduction,
+            );
         let ram_inc_lagrange = self.compute_stage8_lagrange_factor(
             CommittedPolynomial::RamInc,
             &opening_point.r,
@@ -2201,7 +2175,8 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 compute_advice_lagrange_factor::<F>(&opening_point.r, &advice_point.r);
             let staged_claim = advice_claim * lagrange_factor;
             polynomial_claims.push((CommittedPolynomial::TrustedAdvice, staged_claim));
-            if debug_stage8_direct_claims && class_filter.includes_poly(CommittedPolynomial::TrustedAdvice)
+            if debug_stage8_direct_claims
+                && class_filter.includes_poly(CommittedPolynomial::TrustedAdvice)
             {
                 self.debug_compare_stage8_claim(
                     CommittedPolynomial::TrustedAdvice,
@@ -2257,10 +2232,11 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 .as_ref()
                 .expect("program commitments missing in committed mode");
             if !trusted.bytecode_chunk_commitments.is_empty() {
-                let (bytecode_point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
-                    CommittedPolynomial::BytecodeChunk(0),
-                    SumcheckId::BytecodeClaimReduction,
-                );
+                let (bytecode_point, claim) =
+                    self.opening_accumulator.get_committed_polynomial_opening(
+                        CommittedPolynomial::BytecodeChunk(0),
+                        SumcheckId::BytecodeClaimReduction,
+                    );
                 let bytecode_point_r = bytecode_point.r.clone();
                 let log_t = opening_point.r.len();
                 let log_k = bytecode_point_r.len();
@@ -2288,13 +2264,13 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 }
 
                 for chunk_idx in 1..trusted.bytecode_chunk_commitments.len() {
-                    let (chunk_point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
-                        CommittedPolynomial::BytecodeChunk(chunk_idx),
-                        SumcheckId::BytecodeClaimReduction,
-                    );
+                    let (chunk_point, claim) =
+                        self.opening_accumulator.get_committed_polynomial_opening(
+                            CommittedPolynomial::BytecodeChunk(chunk_idx),
+                            SumcheckId::BytecodeClaimReduction,
+                        );
                     debug_assert_eq!(
-                        chunk_point.r,
-                        bytecode_point_r,
+                        chunk_point.r, bytecode_point_r,
                         "all bytecode chunk openings should share one opening point"
                     );
                     let poly = CommittedPolynomial::BytecodeChunk(chunk_idx);
@@ -2372,8 +2348,11 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 if let Some((source_point, direct_eval)) =
                     self.compute_stage8_direct_eval(*poly, stage8_trace, &opening_point)
                 {
-                    let lagrange =
-                        self.compute_stage8_lagrange_factor(*poly, &opening_point.r, &source_point.r);
+                    let lagrange = self.compute_stage8_lagrange_factor(
+                        *poly,
+                        &opening_point.r,
+                        &source_point.r,
+                    );
                     let direct_staged = direct_eval * lagrange;
                     let weighted_direct_eval = *gamma * direct_staged;
                     expected_joint_from_direct_eval += weighted_direct_eval;
@@ -2400,8 +2379,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             );
             if missing_direct_eval == 0 {
                 debug_assert_eq!(
-                    expected_joint_from_direct_eval,
-                    expected_joint_from_claims,
+                    expected_joint_from_direct_eval, expected_joint_from_claims,
                     "Stage8 direct-eval joint claim mismatch against staged claims"
                 );
             } else {
@@ -2486,7 +2464,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         } else {
             committed_lanes()
         };
-        let stage8_trace = self.trace_for_stage6_context();
+        let stage8_trace = Arc::clone(&self.trace);
         let (joint_poly, hint) = state.build_streaming_rlc::<PCS>(
             self.one_hot_params.clone(),
             TraceSource::Materialized(stage8_trace),
@@ -2544,7 +2522,10 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                     .iter()
                     .any(|(p, _)| *p == CommittedPolynomial::BytecodeChunk(chunk_idx))
                 {
-                    commitments_map.insert(CommittedPolynomial::BytecodeChunk(chunk_idx), commitment.clone());
+                    commitments_map.insert(
+                        CommittedPolynomial::BytecodeChunk(chunk_idx),
+                        commitment.clone(),
+                    );
                 }
             }
             if state
@@ -2560,7 +2541,11 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         }
 
         let mut rlc_map = HashMap::new();
-        for (gamma, (poly, _claim)) in state.gamma_powers.iter().zip(state.polynomial_claims.iter()) {
+        for (gamma, (poly, _claim)) in state
+            .gamma_powers
+            .iter()
+            .zip(state.polynomial_claims.iter())
+        {
             *rlc_map.entry(*poly).or_insert(F::zero()) += *gamma;
         }
         let (coeffs, commitments): (Vec<F>, Vec<PCS::Commitment>) = rlc_map
@@ -2689,7 +2674,9 @@ where
         };
         let main_num_vars = max_log_k_chunk + max_log_t_any;
         assert!(
-            shared.bytecode_size().is_multiple_of(shared.bytecode_chunk_count),
+            shared
+                .bytecode_size()
+                .is_multiple_of(shared.bytecode_chunk_count),
             "bytecode chunk count ({}) must divide bytecode size ({})",
             shared.bytecode_chunk_count,
             shared.bytecode_size()
@@ -2744,13 +2731,12 @@ where
         } else {
             8
         };
-        let (program_commitments, program_hints) =
-            TrustedProgramCommitments::derive(
-                &program,
-                &generators,
-                log_k_chunk,
-                shared.bytecode_chunk_count,
-            );
+        let (program_commitments, program_hints) = TrustedProgramCommitments::derive(
+            &program,
+            &generators,
+            log_k_chunk,
+            shared.bytecode_chunk_count,
+        );
         JoltProverPreprocessing {
             generators,
             shared,

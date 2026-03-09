@@ -4,7 +4,7 @@
 
 use crate::field::JoltField;
 use crate::msm::VariableBaseMSM;
-use crate::poly::commitment::dory::{DoryContext, DoryGlobals, DoryLayout};
+use crate::poly::commitment::dory::{DoryGlobals, DoryLayout};
 use crate::poly::eq_poly::EqPolynomial;
 use crate::utils::math::Math;
 use allocative::Allocative;
@@ -53,15 +53,9 @@ impl<F: JoltField> Default for OneHotPolynomial<F> {
 impl<F: JoltField> OneHotPolynomial<F> {
     #[inline]
     fn effective_t_for_layout(&self) -> usize {
-        let t = self.nonzero_indices.len();
-        if DoryGlobals::get_layout() == DoryLayout::CycleMajor
-            && matches!(DoryGlobals::current_context(), DoryContext::Main)
-            && t < DoryGlobals::get_T()
-        {
-            DoryGlobals::get_T()
-        } else {
-            t
-        }
+        // One-hot polynomials always live on their native trace-domain cycle length.
+        // In CycleMajor, larger embedding domains must not change the (k, t) support shape.
+        self.nonzero_indices.len()
     }
 
     /// The number of rows in the coefficient matrix used to
@@ -71,20 +65,18 @@ impl<F: JoltField> OneHotPolynomial<F> {
     pub fn num_rows(&self) -> usize {
         let t = self.effective_t_for_layout();
         match DoryGlobals::get_layout() {
-            DoryLayout::AddressMajor => t.div_ceil(DoryGlobals::address_major_cycles_per_row()),
+            DoryLayout::AddressMajor => {
+                let dense_stride = DoryGlobals::address_major_dense_stride();
+                let cycles_per_row = DoryGlobals::get_num_columns() / dense_stride;
+                t.div_ceil(cycles_per_row)
+            }
             DoryLayout::CycleMajor => (t * self.K).div_ceil(DoryGlobals::get_num_columns()),
         }
     }
 
     #[inline]
     fn column_stride() -> usize {
-        let trace_t = DoryGlobals::get_trace_T();
-        let matrix_t = DoryGlobals::get_T();
-        if trace_t > 0 && matrix_t >= trace_t && matrix_t % trace_t == 0 {
-            matrix_t / trace_t
-        } else {
-            1
-        }
+        DoryGlobals::address_major_one_hot_stride()
     }
 
     pub fn get_num_vars(&self) -> usize {
@@ -148,11 +140,7 @@ impl<F: JoltField> OneHotPolynomial<F> {
         let num_rows = self.num_rows();
         let row_len = DoryGlobals::get_num_columns();
         let t = self.nonzero_indices.len();
-        let effective_t = if column_stride == 1 {
-            self.effective_t_for_layout()
-        } else {
-            t
-        };
+        let effective_t = t;
 
         debug_assert!(
             bases.len() >= row_len,

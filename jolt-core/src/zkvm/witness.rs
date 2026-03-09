@@ -89,7 +89,8 @@ impl CommittedPolynomial {
             && matches!(DoryGlobals::current_context(), DoryContext::Main);
         if is_main_address_major {
             let row_len = DoryGlobals::get_num_columns();
-            let cycles_per_row = DoryGlobals::address_major_cycles_per_row();
+            let stride = DoryGlobals::address_major_dense_stride();
+            let cycles_per_row = row_len / stride;
             tracing::info!("stream_witness address_major cycles_per_row={cycles_per_row}");
             // let cycles_per_row = row_len / (one_hot_params.k_chunk * 4);
             // tracing::info!("stream_witness adjusted cycles_per_row={cycles_per_row}");
@@ -98,7 +99,6 @@ impl CommittedPolynomial {
                 cycles_per_row,
                 "AddressMajor streaming rows must span cycles_per_row cycles"
             );
-            let stride = row_len / cycles_per_row;
             let mut row: Vec<i128> = vec![0; row_len];
             match self {
                 CommittedPolynomial::RdInc => {

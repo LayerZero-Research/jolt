@@ -903,7 +903,8 @@ mod tests {
         let vmp_result = rlc_poly.vector_matrix_product(&left_vec);
 
         let mut expected = vec![Fr::zero(); num_columns];
-        let cycles_per_row = DoryGlobals::address_major_cycles_per_row();
+        let dense_stride = DoryGlobals::address_major_dense_stride();
+        let cycles_per_row = num_columns / dense_stride;
 
         // Dense contribution for AddressMajor layout:
         // Dense coefficients occupy evenly-spaced columns (every K-th column).

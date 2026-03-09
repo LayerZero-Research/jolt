@@ -1,5 +1,5 @@
 use crate::field::{BarrettReduce, FMAdd, JoltField};
-use crate::poly::commitment::dory::{DoryContext, DoryGlobals, DoryLayout};
+use crate::poly::commitment::dory::{DoryGlobals, DoryLayout};
 use crate::poly::multilinear_polynomial::MultilinearPolynomial;
 use crate::poly::one_hot_polynomial::OneHotPolynomial;
 use crate::utils::accumulation::Acc6S;
@@ -437,11 +437,12 @@ impl<F: JoltField> RLCPolynomial<F> {
                         });
                 }
                 DoryLayout::AddressMajor => {
-                    let cycles_per_row = DoryGlobals::address_major_cycles_per_row();
+                    let dense_stride = DoryGlobals::address_major_dense_stride();
+                    let cycles_per_row = num_columns / dense_stride;
                     tracing::info!("address_major_vector_matrix_product cycles_per_row={cycles_per_row}");
                     dense_result
                         .par_iter_mut()
-                        .step_by(num_columns / cycles_per_row)
+                        .step_by(dense_stride)
                         .enumerate()
                         .for_each(|(offset, dot_product_result)| {
                             *dot_product_result = self
@@ -458,39 +459,25 @@ impl<F: JoltField> RLCPolynomial<F> {
             dense_result
         };
 
-        let one_hot_column_stride = Self::one_hot_column_stride();
+        let one_hot_column_stride = DoryGlobals::address_major_one_hot_stride()
+        ;
         // Compute the **linear space** vector-matrix product for one-hot polynomials
         for (coeff, poly) in self.one_hot_rlc.iter() {
             match poly.as_ref() {
                 MultilinearPolynomial::OneHot(one_hot) => {
-                    if one_hot_column_stride == 1 {
-                        one_hot.vector_matrix_product(left_vec, *coeff, &mut result);
-                    } else {
-                        Self::one_hot_vector_matrix_product_with_stride(
-                            one_hot,
-                            left_vec,
-                            *coeff,
-                            &mut result,
-                            one_hot_column_stride,
-                        );
-                    }
+                    Self::one_hot_vector_matrix_product_with_stride(
+                        one_hot,
+                        left_vec,
+                        *coeff,
+                        &mut result,
+                        one_hot_column_stride,
+                    );
                 }
                 _ => panic!("Expected OneHot polynomial in one_hot_rlc"),
             }
         }
 
         result
-    }
-
-    #[inline]
-    fn one_hot_column_stride() -> usize {
-        let trace_t = DoryGlobals::get_trace_T();
-        let matrix_t = DoryGlobals::get_T();
-        if trace_t > 0 && matrix_t >= trace_t && matrix_t % trace_t == 0 {
-            matrix_t / trace_t
-        } else {
-            1
-        }
     }
 
     fn one_hot_vector_matrix_product_with_stride(
@@ -507,57 +494,22 @@ impl<F: JoltField> RLCPolynomial<F> {
             return;
         }
 
-        if column_stride == 1 {
-            one_hot.vector_matrix_product(left_vec, coeff, result);
-            return;
-        }
-
-        let layout = DoryGlobals::get_layout();
+        debug_assert_eq!(DoryGlobals::get_layout(), DoryLayout::AddressMajor);
         let t = one_hot.nonzero_indices.len();
-        let effective_t = if column_stride == 1
-            && layout == DoryLayout::CycleMajor
-            && matches!(DoryGlobals::current_context(), DoryContext::Main)
-            && t < DoryGlobals::get_T()
-        {
-            DoryGlobals::get_T()
-        } else {
-            t
-        };
+        let effective_t = t;
         let num_columns = DoryGlobals::get_num_columns();
         debug_assert_eq!(result.len(), num_columns);
         debug_assert!(num_columns % column_stride == 0);
-        let base_num_columns = num_columns / column_stride;
-
-        // CycleMajor optimization for T >= row_len (typical case where T >= K)
-        if layout == DoryLayout::CycleMajor && t >= base_num_columns {
-            let rows_per_k = effective_t / base_num_columns;
-            result
-                .par_iter_mut()
-                .enumerate()
-                .for_each(|(col_index, dest)| {
-                    if col_index % column_stride != 0 {
-                        return;
-                    }
-                    let base_col = col_index / column_stride;
-                    let mut col_dot_product = F::zero();
-                    for (row_offset, cycle) in
-                        (base_col..t).step_by(base_num_columns).enumerate()
-                    {
-                        if let Some(k) = one_hot.nonzero_indices[cycle] {
-                            let row_index = k as usize * rows_per_k + row_offset;
-                            col_dot_product += left_vec[row_index];
-                        }
-                    }
-                    *dest += coeff * col_dot_product;
-                });
-            return;
-        }
 
         // General path: iterate through nonzero indices and compute contributions
         for (cycle, k) in one_hot.nonzero_indices.iter().enumerate() {
             if let Some(k) = k {
-                let global_index =
-                    layout.address_cycle_to_index(*k as usize, cycle, one_hot.K, effective_t);
+                let global_index = DoryLayout::AddressMajor.address_cycle_to_index(
+                    *k as usize,
+                    cycle,
+                    one_hot.K,
+                    effective_t,
+                );
                 let scaled_index = global_index * column_stride;
                 let row_index = scaled_index / num_columns;
                 let col_index = scaled_index % num_columns;
@@ -762,31 +714,26 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
             return self.address_major_vector_matrix_product(left_vec, num_columns, &ctx);
         }
 
-        let T = DoryGlobals::get_T();
-        let trace_t = DoryGlobals::get_trace_T();
-        let has_onehot = !ctx.onehot_polys.is_empty();
+        let matrix_t = DoryGlobals::get_matrix_t();
         match &ctx.trace_source {
             TraceSource::Materialized(trace) => {
-                // In CycleMajor, when Joint/Main matrix T is larger than the trace-domain T,
-                // one-hot polynomials must stay in the canonical flattened prefix domain.
-                // Fall back to the canonical materialized VMV path, which uses the same
-                // indexing semantics as commitment generation.
-                if DoryGlobals::get_layout() == DoryLayout::CycleMajor
-                    && has_onehot
-                    && trace_t < T
-                {
-                    return self.address_major_vector_matrix_product(left_vec, num_columns, &ctx);
-                }
-                self.materialized_vector_matrix_product(left_vec, num_columns, trace, &ctx, T)
+                self.materialized_vector_matrix_product(
+                    left_vec,
+                    num_columns,
+                    trace,
+                    &ctx,
+                    matrix_t,
+                )
             }
             TraceSource::Lazy(lazy_trace) => {
                 self.lazy_vector_matrix_product(
-                left_vec,
-                num_columns,
-                (**lazy_trace).clone(),
-                &ctx,
-                T,
-            )}
+                    left_vec,
+                    num_columns,
+                    (**lazy_trace).clone(),
+                    &ctx,
+                    matrix_t,
+                )
+            }
         }
     }
 
@@ -875,10 +822,17 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
     ) -> Vec<F> {
         let num_rows = T / num_columns;
         let trace_len = trace.len();
+        let has_onehot = !ctx.onehot_polys.is_empty();
+
+        // In CycleMajor with expanded matrix cycle-domain (trace_len < T), one-hot coefficients
+        // are embedded into the leading linear-space prefix (effective_t = trace_len), not spread
+        // across the full matrix cycle-domain (T). Use exact one-hot accumulation in this case.
+        let exact_onehot_prefix_mode =
+            DoryGlobals::get_layout() == DoryLayout::CycleMajor && has_onehot && trace_len < T;
 
         // Setup: precompute coefficients, row factors, and folded one-hot tables.
         // For one-hot polys we fold over the canonical trace domain rows, not the
-        // potentially larger matrix T used by Joint.
+        // potentially larger matrix T.
         let onehot_rows_per_k = trace_len.div_ceil(num_columns).min(num_rows);
         let setup = VmvSetup::new(ctx, left_vec, num_rows, onehot_rows_per_k);
 
@@ -902,8 +856,6 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
                     // Row-scaled dense coefficients.
                     let scaled_rd_inc = row_weight * setup.rd_inc_coeff;
                     let scaled_ram_inc = row_weight * setup.ram_inc_coeff;
-                    let row_factor = setup.row_factors[row_idx];
-
                     // Split into valid trace range vs padding range.
                     let valid_end = std::cmp::min(chunk_start + num_columns, trace_len);
                     let row_cycles = if chunk_start < valid_end {
@@ -914,14 +866,33 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
 
                     // Process valid trace elements.
                     for (col_idx, cycle) in row_cycles.iter().enumerate() {
-                        setup.process_cycle(
-                            cycle,
-                            scaled_rd_inc,
-                            scaled_ram_inc,
-                            row_factor,
-                            &mut dense_accs[col_idx],
-                            &mut onehot_accs[col_idx],
-                        );
+                        if exact_onehot_prefix_mode {
+                            setup.process_cycle_dense(
+                                cycle,
+                                scaled_rd_inc,
+                                scaled_ram_inc,
+                                &mut dense_accs[col_idx],
+                            );
+                            setup.process_cycle_onehot_prefix_exact(
+                                cycle,
+                                chunk_start + col_idx,
+                                trace_len,
+                                num_columns,
+                                left_vec,
+                                &ctx.onehot_polys,
+                                &mut onehot_accs,
+                            );
+                        } else {
+                            let row_factor = setup.row_factors[row_idx];
+                            setup.process_cycle(
+                                cycle,
+                                scaled_rd_inc,
+                                scaled_ram_inc,
+                                row_factor,
+                                &mut dense_accs[col_idx],
+                                &mut onehot_accs[col_idx],
+                            );
+                        }
                     }
                 }
 
@@ -1029,24 +1000,30 @@ impl<'a, F: JoltField> VmvSetup<'a, F> {
     fn new(
         ctx: &'a StreamingRLCContext<F>,
         left_vec: &[F],
-        num_rows: usize,
-        onehot_rows_per_k: usize,
+        matrix_rows_per_k: usize,
+        active_onehot_rows_per_k: usize,
     ) -> Self {
         let one_hot_params = &ctx.one_hot_params;
         let k_chunk = one_hot_params.k_chunk;
 
         debug_assert!(
-            left_vec.len() >= k_chunk * onehot_rows_per_k,
+            left_vec.len() >= k_chunk * matrix_rows_per_k,
             "left_vec too short for one-hot VMV: len={} need_at_least={}",
             left_vec.len(),
-            k_chunk * onehot_rows_per_k
+            k_chunk * matrix_rows_per_k
+        );
+        debug_assert!(
+            active_onehot_rows_per_k <= matrix_rows_per_k,
+            "active_onehot_rows_per_k={} cannot exceed matrix_rows_per_k={}",
+            active_onehot_rows_per_k,
+            matrix_rows_per_k
         );
 
         // Compute row_factors and eq_k from left vector
         let (row_factors, eq_k) = Self::compute_row_factors_and_eq_k(
             left_vec,
-            num_rows,
-            onehot_rows_per_k,
+            matrix_rows_per_k,
+            active_onehot_rows_per_k,
             k_chunk,
         );
 
@@ -1080,17 +1057,20 @@ impl<'a, F: JoltField> VmvSetup<'a, F> {
     #[inline]
     fn compute_row_factors_and_eq_k(
         left_vec: &[F],
-        num_rows: usize,
-        onehot_rows_per_k: usize,
+        matrix_rows_per_k: usize,
+        active_onehot_rows_per_k: usize,
         k_chunk: usize,
     ) -> (Vec<F>, Vec<F>) {
-        let mut row_factors: Vec<F> = unsafe_allocate_zero_vec(num_rows);
+        let mut row_factors: Vec<F> = unsafe_allocate_zero_vec(matrix_rows_per_k);
         let mut eq_k: Vec<F> = unsafe_allocate_zero_vec(k_chunk);
 
         for k in 0..k_chunk {
-            let base = k * onehot_rows_per_k;
+            // Left vector is laid out in full matrix rows-per-K blocks.
+            // When exec_t < matrix_t, only the first active_onehot_rows_per_k rows per block
+            // contribute to one-hot support; remaining rows are padding.
+            let base = k * matrix_rows_per_k;
             let mut sum_k = F::zero();
-            for row in 0..onehot_rows_per_k {
+            for row in 0..active_onehot_rows_per_k {
                 let v = left_vec[base + row];
                 sum_k += v;
                 row_factors[row] += v;
@@ -1157,14 +1137,12 @@ impl<'a, F: JoltField> VmvSetup<'a, F> {
 
     /// Process a single cycle.
     #[inline(always)]
-    fn process_cycle(
+    fn process_cycle_dense(
         &self,
         cycle: &Cycle,
         scaled_rd_inc: F,
         scaled_ram_inc: F,
-        row_factor: F,
         dense_acc: &mut Acc6S<F>,
-        onehot_acc: &mut F::Unreduced<9>,
     ) {
         // Dense polynomials: accumulate scaled_coeff * (post - pre)
         let (_, pre_value, post_value) = cycle.rd_write().unwrap_or_default();
@@ -1175,6 +1153,66 @@ impl<'a, F: JoltField> VmvSetup<'a, F> {
             let diff = s64_from_diff_u64s(write.post_value, write.pre_value);
             dense_acc.fmadd(&scaled_ram_inc, &diff);
         }
+    }
+
+    /// Process one-hot terms with exact prefix embedding (effective_t = trace_len).
+    #[inline(always)]
+    fn process_cycle_onehot_prefix_exact(
+        &self,
+        cycle: &Cycle,
+        cycle_idx: usize,
+        trace_len: usize,
+        num_columns: usize,
+        left_vec: &[F],
+        onehot_polys: &[(CommittedPolynomial, F)],
+        onehot_accs: &mut [F::Unreduced<9>],
+    ) {
+        let lookup_index = LookupQuery::<XLEN>::to_lookup_index(cycle);
+        let pc = self.program.get_pc(cycle);
+        let remapped_address = remap_address(cycle.ram_access().address() as u64, self.memory_layout);
+
+        for (poly_id, coeff) in onehot_polys.iter() {
+            if coeff.is_zero() {
+                continue;
+            }
+
+            let k = match poly_id {
+                CommittedPolynomial::InstructionRa(idx) => {
+                    self.one_hot_params.lookup_index_chunk(lookup_index, *idx) as usize
+                }
+                CommittedPolynomial::BytecodeRa(idx) => {
+                    self.one_hot_params.bytecode_pc_chunk(pc, *idx) as usize
+                }
+                CommittedPolynomial::RamRa(idx) => {
+                    let Some(addr) = remapped_address else {
+                        continue;
+                    };
+                    self.one_hot_params.ram_address_chunk(addr, *idx) as usize
+                }
+                _ => unreachable!("dense polynomial found in onehot_polys"),
+            };
+
+            let global_index = k * trace_len + cycle_idx;
+            let row_index = global_index / num_columns;
+            let col_index = global_index % num_columns;
+            if row_index < left_vec.len() && col_index < onehot_accs.len() {
+                onehot_accs[col_index] += left_vec[row_index].mul_unreduced::<9>(*coeff);
+            }
+        }
+    }
+
+    /// Process a single cycle.
+    #[inline(always)]
+    fn process_cycle(
+        &self,
+        cycle: &Cycle,
+        scaled_rd_inc: F,
+        scaled_ram_inc: F,
+        row_factor: F,
+        dense_acc: &mut Acc6S<F>,
+        onehot_acc: &mut F::Unreduced<9>,
+    ) {
+        self.process_cycle_dense(cycle, scaled_rd_inc, scaled_ram_inc, dense_acc);
 
         // One-hot polynomials: accumulate using pre-folded K tables (unreduced)
         let mut inner_sum = F::Unreduced::<5>::default();

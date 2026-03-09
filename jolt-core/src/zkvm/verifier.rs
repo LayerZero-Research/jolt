@@ -5,15 +5,15 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::poly::commitment::commitment_scheme::CommitmentScheme;
-use crate::poly::commitment::dory::{DoryContext, DoryGlobals, DoryLayout};
+use crate::poly::commitment::dory::{DoryGlobals, DoryLayout};
 use crate::subprotocols::sumcheck::BatchedSumcheck;
+use crate::zkvm::bytecode::chunks::{
+    committed_lanes, validate_committed_bytecode_chunk_count,
+    DEFAULT_COMMITTED_BYTECODE_CHUNK_COUNT,
+};
 use crate::zkvm::claim_reductions::RegistersClaimReductionSumcheckVerifier;
 use crate::zkvm::config::OneHotParams;
 use crate::zkvm::config::ProgramMode;
-use crate::zkvm::bytecode::chunks::{
-    committed_lanes,
-    validate_committed_bytecode_chunk_count, DEFAULT_COMMITTED_BYTECODE_CHUNK_COUNT,
-};
 use crate::zkvm::program::{
     ProgramMetadata, ProgramPreprocessing, TrustedProgramCommitments, VerifierProgram,
 };
@@ -31,9 +31,9 @@ use crate::zkvm::{
     claim_reductions::{
         AdviceClaimReductionVerifier, AdviceKind, BytecodeClaimReductionParams,
         BytecodeClaimReductionVerifier, HammingWeightClaimReductionVerifier,
-        IncClaimReductionSumcheckVerifier,
-        InstructionLookupsClaimReductionSumcheckVerifier, ProgramImageClaimReductionParams,
-        ProgramImageClaimReductionVerifier, RamRaClaimReductionSumcheckVerifier,
+        IncClaimReductionSumcheckVerifier, InstructionLookupsClaimReductionSumcheckVerifier,
+        ProgramImageClaimReductionParams, ProgramImageClaimReductionVerifier,
+        RamRaClaimReductionSumcheckVerifier,
     },
     fiat_shamir_preamble,
     instruction_lookups::{
@@ -216,7 +216,10 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
                     committed.bytecode_chunk_count
                 )));
             }
-            if !committed.bytecode_len.is_multiple_of(committed.bytecode_chunk_count) {
+            if !committed
+                .bytecode_len
+                .is_multiple_of(committed.bytecode_chunk_count)
+            {
                 return Err(ProofVerifyError::InvalidBytecodeConfig(format!(
                     "bytecode chunk count ({}) must divide bytecode_len ({})",
                     committed.bytecode_chunk_count, committed.bytecode_len
@@ -285,6 +288,12 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
             self.proof.ram_K,
             self.proof.trace_length,
             &mut self.transcript,
+        );
+        let _ = DoryGlobals::initialize_main_with_log_embedding(
+            self.one_hot_params.k_chunk,
+            self.proof.trace_length,
+            self.proof.stage6_trace_length.log_2() + self.one_hot_params.log_k_chunk,
+            Some(self.proof.dory_layout),
         );
 
         // Append commitments to transcript
@@ -538,7 +547,6 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
 
     fn verify_stage6a(&mut self) -> Result<(), anyhow::Error> {
         let stage1_cycle_vars = self.proof.trace_length.log_2();
-        let stage6_log_t = self.proof.stage6_trace_length.log_2();
         let program_preprocessing = match self.proof.program_mode {
             ProgramMode::Committed => {
                 // Ensure we have committed program commitments for committed mode.
@@ -550,8 +558,6 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
         let bytecode_read_raf = BytecodeReadRafAddressSumcheckVerifier::new(
             program_preprocessing,
             stage1_cycle_vars,
-            // stage6_log_t,
-            // self.proof.dory_layout,
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
@@ -842,26 +848,20 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
                 [r_address_stage7.as_slice(), r_cycle_stage6.as_slice()].concat(),
             )
         };
-        let _ = DoryGlobals::initialize_context_with_trace_t(
-            self.one_hot_params.k_chunk,
-            self.proof.stage6_trace_length,
-            self.proof.trace_length,
-            DoryContext::Joint,
-            Some(self.proof.dory_layout),
-        );
-        DoryGlobals::with_context(DoryContext::Joint);
         // 1. Collect all (polynomial, claim) pairs
         let mut polynomial_claims = Vec::new();
 
         // Dense polynomials: RamInc and RdInc (from IncClaimReduction in Stage 6)
-        let (_ram_inc_point, ram_inc_claim) = self.opening_accumulator.get_committed_polynomial_opening(
-            CommittedPolynomial::RamInc,
-            SumcheckId::IncClaimReduction,
-        );
-        let (_rd_inc_point, rd_inc_claim) = self.opening_accumulator.get_committed_polynomial_opening(
-            CommittedPolynomial::RdInc,
-            SumcheckId::IncClaimReduction,
-        );
+        let (_ram_inc_point, ram_inc_claim) =
+            self.opening_accumulator.get_committed_polynomial_opening(
+                CommittedPolynomial::RamInc,
+                SumcheckId::IncClaimReduction,
+            );
+        let (_rd_inc_point, rd_inc_claim) =
+            self.opening_accumulator.get_committed_polynomial_opening(
+                CommittedPolynomial::RdInc,
+                SumcheckId::IncClaimReduction,
+            );
         let dense_point_is_suffix = self.proof.dory_layout == DoryLayout::CycleMajor;
         let dense_lagrange = |dense_point_len: usize| {
             assert!(
@@ -880,7 +880,10 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
         };
         let ram_inc_lagrange = dense_lagrange(_ram_inc_point.r.len());
         let rd_inc_lagrange = dense_lagrange(_rd_inc_point.r.len());
-        polynomial_claims.push((CommittedPolynomial::RamInc, ram_inc_claim * ram_inc_lagrange));
+        polynomial_claims.push((
+            CommittedPolynomial::RamInc,
+            ram_inc_claim * ram_inc_lagrange,
+        ));
         polynomial_claims.push((CommittedPolynomial::RdInc, rd_inc_claim * rd_inc_lagrange));
 
         // Sparse polynomials: all RA polys (from HammingWeightClaimReduction)
@@ -951,10 +954,11 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
                 )
             })?;
             for chunk_idx in 0..trusted.bytecode_chunk_commitments.len() {
-                let (bytecode_point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
-                    CommittedPolynomial::BytecodeChunk(chunk_idx),
-                    SumcheckId::BytecodeClaimReduction,
-                );
+                let (bytecode_point, claim) =
+                    self.opening_accumulator.get_committed_polynomial_opening(
+                        CommittedPolynomial::BytecodeChunk(chunk_idx),
+                        SumcheckId::BytecodeClaimReduction,
+                    );
                 let log_t = opening_point.r.len();
                 let log_k = bytecode_point.r.len();
                 if log_k > log_t {
@@ -1042,7 +1046,10 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
                     .iter()
                     .any(|(p, _)| *p == CommittedPolynomial::BytecodeChunk(chunk_idx))
                 {
-                    commitments_map.insert(CommittedPolynomial::BytecodeChunk(chunk_idx), commitment.clone());
+                    commitments_map.insert(
+                        CommittedPolynomial::BytecodeChunk(chunk_idx),
+                        commitment.clone(),
+                    );
                 }
             }
 
@@ -1156,7 +1163,9 @@ impl JoltSharedPreprocessing {
     ) -> JoltSharedPreprocessing {
         validate_committed_bytecode_chunk_count(bytecode_chunk_count);
         assert!(
-            program_meta.bytecode_len.is_multiple_of(bytecode_chunk_count),
+            program_meta
+                .bytecode_len
+                .is_multiple_of(bytecode_chunk_count),
             "bytecode chunk count ({bytecode_chunk_count}) must divide bytecode size ({})",
             program_meta.bytecode_len
         );

@@ -7,7 +7,6 @@
 use allocative::Allocative;
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::ops::Range;
 
 use rayon::prelude::*;
 
@@ -24,6 +23,7 @@ use crate::subprotocols::sumcheck_prover::SumcheckInstanceProver;
 use crate::subprotocols::sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier};
 use crate::transcripts::Transcript;
 use crate::utils::math::Math;
+use crate::zkvm::claim_reductions::{PrecommittedClaimReduction, TwoPhaseRoundSchedule};
 use crate::zkvm::config::ReadWriteConfig;
 use crate::zkvm::ram::remap_address;
 use crate::zkvm::witness::{CommittedPolynomial, VirtualPolynomial};
@@ -35,159 +35,6 @@ const DEGREE_BOUND: usize = 2;
 pub enum PreCommitted {
     CycleVariables,
     AddressVariables,
-}
-
-#[inline]
-fn internal_dummy_gap_len(
-    cycle_phase_col_rounds: &Range<usize>,
-    cycle_phase_row_rounds: &Range<usize>,
-) -> usize {
-    let cycle_phase_total_rounds = if !cycle_phase_row_rounds.is_empty() {
-        cycle_phase_row_rounds.end
-    } else {
-        cycle_phase_col_rounds.end
-    };
-    cycle_phase_total_rounds - (cycle_phase_col_rounds.len() + cycle_phase_row_rounds.len())
-}
-
-fn cycle_phase_round_schedule(
-    main_cycle_rounds: usize,
-    cycle_rounds: usize,
-    log_k_chunk: usize,
-    joint_col_vars: usize,
-    poly_row_vars: usize,
-    poly_col_vars: usize,
-) -> (Range<usize>, Range<usize>) {
-    match DoryGlobals::get_layout() {
-        DoryLayout::CycleMajor => {
-            let cycle_prefix = cycle_rounds.saturating_sub(main_cycle_rounds);
-            let col_len = std::cmp::min(main_cycle_rounds, poly_col_vars);
-            let col_start = cycle_prefix;
-            let col_end = std::cmp::min(cycle_rounds, col_start + col_len);
-            let col_binding_rounds = col_start..col_end;
-            let row_start_base = std::cmp::min(
-                main_cycle_rounds,
-                std::cmp::max(std::cmp::min(main_cycle_rounds, joint_col_vars), col_len),
-            );
-            let row_start = std::cmp::min(cycle_rounds, cycle_prefix + row_start_base);
-            let row_end = std::cmp::min(cycle_rounds, row_start + poly_row_vars);
-            let row_binding_rounds = row_start..row_end;
-            (col_binding_rounds, row_binding_rounds)
-        }
-        DoryLayout::AddressMajor => {
-            let (prefix_col_bits, _address_col_bits, dense_col_bits) = address_major_col_bit_partition(
-                main_cycle_rounds,
-                cycle_rounds,
-                log_k_chunk,
-                poly_col_vars,
-            );
-            let col_end =
-                std::cmp::min(cycle_rounds, prefix_col_bits.saturating_add(dense_col_bits));
-            let col_binding_rounds = 0..col_end;
-            let row_start_unclamped = joint_col_vars.saturating_sub(log_k_chunk);
-            let row_start =
-                std::cmp::min(cycle_rounds, std::cmp::max(row_start_unclamped, col_end));
-            let row_end = std::cmp::min(cycle_rounds, row_start + poly_row_vars);
-            let row_binding_rounds = row_start..row_end;
-            (col_binding_rounds, row_binding_rounds)
-        }
-    }
-}
-
-#[inline]
-fn joint_col_vars_for_precommitted(cycle_rounds: usize, address_rounds: usize) -> usize {
-    DoryGlobals::balanced_sigma_nu(cycle_rounds + address_rounds).0
-}
-
-#[inline]
-fn address_major_col_bit_partition(
-    main_cycle_rounds: usize,
-    cycle_rounds: usize,
-    log_k_chunk: usize,
-    poly_col_vars: usize,
-) -> (usize, usize, usize) {
-    // AddressMajor Stage-8 anchor shape in BE blocks:
-    //   [dense-cycle-cols || address-cols || cycle-prefix-cols]
-    // where `cycle-prefix-cols` has width `c = cycle_rounds - main_cycle_rounds`.
-    // For top-left projection with `poly_col_vars` columns, selected col bits in LE are:
-    //   [cycle-prefix || address || dense-cycle]
-    // This helper returns (cycle-prefix, address, dense-cycle) bit counts.
-    let cycle_prefix_cols = cycle_rounds.saturating_sub(main_cycle_rounds);
-    let prefix_bits = std::cmp::min(poly_col_vars, cycle_prefix_cols);
-    let remaining = poly_col_vars.saturating_sub(prefix_bits);
-    let address_bits = std::cmp::min(remaining, log_k_chunk);
-    let dense_bits = remaining.saturating_sub(address_bits);
-    (prefix_bits, address_bits, dense_bits)
-}
-
-fn precommitted_num_rounds<Phase: Copy + Eq>(
-    phase: Phase,
-    cycle_phase: Phase,
-    cycle_phase_col_rounds: &Range<usize>,
-    cycle_phase_row_rounds: &Range<usize>,
-    total_poly_vars: usize,
-) -> usize {
-    if phase == cycle_phase {
-        if !cycle_phase_row_rounds.is_empty() {
-            cycle_phase_row_rounds.end
-        } else {
-            cycle_phase_col_rounds.end
-        }
-    } else {
-        let first_phase_rounds = cycle_phase_col_rounds.len() + cycle_phase_row_rounds.len();
-        total_poly_vars - first_phase_rounds
-    }
-}
-
-fn normalize_two_phase_opening_point<F: JoltField, Phase: Copy + Eq>(
-    phase: Phase,
-    cycle_var_challenges: &[F::Challenge],
-    cycle_phase: Phase,
-    cycle_phase_col_rounds: &Range<usize>,
-    cycle_phase_row_rounds: &Range<usize>,
-    main_cycle_rounds: usize,
-    cycle_rounds: usize,
-    log_k_chunk: usize,
-    poly_col_vars: usize,
-    challenges: &[F::Challenge],
-) -> OpeningPoint<BIG_ENDIAN, F> {
-    if phase == cycle_phase {
-        let mut cycle_var_challenges: Vec<F::Challenge> =
-            Vec::with_capacity(cycle_phase_col_rounds.len() + cycle_phase_row_rounds.len());
-        cycle_var_challenges.extend_from_slice(&challenges[cycle_phase_col_rounds.clone()]);
-        if !cycle_phase_row_rounds.is_empty() {
-            cycle_var_challenges.extend_from_slice(&challenges[cycle_phase_row_rounds.clone()]);
-        }
-        return OpeningPoint::<LITTLE_ENDIAN, F>::new(cycle_var_challenges).match_endianness();
-    }
-
-    match DoryGlobals::get_layout() {
-        DoryLayout::CycleMajor => OpeningPoint::<LITTLE_ENDIAN, F>::new(
-            [cycle_var_challenges, challenges].concat(),
-        )
-        .match_endianness(),
-        DoryLayout::AddressMajor => {
-            // For AddressMajor with Stage-6 padding (`c > 0`), top-left projection selects
-            // col bits in LE as `[cycle-prefix || address || dense-cycle]`, while cycle-phase
-            // challenges are accumulated as `[cycle-prefix || dense-cycle || row-cycle]`.
-            // Reorder to natural projected LE order:
-            //   [cycle-prefix || address || dense-cycle || row-cycle]
-            let (prefix_bits, _address_bits, _dense_bits) = address_major_col_bit_partition(
-                main_cycle_rounds,
-                cycle_rounds,
-                log_k_chunk,
-                poly_col_vars,
-            );
-            let col_cycle_len = cycle_phase_col_rounds.len();
-            let (col_cycle, row_cycle) = cycle_var_challenges.split_at(col_cycle_len);
-            let prefix_len = std::cmp::min(prefix_bits, col_cycle.len());
-            let (prefix_cycle, dense_cycle) = col_cycle.split_at(prefix_len);
-            OpeningPoint::<LITTLE_ENDIAN, F>::new(
-                [prefix_cycle, challenges, dense_cycle, row_cycle].concat(),
-            )
-            .match_endianness()
-        }
-    }
 }
 
 #[derive(Clone, Allocative)]
@@ -203,9 +50,7 @@ pub struct ProgramImageClaimReductionParams<F: JoltField> {
     pub prog_row_vars: usize,
     pub joint_col_vars: usize,
     #[allocative(skip)]
-    pub cycle_phase_row_rounds: Range<usize>,
-    #[allocative(skip)]
-    pub cycle_phase_col_rounds: Range<usize>,
+    pub round_schedule: TwoPhaseRoundSchedule,
     pub ram_num_vars: usize,
     pub start_index: usize,
     pub padded_len_words: usize,
@@ -220,8 +65,7 @@ pub struct ProgramImageClaimReductionParams<F: JoltField> {
 
 impl<F: JoltField> ProgramImageClaimReductionParams<F> {
     pub fn num_address_phase_rounds(&self) -> usize {
-        (self.prog_col_vars + self.prog_row_vars)
-            - (self.cycle_phase_col_rounds.len() + self.cycle_phase_row_rounds.len())
+        self.round_schedule.address_phase_rounds.len()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -247,12 +91,12 @@ impl<F: JoltField> ProgramImageClaimReductionParams<F> {
         let log_t = trace_len.log_2();
         let cycle_alignment_rounds = cycle_alignment_rounds.max(log_t);
         let (prog_col_vars, prog_row_vars) = DoryGlobals::balanced_sigma_nu(m);
-        let joint_col_vars = joint_col_vars_for_precommitted(cycle_alignment_rounds, log_k_chunk);
-        let (cycle_phase_col_rounds, cycle_phase_row_rounds) = cycle_phase_round_schedule(
-            log_t,
-            cycle_alignment_rounds,
-            log_k_chunk,
-            joint_col_vars,
+        let joint_geometry = PrecommittedClaimReduction::precommitted_geometry();
+        debug_assert_eq!(joint_geometry.main_cycle_rounds, log_t);
+        debug_assert_eq!(joint_geometry.cycle_rounds, cycle_alignment_rounds);
+        debug_assert_eq!(joint_geometry.address_rounds, log_k_chunk);
+        let joint_col_vars = joint_geometry.joint_col_vars;
+        let round_schedule = PrecommittedClaimReduction::precommitted_two_phase_round_schedule(
             prog_row_vars,
             prog_col_vars,
         );
@@ -309,8 +153,7 @@ impl<F: JoltField> ProgramImageClaimReductionParams<F> {
             prog_col_vars,
             prog_row_vars,
             joint_col_vars,
-            cycle_phase_row_rounds,
-            cycle_phase_col_rounds,
+            round_schedule,
             ram_num_vars,
             start_index,
             padded_len_words,
@@ -326,10 +169,6 @@ impl<F: JoltField> ProgramImageClaimReductionParams<F> {
 }
 
 impl<F: JoltField> ProgramImageClaimReductionParams<F> {
-    fn total_poly_vars(&self) -> usize {
-        self.m
-    }
-
     fn is_cycle_phase(&self) -> bool {
         self.phase == PreCommitted::CycleVariables
     }
@@ -346,27 +185,21 @@ impl<F: JoltField> ProgramImageClaimReductionParams<F> {
         self.phase = PreCommitted::AddressVariables;
     }
 
-    fn num_rounds_for_current_phase(&self) -> usize {
-        precommitted_num_rounds(
-            self.phase,
-            PreCommitted::CycleVariables,
-            &self.cycle_phase_col_rounds,
-            &self.cycle_phase_row_rounds,
-            self.total_poly_vars(),
-        )
+    #[inline]
+    fn is_cycle_phase_round(&self, round: usize) -> bool {
+        self.round_schedule
+            .cycle_phase_rounds
+            .binary_search(&round)
+            .is_ok()
     }
 
     pub fn round_offset(&self, max_num_rounds: usize) -> usize {
-        if self.is_cycle_phase() {
-            max_num_rounds.saturating_sub(self.cycle_alignment_rounds())
-        } else {
-            match DoryGlobals::get_layout() {
-                DoryLayout::AddressMajor => 0,
-                DoryLayout::CycleMajor => {
-                    max_num_rounds.saturating_sub(self.num_rounds_for_current_phase())
-                }
-            }
-        }
+        PrecommittedClaimReduction::precommitted_round_offset(
+            self.is_cycle_phase(),
+            max_num_rounds,
+            self.cycle_alignment_rounds(),
+            self.num_rounds(),
+        )
     }
 }
 
@@ -405,20 +238,17 @@ impl<F: JoltField> SumcheckInstanceParams<F> for ProgramImageClaimReductionParam
     }
 
     fn num_rounds(&self) -> usize {
-        self.num_rounds_for_current_phase()
+        PrecommittedClaimReduction::precommitted_num_rounds_for_phase(
+            self.is_cycle_phase(),
+            &self.round_schedule,
+        )
     }
 
     fn normalize_opening_point(&self, challenges: &[F::Challenge]) -> OpeningPoint<BIG_ENDIAN, F> {
-        normalize_two_phase_opening_point(
-            self.phase,
+        PrecommittedClaimReduction::normalize_precommitted_two_phase_opening_point(
+            self.is_cycle_phase(),
             &self.cycle_var_challenges,
-            PreCommitted::CycleVariables,
-            &self.cycle_phase_col_rounds,
-            &self.cycle_phase_row_rounds,
-            self.log_t,
-            self.cycle_alignment_rounds,
-            self.log_k_chunk,
-            self.prog_col_vars,
+            &self.round_schedule,
             challenges,
         )
     }
@@ -468,57 +298,6 @@ fn top_left_program_image_point_and_selector<F: JoltField>(
     }
 
     (r_addr[prefix_len..].to_vec(), selector)
-}
-
-#[inline(always)]
-fn permute_sumcheck_index_address_major<F: JoltField>(
-    params: &ProgramImageClaimReductionParams<F>,
-    index: usize,
-) -> usize {
-    // Natural projected LE order for top-left ProgramImage cols in AddressMajor:
-    //   [cycle-prefix || address || dense-cycle || row]
-    // Sumcheck binding order used by this two-phase reduction:
-    //   [cycle-prefix || dense-cycle || row || address]
-    // This remap makes low-to-high binds follow the sumcheck order while preserving
-    // equality with the committed polynomial evaluation at the projected opening point.
-    let (prefix_bits, address_bits, dense_bits) = address_major_col_bit_partition(
-        params.log_t,
-        params.cycle_alignment_rounds,
-        params.log_k_chunk,
-        params.prog_col_vars,
-    );
-    let row_bits = params.prog_row_vars;
-
-    let prefix_mask = if prefix_bits == 0 {
-        0
-    } else {
-        (1usize << prefix_bits) - 1
-    };
-    let address_mask = if address_bits == 0 {
-        0
-    } else {
-        (1usize << address_bits) - 1
-    };
-    let dense_mask = if dense_bits == 0 {
-        0
-    } else {
-        (1usize << dense_bits) - 1
-    };
-    let row_mask = if row_bits == 0 {
-        0
-    } else {
-        (1usize << row_bits) - 1
-    };
-
-    let prefix = index & prefix_mask;
-    let address = (index >> prefix_bits) & address_mask;
-    let dense = (index >> (prefix_bits + address_bits)) & dense_mask;
-    let row = (index >> (prefix_bits + address_bits + dense_bits)) & row_mask;
-
-    prefix
-        | (dense << prefix_bits)
-        | (row << (prefix_bits + dense_bits))
-        | (address << (prefix_bits + dense_bits + row_bits))
 }
 
 impl<F: JoltField> ProgramImageClaimReductionProver<F> {
@@ -572,7 +351,12 @@ impl<F: JoltField> ProgramImageClaimReductionProver<F> {
                 let mut permuted_word = vec![0u64; program_image_words_padded.len()];
                 let mut permuted_eq = vec![F::zero(); eq_evals.len()];
                 for old_idx in 0..program_image_words_padded.len() {
-                    let new_idx = permute_sumcheck_index_address_major(&params, old_idx);
+                    let new_idx =
+                        PrecommittedClaimReduction::permute_precommitted_sumcheck_index_address_major(
+                        old_idx,
+                        params.prog_row_vars,
+                        params.prog_col_vars,
+                    );
                     permuted_word[new_idx] = program_image_words_padded[old_idx];
                     permuted_eq[new_idx] = eq_evals[old_idx];
                 }
@@ -582,28 +366,22 @@ impl<F: JoltField> ProgramImageClaimReductionProver<F> {
                 )
             }
             DoryLayout::CycleMajor => {
-                let joint_cols = 1usize << params.joint_col_vars;
-                let row_col_to_address_cycle = |row: usize, col: usize| -> (usize, usize) {
-                    let global_index = row as u128 * joint_cols as u128 + col as u128;
-                    let address = global_index / (1u128 << params.log_t);
-                    let cycle = global_index % (1u128 << params.log_t);
-                    (address as usize, cycle as usize)
-                };
-                let prog_cols = 1usize << params.prog_col_vars;
-                let prog_index_to_address_cycle = |index: usize| -> (usize, usize) {
-                    let row = index / prog_cols;
-                    let col = index % prog_cols;
-                    row_col_to_address_cycle(row, col)
-                };
-
                 let mut permuted_coeffs: Vec<(usize, (u64, F))> = program_image_words_padded
                     .into_par_iter()
                     .zip(eq_evals.into_par_iter())
                     .enumerate()
                     .collect();
                 permuted_coeffs.par_sort_by(|&(index_a, _), &(index_b, _)| {
-                    let (address_a, cycle_a) = prog_index_to_address_cycle(index_a);
-                    let (address_b, cycle_b) = prog_index_to_address_cycle(index_b);
+                    let (address_a, cycle_a) =
+                        PrecommittedClaimReduction::cycle_major_top_left_index_to_address_cycle(
+                            index_a,
+                            params.prog_col_vars,
+                        );
+                    let (address_b, cycle_b) =
+                        PrecommittedClaimReduction::cycle_major_top_left_index_to_address_cycle(
+                            index_b,
+                            params.prog_col_vars,
+                        );
                     match address_a.cmp(&address_b) {
                         Ordering::Less => Ordering::Less,
                         Ordering::Greater => Ordering::Greater,
@@ -689,10 +467,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
     }
 
     fn compute_message(&mut self, round: usize, previous_claim: F) -> UniPoly<F> {
-        if self.params.is_cycle_phase()
-            && !self.params.cycle_phase_col_rounds.contains(&round)
-            && !self.params.cycle_phase_row_rounds.contains(&round)
-        {
+        if self.params.is_cycle_phase() && !self.params.is_cycle_phase_round(round) {
             return UniPoly::from_coeff(vec![previous_claim * F::from_u64(2).inverse().unwrap()]);
         }
 
@@ -701,8 +476,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
         } else {
             self.params.address_alignment_rounds()
         };
-        let num_trailing_variables =
-            trailing_cap.saturating_sub(self.params.num_rounds_for_current_phase());
+        let num_trailing_variables = trailing_cap.saturating_sub(self.params.num_rounds());
         let scaling_factor = self.scale * F::one().mul_pow_2(num_trailing_variables);
         let prev_unscaled = previous_claim * scaling_factor.inverse().unwrap();
         let poly_unscaled = self.compute_message_unscaled(prev_unscaled);
@@ -711,19 +485,20 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
 
     fn ingest_challenge(&mut self, r_j: F::Challenge, round: usize) {
         if self.params.is_cycle_phase() {
-            let is_dummy_round = !self.params.cycle_phase_col_rounds.contains(&round)
-                && !self.params.cycle_phase_row_rounds.contains(&round);
+            let is_dummy_round = !self.params.is_cycle_phase_round(round);
             if is_dummy_round {
                 self.scale *= F::from_u64(2).inverse().unwrap();
             } else {
-                self.program_word.bind_parallel(r_j, BindingOrder::LowToHigh);
+                self.program_word
+                    .bind_parallel(r_j, BindingOrder::LowToHigh);
                 self.eq_slice.bind_parallel(r_j, BindingOrder::LowToHigh);
                 self.params.cycle_var_challenges.push(r_j);
             }
             return;
         }
 
-        self.program_word.bind_parallel(r_j, BindingOrder::LowToHigh);
+        self.program_word
+            .bind_parallel(r_j, BindingOrder::LowToHigh);
         self.eq_slice.bind_parallel(r_j, BindingOrder::LowToHigh);
     }
 
@@ -821,10 +596,10 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
                     eq_eval + params.gamma * eq_final
                 };
 
-                let gap_len = internal_dummy_gap_len(
-                    &params.cycle_phase_col_rounds,
-                    &params.cycle_phase_row_rounds,
-                );
+                let gap_len =
+                    PrecommittedClaimReduction::precommitted_internal_dummy_gap_len(
+                        &params.round_schedule,
+                    );
                 let two_inv = F::from_u64(2).inverse().unwrap();
                 let scale = (0..gap_len).fold(F::one(), |acc, _| acc * two_inv);
                 pw_eval * eq_combined * scale
@@ -851,8 +626,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
             params.cycle_var_challenges = opening_point_le.r;
         }
 
-        if params.phase == PreCommitted::AddressVariables
-            || params.num_address_phase_rounds() == 0
+        if params.phase == PreCommitted::AddressVariables || params.num_address_phase_rounds() == 0
         {
             accumulator.append_dense(
                 transcript,
