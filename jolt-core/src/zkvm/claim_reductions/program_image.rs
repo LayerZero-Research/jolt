@@ -226,6 +226,10 @@ impl<F: JoltField> PrecomittedParams<F> for ProgramImageClaimReductionParams<F> 
         self.precommitted.is_cycle_phase_round(round)
     }
 
+    fn is_address_phase_round(&self, round: usize) -> bool {
+        self.precommitted.is_address_phase_round(round)
+    }
+
     fn cycle_alignment_rounds(&self) -> usize {
         self.precommitted.cycle_alignment_rounds()
     }

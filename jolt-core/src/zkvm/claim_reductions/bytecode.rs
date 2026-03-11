@@ -143,6 +143,10 @@ impl<F: JoltField> BytecodeClaimReductionParams<F> {
         self.precommitted.is_cycle_phase_round(round)
     }
 
+    fn is_address_phase_round(&self, round: usize) -> bool {
+        self.precommitted.is_address_phase_round(round)
+    }
+
     fn cycle_alignment_rounds(&self) -> usize {
         self.precommitted.cycle_alignment_rounds()
     }
@@ -344,7 +348,12 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for BytecodeClaim
     }
 
     fn compute_message(&mut self, round: usize, previous_claim: F) -> UniPoly<F> {
-        if self.params.is_cycle_phase() && !self.params.is_cycle_phase_round(round) {
+        let is_active_round = if self.params.is_cycle_phase() {
+            self.params.is_cycle_phase_round(round)
+        } else {
+            self.params.is_address_phase_round(round)
+        };
+        if !is_active_round {
             return UniPoly::from_coeff(vec![previous_claim * F::from_u64(2).inverse().unwrap()]);
         }
 
@@ -362,21 +371,22 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for BytecodeClaim
     }
 
     fn ingest_challenge(&mut self, r_j: F::Challenge, round: usize) {
-        if self.params.is_cycle_phase() {
-            let is_dummy_round = !self.params.is_cycle_phase_round(round);
-            if is_dummy_round {
-                self.scale *= F::from_u64(2).inverse().unwrap();
-            } else {
-                self.value_poly.bind_parallel(r_j, BindingOrder::LowToHigh);
-                self.eq_poly.bind_parallel(r_j, BindingOrder::LowToHigh);
-                self.bind_aux_polys(r_j);
-                self.params.precommitted.record_cycle_challenge(r_j);
-            }
+        let is_active_round = if self.params.is_cycle_phase() {
+            self.params.is_cycle_phase_round(round)
+        } else {
+            self.params.is_address_phase_round(round)
+        };
+        if !is_active_round {
+            self.scale *= F::from_u64(2).inverse().unwrap();
             return;
         }
+
         self.value_poly.bind_parallel(r_j, BindingOrder::LowToHigh);
         self.eq_poly.bind_parallel(r_j, BindingOrder::LowToHigh);
         self.bind_aux_polys(r_j);
+        if self.params.is_cycle_phase() {
+            self.params.precommitted.record_cycle_challenge(r_j);
+        }
     }
 
     fn cache_openings(
