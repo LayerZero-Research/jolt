@@ -89,8 +89,13 @@ impl<F: JoltField> ValFinalSumcheckParams<F> {
             .r;
 
         let n_memory_vars = ram_K.log_2();
-        let advice_vars_from_bytes =
-            |advice_size_bytes: usize| advice_size_bytes.div_ceil(8).next_power_of_two().max(1).log_2();
+        let advice_vars_from_bytes = |advice_size_bytes: usize| {
+            advice_size_bytes
+                .div_ceil(8)
+                .next_power_of_two()
+                .max(1)
+                .log_2()
+        };
 
         // When needs_single_advice_opening is true, advice is only opened at RamValEvaluation
         // (the two points are identical). Otherwise, we use RamValFinalEvaluation.

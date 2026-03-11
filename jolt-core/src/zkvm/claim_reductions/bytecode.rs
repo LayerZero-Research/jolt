@@ -21,8 +21,8 @@ use crate::utils::math::Math;
 use crate::zkvm::bytecode::chunks::committed_lanes;
 use crate::zkvm::bytecode::read_raf_checking::BytecodeReadRafSumcheckParams;
 use crate::zkvm::claim_reductions::{
-    build_permuted_precommitted_polys, precommitted_dummy_round_scale,
-    PrecommittedClaimReduction, PrecommittedSchedulingReference, TWO_PHASE_DEGREE_BOUND,
+    build_permuted_precommitted_polys, precommitted_dummy_round_scale, PrecommittedClaimReduction,
+    PrecommittedSchedulingReference, TWO_PHASE_DEGREE_BOUND,
 };
 use crate::zkvm::instruction::{
     CircuitFlags, InstructionFlags, NUM_CIRCUIT_FLAGS, NUM_INSTRUCTION_FLAGS,
@@ -160,7 +160,8 @@ impl<F: JoltField> BytecodeClaimReductionParams<F> {
     }
 
     fn num_rounds_for_current_phase(&self) -> usize {
-        self.precommitted.num_rounds_for_phase(self.is_cycle_phase())
+        self.precommitted
+            .num_rounds_for_phase(self.is_cycle_phase())
     }
 
     pub fn round_offset(&self, max_num_rounds: usize) -> usize {
@@ -534,7 +535,6 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
         }
     }
 }
-
 
 fn evaluate_bytecode_eq_combined<F: JoltField>(
     params: &BytecodeClaimReductionParams<F>,

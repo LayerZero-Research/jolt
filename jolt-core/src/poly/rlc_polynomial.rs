@@ -438,24 +438,14 @@ impl<F: JoltField> RLCPolynomial<F> {
                 }
                 DoryLayout::AddressMajor => {
                     let dense_stride = DoryGlobals::address_major_dense_stride();
-                    let cycles_per_row = num_columns / dense_stride;
-                    tracing::info!(
-                        "address_major_vector_matrix_product cycles_per_row={cycles_per_row}"
-                    );
-                    dense_result
-                        .par_iter_mut()
-                        .step_by(dense_stride)
-                        .enumerate()
-                        .for_each(|(offset, dot_product_result)| {
-                            *dot_product_result = self
-                                .dense_rlc
-                                .par_iter()
-                                .skip(offset)
-                                .step_by(cycles_per_row)
-                                .zip(left_vec.par_iter())
-                                .map(|(&a, &b)| -> F { a * b })
-                                .sum::<F>();
-                        });
+                    for (cycle, coeff) in self.dense_rlc.iter().enumerate() {
+                        let scaled_index = cycle.saturating_mul(dense_stride);
+                        let row_index = scaled_index / num_columns;
+                        let col_index = scaled_index % num_columns;
+                        if row_index < left_vec.len() {
+                            dense_result[col_index] += *coeff * left_vec[row_index];
+                        }
+                    }
                 }
             }
             dense_result
@@ -498,7 +488,6 @@ impl<F: JoltField> RLCPolynomial<F> {
         debug_assert_eq!(DoryGlobals::get_layout(), DoryLayout::AddressMajor);
         let num_columns = DoryGlobals::get_num_columns();
         debug_assert_eq!(result.len(), num_columns);
-        debug_assert!(num_columns % column_stride == 0);
         let dense_stride = DoryGlobals::address_major_dense_stride();
 
         // General path: iterate through nonzero indices and compute contributions

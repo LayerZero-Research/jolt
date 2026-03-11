@@ -119,8 +119,13 @@ impl<F: JoltField> ValEvaluationSumcheckParams<F> {
         let (r_address, r_cycle) = r.split_at(ram_K.log_2());
 
         let n_memory_vars = ram_K.log_2();
-        let advice_vars_from_bytes =
-            |advice_size_bytes: usize| advice_size_bytes.div_ceil(8).next_power_of_two().max(1).log_2();
+        let advice_vars_from_bytes = |advice_size_bytes: usize| {
+            advice_size_bytes
+                .div_ceil(8)
+                .next_power_of_two()
+                .max(1)
+                .log_2()
+        };
 
         // Calculate untrusted advice contribution
         let untrusted_contribution = super::calculate_advice_memory_evaluation(

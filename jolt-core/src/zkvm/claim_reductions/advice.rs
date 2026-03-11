@@ -184,15 +184,13 @@ impl<F: JoltField> SumcheckInstanceParams<F> for AdviceClaimReductionParams<F> {
     }
 
     fn num_rounds(&self) -> usize {
-        self.precommitted.num_rounds_for_phase(self.is_cycle_phase())
+        self.precommitted
+            .num_rounds_for_phase(self.is_cycle_phase())
     }
 
     fn normalize_opening_point(&self, challenges: &[F::Challenge]) -> OpeningPoint<BIG_ENDIAN, F> {
-        self.precommitted.normalize_opening_point(
-            self.is_cycle_phase(),
-            challenges,
-            self.log_t,
-        )
+        self.precommitted
+            .normalize_opening_point(self.is_cycle_phase(), challenges, self.log_t)
     }
 }
 

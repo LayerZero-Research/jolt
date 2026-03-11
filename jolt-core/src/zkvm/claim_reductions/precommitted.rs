@@ -72,8 +72,7 @@ impl<F: JoltField> PrecommittedClaimReduction<F> {
     ) -> Self {
         let has_precommitted_dominance =
             scheduling_reference.reference_total_vars > scheduling_reference.main_total_vars;
-        let embedding_mode =
-            Self::embedding_mode_for_poly(poly_total_vars, &scheduling_reference);
+        let embedding_mode = Self::embedding_mode_for_poly(poly_total_vars, &scheduling_reference);
         let dory_opening_round_permutation_be = Self::reference_dory_opening_round_permutation_be(
             &scheduling_reference,
             has_precommitted_dominance,
@@ -108,13 +107,12 @@ impl<F: JoltField> PrecommittedClaimReduction<F> {
         reference: &PrecommittedSchedulingReference,
     ) -> PrecommittedEmbeddingMode {
         let has_precommitted_dominance = reference.reference_total_vars > reference.main_total_vars;
-        let embedding_mode = if has_precommitted_dominance
-            && poly_total_vars == reference.reference_total_vars
-        {
-            PrecommittedEmbeddingMode::DominantPrecommitted
-        } else {
-            PrecommittedEmbeddingMode::EmbeddedPrecommitted
-        };
+        let embedding_mode =
+            if has_precommitted_dominance && poly_total_vars == reference.reference_total_vars {
+                PrecommittedEmbeddingMode::DominantPrecommitted
+            } else {
+                PrecommittedEmbeddingMode::EmbeddedPrecommitted
+            };
         if embedding_mode == PrecommittedEmbeddingMode::DominantPrecommitted {
             assert_eq!(poly_total_vars, reference.reference_total_vars);
         }
@@ -213,7 +211,9 @@ impl<F: JoltField> PrecommittedClaimReduction<F> {
 
     #[inline]
     pub fn is_cycle_phase_round(&self, round: usize) -> bool {
-        self.cycle_phase_rounds.iter().any(|&scheduled| scheduled == round)
+        self.cycle_phase_rounds
+            .iter()
+            .any(|&scheduled| scheduled == round)
     }
 
     #[inline]
@@ -588,8 +588,11 @@ impl<F: JoltField, P: PrecomittedParams<F>> PrecomittedProver<F, P> {
     }
 }
 
-pub fn precommitted_dummy_round_scale<F: JoltField>(precommitted: &PrecommittedClaimReduction<F>) -> F {
-    let cycle_gap_len = precommitted.cycle_phase_total_rounds - precommitted.cycle_phase_rounds.len();
+pub fn precommitted_dummy_round_scale<F: JoltField>(
+    precommitted: &PrecommittedClaimReduction<F>,
+) -> F {
+    let cycle_gap_len =
+        precommitted.cycle_phase_total_rounds - precommitted.cycle_phase_rounds.len();
     let address_gap_len =
         precommitted.address_phase_total_rounds - precommitted.address_phase_rounds.len();
     let gap_len = cycle_gap_len + address_gap_len;

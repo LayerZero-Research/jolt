@@ -8,7 +8,8 @@ use crate::poly::commitment::commitment_scheme::CommitmentScheme;
 use crate::poly::commitment::dory::{DoryGlobals, DoryLayout};
 use crate::subprotocols::sumcheck::BatchedSumcheck;
 use crate::zkvm::bytecode::chunks::{
-    committed_lanes, validate_committed_bytecode_chunk_count, DEFAULT_COMMITTED_BYTECODE_CHUNK_COUNT,
+    committed_lanes, validate_committed_bytecode_chunk_count,
+    DEFAULT_COMMITTED_BYTECODE_CHUNK_COUNT,
 };
 use crate::zkvm::claim_reductions::RegistersClaimReductionSumcheckVerifier;
 use crate::zkvm::config::OneHotParams;
@@ -32,8 +33,7 @@ use crate::zkvm::{
         BytecodeClaimReductionVerifier, HammingWeightClaimReductionVerifier,
         IncClaimReductionSumcheckVerifier, InstructionLookupsClaimReductionSumcheckVerifier,
         PrecommittedClaimReduction, ProgramImageClaimReductionParams,
-        ProgramImageClaimReductionVerifier,
-        RamRaClaimReductionSumcheckVerifier,
+        ProgramImageClaimReductionVerifier, RamRaClaimReductionSumcheckVerifier,
     },
     fiat_shamir_preamble,
     instruction_lookups::{
@@ -649,10 +649,11 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
 
         let main_total_vars = self.proof.trace_length.log_2() + self.one_hot_params.log_k_chunk;
         let precommitted_candidates = self.precommitted_candidate_total_vars();
-        let precommitted_scheduling_reference = PrecommittedClaimReduction::<F>::scheduling_reference(
-            main_total_vars,
-            &precommitted_candidates,
-        );
+        let precommitted_scheduling_reference =
+            PrecommittedClaimReduction::<F>::scheduling_reference(
+                main_total_vars,
+                &precommitted_candidates,
+            );
 
         // Bytecode claim reduction (Phase 1 in Stage 6b): consumes Val_s(r_bc) from Stage 6a and
         // caches an intermediate claim for Stage 7.
@@ -972,8 +973,10 @@ impl<'a, F: JoltField, PCS: CommitmentScheme<Field = F>, ProofTranscript: Transc
                 CommittedPolynomial::RdInc,
                 SumcheckId::IncClaimReduction,
             );
-        let ram_inc_lagrange = compute_advice_lagrange_factor::<F>(&opening_point.r, &ram_inc_point.r);
-        let rd_inc_lagrange = compute_advice_lagrange_factor::<F>(&opening_point.r, &rd_inc_point.r);
+        let ram_inc_lagrange =
+            compute_advice_lagrange_factor::<F>(&opening_point.r, &ram_inc_point.r);
+        let rd_inc_lagrange =
+            compute_advice_lagrange_factor::<F>(&opening_point.r, &rd_inc_point.r);
         polynomial_claims.push((
             CommittedPolynomial::RamInc,
             ram_inc_claim * ram_inc_lagrange,

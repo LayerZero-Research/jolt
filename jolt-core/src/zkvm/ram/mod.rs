@@ -236,14 +236,14 @@ pub fn prover_accumulate_advice<F: JoltField>(
     );
     let (r_address_rw, _) = r_rw.split_at(total_variables);
 
-    let compute_advice_opening = |advice_poly: &MultilinearPolynomial<F>,
-                                  r_address: &OpeningPoint<BIG_ENDIAN, F>| {
-        let advice_variables = advice_poly.get_num_vars();
-        let eval = advice_poly.evaluate(&r_address.r[total_variables - advice_variables..]);
-        let advice_point =
-            OpeningPoint::new(r_address.r[total_variables - advice_variables..].to_vec());
-        (advice_point, eval)
-    };
+    let compute_advice_opening =
+        |advice_poly: &MultilinearPolynomial<F>, r_address: &OpeningPoint<BIG_ENDIAN, F>| {
+            let advice_variables = advice_poly.get_num_vars();
+            let eval = advice_poly.evaluate(&r_address.r[total_variables - advice_variables..]);
+            let advice_point =
+                OpeningPoint::new(r_address.r[total_variables - advice_variables..].to_vec());
+            (advice_point, eval)
+        };
 
     if let Some(ref untrusted_advice_poly) = untrusted_advice_polynomial {
         // Opening at r_address_rw (for ValEvaluation)
@@ -325,10 +325,14 @@ pub fn verifier_accumulate_advice<F: JoltField>(
     let (r_address_rw, _) = r_rw.split_at(total_vars);
 
     let advice_vars_from_bytes = |advice_size_bytes: usize| {
-        advice_size_bytes.div_ceil(8).next_power_of_two().max(1).log_2()
+        advice_size_bytes
+            .div_ceil(8)
+            .next_power_of_two()
+            .max(1)
+            .log_2()
     };
-    let compute_advice_point =
-        |r_address: &OpeningPoint<BIG_ENDIAN, F>, advice_variables: usize| {
+    let compute_advice_point = |r_address: &OpeningPoint<BIG_ENDIAN, F>,
+                                advice_variables: usize| {
         let mut advice_point = r_address.clone();
         advice_point.r = r_address.r[total_vars - advice_variables..].to_vec();
         advice_point

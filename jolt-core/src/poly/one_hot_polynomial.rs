@@ -66,9 +66,16 @@ impl<F: JoltField> OneHotPolynomial<F> {
         let t = self.effective_t_for_layout();
         match DoryGlobals::get_layout() {
             DoryLayout::AddressMajor => {
+                if t == 0 {
+                    return 0;
+                }
+                let row_len = DoryGlobals::get_num_columns();
                 let dense_stride = DoryGlobals::address_major_dense_stride();
-                let cycles_per_row = DoryGlobals::get_num_columns() / dense_stride;
-                t.div_ceil(cycles_per_row)
+                let one_hot_stride = Self::column_stride();
+                let max_scaled_index = (t - 1)
+                    .saturating_mul(dense_stride)
+                    .saturating_add(self.K.saturating_sub(1).saturating_mul(one_hot_stride));
+                (max_scaled_index / row_len) + 1
             }
             DoryLayout::CycleMajor => (t * self.K).div_ceil(DoryGlobals::get_num_columns()),
         }
@@ -145,10 +152,6 @@ impl<F: JoltField> OneHotPolynomial<F> {
         debug_assert!(
             bases.len() >= row_len,
             "Expected at least row_len bases for Dory row commitments"
-        );
-        debug_assert!(
-            row_len % column_stride == 0,
-            "row_len ({row_len}) must be divisible by column_stride ({column_stride})"
         );
 
         // Safety: This function is only called with G1Affine

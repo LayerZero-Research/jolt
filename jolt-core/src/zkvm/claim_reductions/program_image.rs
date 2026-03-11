@@ -90,7 +90,6 @@ impl<F: JoltField> ProgramImageClaimReductionParams<F> {
             prog_col_vars,
             scheduling_reference,
         );
-        tracing::info!("precommitted: {:?}", precommitted);
 
         // r_address_rw comes from RamVal/RamReadWriteChecking (Stage 2).
         let (r_rw, _) = accumulator.get_virtual_polynomial_opening(
@@ -205,15 +204,13 @@ impl<F: JoltField> SumcheckInstanceParams<F> for ProgramImageClaimReductionParam
     }
 
     fn num_rounds(&self) -> usize {
-        self.precommitted.num_rounds_for_phase(self.is_cycle_phase())
+        self.precommitted
+            .num_rounds_for_phase(self.is_cycle_phase())
     }
 
     fn normalize_opening_point(&self, challenges: &[F::Challenge]) -> OpeningPoint<BIG_ENDIAN, F> {
-        self.precommitted.normalize_opening_point(
-            self.is_cycle_phase(),
-            challenges,
-            self.log_t,
-        )
+        self.precommitted
+            .normalize_opening_point(self.is_cycle_phase(), challenges, self.log_t)
     }
 }
 

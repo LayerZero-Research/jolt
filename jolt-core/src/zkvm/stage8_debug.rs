@@ -116,9 +116,9 @@ pub(crate) fn report_stage8_direct_claim_check<F: JoltField + core::fmt::Debug>(
     let staged_from_opening_point_derivation = direct_opening_point_derivation * lagrange_factor;
     let scaled_triple_match = scaled_sumcheck_claim == staged_from_sumcheck_point
         && staged_from_sumcheck_point == staged_from_opening_point_derivation;
-    let staged_claim_consistent =
-        staged_from_sumcheck_point == staged_from_opening_point_derivation
-            && staged_from_opening_point_derivation == staged_claim;
+    let staged_claim_consistent = staged_from_sumcheck_point
+        == staged_from_opening_point_derivation
+        && staged_from_opening_point_derivation == staged_claim;
     if !scaled_triple_match {
         tracing::warn!(
             "Stage8 debug mismatch poly={:?} sumcheck={:?} \

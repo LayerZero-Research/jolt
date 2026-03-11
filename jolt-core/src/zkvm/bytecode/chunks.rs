@@ -197,7 +197,6 @@ pub fn for_each_active_lane_value<F: JoltField>(
     }
 }
 
-
 #[tracing::instrument(
     skip_all,
     name = "bytecode::build_committed_bytecode_chunk_polynomials"

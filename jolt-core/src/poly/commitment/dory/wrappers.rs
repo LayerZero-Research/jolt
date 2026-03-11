@@ -255,16 +255,48 @@ where
         && dory_layout == DoryLayout::AddressMajor
         && dense_len.is_some_and(|len| len <= max_trace_dense_len);
 
-    let (dense_affine_bases, dense_chunk_size): (Vec<_>, usize) = if is_trace_dense_addr_major {
+    let (dense_affine_bases, dense_chunk_size, dense_sparse_row_terms): (
+        Vec<_>,
+        usize,
+        Option<Vec<Vec<(usize, Fr)>>>,
+    ) = if is_trace_dense_addr_major {
         let stride = DoryGlobals::address_major_dense_stride();
         let cycles_per_row = row_len / stride;
-        let bases: Vec<_> = g1_slice
-            .par_iter()
-            .take(row_len)
-            .step_by(stride)
-            .map(|g| g.0.into_affine())
-            .collect();
-        (bases, cycles_per_row)
+        if cycles_per_row == 0 {
+            let dense_len = dense_len.expect("trace-dense path requires scalar polynomial length");
+            let dense_affine_bases: Vec<_> = g1_slice
+                .par_iter()
+                .take(row_len)
+                .map(|g| g.0.into_affine())
+                .collect();
+            let num_rows = if dense_len == 0 {
+                0
+            } else {
+                ((dense_len - 1).saturating_mul(stride) / row_len) + 1
+            };
+            let mut row_terms: Vec<Vec<(usize, Fr)>> = vec![Vec::new(); num_rows];
+            for cycle in 0..dense_len {
+                let coeff = poly.get_coeff(cycle);
+                if coeff.is_zero() {
+                    continue;
+                }
+                let scaled_index = cycle.saturating_mul(stride);
+                let row_index = scaled_index / row_len;
+                let col_index = scaled_index % row_len;
+                if row_index < num_rows {
+                    row_terms[row_index].push((col_index, coeff));
+                }
+            }
+            (dense_affine_bases, 1, Some(row_terms))
+        } else {
+            let dense_affine_bases: Vec<_> = g1_slice
+                .par_iter()
+                .take(row_len)
+                .step_by(stride)
+                .map(|g| g.0.into_affine())
+                .collect();
+            (dense_affine_bases, cycles_per_row, None)
+        }
     } else {
         (
             g1_slice
@@ -273,8 +305,32 @@ where
                 .map(|g| g.0.into_affine())
                 .collect(),
             row_len,
+            None,
         )
     };
+
+    if let Some(row_terms) = dense_sparse_row_terms {
+        let result: Vec<ArkG1> = row_terms
+            .into_par_iter()
+            .map(|terms| {
+                if terms.is_empty() {
+                    return ArkG1(ark_bn254::G1Projective::zero());
+                }
+                let mut bases = Vec::with_capacity(terms.len());
+                let mut scalars = Vec::with_capacity(terms.len());
+                for (col_index, scalar) in terms {
+                    bases.push(dense_affine_bases[col_index]);
+                    scalars.push(scalar);
+                }
+                ArkG1(VariableBaseMSM::msm_field_elements(&bases, &scalars).unwrap())
+            })
+            .collect();
+        // SAFETY: Vec<ArkG1> and Vec<E::G1> have the same memory layout when E = BN254.
+        #[allow(clippy::missing_transmute_annotations)]
+        unsafe {
+            return Ok(std::mem::transmute(result));
+        }
+    }
 
     let result: Vec<ArkG1> = match poly {
         MultilinearPolynomial::LargeScalars(poly) => poly
