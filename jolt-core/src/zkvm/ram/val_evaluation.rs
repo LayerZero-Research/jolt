@@ -119,14 +119,14 @@ impl<F: JoltField> ValEvaluationSumcheckParams<F> {
         let (r_address, r_cycle) = r.split_at(ram_K.log_2());
 
         let n_memory_vars = ram_K.log_2();
+        let advice_vars_from_bytes =
+            |advice_size_bytes: usize| advice_size_bytes.div_ceil(8).next_power_of_two().max(1).log_2();
 
         // Calculate untrusted advice contribution
         let untrusted_contribution = super::calculate_advice_memory_evaluation(
             opening_accumulator
                 .get_advice_opening(AdviceKind::Untrusted, SumcheckId::RamValEvaluation),
-            (program_io.memory_layout.max_untrusted_advice_size as usize / 8)
-                .next_power_of_two()
-                .log_2(),
+            advice_vars_from_bytes(program_io.untrusted_advice.len()),
             program_io.memory_layout.untrusted_advice_start,
             &program_io.memory_layout,
             &r_address.r,
@@ -137,9 +137,7 @@ impl<F: JoltField> ValEvaluationSumcheckParams<F> {
         let trusted_contribution = super::calculate_advice_memory_evaluation(
             opening_accumulator
                 .get_advice_opening(AdviceKind::Trusted, SumcheckId::RamValEvaluation),
-            (program_io.memory_layout.max_trusted_advice_size as usize / 8)
-                .next_power_of_two()
-                .log_2(),
+            advice_vars_from_bytes(program_io.trusted_advice.len()),
             program_io.memory_layout.trusted_advice_start,
             &program_io.memory_layout,
             &r_address.r,

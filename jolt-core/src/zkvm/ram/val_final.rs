@@ -89,6 +89,8 @@ impl<F: JoltField> ValFinalSumcheckParams<F> {
             .r;
 
         let n_memory_vars = ram_K.log_2();
+        let advice_vars_from_bytes =
+            |advice_size_bytes: usize| advice_size_bytes.div_ceil(8).next_power_of_two().max(1).log_2();
 
         // When needs_single_advice_opening is true, advice is only opened at RamValEvaluation
         // (the two points are identical). Otherwise, we use RamValFinalEvaluation.
@@ -101,9 +103,7 @@ impl<F: JoltField> ValFinalSumcheckParams<F> {
 
         let untrusted_advice_contribution = super::calculate_advice_memory_evaluation(
             opening_accumulator.get_advice_opening(AdviceKind::Untrusted, advice_sumcheck_id),
-            (program_io.memory_layout.max_untrusted_advice_size as usize / 8)
-                .next_power_of_two()
-                .log_2(),
+            advice_vars_from_bytes(program_io.untrusted_advice.len()),
             program_io.memory_layout.untrusted_advice_start,
             &program_io.memory_layout,
             &r_address,
@@ -112,9 +112,7 @@ impl<F: JoltField> ValFinalSumcheckParams<F> {
 
         let trusted_advice_contribution = super::calculate_advice_memory_evaluation(
             opening_accumulator.get_advice_opening(AdviceKind::Trusted, advice_sumcheck_id),
-            (program_io.memory_layout.max_trusted_advice_size as usize / 8)
-                .next_power_of_two()
-                .log_2(),
+            advice_vars_from_bytes(program_io.trusted_advice.len()),
             program_io.memory_layout.trusted_advice_start,
             &program_io.memory_layout,
             &r_address,

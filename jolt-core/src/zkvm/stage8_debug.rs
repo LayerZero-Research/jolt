@@ -69,7 +69,13 @@ Supported: all,dense,ra,advice,bytecode,program_image"
             }
         }
 
-        filter
+        // Default prover/verifier behavior should include every class unless a
+        // concrete non-empty subset is explicitly requested.
+        if filter.any_enabled() {
+            filter
+        } else {
+            Self::all_enabled()
+        }
     }
 
     #[inline]
@@ -84,7 +90,9 @@ Supported: all,dense,ra,advice,bytecode,program_image"
             CommittedPolynomial::InstructionRa(_)
             | CommittedPolynomial::BytecodeRa(_)
             | CommittedPolynomial::RamRa(_) => self.ra,
-            CommittedPolynomial::TrustedAdvice | CommittedPolynomial::UntrustedAdvice => self.advice,
+            CommittedPolynomial::TrustedAdvice | CommittedPolynomial::UntrustedAdvice => {
+                self.advice
+            }
             CommittedPolynomial::BytecodeChunk(_) => self.bytecode,
             CommittedPolynomial::ProgramImageInit => self.program_image,
         }
@@ -95,21 +103,61 @@ Supported: all,dense,ra,advice,bytecode,program_image"
 pub(crate) fn report_stage8_direct_claim_check<F: JoltField + core::fmt::Debug>(
     poly: CommittedPolynomial,
     source_sumcheck: SumcheckId,
-    direct_eval: F,
-    source_claim: F,
+    sumcheck_opening_point: &OpeningPoint<BIG_ENDIAN, F>,
+    derived_opening_point: &OpeningPoint<BIG_ENDIAN, F>,
+    sumcheck_claim: F,
+    direct_sumcheck_point: F,
+    direct_opening_point_derivation: F,
     lagrange_factor: F,
     staged_claim: F,
 ) {
-    let expected_staged = direct_eval * lagrange_factor;
+    let scaled_sumcheck_claim = sumcheck_claim * lagrange_factor;
+    let staged_from_sumcheck_point = direct_sumcheck_point * lagrange_factor;
+    let staged_from_opening_point_derivation = direct_opening_point_derivation * lagrange_factor;
+    let scaled_triple_match = scaled_sumcheck_claim == staged_from_sumcheck_point
+        && staged_from_sumcheck_point == staged_from_opening_point_derivation;
+    let staged_claim_consistent =
+        staged_from_sumcheck_point == staged_from_opening_point_derivation
+            && staged_from_opening_point_derivation == staged_claim;
+    if !scaled_triple_match {
+        tracing::warn!(
+            "Stage8 debug mismatch poly={:?} sumcheck={:?} \
+             (scaled_triple_match={}, staged_claim_consistent={}): \
+             sumcheck_claim={:?} direct_sumcheck_eval={:?} direct_derived_eval={:?} \
+             lagrange_factor={:?} staged_claim={:?} \
+             sumcheck_opening_point={:?} derived_opening_point={:?}",
+            poly,
+            source_sumcheck,
+            scaled_triple_match,
+            staged_claim_consistent,
+            sumcheck_claim,
+            direct_sumcheck_point,
+            direct_opening_point_derivation,
+            lagrange_factor,
+            staged_claim,
+            sumcheck_opening_point.r,
+            derived_opening_point.r
+        );
+    }
 
     debug_assert_eq!(
-        direct_eval, source_claim,
-        "Stage8 direct/source mismatch for {:?} from {:?}",
+        direct_sumcheck_point, sumcheck_claim,
+        "Stage8 sumcheck-point/source mismatch for {:?} from {:?}",
         poly, source_sumcheck
     );
     debug_assert_eq!(
-        expected_staged, staged_claim,
-        "Stage8 staged-claim mismatch for {:?} from {:?}",
+        direct_opening_point_derivation, sumcheck_claim,
+        "Stage8 opening-derivation/source mismatch for {:?} from {:?}",
+        poly, source_sumcheck
+    );
+    debug_assert_eq!(
+        staged_from_sumcheck_point, staged_claim,
+        "Stage8 staged-claim mismatch (sumcheck point) for {:?} from {:?}",
+        poly, source_sumcheck
+    );
+    debug_assert_eq!(
+        staged_from_opening_point_derivation, staged_claim,
+        "Stage8 staged-claim mismatch (opening-point derivation) for {:?} from {:?}",
         poly, source_sumcheck
     );
 }
@@ -155,11 +203,5 @@ pub(crate) fn derive_poly_source_point_from_dory_dims<F: JoltField>(
     let (sigma_poly, nu_poly) = DoryGlobals::balanced_sigma_nu(poly_num_vars);
     let poly_num_rows = 1usize << nu_poly;
     let poly_num_columns = 1usize << sigma_poly;
-    derive_poly_source_point_from_matrix_dims(
-        stage8_opening_point,
-        poly_num_rows,
-        poly_num_columns,
-    )
+    derive_poly_source_point_from_matrix_dims(stage8_opening_point, poly_num_rows, poly_num_columns)
 }
-
-

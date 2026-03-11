@@ -316,19 +316,6 @@ impl DoryGlobals {
         log_t.saturating_sub(sigma_main)
     }
 
-    /// Tracks the largest polynomial var-count required by the Main-context proof flow.
-    ///
-    /// This is used to derive a shared "max embedding" geometry while keeping Main `T`
-    /// semantics unchanged for sumchecks.
-    pub fn set_main_log_embedding(log_embedding: usize) {
-        debug_assert_eq!(
-            MAIN_LOG_EMBEDDING.load(Ordering::SeqCst),
-            0,
-            "main_log_embedding should be initialized once"
-        );
-        MAIN_LOG_EMBEDDING.store(log_embedding, Ordering::SeqCst);
-    }
-
     #[inline]
     pub fn get_main_log_embedding() -> usize {
         let stored = MAIN_LOG_EMBEDDING.load(Ordering::SeqCst);
@@ -337,12 +324,12 @@ impl DoryGlobals {
         } else {
             #[allow(static_mut_refs)]
             unsafe {
-                let main_cols = NUM_COLUMNS
-                    .get()
-                    .expect("main num_columns must be initialized before reading main_log_embedding");
-                let main_rows = MAX_NUM_ROWS
-                    .get()
-                    .expect("main max_num_rows must be initialized before reading main_log_embedding");
+                let main_cols = NUM_COLUMNS.get().expect(
+                    "main num_columns must be initialized before reading main_log_embedding",
+                );
+                let main_rows = MAX_NUM_ROWS.get().expect(
+                    "main max_num_rows must be initialized before reading main_log_embedding",
+                );
                 main_cols.log_2() + main_rows.log_2()
             }
         }
@@ -388,6 +375,22 @@ impl DoryGlobals {
     }
 
     #[inline]
+    pub(crate) fn main_t() -> usize {
+        #[allow(static_mut_refs)]
+        unsafe {
+            *GLOBAL_T.get().expect("main t not initialized")
+        }
+    }
+
+    #[inline]
+    pub(crate) fn configured_main_num_columns() -> usize {
+        #[allow(static_mut_refs)]
+        unsafe {
+            *NUM_COLUMNS.get().expect("main num_columns not initialized")
+        }
+    }
+
+    #[inline]
     fn main_embedding_extra_vars() -> usize {
         let main_total_vars = Self::main_k().log_2() + Self::get_T().log_2();
         Self::get_main_log_embedding().saturating_sub(main_total_vars)
@@ -397,17 +400,20 @@ impl DoryGlobals {
     ///
     /// Uses `stride_log = main_log_embedding - (logK + logT)`.
     pub fn address_major_one_hot_stride() -> usize {
-        debug_assert_eq!(Self::current_context(), DoryContext::Main);
-        debug_assert_eq!(Self::get_layout(), DoryLayout::AddressMajor);
+        if Self::current_context() != DoryContext::Main
+            || Self::get_layout() != DoryLayout::AddressMajor
+        {
+            return 1;
+        }
         1usize << Self::main_embedding_extra_vars()
     }
-
 
     /// AddressMajor column stride for dense trace-domain embeddings in Main context.
     ///
     /// Uses `stride_log = main_log_embedding - (logK + logT) + logK`.
     pub fn address_major_dense_stride() -> usize {
-        if Self::current_context() != DoryContext::Main || Self::get_layout() != DoryLayout::AddressMajor
+        if Self::current_context() != DoryContext::Main
+            || Self::get_layout() != DoryLayout::AddressMajor
         {
             return 1;
         }
@@ -632,12 +638,7 @@ impl DoryGlobals {
         layout: Option<DoryLayout>,
     ) -> Option<()> {
         if context == DoryContext::Main {
-            return Self::initialize_main_with_log_embedding(
-                K,
-                T,
-                K.log_2() + T.log_2(),
-                layout,
-            );
+            return Self::initialize_main_with_log_embedding(K, T, K.log_2() + T.log_2(), layout);
         }
         Self::initialize_context_common(K, T, T, context)?;
         Some(())
@@ -648,12 +649,10 @@ impl DoryGlobals {
     pub fn initialize_main_with_log_embedding(
         K: usize,
         T: usize,
-        log_embedding: usize,
+        matrix_total_vars: usize,
         layout: Option<DoryLayout>,
     ) -> Option<()> {
         let log_k = K.log_2();
-        let log_t = T.log_2();
-        let matrix_total_vars = std::cmp::max(log_embedding, log_k + log_t);
         let matrix_t = 1usize << matrix_total_vars.saturating_sub(log_k);
         Self::initialize_context_common(K, matrix_t, T, DoryContext::Main)?;
         Self::set_main_k(K);
@@ -662,7 +661,7 @@ impl DoryGlobals {
         }
         CURRENT_CONTEXT.store(DoryContext::Main as u8, Ordering::SeqCst);
         // Never allow explicit main log-embedding to shrink below Main context dimensions.
-        Self::set_main_log_embedding(matrix_total_vars);
+        MAIN_LOG_EMBEDDING.store(matrix_total_vars, Ordering::SeqCst);
         Some(())
     }
 

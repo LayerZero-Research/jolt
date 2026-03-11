@@ -55,7 +55,8 @@ use crate::{
             HammingWeightClaimReductionParams, HammingWeightClaimReductionProver,
             IncClaimReductionSumcheckParams, IncClaimReductionSumcheckProver,
             InstructionLookupsClaimReductionSumcheckParams,
-            InstructionLookupsClaimReductionSumcheckProver, ProgramImageClaimReductionParams,
+            PrecommittedClaimReduction, InstructionLookupsClaimReductionSumcheckProver,
+            ProgramImageClaimReductionParams,
             ProgramImageClaimReductionProver, RaReductionParams, RamRaClaimReductionSumcheckProver,
             RegistersClaimReductionSumcheckParams, RegistersClaimReductionSumcheckProver,
         },
@@ -284,113 +285,48 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         )
     }
 
-    /// Adjusts the padded trace length to ensure the main Dory matrix is large enough
-    /// to embed "extra" (non-trace-streamed) polynomials as the top-left block.
-    ///
-    /// Returns the adjusted padded_trace_len that satisfies:
-    /// - `sigma_main >= max_sigma_a`
-    /// - `nu_main >= max_nu_a`
-    ///
-    /// Panics if `max_padded_trace_length` is too small for the configured sizes.
-    #[allow(clippy::too_many_arguments)]
-    fn adjust_trace_length_for_advice(
-        mut padded_trace_len: usize,
-        max_padded_trace_length: usize,
-        max_trusted_advice_size: u64,
-        max_untrusted_advice_size: u64,
-        has_trusted_advice: bool,
-        has_untrusted_advice: bool,
-        has_program_image: bool,
-        program_image_len_words_padded: usize,
-    ) -> usize {
-        // Canonical advice shape policy (balanced):
-        // - advice_vars = log2(advice_len)
-        // - sigma_a = ceil(advice_vars/2)
-        // - nu_a    = advice_vars - sigma_a
-        let mut max_sigma_a = 0usize;
-        let mut max_nu_a = 0usize;
-
-        if has_trusted_advice {
-            let (sigma_a, nu_a) =
-                DoryGlobals::advice_sigma_nu_from_max_bytes(max_trusted_advice_size as usize);
-            max_sigma_a = max_sigma_a.max(sigma_a);
-            max_nu_a = max_nu_a.max(nu_a);
-        }
-        if has_untrusted_advice {
-            let (sigma_a, nu_a) =
-                DoryGlobals::advice_sigma_nu_from_max_bytes(max_untrusted_advice_size as usize);
-            max_sigma_a = max_sigma_a.max(sigma_a);
-            max_nu_a = max_nu_a.max(nu_a);
+    #[inline]
+    fn main_total_vars(&self) -> usize {
+        // Keep Stage 1-5 trace domain native, but size Main embedding to support
+        // precommitted embedding technique.
+        let trace_log_t = self.trace.len().log_2();
+        let log_k_chunk = self.one_hot_params.log_k_chunk;
+        let mut max_total_vars = trace_log_t + log_k_chunk;
+        for total_vars in self.precommitted_candidate_total_vars() {
+            max_total_vars = max_total_vars.max(total_vars);
         }
 
-        if has_program_image {
-            let prog_vars = program_image_len_words_padded.log_2();
-            let (sigma_p, nu_p) = DoryGlobals::balanced_sigma_nu(prog_vars);
-            max_sigma_a = max_sigma_a.max(sigma_p);
-            max_nu_a = max_nu_a.max(nu_p);
-        }
-
-        if max_sigma_a == 0 && max_nu_a == 0 {
-            return padded_trace_len;
-        }
-
-        // Require main matrix dimensions to be large enough to embed advice as the top-left
-        // block: sigma_main >= sigma_a and nu_main >= nu_a.
-        //
-        // This loop doubles padded_trace_len until the main Dory matrix is large enough.
-        // Each doubling increases log_t by 1, which increases total_vars by 1 (since
-        // log_k_chunk stays constant for a given log_t range), increasing both sigma_main
-        // and nu_main by roughly 0.5 each iteration.
-        while {
-            let log_t = padded_trace_len.log_2();
-            let log_k_chunk = OneHotConfig::new(log_t).log_k_chunk as usize;
-            let (sigma_main, nu_main) = DoryGlobals::main_sigma_nu(log_k_chunk, log_t);
-            sigma_main < max_sigma_a || nu_main < max_nu_a
-        } {
-            if padded_trace_len >= max_padded_trace_length {
-                // This is a configuration error: the preprocessing was set up with
-                // max_padded_trace_length too small for the configured advice sizes.
-                // Cannot recover at runtime - user must fix their configuration.
-                let log_t = padded_trace_len.log_2();
-                let log_k_chunk = OneHotConfig::new(log_t).log_k_chunk as usize;
-                let total_vars = log_k_chunk + log_t;
-                let (sigma_main, nu_main) = DoryGlobals::main_sigma_nu(log_k_chunk, log_t);
-                panic!(
-                    "Configuration error: trace too small to embed advice into Dory batch opening.\n\
-                    Current: (sigma_main={sigma_main}, nu_main={nu_main}) from total_vars={total_vars} (log_t={log_t}, log_k_chunk={log_k_chunk})\n\
-                    Required: (sigma_a={max_sigma_a}, nu_a={max_nu_a}) for advice embedding\n\
-                    Solutions:\n\
-                    1. Increase max_trace_length in preprocessing (currently {max_padded_trace_length})\n\
-                    2. Reduce max_trusted_advice_size or max_untrusted_advice_size\n\
-                    3. Run a program with more cycles"
-                );
-            }
-            padded_trace_len = (padded_trace_len * 2).min(max_padded_trace_length);
-        }
-
-        padded_trace_len
+        max_total_vars
     }
 
     #[inline]
-    fn stage6_trace_length(&self) -> usize {
+    fn precommitted_candidate_total_vars(&self) -> Vec<usize> {
+        let mut candidates = Vec::new();
         if self.program_mode == ProgramMode::Committed {
-            let trace_len = self.trace.len().log_2();
-            let bytecode_t = self.preprocessing.shared.bytecode_size().log_2();
-            let committed_lane_count = committed_lanes().log_2();
-            let bytecode_chunk_count = self.preprocessing.shared.bytecode_chunk_count.log_2();
-            let log_k_chunk = self.one_hot_params.log_k_chunk;
-            let committed_log_t =
-                bytecode_t + committed_lane_count - bytecode_chunk_count - log_k_chunk;
-            let stage6_log_t = std::cmp::max(trace_len, committed_log_t);
-            1usize << stage6_log_t
-        } else {
-            self.trace.len()
+            let bytecode_t_full = self.preprocessing.shared.bytecode_size().log_2();
+            let chunk_log = self.preprocessing.shared.bytecode_chunk_count.log_2();
+            let chunk_cycle_log_t = bytecode_t_full.saturating_sub(chunk_log);
+            candidates.push(committed_lanes().log_2() + chunk_cycle_log_t);
+            if let Some(committed) = self.preprocessing.program_commitments.as_ref() {
+                candidates.push(committed.program_image_num_words.log_2());
+            }
         }
-    }
 
-    #[inline]
-    fn stage6_log_t(&self) -> usize {
-        self.stage6_trace_length().log_2()
+        if self.advice.trusted_advice_polynomial.is_some() {
+            let (sigma, nu) = DoryGlobals::advice_sigma_nu_from_max_bytes(
+                self.program_io.trusted_advice.len().div_ceil(8) * 8,
+            );
+            candidates.push(sigma + nu);
+        }
+
+        if self.advice.untrusted_advice_polynomial.is_some() {
+            let (sigma, nu) = DoryGlobals::advice_sigma_nu_from_max_bytes(
+                self.program_io.untrusted_advice.len().div_ceil(8) * 8,
+            );
+            candidates.push(sigma + nu);
+        }
+
+        candidates
     }
 
     pub fn gen_from_trace(
@@ -446,42 +382,20 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
 
         let padded_trace_len = trace_len_stage1_to_5;
 
-        let (has_program_image, program_image_len_words_padded) =
-            if program_mode == ProgramMode::Committed {
-                let trusted = preprocessing
-                    .program_commitments
-                    .as_ref()
-                    .expect("program commitments missing in committed preprocessing");
-                (true, trusted.program_image_num_words)
-            } else {
-                (false, 0usize)
-            };
-        let padded_trace_len = if has_program_image {
+        let program_image_len_words_padded = if program_mode == ProgramMode::Committed {
+            let trusted = preprocessing
+                .program_commitments
+                .as_ref()
+                .expect("program commitments missing in committed preprocessing");
             tracing::info!("padded_trace_len: {}", padded_trace_len);
             tracing::info!(
                 "program_image_len_words: {}",
                 preprocessing.program.program_image_words.len()
             );
-            padded_trace_len.max(program_image_len_words_padded)
+            trusted.program_image_num_words
         } else {
-            padded_trace_len
+            0usize
         };
-        // We may need extra padding so the main Dory matrix has enough (row, col) variables
-        // to embed advice commitments committed in their own preprocessing-only contexts.
-        let has_trusted_advice = !program_io.trusted_advice.is_empty();
-        let has_untrusted_advice = !program_io.untrusted_advice.is_empty();
-
-        let padded_trace_len = Self::adjust_trace_length_for_advice(
-            padded_trace_len,
-            preprocessing.shared.max_padded_trace_length,
-            preprocessing.shared.memory_layout.max_trusted_advice_size,
-            preprocessing.shared.memory_layout.max_untrusted_advice_size,
-            has_trusted_advice,
-            has_untrusted_advice,
-            has_program_image,
-            program_image_len_words_padded,
-        );
-
         // Keep Stage 1-5 on the original trace domain.
         // Stage 6-8 use the committed-bytecode cycle domain in Committed mode.
         trace.resize(trace_len_stage1_to_5, Cycle::NoOp);
@@ -505,7 +419,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 .unwrap_or(0)
                     + {
                         let base = preprocessing.program.program_image_words.len() as u64;
-                        if has_program_image {
+                        if program_mode == ProgramMode::Committed {
                             tracing::info!(
                                 "program_image_len_words_padded: {}",
                                 program_image_len_words_padded
@@ -705,6 +619,8 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             opening_claims: Claims(self.opening_accumulator.openings.clone()),
             commitments,
             untrusted_advice_commitment,
+            trusted_advice_size_bytes: self.program_io.trusted_advice.len(),
+            untrusted_advice_size_bytes: self.program_io.untrusted_advice.len(),
             stage1_uni_skip_first_round_proof,
             stage1_sumcheck_proof,
             stage2_uni_skip_first_round_proof,
@@ -717,7 +633,6 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             stage7_sumcheck_proof,
             joint_opening_proof,
             trace_length: self.trace.len(),
-            stage6_trace_length: self.stage6_trace_length(),
             ram_K: self.one_hot_params.ram_k,
             bytecode_K: self.one_hot_params.bytecode_len,
             program_mode: self.program_mode,
@@ -746,12 +661,12 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         HashMap<CommittedPolynomial, PCS::OpeningProofHint>,
     ) {
         // Use Main context in both full and committed modes.
-        let stage6_main_log_embedding = self.stage6_log_t() + self.one_hot_params.log_k_chunk;
+        let main_total_vars = self.main_total_vars();
         let trace = Arc::clone(&self.trace);
         let _guard = DoryGlobals::initialize_main_with_log_embedding(
             1 << self.one_hot_params.log_k_chunk,
             trace.len(),
-            stage6_main_log_embedding,
+            main_total_vars,
             Some(DoryGlobals::get_layout()),
         );
 
@@ -868,8 +783,14 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         // Commit untrusted advice in its dedicated Dory context, using a preprocessing-only
         // matrix shape derived deterministically from the advice length (balanced dims).
 
-        let mut untrusted_advice_vec =
-            vec![0; self.program_io.memory_layout.max_untrusted_advice_size as usize / 8];
+        let untrusted_words = self
+            .program_io
+            .untrusted_advice
+            .len()
+            .div_ceil(8)
+            .next_power_of_two()
+            .max(1);
+        let mut untrusted_advice_vec = vec![0u64; untrusted_words];
 
         populate_memory_states(
             0,
@@ -898,8 +819,14 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             return;
         }
 
-        let mut trusted_advice_vec =
-            vec![0; self.program_io.memory_layout.max_trusted_advice_size as usize / 8];
+        let trusted_words = self
+            .program_io
+            .trusted_advice
+            .len()
+            .div_ceil(8)
+            .next_power_of_two()
+            .max(1);
+        let mut trusted_advice_vec = vec![0u64; trusted_words];
 
         populate_memory_states(
             0,
@@ -1156,7 +1083,6 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         prover_accumulate_advice(
             &self.advice.untrusted_advice_polynomial,
             &self.advice.trusted_advice_polynomial,
-            &self.program_io.memory_layout,
             &self.one_hot_params,
             &mut self.opening_accumulator,
             &mut self.transcript,
@@ -1394,9 +1320,6 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             .take()
             .expect("booleanity_params must be set by prove_stage6a");
 
-        let stage6_log_t_padded = self.stage6_log_t();
-        let trace_log_t = self.trace.len().log_2();
-        let trace_len = self.trace.len();
         let ram_hamming_booleanity_params =
             HammingBooleanitySumcheckParams::new(&self.opening_accumulator);
         let ram_ra_virtual_params = RamRaVirtualParams::new(
@@ -1415,15 +1338,20 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             &mut self.transcript,
         );
 
+        let main_total_vars = self.trace.len().log_2() + self.one_hot_params.log_k_chunk;
+        let precommitted_candidates = self.precommitted_candidate_total_vars();
+        let precommitted_scheduling_reference = PrecommittedClaimReduction::<F>::scheduling_reference(
+            main_total_vars,
+            &precommitted_candidates,
+        );
+
         // Bytecode claim reduction (Phase 1 in Stage 6b): consumes Val_s(r_bc) from Stage 6a and
         // caches an intermediate claim for Stage 7.
         if self.program_mode == ProgramMode::Committed {
             let bytecode_reduction_params = BytecodeClaimReductionParams::new(
                 &bytecode_read_raf_params,
-                stage6_log_t_padded,
-                self.one_hot_params.log_k_chunk,
-                self.trace.len().log_2(),
                 self.preprocessing.shared.bytecode_chunk_count,
+                precommitted_scheduling_reference,
                 &self.opening_accumulator,
                 &mut self.transcript,
             );
@@ -1451,13 +1379,11 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         if self.advice.trusted_advice_polynomial.is_some() {
             let trusted_advice_params = AdviceClaimReductionParams::new(
                 AdviceKind::Trusted,
-                &self.program_io.memory_layout,
-                trace_len,
-                stage6_log_t_padded,
+                self.program_io.trusted_advice.len().div_ceil(8) * 8,
+                &self.rw_config,
+                precommitted_scheduling_reference,
                 &self.opening_accumulator,
                 &mut self.transcript,
-                self.rw_config
-                    .needs_single_advice_opening(self.trace.len().log_2()),
             );
             // Note: We clone the advice polynomial here because Stage 8 needs the original polynomial
             // A future optimization could use Arc<MultilinearPolynomial> with copy-on-write.
@@ -1477,13 +1403,11 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         if self.advice.untrusted_advice_polynomial.is_some() {
             let untrusted_advice_params = AdviceClaimReductionParams::new(
                 AdviceKind::Untrusted,
-                &self.program_io.memory_layout,
-                trace_len,
-                stage6_log_t_padded,
+                self.program_io.untrusted_advice.len().div_ceil(8) * 8,
+                &self.rw_config,
+                precommitted_scheduling_reference,
                 &self.opening_accumulator,
                 &mut self.transcript,
-                self.rw_config
-                    .needs_single_advice_opening(self.trace.len().log_2()),
             );
             // Note: We clone the advice polynomial here because Stage 8 needs the original polynomial
             // A future optimization could use Arc<MultilinearPolynomial> with copy-on-write.
@@ -1583,11 +1507,8 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 self.preprocessing.program.min_bytecode_address,
                 padded_len_words,
                 self.one_hot_params.ram_k,
-                trace_len,
-                stage6_log_t_padded,
-                trace_log_t,
-                self.one_hot_params.log_k_chunk,
                 &self.rw_config,
+                precommitted_scheduling_reference,
                 &self.opening_accumulator,
                 &mut self.transcript,
             );
@@ -1658,8 +1579,13 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         // Includes HammingWeightClaimReduction plus lane/address-phase reductions (if needed).
         let mut instances: Vec<Box<dyn SumcheckInstanceProver<F, ProofTranscript>>> =
             vec![Box::new(hw_prover)];
+        tracing::info!("Stage 7 include: HammingWeightClaimReduction");
 
         if let Some(mut bytecode_reduction_prover) = self.bytecode_reduction_prover.take() {
+            tracing::info!(
+                "Stage 7 bytecode address rounds={}",
+                bytecode_reduction_prover.params().num_address_phase_rounds()
+            );
             if bytecode_reduction_prover
                 .params()
                 .num_address_phase_rounds()
@@ -1667,6 +1593,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             {
                 // Transition to address rounds only when phase-2 rounds are required.
                 bytecode_reduction_prover.transition_to_address_phase();
+                tracing::info!("Stage 7 include: BytecodeClaimReduction");
                 instances.push(Box::new(bytecode_reduction_prover));
             }
         }
@@ -1674,6 +1601,12 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         if let Some(mut advice_reduction_prover_trusted) =
             self.advice_reduction_prover_trusted.take()
         {
+            tracing::info!(
+                "Stage 7 trusted advice address rounds={}",
+                advice_reduction_prover_trusted
+                    .params()
+                    .num_address_phase_rounds()
+            );
             if advice_reduction_prover_trusted
                 .params()
                 .num_address_phase_rounds()
@@ -1681,12 +1614,19 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             {
                 // Transition phase
                 advice_reduction_prover_trusted.transition_to_address_phase();
+                tracing::info!("Stage 7 include: AdviceClaimReduction(trusted)");
                 instances.push(Box::new(advice_reduction_prover_trusted));
             }
         }
         if let Some(mut advice_reduction_prover_untrusted) =
             self.advice_reduction_prover_untrusted.take()
         {
+            tracing::info!(
+                "Stage 7 untrusted advice address rounds={}",
+                advice_reduction_prover_untrusted
+                    .params()
+                    .num_address_phase_rounds()
+            );
             if advice_reduction_prover_untrusted
                 .params()
                 .num_address_phase_rounds()
@@ -1694,11 +1634,18 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             {
                 // Transition phase
                 advice_reduction_prover_untrusted.transition_to_address_phase();
+                tracing::info!("Stage 7 include: AdviceClaimReduction(untrusted)");
                 instances.push(Box::new(advice_reduction_prover_untrusted));
             }
         }
         if let Some(mut program_image_reduction_prover) = self.program_image_reduction_prover.take()
         {
+            tracing::info!(
+                "Stage 7 program-image address rounds={}",
+                program_image_reduction_prover
+                    .params()
+                    .num_address_phase_rounds()
+            );
             if program_image_reduction_prover
                 .params()
                 .num_address_phase_rounds()
@@ -1706,6 +1653,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             {
                 // Transition phase
                 program_image_reduction_prover.transition_to_address_phase();
+                tracing::info!("Stage 7 include: ProgramImageClaimReduction");
                 instances.push(Box::new(program_image_reduction_prover));
             } else {
                 drop_in_background_thread(program_image_reduction_prover);
@@ -1715,49 +1663,32 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         #[cfg(feature = "allocative")]
         write_boxed_instance_flamegraph_svg(&instances, "stage7_start_flamechart.svg");
         tracing::info!("Stage 7 proving");
-        let (sumcheck_proof, _) = BatchedSumcheck::prove(
+        let stage7_max_num_rounds = instances
+            .iter()
+            .map(|instance| instance.num_rounds())
+            .max()
+            .unwrap_or(0);
+        for (idx, instance) in instances.iter().enumerate() {
+            let num_rounds = instance.num_rounds();
+            let round_offset = instance.round_offset(stage7_max_num_rounds);
+            tracing::warn!(
+                "Stage7 prover instance idx={} rounds={} offset={}",
+                idx,
+                num_rounds,
+                round_offset
+            );
+        }
+        let (sumcheck_proof, _r_stage7) = BatchedSumcheck::prove(
             instances.iter_mut().map(|v| &mut **v as _).collect(),
             &mut self.opening_accumulator,
             &mut self.transcript,
         );
         #[cfg(feature = "allocative")]
         write_boxed_instance_flamegraph_svg(&instances, "stage7_end_flamechart.svg");
+
         drop_in_background_thread(instances);
 
         sumcheck_proof
-    }
-
-    fn debug_compare_stage8_claim(
-        &self,
-        poly: CommittedPolynomial,
-        source_sumcheck: SumcheckId,
-        source_claim: F,
-        lagrange_factor: F,
-        staged_claim: F,
-        stage8_trace: &[Cycle],
-        stage8_opening_point: &OpeningPoint<BIG_ENDIAN, F>,
-    ) {
-        let direct_eval_opt =
-            self.compute_stage8_direct_eval(poly, stage8_trace, stage8_opening_point);
-
-        let Some((_source_point, direct_eval)) = direct_eval_opt else {
-            tracing::warn!(
-                "Stage8 direct-claim check skipped: poly={:?} sumcheck={:?} \
-                 (missing polynomial materialization)",
-                poly,
-                source_sumcheck
-            );
-            return;
-        };
-
-        report_stage8_direct_claim_check::<F>(
-            poly,
-            source_sumcheck,
-            direct_eval,
-            source_claim,
-            lagrange_factor,
-            staged_claim,
-        );
     }
 
     fn compute_stage8_direct_eval(
@@ -1765,7 +1696,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         poly: CommittedPolynomial,
         stage8_trace: &[Cycle],
         stage8_opening_point: &OpeningPoint<BIG_ENDIAN, F>,
-    ) -> Option<(OpeningPoint<BIG_ENDIAN, F>, F)> {
+    ) -> Option<(OpeningPoint<BIG_ENDIAN, F>, OpeningPoint<BIG_ENDIAN, F>, F, F)> {
         let derive_from_prefix = |num_vars: usize| -> OpeningPoint<BIG_ENDIAN, F> {
             assert!(
                 num_vars <= stage8_opening_point.r.len(),
@@ -1815,16 +1746,18 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                     stage8_trace,
                     Some(&self.one_hot_params),
                 );
-                let derived_source_point = match DoryGlobals::get_layout() {
+                let (derived_source_point, _) = self
+                    .opening_accumulator
+                    .get_committed_polynomial_opening(poly, SumcheckId::IncClaimReduction);
+                let opening_derived_point = match DoryGlobals::get_layout() {
                     DoryLayout::AddressMajor => derive_from_prefix(witness.get_num_vars()),
                     DoryLayout::CycleMajor => derive_from_suffix(witness.get_num_vars()),
                 };
-                if matches!(poly, CommittedPolynomial::RdInc) {
-                    tracing::info!("dense_derived_opening_point={:?}", &derived_source_point.r);
-                }
                 Some((
                     derived_source_point.clone(),
+                    opening_derived_point.clone(),
                     witness.evaluate(&derived_source_point.r),
+                    witness.evaluate(&opening_derived_point.r),
                 ))
             }
             CommittedPolynomial::InstructionRa(_)
@@ -1836,27 +1769,35 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                     stage8_trace,
                     Some(&self.one_hot_params),
                 );
-                let derived_source_point = match DoryGlobals::get_layout() {
-                    DoryLayout::AddressMajor => {
-                        derive_ra_from_prefix_rotated(witness.get_num_vars())
-                    }
+                let (derived_source_point, _) = self
+                    .opening_accumulator
+                    .get_committed_polynomial_opening(poly, SumcheckId::HammingWeightClaimReduction);
+                let opening_derived_point = match DoryGlobals::get_layout() {
+                    DoryLayout::AddressMajor => derive_ra_from_prefix_rotated(witness.get_num_vars()),
                     DoryLayout::CycleMajor => derive_from_suffix(witness.get_num_vars()),
                 };
-                if matches!(poly, CommittedPolynomial::InstructionRa(0)) {
-                    tracing::info!("ra_derived_opening_point={:?}", &derived_source_point.r);
-                }
-                let direct_eval = witness.evaluate(&derived_source_point.r);
-                Some((derived_source_point.clone(), direct_eval))
+                let direct_sumcheck_point = witness.evaluate(&derived_source_point.r);
+                let direct_opening_point_derivation = witness.evaluate(&opening_derived_point.r);
+                Some((
+                    derived_source_point.clone(),
+                    opening_derived_point,
+                    direct_sumcheck_point,
+                    direct_opening_point_derivation,
+                ))
             }
             CommittedPolynomial::TrustedAdvice => {
                 self.advice.trusted_advice_polynomial.as_ref().map(|poly| {
-                    let derived_source_point = derive_poly_source_point_from_dory_dims(
-                        stage8_opening_point,
-                        poly.get_num_vars(),
-                    );
+                    let (sumcheck_point, _) = self
+                        .opening_accumulator
+                        .get_advice_opening(AdviceKind::Trusted, SumcheckId::AdviceClaimReduction)
+                        .expect("trusted advice opening should exist for Stage8 debug");
+                    let opening_derived_point =
+                        derive_poly_source_point_from_dory_dims(stage8_opening_point, poly.get_num_vars());
                     (
-                        derived_source_point.clone(),
-                        poly.evaluate(&derived_source_point.r),
+                        sumcheck_point.clone(),
+                        opening_derived_point.clone(),
+                        poly.evaluate(&sumcheck_point.r),
+                        poly.evaluate(&opening_derived_point.r),
                     )
                 })
             }
@@ -1865,13 +1806,17 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 .untrusted_advice_polynomial
                 .as_ref()
                 .map(|poly| {
-                    let derived_source_point = derive_poly_source_point_from_dory_dims(
-                        stage8_opening_point,
-                        poly.get_num_vars(),
-                    );
+                    let (sumcheck_point, _) = self
+                        .opening_accumulator
+                        .get_advice_opening(AdviceKind::Untrusted, SumcheckId::AdviceClaimReduction)
+                        .expect("untrusted advice opening should exist for Stage8 debug");
+                    let opening_derived_point =
+                        derive_poly_source_point_from_dory_dims(stage8_opening_point, poly.get_num_vars());
                     (
-                        derived_source_point.clone(),
-                        poly.evaluate(&derived_source_point.r),
+                        sumcheck_point.clone(),
+                        opening_derived_point.clone(),
+                        poly.evaluate(&sumcheck_point.r),
+                        poly.evaluate(&opening_derived_point.r),
                     )
                 }),
             CommittedPolynomial::BytecodeChunk(chunk_idx) => self
@@ -1879,10 +1824,17 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 .as_ref()
                 .and_then(|chunk_polys| chunk_polys.get(chunk_idx))
                 .map(|poly| {
-                    let derived_source_point = derive_from_suffix(poly.get_num_vars());
+                    let (sumcheck_point, _) =
+                        self.opening_accumulator.get_committed_polynomial_opening(
+                            CommittedPolynomial::BytecodeChunk(chunk_idx),
+                            SumcheckId::BytecodeClaimReduction,
+                        );
+                    let opening_derived_point = derive_from_suffix(poly.get_num_vars());
                     (
-                        derived_source_point.clone(),
-                        poly.evaluate(&derived_source_point.r),
+                        sumcheck_point.clone(),
+                        opening_derived_point.clone(),
+                        poly.evaluate(&sumcheck_point.r),
+                        poly.evaluate(&opening_derived_point.r),
                     )
                 }),
             CommittedPolynomial::ProgramImageInit => self
@@ -1894,36 +1846,67 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                         &self.preprocessing.program,
                         trusted.program_image_num_words,
                     );
-                    let derived_source_point = derive_poly_source_point_from_dory_dims(
-                        stage8_opening_point,
-                        poly.get_num_vars(),
-                    );
+                    let (sumcheck_point, _) = self
+                        .opening_accumulator
+                        .get_committed_polynomial_opening(
+                            CommittedPolynomial::ProgramImageInit,
+                            SumcheckId::ProgramImageClaimReduction,
+                        );
+                    let opening_derived_point =
+                        derive_poly_source_point_from_dory_dims(stage8_opening_point, poly.get_num_vars());
                     (
-                        derived_source_point.clone(),
-                        poly.evaluate(&derived_source_point.r),
+                        sumcheck_point.clone(),
+                        opening_derived_point.clone(),
+                        poly.evaluate(&sumcheck_point.r),
+                        poly.evaluate(&opening_derived_point.r),
                     )
                 }),
         }
     }
 
-    #[inline]
-    fn compute_stage8_dense_lagrange_factor(
-        opening_point: &[F::Challenge],
-        dense_point_len: usize,
-        dense_point_is_suffix: bool,
-    ) -> F {
-        assert!(
-            dense_point_len <= opening_point.len(),
-            "dense opening point cannot be larger than joint opening point"
-        );
-        if dense_point_is_suffix {
-            opening_point[..opening_point.len() - dense_point_len]
-                .iter()
-                .fold(F::one(), |acc, r| acc * (F::one() - *r))
-        } else {
-            opening_point[dense_point_len..]
-                .iter()
-                .fold(F::one(), |acc, r| acc * (F::one() - *r))
+    fn stage8_source_sumcheck_claim(&self, poly: CommittedPolynomial) -> Option<(SumcheckId, F)> {
+        match poly {
+            CommittedPolynomial::RdInc | CommittedPolynomial::RamInc => {
+                let claim = self
+                    .opening_accumulator
+                    .get_committed_polynomial_opening(poly, SumcheckId::IncClaimReduction)
+                    .1;
+                Some((SumcheckId::IncClaimReduction, claim))
+            }
+            CommittedPolynomial::InstructionRa(_)
+            | CommittedPolynomial::BytecodeRa(_)
+            | CommittedPolynomial::RamRa(_) => {
+                let claim = self
+                    .opening_accumulator
+                    .get_committed_polynomial_opening(poly, SumcheckId::HammingWeightClaimReduction)
+                    .1;
+                Some((SumcheckId::HammingWeightClaimReduction, claim))
+            }
+            CommittedPolynomial::TrustedAdvice => self
+                .opening_accumulator
+                .get_advice_opening(AdviceKind::Trusted, SumcheckId::AdviceClaimReduction)
+                .map(|(_, claim)| (SumcheckId::AdviceClaimReduction, claim)),
+            CommittedPolynomial::UntrustedAdvice => self
+                .opening_accumulator
+                .get_advice_opening(AdviceKind::Untrusted, SumcheckId::AdviceClaimReduction)
+                .map(|(_, claim)| (SumcheckId::AdviceClaimReduction, claim)),
+            CommittedPolynomial::BytecodeChunk(_) => {
+                let claim = self
+                    .opening_accumulator
+                    .get_committed_polynomial_opening(poly, SumcheckId::BytecodeClaimReduction)
+                    .1;
+                Some((SumcheckId::BytecodeClaimReduction, claim))
+            }
+            CommittedPolynomial::ProgramImageInit => {
+                let claim = self
+                    .opening_accumulator
+                    .get_committed_polynomial_opening(
+                        CommittedPolynomial::ProgramImageInit,
+                        SumcheckId::ProgramImageClaimReduction,
+                    )
+                    .1;
+                Some((SumcheckId::ProgramImageClaimReduction, claim))
+            }
         }
     }
 
@@ -1934,16 +1917,100 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         opening_point: &[F::Challenge],
         source_point: &[F::Challenge],
     ) -> F {
-        match poly {
-            CommittedPolynomial::RamInc | CommittedPolynomial::RdInc => {
-                let dense_point_is_suffix = DoryGlobals::get_layout() == DoryLayout::CycleMajor;
-                Self::compute_stage8_dense_lagrange_factor(
-                    opening_point,
-                    source_point.len(),
-                    dense_point_is_suffix,
+        let _ = poly;
+        compute_advice_lagrange_factor::<F>(opening_point, source_point)
+    }
+
+    fn compute_stage8_opening_point(&self) -> OpeningPoint<BIG_ENDIAN, F> {
+        // Stage-8 opening point policy:
+        // - if a dominant precommitted polynomial exists, use it as anchor;
+        // - otherwise, use the Hamming-weight anchor.
+        // Program mode only affects whether bytecode/program-image precommitted openings exist.
+        let native_main_vars = self.trace.len().log_2() + self.one_hot_params.log_k_chunk;
+        let mut candidates: Vec<(&str, OpeningPoint<BIG_ENDIAN, F>)> = Vec::new();
+        if self.program_mode == ProgramMode::Committed {
+            let bytecode_point = self
+                .opening_accumulator
+                .get_committed_polynomial_opening(
+                    CommittedPolynomial::BytecodeChunk(0),
+                    SumcheckId::BytecodeClaimReduction,
                 )
+                .0;
+            candidates.push(("bytecode", bytecode_point));
+            let program_image_point = self
+                .opening_accumulator
+                .get_committed_polynomial_opening(
+                    CommittedPolynomial::ProgramImageInit,
+                    SumcheckId::ProgramImageClaimReduction,
+                )
+                .0;
+            candidates.push(("program_image", program_image_point));
+        }
+        if let Some((pt, _)) = self
+            .opening_accumulator
+            .get_advice_opening(AdviceKind::Trusted, SumcheckId::AdviceClaimReduction)
+        {
+            candidates.push(("trusted_advice", pt));
+        }
+        if let Some((pt, _)) = self
+            .opening_accumulator
+            .get_advice_opening(AdviceKind::Untrusted, SumcheckId::AdviceClaimReduction)
+        {
+            candidates.push(("untrusted_advice", pt));
+        }
+
+        let max_len = candidates.iter().map(|(_, p)| p.r.len()).max().unwrap_or(0);
+        if max_len > native_main_vars {
+            let dominant = candidates
+                .iter()
+                .find(|(_, p)| p.r.len() == max_len)
+                .expect("at least one dominant precommitted candidate expected");
+            for (name, point) in candidates.iter().filter(|(_, p)| p.r.len() == max_len) {
+                assert_eq!(
+                    point.r, dominant.1.r,
+                    "incompatible dominant precommitted anchors: {} and {} have equal \
+                     dimensionality {} but different opening points",
+                    dominant.0, name, max_len
+                );
             }
-            _ => compute_advice_lagrange_factor::<F>(opening_point, source_point),
+            OpeningPoint::<BIG_ENDIAN, F>::new(dominant.1.r.clone())
+        } else {
+            let (hamming_point, _) = self.opening_accumulator.get_committed_polynomial_opening(
+                CommittedPolynomial::InstructionRa(0),
+                SumcheckId::HammingWeightClaimReduction,
+            );
+            let r_address_stage7 = hamming_point.r[..self.one_hot_params.log_k_chunk].to_vec();
+            let stage6_cycle_challenges_le = self
+                .stage6_cycle_challenges
+                .clone()
+                .expect("Stage 6b cycle challenges must be available before Stage 8");
+            let mut r_cycle_stage6 = stage6_cycle_challenges_le.clone();
+            // Stage-6 sumcheck challenges are stored in little-endian round order.
+            // Stage 8 uses big-endian opening points.
+            r_cycle_stage6.reverse();
+            match DoryGlobals::get_layout() {
+                DoryLayout::AddressMajor => OpeningPoint::<BIG_ENDIAN, F>::new(
+                    [r_cycle_stage6.as_slice(), r_address_stage7.as_slice()].concat(),
+                ),
+                DoryLayout::CycleMajor => {
+                    let native_cycle = &hamming_point.r[self.one_hot_params.log_k_chunk..];
+                    assert!(
+                        r_cycle_stage6.len() >= native_cycle.len(),
+                        "stage6 cycle challenges shorter than native cycle vars"
+                    );
+                    assert!(
+                        r_cycle_stage6[..native_cycle.len()] == *native_cycle,
+                        "cycle-major Stage-8 expects stage6 cycle prefix to equal native cycle vars \
+                         (cycle_full_len={}, native_len={})",
+                        r_cycle_stage6.len(),
+                        native_cycle.len()
+                    );
+                    let cycle_extra = &r_cycle_stage6[native_cycle.len()..];
+                    let cycle_extra_and_anchor =
+                        [cycle_extra, r_address_stage7.as_slice(), native_cycle].concat();
+                    OpeningPoint::<BIG_ENDIAN, F>::new(cycle_extra_and_anchor)
+                }
+            }
         }
     }
 
@@ -1974,52 +2041,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         let debug_stage8_direct_claims = true;
         let stage8_trace_for_debug = Some(Arc::clone(&self.trace));
 
-        // In committed mode, construct Stage-8 opening point groups as:
-        // [Stage6b bytecode-only prefix || Stage7 vars || Stage6b shared dense suffix] (BE).
-        let opening_point = if self.program_mode == ProgramMode::Committed {
-            let bytecode_point = self
-                .opening_accumulator
-                .get_committed_polynomial_opening(
-                    CommittedPolynomial::BytecodeChunk(0),
-                    SumcheckId::BytecodeClaimReduction,
-                )
-                .0;
-            let (inc_point, _) = self.opening_accumulator.get_committed_polynomial_opening(
-                CommittedPolynomial::RamInc,
-                SumcheckId::IncClaimReduction,
-            );
-            tracing::info!("bytecode_point={:?}", bytecode_point.r);
-            let stage7_rounds = self.one_hot_params.log_k_chunk;
-            let inc_rounds = inc_point.r.len();
-            tracing::info!("inc_rounds={inc_rounds}, inc_point={:?}", inc_point.r);
-            assert!(
-                stage7_rounds + inc_rounds <= bytecode_point.r.len(),
-                "stage7+inc rounds exceed bytecode point len (stage7={}, inc={}, bytecode={})",
-                stage7_rounds,
-                inc_rounds,
-                bytecode_point.r.len()
-            );
-            // Use bytecode claim-reduction normalized opening directly as Stage-8 anchor.
-            // Segment ordering is defined in BytecodeClaimReductionParams::normalize_opening_point.
-            OpeningPoint::<BIG_ENDIAN, F>::new(bytecode_point.r.clone())
-        } else {
-            let (hamming_point, _) = self.opening_accumulator.get_committed_polynomial_opening(
-                CommittedPolynomial::InstructionRa(0),
-                SumcheckId::HammingWeightClaimReduction,
-            );
-            let r_address_stage7 = hamming_point.r[..self.one_hot_params.log_k_chunk].to_vec();
-            let stage6_cycle_challenges_le = self
-                .stage6_cycle_challenges
-                .clone()
-                .expect("Stage 6b cycle challenges must be available before Stage 8");
-            let mut r_cycle_stage6 = stage6_cycle_challenges_le.clone();
-            // Stage-6 sumcheck challenges are stored in little-endian round order.
-            // Stage 8 uses big-endian opening points.
-            r_cycle_stage6.reverse();
-            OpeningPoint::<BIG_ENDIAN, F>::new(
-                [r_address_stage7.as_slice(), r_cycle_stage6.as_slice()].concat(),
-            )
-        };
+        let opening_point = self.compute_stage8_opening_point();
         tracing::info!("Stage8 anchor opening_point_be={:?}", opening_point.r);
         // 1. Collect all (polynomial, claim) pairs
         let mut polynomial_claims = Vec::new();
@@ -2050,38 +2072,6 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         let rd_inc_staged_claim = rd_inc_claim * rd_inc_lagrange;
         polynomial_claims.push((CommittedPolynomial::RamInc, ram_inc_staged_claim));
         polynomial_claims.push((CommittedPolynomial::RdInc, rd_inc_staged_claim));
-        if debug_stage8_direct_claims && class_filter.includes_poly(CommittedPolynomial::RamInc) {
-            self.debug_compare_stage8_claim(
-                CommittedPolynomial::RamInc,
-                SumcheckId::IncClaimReduction,
-                ram_inc_claim,
-                ram_inc_lagrange,
-                ram_inc_staged_claim,
-                stage8_trace_for_debug
-                    .as_ref()
-                    .expect("Stage8 debug trace must be available"),
-                &opening_point,
-            );
-        }
-        if debug_stage8_direct_claims && class_filter.includes_poly(CommittedPolynomial::RdInc) {
-            self.debug_compare_stage8_claim(
-                CommittedPolynomial::RdInc,
-                SumcheckId::IncClaimReduction,
-                rd_inc_claim,
-                rd_inc_lagrange,
-                rd_inc_staged_claim,
-                stage8_trace_for_debug
-                    .as_ref()
-                    .expect("Stage8 debug trace must be available"),
-                &opening_point,
-            );
-        }
-        let (ra_point, _) = self.opening_accumulator.get_committed_polynomial_opening(
-            CommittedPolynomial::InstructionRa(0),
-            SumcheckId::HammingWeightClaimReduction,
-        );
-        tracing::info!("ra_point={:?}", ra_point.r);
-
         // Sparse polynomials: all RA polys (from HammingWeightClaimReduction)
         // These can also be lower-dimensional than the unified Stage 8 point when
         // Stage 6/7 runs with fewer cycle rounds; apply embedding factors uniformly.
@@ -2095,19 +2085,6 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             let poly = CommittedPolynomial::InstructionRa(i);
             let staged_claim = claim * lagrange_factor;
             polynomial_claims.push((poly, staged_claim));
-            if debug_stage8_direct_claims && class_filter.includes_poly(poly) {
-                self.debug_compare_stage8_claim(
-                    poly,
-                    SumcheckId::HammingWeightClaimReduction,
-                    claim,
-                    lagrange_factor,
-                    staged_claim,
-                    stage8_trace_for_debug
-                        .as_ref()
-                        .expect("Stage8 debug trace must be available"),
-                    &opening_point,
-                );
-            }
         }
         for i in 0..self.one_hot_params.bytecode_d {
             let (ra_point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
@@ -2119,19 +2096,6 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             let poly = CommittedPolynomial::BytecodeRa(i);
             let staged_claim = claim * lagrange_factor;
             polynomial_claims.push((poly, staged_claim));
-            if debug_stage8_direct_claims && class_filter.includes_poly(poly) {
-                self.debug_compare_stage8_claim(
-                    poly,
-                    SumcheckId::HammingWeightClaimReduction,
-                    claim,
-                    lagrange_factor,
-                    staged_claim,
-                    stage8_trace_for_debug
-                        .as_ref()
-                        .expect("Stage8 debug trace must be available"),
-                    &opening_point,
-                );
-            }
         }
         for i in 0..self.one_hot_params.ram_d {
             let (ra_point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
@@ -2143,19 +2107,6 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             let poly = CommittedPolynomial::RamRa(i);
             let staged_claim = claim * lagrange_factor;
             polynomial_claims.push((poly, staged_claim));
-            if debug_stage8_direct_claims && class_filter.includes_poly(poly) {
-                self.debug_compare_stage8_claim(
-                    poly,
-                    SumcheckId::HammingWeightClaimReduction,
-                    claim,
-                    lagrange_factor,
-                    staged_claim,
-                    stage8_trace_for_debug
-                        .as_ref()
-                        .expect("Stage8 debug trace must be available"),
-                    &opening_point,
-                );
-            }
         }
 
         // Advice polynomials: TrustedAdvice and UntrustedAdvice (from AdviceClaimReduction in Stage 6)
@@ -2175,21 +2126,6 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 compute_advice_lagrange_factor::<F>(&opening_point.r, &advice_point.r);
             let staged_claim = advice_claim * lagrange_factor;
             polynomial_claims.push((CommittedPolynomial::TrustedAdvice, staged_claim));
-            if debug_stage8_direct_claims
-                && class_filter.includes_poly(CommittedPolynomial::TrustedAdvice)
-            {
-                self.debug_compare_stage8_claim(
-                    CommittedPolynomial::TrustedAdvice,
-                    SumcheckId::AdviceClaimReduction,
-                    advice_claim,
-                    lagrange_factor,
-                    staged_claim,
-                    stage8_trace_for_debug
-                        .as_ref()
-                        .expect("Stage8 debug trace must be available"),
-                    &opening_point,
-                );
-            }
         }
 
         if let Some((advice_point, advice_claim)) = self
@@ -2206,21 +2142,6 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 compute_advice_lagrange_factor::<F>(&opening_point.r, &advice_point.r);
             let staged_claim = advice_claim * lagrange_factor;
             polynomial_claims.push((CommittedPolynomial::UntrustedAdvice, staged_claim));
-            if debug_stage8_direct_claims
-                && class_filter.includes_poly(CommittedPolynomial::UntrustedAdvice)
-            {
-                self.debug_compare_stage8_claim(
-                    CommittedPolynomial::UntrustedAdvice,
-                    SumcheckId::AdviceClaimReduction,
-                    advice_claim,
-                    lagrange_factor,
-                    staged_claim,
-                    stage8_trace_for_debug
-                        .as_ref()
-                        .expect("Stage8 debug trace must be available"),
-                    &opening_point,
-                );
-            }
         }
 
         // Committed bytecode chunk polynomials: each chunk is committed separately in Bytecode
@@ -2249,19 +2170,6 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 let first_poly = CommittedPolynomial::BytecodeChunk(0);
                 let first_staged_claim = claim * lagrange_factor;
                 polynomial_claims.push((first_poly, first_staged_claim));
-                if debug_stage8_direct_claims && class_filter.includes_poly(first_poly) {
-                    self.debug_compare_stage8_claim(
-                        first_poly,
-                        SumcheckId::BytecodeClaimReduction,
-                        claim,
-                        lagrange_factor,
-                        first_staged_claim,
-                        stage8_trace_for_debug
-                            .as_ref()
-                            .expect("Stage8 debug trace must be available"),
-                        &opening_point,
-                    );
-                }
 
                 for chunk_idx in 1..trusted.bytecode_chunk_commitments.len() {
                     let (chunk_point, claim) =
@@ -2276,19 +2184,6 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                     let poly = CommittedPolynomial::BytecodeChunk(chunk_idx);
                     let staged_claim = claim * lagrange_factor;
                     polynomial_claims.push((poly, staged_claim));
-                    if debug_stage8_direct_claims && class_filter.includes_poly(poly) {
-                        self.debug_compare_stage8_claim(
-                            poly,
-                            SumcheckId::BytecodeClaimReduction,
-                            claim,
-                            lagrange_factor,
-                            staged_claim,
-                            stage8_trace_for_debug
-                                .as_ref()
-                                .expect("Stage8 debug trace must be available"),
-                            &opening_point,
-                        );
-                    }
                 }
             }
         }
@@ -2305,21 +2200,6 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                 compute_advice_lagrange_factor::<F>(&opening_point.r, &prog_point.r);
             let staged_claim = prog_claim * lagrange_factor;
             polynomial_claims.push((CommittedPolynomial::ProgramImageInit, staged_claim));
-            if debug_stage8_direct_claims
-                && class_filter.includes_poly(CommittedPolynomial::ProgramImageInit)
-            {
-                self.debug_compare_stage8_claim(
-                    CommittedPolynomial::ProgramImageInit,
-                    SumcheckId::ProgramImageClaimReduction,
-                    prog_claim,
-                    lagrange_factor,
-                    staged_claim,
-                    stage8_trace_for_debug
-                        .as_ref()
-                        .expect("Stage8 debug trace must be available"),
-                    &opening_point,
-                );
-            }
         }
         polynomial_claims.retain(|(poly, _)| class_filter.includes_poly(*poly));
         assert!(
@@ -2345,7 +2225,12 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             {
                 let weighted_claim = *gamma * *claim;
                 expected_joint_from_claims += weighted_claim;
-                if let Some((source_point, direct_eval)) =
+                if let Some((
+                    source_point,
+                    derived_opening_point,
+                    direct_sumcheck_point,
+                    direct_opening_point_derivation,
+                )) =
                     self.compute_stage8_direct_eval(*poly, stage8_trace, &opening_point)
                 {
                     let lagrange = self.compute_stage8_lagrange_factor(
@@ -2353,16 +2238,30 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                         &opening_point.r,
                         &source_point.r,
                     );
-                    let direct_staged = direct_eval * lagrange;
+                    let direct_staged = direct_opening_point_derivation * lagrange;
                     let weighted_direct_eval = *gamma * direct_staged;
                     expected_joint_from_direct_eval += weighted_direct_eval;
-                    tracing::info!(
-                        "Stage8 joint-rlc term idx={} poly={:?} direct_eval={:?} sumcheck_claim={:?}",
-                        idx,
-                        poly,
-                        direct_staged,
-                        claim
-                    );
+                    if let Some((source_sumcheck, source_claim)) =
+                        self.stage8_source_sumcheck_claim(*poly)
+                    {
+                        report_stage8_direct_claim_check::<F>(
+                            *poly,
+                            source_sumcheck,
+                            &source_point,
+                            &derived_opening_point,
+                            source_claim,
+                            direct_sumcheck_point,
+                            direct_opening_point_derivation,
+                            lagrange,
+                            *claim,
+                        );
+                    } else {
+                        tracing::warn!(
+                            "Stage8 direct-claim check skipped idx={} poly={:?}: missing source sumcheck claim",
+                            idx,
+                            poly,
+                        );
+                    }
                 } else {
                     missing_direct_eval += 1;
                     tracing::warn!(
@@ -2580,6 +2479,8 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             &joint_commitment,
         )
         .expect("Stage 8 sanity check: joint opening proof failed verification");
+
+        tracing::info!("self-verify stage 8: success");
 
         joint_opening_proof
     }

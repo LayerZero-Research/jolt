@@ -198,17 +198,17 @@ impl<F: JoltField> OneHotPolynomial<F> {
 
         // General path: collect column indices for each row based on layout
         let mut row_indices: Vec<Vec<usize>> = vec![Vec::new(); num_rows];
+        let addr_major_dense_stride = DoryGlobals::address_major_dense_stride();
         for (cycle, k) in self.nonzero_indices.iter().enumerate() {
             if let Some(k) = k {
-                let global_index =
-                    layout.address_cycle_to_index(*k as usize, cycle, self.K, effective_t);
-                // In CycleMajor, one-hot polys are always embedded as a flat prefix over the
-                // canonical (k, t) domain. Even if Joint introduces extra dimensions (e.g.
-                // from committed bytecode), we do not spread one-hot mass across those vars.
-                let scaled_index = if layout == DoryLayout::CycleMajor || column_stride == 1 {
-                    global_index
+                let scaled_index = if layout == DoryLayout::AddressMajor {
+                    // AddressMajor: dense stride advances cycle; one-hot stride advances address.
+                    cycle * addr_major_dense_stride + (*k as usize) * column_stride
                 } else {
-                    global_index * column_stride
+                    // In CycleMajor, one-hot polys are always embedded as a flat prefix over the
+                    // canonical (k, t) domain. Even if Joint introduces extra dimensions (e.g.
+                    // from committed bytecode), we do not spread one-hot mass across those vars.
+                    layout.address_cycle_to_index(*k as usize, cycle, self.K, effective_t)
                 };
                 let row_index = scaled_index / row_len;
                 let col_index = scaled_index % row_len;
@@ -270,12 +270,17 @@ impl<F: JoltField> OneHotPolynomial<F> {
         }
 
         // General path: iterate through nonzero indices and compute contributions
+        let addr_major_dense_stride = DoryGlobals::address_major_dense_stride();
+        let column_stride = Self::column_stride();
         for (cycle, k) in self.nonzero_indices.iter().enumerate() {
             if let Some(k) = k {
-                let global_index =
-                    layout.address_cycle_to_index(*k as usize, cycle, self.K, effective_t);
-                let row_index = global_index / num_columns;
-                let col_index = global_index % num_columns;
+                let scaled_index = if layout == DoryLayout::AddressMajor {
+                    cycle * addr_major_dense_stride + (*k as usize) * column_stride
+                } else {
+                    layout.address_cycle_to_index(*k as usize, cycle, self.K, effective_t)
+                };
+                let row_index = scaled_index / num_columns;
+                let col_index = scaled_index % num_columns;
                 if row_index < left_vec.len() && col_index < result.len() {
                     result[col_index] += coeff * left_vec[row_index];
                 }

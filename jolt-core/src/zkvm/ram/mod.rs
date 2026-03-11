@@ -222,7 +222,6 @@ pub fn populate_memory_states(
 pub fn prover_accumulate_advice<F: JoltField>(
     untrusted_advice_polynomial: &Option<MultilinearPolynomial<F>>,
     trusted_advice_polynomial: &Option<MultilinearPolynomial<F>>,
-    memory_layout: &MemoryLayout,
     one_hot_params: &OneHotParams,
     opening_accumulator: &mut ProverOpeningAccumulator<F>,
     transcript: &mut impl Transcript,
@@ -238,9 +237,8 @@ pub fn prover_accumulate_advice<F: JoltField>(
     let (r_address_rw, _) = r_rw.split_at(total_variables);
 
     let compute_advice_opening = |advice_poly: &MultilinearPolynomial<F>,
-                                  r_address: &OpeningPoint<BIG_ENDIAN, F>,
-                                  max_advice_size: usize| {
-        let advice_variables = (max_advice_size / 8).next_power_of_two().log_2();
+                                  r_address: &OpeningPoint<BIG_ENDIAN, F>| {
+        let advice_variables = advice_poly.get_num_vars();
         let eval = advice_poly.evaluate(&r_address.r[total_variables - advice_variables..]);
         let advice_point =
             OpeningPoint::new(r_address.r[total_variables - advice_variables..].to_vec());
@@ -248,11 +246,8 @@ pub fn prover_accumulate_advice<F: JoltField>(
     };
 
     if let Some(ref untrusted_advice_poly) = untrusted_advice_polynomial {
-        let max_size = memory_layout.max_untrusted_advice_size as usize;
-
         // Opening at r_address_rw (for ValEvaluation)
-        let (point_rw, eval_rw) =
-            compute_advice_opening(untrusted_advice_poly, &r_address_rw, max_size);
+        let (point_rw, eval_rw) = compute_advice_opening(untrusted_advice_poly, &r_address_rw);
         opening_accumulator.append_untrusted_advice(
             transcript,
             SumcheckId::RamValEvaluation,
@@ -266,8 +261,7 @@ pub fn prover_accumulate_advice<F: JoltField>(
                 VirtualPolynomial::RamValFinal,
                 SumcheckId::RamOutputCheck,
             );
-            let (point_raf, eval_raf) =
-                compute_advice_opening(untrusted_advice_poly, &r_raf, max_size);
+            let (point_raf, eval_raf) = compute_advice_opening(untrusted_advice_poly, &r_raf);
             opening_accumulator.append_untrusted_advice(
                 transcript,
                 SumcheckId::RamValFinalEvaluation,
@@ -278,11 +272,8 @@ pub fn prover_accumulate_advice<F: JoltField>(
     }
 
     if let Some(ref trusted_advice_poly) = trusted_advice_polynomial {
-        let max_size = memory_layout.max_trusted_advice_size as usize;
-
         // Opening at r_address_rw (for ValEvaluation)
-        let (point_rw, eval_rw) =
-            compute_advice_opening(trusted_advice_poly, &r_address_rw, max_size);
+        let (point_rw, eval_rw) = compute_advice_opening(trusted_advice_poly, &r_address_rw);
         opening_accumulator.append_trusted_advice(
             transcript,
             SumcheckId::RamValEvaluation,
@@ -296,8 +287,7 @@ pub fn prover_accumulate_advice<F: JoltField>(
                 VirtualPolynomial::RamValFinal,
                 SumcheckId::RamOutputCheck,
             );
-            let (point_raf, eval_raf) =
-                compute_advice_opening(trusted_advice_poly, &r_raf, max_size);
+            let (point_raf, eval_raf) = compute_advice_opening(trusted_advice_poly, &r_raf);
             opening_accumulator.append_trusted_advice(
                 transcript,
                 SumcheckId::RamValFinalEvaluation,
@@ -334,18 +324,21 @@ pub fn verifier_accumulate_advice<F: JoltField>(
     );
     let (r_address_rw, _) = r_rw.split_at(total_vars);
 
-    let compute_advice_point = |r_address: &OpeningPoint<BIG_ENDIAN, F>, max_advice_size: usize| {
-        let advice_variables = (max_advice_size / 8).next_power_of_two().log_2();
+    let advice_vars_from_bytes = |advice_size_bytes: usize| {
+        advice_size_bytes.div_ceil(8).next_power_of_two().max(1).log_2()
+    };
+    let compute_advice_point =
+        |r_address: &OpeningPoint<BIG_ENDIAN, F>, advice_variables: usize| {
         let mut advice_point = r_address.clone();
         advice_point.r = r_address.r[total_vars - advice_variables..].to_vec();
         advice_point
     };
 
     if has_untrusted_advice_commitment {
-        let max_size = program_io.memory_layout.max_untrusted_advice_size as usize;
+        let advice_variables = advice_vars_from_bytes(program_io.untrusted_advice.len());
 
         // Opening at r_address_rw (for ValEvaluation)
-        let point_rw = compute_advice_point(&r_address_rw, max_size);
+        let point_rw = compute_advice_point(&r_address_rw, advice_variables);
         opening_accumulator.append_untrusted_advice(
             transcript,
             SumcheckId::RamValEvaluation,
@@ -358,7 +351,7 @@ pub fn verifier_accumulate_advice<F: JoltField>(
                 VirtualPolynomial::RamValFinal,
                 SumcheckId::RamOutputCheck,
             );
-            let point_raf = compute_advice_point(&r_raf, max_size);
+            let point_raf = compute_advice_point(&r_raf, advice_variables);
             opening_accumulator.append_untrusted_advice(
                 transcript,
                 SumcheckId::RamValFinalEvaluation,
@@ -368,10 +361,10 @@ pub fn verifier_accumulate_advice<F: JoltField>(
     }
 
     if has_trusted_advice_commitment {
-        let max_size = program_io.memory_layout.max_trusted_advice_size as usize;
+        let advice_variables = advice_vars_from_bytes(program_io.trusted_advice.len());
 
         // Opening at r_address_rw (for ValEvaluation)
-        let point_rw = compute_advice_point(&r_address_rw, max_size);
+        let point_rw = compute_advice_point(&r_address_rw, advice_variables);
         opening_accumulator.append_trusted_advice(
             transcript,
             SumcheckId::RamValEvaluation,
@@ -384,7 +377,7 @@ pub fn verifier_accumulate_advice<F: JoltField>(
                 VirtualPolynomial::RamValFinal,
                 SumcheckId::RamOutputCheck,
             );
-            let point_raf = compute_advice_point(&r_raf, max_size);
+            let point_raf = compute_advice_point(&r_raf, advice_variables);
             opening_accumulator.append_trusted_advice(
                 transcript,
                 SumcheckId::RamValFinalEvaluation,

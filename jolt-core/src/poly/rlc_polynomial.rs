@@ -439,7 +439,9 @@ impl<F: JoltField> RLCPolynomial<F> {
                 DoryLayout::AddressMajor => {
                     let dense_stride = DoryGlobals::address_major_dense_stride();
                     let cycles_per_row = num_columns / dense_stride;
-                    tracing::info!("address_major_vector_matrix_product cycles_per_row={cycles_per_row}");
+                    tracing::info!(
+                        "address_major_vector_matrix_product cycles_per_row={cycles_per_row}"
+                    );
                     dense_result
                         .par_iter_mut()
                         .step_by(dense_stride)
@@ -459,8 +461,7 @@ impl<F: JoltField> RLCPolynomial<F> {
             dense_result
         };
 
-        let one_hot_column_stride = DoryGlobals::address_major_one_hot_stride()
-        ;
+        let one_hot_column_stride = DoryGlobals::address_major_one_hot_stride();
         // Compute the **linear space** vector-matrix product for one-hot polynomials
         for (coeff, poly) in self.one_hot_rlc.iter() {
             match poly.as_ref() {
@@ -495,22 +496,15 @@ impl<F: JoltField> RLCPolynomial<F> {
         }
 
         debug_assert_eq!(DoryGlobals::get_layout(), DoryLayout::AddressMajor);
-        let t = one_hot.nonzero_indices.len();
-        let effective_t = t;
         let num_columns = DoryGlobals::get_num_columns();
         debug_assert_eq!(result.len(), num_columns);
         debug_assert!(num_columns % column_stride == 0);
+        let dense_stride = DoryGlobals::address_major_dense_stride();
 
         // General path: iterate through nonzero indices and compute contributions
         for (cycle, k) in one_hot.nonzero_indices.iter().enumerate() {
             if let Some(k) = k {
-                let global_index = DoryLayout::AddressMajor.address_cycle_to_index(
-                    *k as usize,
-                    cycle,
-                    one_hot.K,
-                    effective_t,
-                );
-                let scaled_index = global_index * column_stride;
+                let scaled_index = cycle * dense_stride + (*k as usize) * column_stride;
                 let row_index = scaled_index / num_columns;
                 let col_index = scaled_index % num_columns;
                 if row_index < left_vec.len() && col_index < result.len() {
@@ -716,24 +710,20 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
 
         let matrix_t = DoryGlobals::get_matrix_t();
         match &ctx.trace_source {
-            TraceSource::Materialized(trace) => {
-                self.materialized_vector_matrix_product(
-                    left_vec,
-                    num_columns,
-                    trace,
-                    &ctx,
-                    matrix_t,
-                )
-            }
-            TraceSource::Lazy(lazy_trace) => {
-                self.lazy_vector_matrix_product(
-                    left_vec,
-                    num_columns,
-                    (**lazy_trace).clone(),
-                    &ctx,
-                    matrix_t,
-                )
-            }
+            TraceSource::Materialized(trace) => self.materialized_vector_matrix_product(
+                left_vec,
+                num_columns,
+                trace,
+                &ctx,
+                matrix_t,
+            ),
+            TraceSource::Lazy(lazy_trace) => self.lazy_vector_matrix_product(
+                left_vec,
+                num_columns,
+                (**lazy_trace).clone(),
+                &ctx,
+                matrix_t,
+            ),
         }
     }
 
@@ -1169,7 +1159,8 @@ impl<'a, F: JoltField> VmvSetup<'a, F> {
     ) {
         let lookup_index = LookupQuery::<XLEN>::to_lookup_index(cycle);
         let pc = self.program.get_pc(cycle);
-        let remapped_address = remap_address(cycle.ram_access().address() as u64, self.memory_layout);
+        let remapped_address =
+            remap_address(cycle.ram_access().address() as u64, self.memory_layout);
 
         for (poly_id, coeff) in onehot_polys.iter() {
             if coeff.is_zero() {
