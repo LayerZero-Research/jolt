@@ -1558,6 +1558,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
     /// Stage 7: HammingWeight + ClaimReduction sumcheck (only log_k_chunk rounds).
     #[tracing::instrument(skip_all)]
     fn prove_stage7(&mut self) -> SumcheckInstanceProof<F, ProofTranscript> {
+        let perf_mode = std::env::var_os("JOLT_PERF").is_some();
         // Create params and prover for HammingWeightClaimReduction
         // (r_cycle and r_addr_bool are extracted from Booleanity opening internally)
         let hw_params = HammingWeightClaimReductionParams::new(
@@ -1671,15 +1672,17 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             .map(|instance| instance.num_rounds())
             .max()
             .unwrap_or(0);
-        for (idx, instance) in instances.iter().enumerate() {
-            let num_rounds = instance.num_rounds();
-            let round_offset = instance.round_offset(stage7_max_num_rounds);
-            tracing::warn!(
-                "Stage7 prover instance idx={} rounds={} offset={}",
-                idx,
-                num_rounds,
-                round_offset
-            );
+        if !perf_mode {
+            for (idx, instance) in instances.iter().enumerate() {
+                let num_rounds = instance.num_rounds();
+                let round_offset = instance.round_offset(stage7_max_num_rounds);
+                tracing::warn!(
+                    "Stage7 prover instance idx={} rounds={} offset={}",
+                    idx,
+                    num_rounds,
+                    round_offset
+                );
+            }
         }
         let (sumcheck_proof, _r_stage7) = BatchedSumcheck::prove(
             instances.iter_mut().map(|v| &mut **v as _).collect(),
@@ -2040,7 +2043,11 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         witness_commitments: &[PCS::Commitment],
         untrusted_advice_commitment: Option<&PCS::Commitment>,
     ) -> PCS::Proof {
+        let perf_mode = std::env::var_os("JOLT_PERF").is_some();
         tracing::info!("Stage 8 proving (Dory batch opening)");
+        if perf_mode {
+            tracing::info!("JOLT_PERF enabled: skipping Stage 8 debug validations");
+        }
 
         let class_filter = Stage8DoryClassFilter::from_env();
         assert!(
@@ -2055,8 +2062,8 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             class_filter.bytecode,
             class_filter.program_image
         );
-        let debug_stage8_direct_claims = true;
-        let stage8_trace_for_debug = Some(Arc::clone(&self.trace));
+        let debug_stage8_direct_claims = !perf_mode;
+        let stage8_trace_for_debug = debug_stage8_direct_claims.then(|| Arc::clone(&self.trace));
 
         let opening_point = self.compute_stage8_opening_point();
         tracing::info!("Stage8 anchor opening_point_be={:?}", opening_point.r);
@@ -2485,18 +2492,20 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             &mut self.transcript,
         );
 
-        let verifier_setup = PCS::setup_verifier(&self.preprocessing.generators);
-        PCS::verify(
-            &joint_opening_proof,
-            &verifier_setup,
-            &mut sanity_transcript,
-            &opening_point.r,
-            &joint_claim,
-            &joint_commitment,
-        )
-        .expect("Stage 8 sanity check: joint opening proof failed verification");
+        if !perf_mode {
+            let verifier_setup = PCS::setup_verifier(&self.preprocessing.generators);
+            PCS::verify(
+                &joint_opening_proof,
+                &verifier_setup,
+                &mut sanity_transcript,
+                &opening_point.r,
+                &joint_claim,
+                &joint_commitment,
+            )
+            .expect("Stage 8 sanity check: joint opening proof failed verification");
 
-        tracing::info!("self-verify stage 8: success");
+            tracing::info!("self-verify stage 8: success");
+        }
 
         joint_opening_proof
     }

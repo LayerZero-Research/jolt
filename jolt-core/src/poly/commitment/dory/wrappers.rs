@@ -262,7 +262,28 @@ where
     ) = if is_trace_dense_addr_major {
         let stride = DoryGlobals::address_major_dense_stride();
         let cycles_per_row = row_len / stride;
+        // This branch is taken when the AddressMajor trace-dense embedding stride exceeds
+        // the post-embedded Main row width (`row_len`), i.e. `row_len < stride`.
+        //
+        // With:
+        // - M = DoryGlobals::get_main_log_embedding() = total embedded Main vars
+        // - k = log2(main K)
+        // - t = log2(execution T)
+        // - e = embedding extra vars = M - (k + t)
+        //
+        // we have:
+        // - row_len = 2^sigma_main, where sigma_main = ceil(M/2)
+        //          = 2^ceil((e + k + t)/2)
+        // - stride  = 2^(main_embedding_extra_vars + k) = 2^(M - t) = 2^(e + k)
+        //
+        // so `cycles_per_row == 0` exactly when:
+        //   ceil(M/2) < (M - t)   <=>   t < floor(M/2).
+        //
         if cycles_per_row == 0 {
+            tracing::warn!("cycles_per_row is 0");
+            tracing::warn!("dense_len: {:?}", dense_len);
+            tracing::warn!("row_len: {:?}", row_len);
+            tracing::warn!("stride: {:?}", stride);
             let dense_len = dense_len.expect("trace-dense path requires scalar polynomial length");
             let dense_affine_bases: Vec<_> = g1_slice
                 .par_iter()
@@ -274,18 +295,23 @@ where
             } else {
                 ((dense_len - 1).saturating_mul(stride) / row_len) + 1
             };
+            let sparse_terms: Vec<(usize, usize, Fr)> = (0..dense_len)
+                .into_par_iter()
+                .filter_map(|cycle| {
+                    let coeff = poly.get_coeff(cycle);
+                    if coeff.is_zero() {
+                        return None;
+                    }
+                    let scaled_index = cycle.saturating_mul(stride);
+                    let row_index = scaled_index / row_len;
+                    let col_index = scaled_index % row_len;
+                    debug_assert!(row_index < num_rows);
+                    Some((row_index, col_index, coeff))
+                })
+                .collect();
             let mut row_terms: Vec<Vec<(usize, Fr)>> = vec![Vec::new(); num_rows];
-            for cycle in 0..dense_len {
-                let coeff = poly.get_coeff(cycle);
-                if coeff.is_zero() {
-                    continue;
-                }
-                let scaled_index = cycle.saturating_mul(stride);
-                let row_index = scaled_index / row_len;
-                let col_index = scaled_index % row_len;
-                if row_index < num_rows {
-                    row_terms[row_index].push((col_index, coeff));
-                }
+            for (row_index, col_index, coeff) in sparse_terms {
+                row_terms[row_index].push((col_index, coeff));
             }
             (dense_affine_bases, 1, Some(row_terms))
         } else {

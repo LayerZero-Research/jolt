@@ -662,6 +662,14 @@ impl DoryGlobals {
         CURRENT_CONTEXT.store(DoryContext::Main as u8, Ordering::SeqCst);
         // Never allow explicit main log-embedding to shrink below Main context dimensions.
         MAIN_LOG_EMBEDDING.store(matrix_total_vars, Ordering::SeqCst);
+        tracing::warn!("initialize_main_with_log_embedding: K={K} T={T} matrix_total_vars={matrix_total_vars} layout={layout:?}");
+        tracing::warn!("num_columns: {:?}", Self::get_num_columns());
+        tracing::warn!("max_num_rows: {:?}", Self::get_max_num_rows());
+        tracing::warn!("T: {:?}", Self::get_T());
+        tracing::warn!(
+            "address_major_dense_stride: {:?}",
+            Self::address_major_dense_stride()
+        );
         Some(())
     }
 
