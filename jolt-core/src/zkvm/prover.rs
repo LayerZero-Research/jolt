@@ -372,33 +372,22 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
 
         // Setup trace length and padding
         let unpadded_trace_len = trace.len();
-        let trace_len_stage1_to_5 = if unpadded_trace_len < 256 {
-            256 // ensures that T >= k^{1/D}
-        } else {
-            (trace.len() + 1).next_power_of_two()
-        };
+        let padded_trace_len = unpadded_trace_len.next_power_of_two().max(256);
 
-        tracing::info!("trace_len_stage1_to_5: {}", trace_len_stage1_to_5);
+        tracing::info!("padded_trace_len: {}", padded_trace_len);
 
-        let padded_trace_len = trace_len_stage1_to_5;
-
-        let program_image_len_words_padded = if program_mode == ProgramMode::Committed {
+        let committed_program_image_words = if program_mode == ProgramMode::Committed {
             let trusted = preprocessing
                 .program_commitments
                 .as_ref()
                 .expect("program commitments missing in committed preprocessing");
-            tracing::info!("padded_trace_len: {}", padded_trace_len);
-            tracing::info!(
-                "program_image_len_words: {}",
-                preprocessing.program.program_image_words.len()
-            );
             trusted.program_image_num_words
         } else {
             0usize
         };
         // Keep Stage 1-5 on the original trace domain.
         // Stage 6-8 use the committed-bytecode cycle domain in Committed mode.
-        trace.resize(trace_len_stage1_to_5, Cycle::NoOp);
+        trace.resize(padded_trace_len, Cycle::NoOp);
 
         // Calculate K for DoryGlobals initialization
         let ram_K = trace
@@ -420,12 +409,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                     + {
                         let base = preprocessing.program.program_image_words.len() as u64;
                         if program_mode == ProgramMode::Committed {
-                            tracing::info!(
-                                "program_image_len_words_padded: {}",
-                                program_image_len_words_padded
-                            );
-                            tracing::info!("base: {}", base);
-                            (program_image_len_words_padded as u64).max(base)
+                            (committed_program_image_words as u64).max(base)
                         } else {
                             base
                         }
@@ -437,9 +421,9 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
         tracing::info!("ram_K: {}", ram_K);
 
         let transcript = ProofTranscript::new(b"Jolt");
-        let opening_accumulator = ProverOpeningAccumulator::new(trace_len_stage1_to_5.log_2());
+        let opening_accumulator = ProverOpeningAccumulator::new(padded_trace_len.log_2());
 
-        let spartan_key = UniformSpartanKey::new(trace_len_stage1_to_5);
+        let spartan_key = UniformSpartanKey::new(padded_trace_len);
 
         let (initial_ram_state, final_ram_state) = gen_ram_memory_states::<F>(
             ram_K,
@@ -449,7 +433,7 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
             &final_memory_state,
         );
 
-        let log_T = trace_len_stage1_to_5.log_2();
+        let log_T = padded_trace_len.log_2();
         let ram_log_K = ram_K.log_2();
         let rw_config = ReadWriteConfig::new(log_T, ram_log_K);
         let one_hot_params = if program_mode == ProgramMode::Committed {
@@ -1848,7 +1832,10 @@ impl<'a, F: JoltField, PCS: StreamingCommitmentScheme<Field = F>, ProofTranscrip
                             CommittedPolynomial::BytecodeChunk(chunk_idx),
                             SumcheckId::BytecodeClaimReduction,
                         );
-                    let opening_derived_point = derive_from_suffix(poly.get_num_vars());
+                    let opening_derived_point = derive_poly_source_point_from_dory_dims(
+                        stage8_opening_point,
+                        poly.get_num_vars(),
+                    );
                     (
                         sumcheck_point.clone(),
                         opening_derived_point.clone(),

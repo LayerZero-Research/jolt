@@ -743,7 +743,9 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
     ) -> Vec<F> {
         // AddressMajor uses a dedicated streaming path.
         match DoryGlobals::get_layout() {
-            DoryLayout::AddressMajor => self.address_major_vector_matrix_product(left_vec, num_columns, &ctx),
+            DoryLayout::AddressMajor => {
+                self.address_major_vector_matrix_product(left_vec, num_columns, &ctx)
+            }
             DoryLayout::CycleMajor => {
                 let matrix_t = DoryGlobals::get_matrix_t();
                 match &ctx.trace_source {
@@ -879,17 +881,33 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
                     let lookup_index = LookupQuery::<XLEN>::to_lookup_index(cycle);
                     for (idx, coeff) in instruction_terms.iter() {
                         let k = ctx.one_hot_params.lookup_index_chunk(lookup_index, *idx) as usize;
-                        let onehot_col =
-                            (scaled_cycle_index + k * one_hot_column_stride) % num_columns;
-                        onehot_accs[onehot_col] += left.mul_unreduced::<9>(*coeff);
+                        let onehot_scaled_index = scaled_cycle_index + k * one_hot_column_stride;
+                        let onehot_row_index = onehot_scaled_index / num_columns;
+                        if onehot_row_index >= left_vec.len() {
+                            continue;
+                        }
+                        let onehot_left = left_vec[onehot_row_index];
+                        if onehot_left.is_zero() {
+                            continue;
+                        }
+                        let onehot_col = onehot_scaled_index % num_columns;
+                        onehot_accs[onehot_col] += onehot_left.mul_unreduced::<9>(*coeff);
                     }
 
                     let pc = ctx.preprocessing.program.get_pc(cycle);
                     for (idx, coeff) in bytecode_terms.iter() {
                         let k = ctx.one_hot_params.bytecode_pc_chunk(pc, *idx) as usize;
-                        let onehot_col =
-                            (scaled_cycle_index + k * one_hot_column_stride) % num_columns;
-                        onehot_accs[onehot_col] += left.mul_unreduced::<9>(*coeff);
+                        let onehot_scaled_index = scaled_cycle_index + k * one_hot_column_stride;
+                        let onehot_row_index = onehot_scaled_index / num_columns;
+                        if onehot_row_index >= left_vec.len() {
+                            continue;
+                        }
+                        let onehot_left = left_vec[onehot_row_index];
+                        if onehot_left.is_zero() {
+                            continue;
+                        }
+                        let onehot_col = onehot_scaled_index % num_columns;
+                        onehot_accs[onehot_col] += onehot_left.mul_unreduced::<9>(*coeff);
                     }
 
                     let remapped_address = remap_address(
@@ -900,9 +918,18 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
                         for (idx, coeff) in ram_terms.iter() {
                             let k = ctx.one_hot_params.ram_address_chunk(remapped_address, *idx)
                                 as usize;
-                            let onehot_col =
-                                (scaled_cycle_index + k * one_hot_column_stride) % num_columns;
-                            onehot_accs[onehot_col] += left.mul_unreduced::<9>(*coeff);
+                            let onehot_scaled_index =
+                                scaled_cycle_index + k * one_hot_column_stride;
+                            let onehot_row_index = onehot_scaled_index / num_columns;
+                            if onehot_row_index >= left_vec.len() {
+                                continue;
+                            }
+                            let onehot_left = left_vec[onehot_row_index];
+                            if onehot_left.is_zero() {
+                                continue;
+                            }
+                            let onehot_col = onehot_scaled_index % num_columns;
+                            onehot_accs[onehot_col] += onehot_left.mul_unreduced::<9>(*coeff);
                         }
                     }
                 }

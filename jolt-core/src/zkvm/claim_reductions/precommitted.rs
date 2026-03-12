@@ -3,6 +3,7 @@ use rayon::prelude::*;
 
 use crate::field::JoltField;
 use crate::poly::commitment::dory::{DoryGlobals, DoryLayout};
+use crate::poly::eq_poly::EqPolynomial;
 use crate::poly::multilinear_polynomial::{BindingOrder, MultilinearPolynomial, PolynomialBinding};
 use crate::poly::opening_proof::{OpeningPoint, BIG_ENDIAN, LITTLE_ENDIAN};
 use crate::poly::unipoly::UniPoly;
@@ -327,80 +328,91 @@ impl<F: JoltField> PrecommittedClaimReduction<F> {
     }
 }
 
-pub fn permute_precommitted_value_and_eq_coeffs<V: Copy + Send + Sync, F: JoltField>(
-    value_coeffs: Vec<V>,
-    eq_coeffs: Vec<F>,
-    embedding_mode: PrecommittedEmbeddingMode,
-    poly_row_vars: usize,
-    poly_col_vars: usize,
-    scheduling_reference: &PrecommittedSchedulingReference,
-    dense_cycle_prefix_vars: usize,
-) -> (Vec<V>, Vec<F>) {
-    assert_eq!(value_coeffs.len(), eq_coeffs.len());
-    let permutation = precommitted_sumcheck_index_permutation::<F>(
-        embedding_mode,
-        value_coeffs.len(),
-        poly_row_vars,
-        poly_col_vars,
-        scheduling_reference,
-        dense_cycle_prefix_vars,
-    );
-    let Some(permutation) = permutation else {
-        return (value_coeffs, eq_coeffs);
-    };
-
-    let mut permuted_values = value_coeffs.clone();
-    let mut permuted_eq = vec![F::zero(); eq_coeffs.len()];
-    for old_idx in 0..value_coeffs.len() {
-        let new_idx = permutation[old_idx];
-        permuted_values[new_idx] = value_coeffs[old_idx];
-        permuted_eq[new_idx] = eq_coeffs[old_idx];
+pub fn permute_precommitted_polys<V: Copy + Send + Sync, F: JoltField>(
+    coeffs_by_poly: Vec<Vec<V>>,
+    precommitted: &PrecommittedClaimReduction<F>,
+) -> Vec<MultilinearPolynomial<F>>
+where
+    MultilinearPolynomial<F>: From<Vec<V>>,
+{
+    if coeffs_by_poly.is_empty() {
+        return Vec::new();
     }
-    (permuted_values, permuted_eq)
+    let coeffs_len = coeffs_by_poly[0].len();
+    assert!(
+        coeffs_by_poly
+            .iter()
+            .all(|coeffs| coeffs.len() == coeffs_len),
+        "all precommitted polynomials must have equal coefficient lengths",
+    );
+    let inverse_permutation = precommitted_sumcheck_inverse_index_permutation(
+        coeffs_len,
+        &precommitted.poly_opening_round_permutation_be,
+    );
+    let permuted_coeffs_by_poly: Vec<Vec<V>> = if let Some(inverse_permutation) = inverse_permutation
+    {
+        coeffs_by_poly
+            .into_iter()
+            .map(|coeffs| {
+                (0..coeffs_len)
+                    .into_par_iter()
+                    .map(|new_idx| {
+                        let old_idx = inverse_permutation[new_idx];
+                        coeffs[old_idx]
+                    })
+                    .collect()
+            })
+            .collect()
+    } else {
+        coeffs_by_poly
+    };
+    permuted_coeffs_by_poly.into_iter().map(Into::into).collect()
 }
 
-fn precommitted_sumcheck_index_permutation<F: JoltField>(
-    embedding_mode: PrecommittedEmbeddingMode,
-    coeffs_len: usize,
-    poly_row_vars: usize,
-    poly_col_vars: usize,
-    scheduling_reference: &PrecommittedSchedulingReference,
-    dense_cycle_prefix_vars: usize,
+pub fn precommitted_eq_evals_with_scaling<F: JoltField>(
+    challenges_be: &[F::Challenge],
+    scaling_factor: Option<F>,
+    precommitted: &PrecommittedClaimReduction<F>,
+) -> Vec<F>
+where
+    F: std::ops::Mul<F::Challenge, Output = F> + std::ops::SubAssign<F>,
+{
+    let permuted_challenges = precommitted_permute_eq_challenges(
+        challenges_be,
+        &precommitted.poly_opening_round_permutation_be,
+    );
+    if let Some(permuted_challenges) = permuted_challenges {
+        EqPolynomial::evals_with_scaling(&permuted_challenges, scaling_factor)
+    } else {
+        EqPolynomial::evals_with_scaling(challenges_be, scaling_factor)
+    }
+}
+
+fn precommitted_permute_eq_challenges<C: Copy>(
+    challenges_be: &[C],
+    poly_opening_round_permutation_be: &[usize],
+) -> Option<Vec<C>> {
+    let old_lsb_to_new_lsb = precommitted_sumcheck_lsb_permutation(poly_opening_round_permutation_be)?;
+    assert_eq!(
+        challenges_be.len(),
+        old_lsb_to_new_lsb.len(),
+        "challenge vector length mismatch for precommitted eq permutation",
+    );
+    let num_vars = challenges_be.len();
+    let mut permuted_challenges = challenges_be.to_vec();
+    for old_be in 0..num_vars {
+        let old_lsb = num_vars - 1 - old_be;
+        let new_lsb = old_lsb_to_new_lsb[old_lsb];
+        let new_be = num_vars - 1 - new_lsb;
+        permuted_challenges[new_be] = challenges_be[old_be];
+    }
+    Some(permuted_challenges)
+}
+
+fn precommitted_sumcheck_lsb_permutation(
+    poly_opening_round_permutation_be: &[usize],
 ) -> Option<Vec<usize>> {
-    let _ = embedding_mode;
-    let num_vars = poly_row_vars + poly_col_vars;
-    assert_eq!(
-        coeffs_len,
-        1usize << num_vars,
-        "precommitted coeff vector length mismatch: len={} expected=2^{}",
-        coeffs_len,
-        num_vars
-    );
-
-    let has_precommitted_dominance =
-        scheduling_reference.reference_total_vars > scheduling_reference.main_total_vars;
-    let dory_opening_round_permutation_be =
-        PrecommittedClaimReduction::<F>::reference_dory_opening_round_permutation_be(
-            scheduling_reference,
-            has_precommitted_dominance,
-            dense_cycle_prefix_vars,
-        );
-    let poly_opening_round_permutation_be =
-        PrecommittedClaimReduction::<F>::project_dory_round_permutation_for_poly(
-            &dory_opening_round_permutation_be,
-            scheduling_reference,
-            poly_row_vars,
-            poly_col_vars,
-        );
-    assert_eq!(
-        poly_opening_round_permutation_be.len(),
-        num_vars,
-        "poly opening round permutation size mismatch",
-    );
-
-    // `poly_opening_round_permutation_be[be_var_idx] = round`.
-    // Sort by round to get binding order. The first bound variable must become
-    // the lowest-index variable for low-to-high sumcheck binding.
+    let num_vars = poly_opening_round_permutation_be.len();
     let mut be_var_by_round: Vec<usize> = (0..num_vars).collect();
     be_var_by_round.sort_unstable_by_key(|&be_idx| poly_opening_round_permutation_be[be_idx]);
 
@@ -417,46 +429,44 @@ fn precommitted_sumcheck_index_permutation<F: JoltField>(
     {
         return None;
     }
-
-    let permutation: Vec<usize> = (0..coeffs_len)
-        .into_par_iter()
-        .map(|old_idx| {
-            let mut new_idx = 0usize;
-            for old_lsb in 0..num_vars {
-                let bit = (old_idx >> old_lsb) & 1usize;
-                let new_lsb = old_lsb_to_new_lsb[old_lsb];
-                new_idx |= bit << new_lsb;
-            }
-            new_idx
-        })
-        .collect();
-    Some(permutation)
+    Some(old_lsb_to_new_lsb)
 }
 
-pub fn build_permuted_precommitted_polys<V: Copy + Send + Sync, F: JoltField>(
-    value_coeffs: Vec<V>,
-    eq_coeffs: Vec<F>,
-    embedding_mode: PrecommittedEmbeddingMode,
-    poly_row_vars: usize,
-    poly_col_vars: usize,
-    scheduling_reference: &PrecommittedSchedulingReference,
-    dense_cycle_prefix_vars: usize,
-) -> (MultilinearPolynomial<F>, MultilinearPolynomial<F>)
-where
-    MultilinearPolynomial<F>: From<Vec<V>>,
-{
-    let (permuted_values, permuted_eq) = permute_precommitted_value_and_eq_coeffs(
-        value_coeffs,
-        eq_coeffs,
-        embedding_mode,
-        poly_row_vars,
-        poly_col_vars,
-        scheduling_reference,
-        dense_cycle_prefix_vars,
+fn precommitted_sumcheck_inverse_index_permutation(
+    coeffs_len: usize,
+    poly_opening_round_permutation_be: &[usize],
+) -> Option<Vec<usize>> {
+    let num_vars = poly_opening_round_permutation_be.len();
+    assert_eq!(
+        coeffs_len,
+        1usize << num_vars,
+        "precommitted coeff vector length mismatch: len={} expected=2^{}",
+        coeffs_len,
+        num_vars
     );
-    let value_poly: MultilinearPolynomial<F> = permuted_values.into();
-    let eq_poly: MultilinearPolynomial<F> = permuted_eq.into();
-    (value_poly, eq_poly)
+    // `poly_opening_round_permutation_be[be_var_idx] = round`.
+    // Sort by round to get binding order. The first bound variable must become
+    // the lowest-index variable for low-to-high sumcheck binding.
+    let old_lsb_to_new_lsb = precommitted_sumcheck_lsb_permutation(poly_opening_round_permutation_be)?;
+
+    let mut new_lsb_to_old_lsb = vec![0usize; num_vars];
+    for (old_lsb, &new_lsb) in old_lsb_to_new_lsb.iter().enumerate() {
+        new_lsb_to_old_lsb[new_lsb] = old_lsb;
+    }
+
+    let inverse_permutation: Vec<usize> = (0..coeffs_len)
+        .into_par_iter()
+        .map(|new_idx| {
+            let mut old_idx = 0usize;
+            for new_lsb in 0..num_vars {
+                let bit = (new_idx >> new_lsb) & 1usize;
+                let old_lsb = new_lsb_to_old_lsb[new_lsb];
+                old_idx |= bit << old_lsb;
+            }
+            old_idx
+        })
+        .collect();
+    Some(inverse_permutation)
 }
 
 pub const TWO_PHASE_DEGREE_BOUND: usize = 2;
@@ -588,7 +598,7 @@ impl<F: JoltField, P: PrecomittedParams<F>> PrecomittedProver<F, P> {
     }
 }
 
-pub fn precommitted_dummy_round_scale<F: JoltField>(
+pub fn precommitted_skip_round_scale<F: JoltField>(
     precommitted: &PrecommittedClaimReduction<F>,
 ) -> F {
     let cycle_gap_len =

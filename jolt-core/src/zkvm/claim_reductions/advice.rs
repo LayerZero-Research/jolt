@@ -17,13 +17,13 @@
 //! - **Phase 2 (Stage 7)**: resume from `C_mid`, bind the address-derived advice coordinates, and
 //!   cache the final advice opening `AdviceMLE(advice_point)` for batching into Stage 8.
 //!
-//! ## Dummy-gap scaling (within Stage 6)
+//! ## Skip-round scaling (within Stage 6)
 //! With cycle-major order, there may be a gap during the cycle phase where the cycle variables
 //! being bound in the batched sumcheck do not appear in the advice polynommial.
 //!
 //! We handle this without modifying the generic batched sumcheck by treating those intervening
-//! rounds as **dummy internal rounds** (constant univariates), and maintaining a running scaling
-//! factor `2^{-dummy_done}` so the per-round univariates remain consistent.
+//! rounds as **skipped internal rounds** (constant univariates), and maintaining a running scaling
+//! factor `2^{-skipped_done}` so the per-round univariates remain consistent.
 //!
 //! Trusted and untrusted advice run as **separate** sumcheck instances (each may have different
 //! dimensions).
@@ -45,9 +45,9 @@ use crate::subprotocols::sumcheck_verifier::{SumcheckInstanceParams, SumcheckIns
 use crate::transcripts::Transcript;
 use crate::utils::math::Math;
 use crate::zkvm::claim_reductions::{
-    build_permuted_precommitted_polys, precommitted_dummy_round_scale, PrecomittedParams,
-    PrecomittedProver, PrecommittedClaimReduction, PrecommittedSchedulingReference,
-    TWO_PHASE_DEGREE_BOUND,
+    permute_precommitted_polys, precommitted_eq_evals_with_scaling, precommitted_skip_round_scale,
+    PrecomittedParams, PrecomittedProver, PrecommittedClaimReduction,
+    PrecommittedSchedulingReference, TWO_PHASE_DEGREE_BOUND,
 };
 use crate::zkvm::config::ReadWriteConfig;
 use allocative::Allocative;
@@ -239,14 +239,19 @@ impl<F: JoltField> AdviceClaimReductionProver<F> {
         advice_poly: MultilinearPolynomial<F>,
     ) -> Self {
         let eq_evals = if params.single_opening {
-            EqPolynomial::evals(&params.r_val_eval.r)
+            precommitted_eq_evals_with_scaling(&params.r_val_eval.r, None, &params.precommitted)
         } else {
-            let evals = EqPolynomial::evals(&params.r_val_eval.r);
+            let evals =
+                precommitted_eq_evals_with_scaling(&params.r_val_eval.r, None, &params.precommitted);
             let r_final = params
                 .r_val_final
                 .as_ref()
                 .expect("r_val_final must exist when !single_opening");
-            let eq_final = EqPolynomial::evals_with_scaling(&r_final.r, Some(params.gamma));
+            let eq_final = precommitted_eq_evals_with_scaling(
+                &r_final.r,
+                Some(params.gamma),
+                &params.precommitted,
+            );
             evals
                 .par_iter()
                 .zip(eq_final.par_iter())
@@ -257,15 +262,13 @@ impl<F: JoltField> AdviceClaimReductionProver<F> {
             let MultilinearPolynomial::U64Scalars(poly) = advice_poly else {
                 panic!("Advice should have u64 coefficients");
             };
-            build_permuted_precommitted_polys(
-                poly.coeffs,
-                eq_evals,
-                params.precommitted.embedding_mode,
-                params.advice_row_vars,
-                params.advice_col_vars,
-                &params.precommitted.scheduling_reference,
-                params.log_t,
-            )
+            let mut permuted =
+                permute_precommitted_polys(vec![poly.coeffs], &params.precommitted).into_iter();
+            let advice_poly = permuted
+                .next()
+                .expect("expected one permuted advice polynomial");
+            let eq_poly = eq_evals.into();
+            (advice_poly, eq_poly)
         };
 
         Self {
@@ -415,8 +418,8 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
                     .1;
                 let eq_combined = evaluate_advice_eq_combined(&params, &opening_point);
 
-                // Account for Phase 1's internal dummy-gap traversal via constant scaling.
-                let scale: F = precommitted_dummy_round_scale(&params.precommitted);
+                // Account for Phase 1's internal skip-round traversal via constant scaling.
+                let scale: F = precommitted_skip_round_scale(&params.precommitted);
                 advice_claim * eq_combined * scale
             }
         }

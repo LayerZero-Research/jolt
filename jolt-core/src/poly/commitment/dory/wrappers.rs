@@ -290,11 +290,10 @@ where
                 .take(row_len)
                 .map(|g| g.0.into_affine())
                 .collect();
-            let num_rows = if dense_len == 0 {
-                0
-            } else {
-                ((dense_len - 1).saturating_mul(stride) / row_len) + 1
-            };
+            // Keep the committed matrix shape consistent with the initialized Main context.
+            // Even if the embedded dense trace only touches a sparse subset of rows, we must
+            // include trailing all-zero rows up to the full Dory row domain.
+            let num_rows = DoryGlobals::get_max_num_rows();
             let sparse_terms: Vec<(usize, usize, Fr)> = (0..dense_len)
                 .into_par_iter()
                 .filter_map(|cycle| {

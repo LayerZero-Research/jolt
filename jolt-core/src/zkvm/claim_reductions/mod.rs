@@ -28,8 +28,8 @@ pub use instruction_lookups::{
     InstructionLookupsClaimReductionSumcheckVerifier,
 };
 pub use precommitted::{
-    build_permuted_precommitted_polys, permute_precommitted_value_and_eq_coeffs,
-    precommitted_dummy_round_scale, PrecomittedParams, PrecomittedProver,
+    permute_precommitted_polys, precommitted_eq_evals_with_scaling, precommitted_skip_round_scale,
+    PrecomittedParams, PrecomittedProver,
     PrecommittedClaimReduction, PrecommittedEmbeddingMode, PrecommittedSchedulingReference,
     TWO_PHASE_DEGREE_BOUND,
 };

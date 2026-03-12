@@ -21,7 +21,7 @@ use crate::utils::math::Math;
 use crate::zkvm::bytecode::chunks::committed_lanes;
 use crate::zkvm::bytecode::read_raf_checking::BytecodeReadRafSumcheckParams;
 use crate::zkvm::claim_reductions::{
-    build_permuted_precommitted_polys, precommitted_dummy_round_scale, PrecommittedClaimReduction,
+    permute_precommitted_polys, precommitted_skip_round_scale, PrecommittedClaimReduction,
     PrecommittedSchedulingReference, TWO_PHASE_DEGREE_BOUND,
 };
 use crate::zkvm::instruction::{
@@ -250,33 +250,24 @@ impl<F: JoltField> BytecodeClaimReductionProver<F> {
                     .sum::<F>()
             })
             .collect();
-        let (value_poly, eq_poly) = build_permuted_precommitted_polys(
-            raw_value_coeffs,
-            eq_coeffs_template.clone(),
-            params.precommitted.embedding_mode,
-            params.bytecode_row_vars,
-            params.bytecode_col_vars,
-            &params.precommitted.scheduling_reference,
-            params.dense_cycle_prefix_vars,
-        );
-        let chunk_value_polys = raw_chunk_polys
-            .par_iter()
-            .map(|raw_chunk_poly| {
-                let raw_chunk_coeffs: Vec<F> = (0..raw_chunk_poly.len())
-                    .map(|idx| raw_chunk_poly.get_coeff(idx))
-                    .collect();
-                build_permuted_precommitted_polys(
-                    raw_chunk_coeffs,
-                    eq_coeffs_template.clone(),
-                    params.precommitted.embedding_mode,
-                    params.bytecode_row_vars,
-                    params.bytecode_col_vars,
-                    &params.precommitted.scheduling_reference,
-                    params.dense_cycle_prefix_vars,
-                )
-                .0
-            })
-            .collect();
+        let mut coeffs_by_poly = Vec::with_capacity(2 + raw_chunk_polys.len());
+        coeffs_by_poly.push(raw_value_coeffs);
+        coeffs_by_poly.push(eq_coeffs_template);
+        for raw_chunk_poly in raw_chunk_polys.iter() {
+            let raw_chunk_coeffs: Vec<F> = (0..raw_chunk_poly.len())
+                .map(|idx| raw_chunk_poly.get_coeff(idx))
+                .collect();
+            coeffs_by_poly.push(raw_chunk_coeffs);
+        }
+        let mut permuted_polys =
+            permute_precommitted_polys(coeffs_by_poly, &params.precommitted).into_iter();
+        let value_poly = permuted_polys
+            .next()
+            .expect("expected permuted bytecode value polynomial");
+        let eq_poly = permuted_polys
+            .next()
+            .expect("expected permuted bytecode eq polynomial");
+        let chunk_value_polys: Vec<MultilinearPolynomial<F>> = permuted_polys.collect();
 
         Self {
             params,
@@ -493,7 +484,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
                     .sum();
                 let eq_combined = evaluate_bytecode_eq_combined(&params, sumcheck_challenges);
 
-                let scale: F = precommitted_dummy_round_scale(&params.precommitted);
+                let scale: F = precommitted_skip_round_scale(&params.precommitted);
 
                 bytecode_opening * eq_combined * scale
             }

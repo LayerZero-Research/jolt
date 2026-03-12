@@ -23,9 +23,9 @@ use crate::subprotocols::sumcheck_verifier::{SumcheckInstanceParams, SumcheckIns
 use crate::transcripts::Transcript;
 use crate::utils::math::Math;
 use crate::zkvm::claim_reductions::{
-    build_permuted_precommitted_polys, precommitted_dummy_round_scale, PrecomittedParams,
-    PrecomittedProver, PrecommittedClaimReduction, PrecommittedSchedulingReference,
-    TWO_PHASE_DEGREE_BOUND,
+    permute_precommitted_polys, precommitted_eq_evals_with_scaling, precommitted_skip_round_scale,
+    PrecomittedParams, PrecomittedProver, PrecommittedClaimReduction,
+    PrecommittedSchedulingReference, TWO_PHASE_DEGREE_BOUND,
 };
 use crate::zkvm::config::ReadWriteConfig;
 use crate::zkvm::ram::remap_address;
@@ -301,14 +301,16 @@ impl<F: JoltField> ProgramImageClaimReductionProver<F> {
         debug_assert_eq!(params.padded_len_words, 1usize << params.m);
 
         let eq_evals = if params.single_opening {
-            EqPolynomial::evals_with_scaling(
+            precommitted_eq_evals_with_scaling(
                 &params.r_addr_rw_reduced,
                 Some(params.selector_rw.clone()),
+                &params.precommitted,
             )
         } else {
-            let evals = EqPolynomial::evals_with_scaling(
+            let evals = precommitted_eq_evals_with_scaling(
                 &params.r_addr_rw_reduced,
                 Some(params.selector_rw.clone()),
+                &params.precommitted,
             );
             let r_addr_raf_reduced = params
                 .r_addr_raf_reduced
@@ -319,7 +321,11 @@ impl<F: JoltField> ProgramImageClaimReductionProver<F> {
                 .as_ref()
                 .expect("missing reduced raf selector")
                 .clone();
-            let eq_final = EqPolynomial::evals_with_scaling(r_addr_raf_reduced, Some(selector_raf));
+            let eq_final = precommitted_eq_evals_with_scaling(
+                r_addr_raf_reduced,
+                Some(selector_raf),
+                &params.precommitted,
+            );
             evals
                 .par_iter()
                 .zip(eq_final.par_iter())
@@ -329,16 +335,16 @@ impl<F: JoltField> ProgramImageClaimReductionProver<F> {
 
         // Permute ProgramWord and eq_slice so low-to-high binding follows the two-phase
         // schedule while preserving top-left projection semantics against the joint point.
-        let (program_word, eq_slice): (MultilinearPolynomial<F>, MultilinearPolynomial<F>) =
-            build_permuted_precommitted_polys(
-                program_image_words_padded,
-                eq_evals,
-                params.precommitted.embedding_mode,
-                params.prog_row_vars,
-                params.prog_col_vars,
-                &params.precommitted.scheduling_reference,
-                params.log_t,
-            );
+        let (program_word, eq_slice): (MultilinearPolynomial<F>, MultilinearPolynomial<F>) = {
+            let mut permuted =
+                permute_precommitted_polys(vec![program_image_words_padded], &params.precommitted)
+                    .into_iter();
+            let program_word = permuted
+                .next()
+                .expect("expected one permuted program image polynomial");
+            let eq_slice = eq_evals.into();
+            (program_word, eq_slice)
+        };
 
         Self {
             core: PrecomittedProver::new(params, program_word, eq_slice),
@@ -459,7 +465,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
                     eq_eval + params.gamma * eq_final
                 };
 
-                let scale: F = precommitted_dummy_round_scale(&params.precommitted);
+                let scale: F = precommitted_skip_round_scale(&params.precommitted);
                 pw_eval * eq_combined * scale
             }
         }
