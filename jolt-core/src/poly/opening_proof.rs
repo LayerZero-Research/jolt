@@ -188,6 +188,11 @@ impl OpeningId {
 pub type Opening<F> = (OpeningPoint<BIG_ENDIAN, F>, F);
 pub type Openings<F> = BTreeMap<OpeningId, Opening<F>>;
 
+/// Dummy openings must survive any verifier-side `split_at_r(log_K)` call while a deferred
+/// opening error is still pending. The current verifier caps `ram_K` at 2^128 addresses,
+/// so 128 extra coordinates cover every known split.
+const DUMMY_OPENING_SPLIT_SLACK_BITS: usize = 128;
+
 fn underlying_polynomial_id(opening_id: OpeningId) -> PolynomialId {
     match opening_id {
         OpeningId::Polynomial(poly_id, _sumcheck_id) => poly_id,
@@ -651,12 +656,23 @@ where
         }
     }
 
+    pub(crate) fn has_deferred_opening_error(&self) -> bool {
+        self.missing_opening.borrow().is_some() || self.malformed_proof.borrow().is_some()
+    }
+
+    pub(crate) fn record_malformed_proof_once(&self, message: impl Into<String>) {
+        let mut malformed = self.malformed_proof.borrow_mut();
+        if malformed.is_none() {
+            *malformed = Some(message.into());
+        }
+    }
+
     fn record_missing_opening(&self, key: OpeningId) -> (OpeningPoint<BIG_ENDIAN, F>, F) {
         let mut missing = self.missing_opening.borrow_mut();
         if missing.is_none() {
             *missing = Some(key);
         }
-        let dummy_len = self.log_T.max(1) + 128;
+        let dummy_len = self.log_T.max(1) + DUMMY_OPENING_SPLIT_SLACK_BITS;
         (
             OpeningPoint::new(vec![F::Challenge::default(); dummy_len]),
             F::zero(),
@@ -703,10 +719,7 @@ where
     ) -> Option<(OpeningId, F)> {
         self.opening_ids_by_poly.get(&poly_id).and_then(|ids| {
             ids.iter().find_map(|existing_id| {
-                let (existing_point, existing_claim) = self
-                    .openings
-                    .get(existing_id)
-                    .expect("indexed opening missing");
+                let (existing_point, existing_claim) = self.openings.get(existing_id)?;
                 if existing_point.r.is_empty() {
                     return None;
                 }
@@ -719,6 +732,39 @@ where
         })
     }
 
+    fn unindex_opening_id(&mut self, key: OpeningId) {
+        let poly_id = underlying_polynomial_id(key);
+        let should_remove_entry = if let Some(ids) = self.opening_ids_by_poly.get_mut(&poly_id) {
+            ids.retain(|existing_id| *existing_id != key);
+            ids.is_empty()
+        } else {
+            false
+        };
+        if should_remove_entry {
+            self.opening_ids_by_poly.remove(&poly_id);
+        }
+    }
+
+    fn remove_pending_claim(&mut self, key: OpeningId) {
+        if let Some(index) = self
+            .pending_claim_ids
+            .iter()
+            .position(|existing_id| *existing_id == key)
+        {
+            self.pending_claim_ids.remove(index);
+            self.pending_claims.remove(index);
+        }
+    }
+
+    fn poison_opening(&mut self, key: OpeningId) {
+        self.openings.remove(&key);
+        self.unindex_opening_id(key);
+        self.remove_pending_claim(key);
+        self.aliases.remove(&key);
+        self.aliases
+            .retain(|alias, canonical| *alias != key && *canonical != key);
+    }
+
     fn populate_or_alias_opening(&mut self, key: OpeningId, point: OpeningPoint<BIG_ENDIAN, F>) {
         if let Some((_, claim)) = self.openings.get(&key) {
             if let Some((existing_id, existing_claim)) =
@@ -726,12 +772,11 @@ where
             {
                 if existing_id != key {
                     if *claim != existing_claim {
-                        let mut malformed = self.malformed_proof.borrow_mut();
-                        if malformed.is_none() {
-                            *malformed = Some(format!(
-                                "inconsistent duplicate opening claims: {key:?} vs {existing_id:?}"
-                            ));
-                        }
+                        self.record_malformed_proof_once(format!(
+                            "inconsistent duplicate opening claims: {key:?} vs {existing_id:?}"
+                        ));
+                        self.poison_opening(existing_id);
+                        self.poison_opening(key);
                         return;
                     }
                     self.aliases.insert(key, existing_id);
@@ -879,6 +924,7 @@ pub fn compute_advice_lagrange_factor<F: JoltField>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::field::challenge::MontU128Challenge;
     use ark_bn254::Fr;
 
     #[test]
@@ -893,6 +939,41 @@ mod tests {
             accumulator.take_missing_opening_error(),
             Err(ProofVerifyError::MissingOpening(message))
                 if message.contains("InstructionRa(0)")
+        ));
+    }
+
+    #[test]
+    fn verifier_accumulator_prioritizes_malformed_duplicate_openings() {
+        let mut accumulator = VerifierOpeningAccumulator::<Fr>::new(4, false);
+        let first = OpeningId::committed(
+            CommittedPolynomial::InstructionRa(0),
+            SumcheckId::InstructionReadRaf,
+        );
+        let second = OpeningId::committed(
+            CommittedPolynomial::InstructionRa(0),
+            SumcheckId::InstructionClaimReduction,
+        );
+        let point = OpeningPoint::new([7_u128, 9_u128].map(MontU128Challenge::<Fr>::from).to_vec());
+
+        accumulator
+            .openings
+            .insert(first, (OpeningPoint::default(), Fr::from(1u64)));
+        accumulator
+            .openings
+            .insert(second, (OpeningPoint::default(), Fr::from(2u64)));
+
+        accumulator.populate_or_alias_opening(first, point.clone());
+        accumulator.populate_or_alias_opening(second, point);
+
+        let _ = accumulator.get_committed_polynomial_opening(
+            CommittedPolynomial::InstructionRa(0),
+            SumcheckId::InstructionReadRaf,
+        );
+
+        assert!(matches!(
+            accumulator.take_missing_opening_error(),
+            Err(ProofVerifyError::MalformedProof(message))
+                if message.contains("inconsistent duplicate opening claims")
         ));
     }
 }

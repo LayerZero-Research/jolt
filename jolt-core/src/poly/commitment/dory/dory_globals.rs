@@ -201,7 +201,9 @@ impl DoryGlobals {
     pub fn acquire_runtime_guard() -> DoryRuntimeGuard {
         let mutex = DORY_RUNTIME_GUARD.get_or_init(|| Mutex::new(()));
         DoryRuntimeGuard {
-            _guard: mutex.lock().unwrap(),
+            _guard: mutex
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
         }
     }
 

@@ -527,6 +527,8 @@ impl<
         let instances: Vec<&dyn SumcheckInstanceVerifier<F, ProofTranscript>> =
             vec![&spartan_outer_remaining];
 
+        self.opening_accumulator.take_missing_opening_error()?;
+
         let (batching_coefficients, r_stage1) = BatchedSumcheck::verify(
             &self.proof.stage1_sumcheck_proof,
             instances.clone(),
@@ -651,6 +653,8 @@ impl<
             &ram_output_check,
         ];
 
+        self.opening_accumulator.take_missing_opening_error()?;
+
         let (batching_coefficients, r_stage2) = BatchedSumcheck::verify(
             &self.proof.stage2_sumcheck_proof,
             instances.clone(),
@@ -731,6 +735,8 @@ impl<
             &spartan_instruction_input,
             &spartan_registers_claim_reduction,
         ];
+
+        self.opening_accumulator.take_missing_opening_error()?;
 
         let (batching_coefficients, r_stage3) = BatchedSumcheck::verify(
             &self.proof.stage3_sumcheck_proof,
@@ -815,6 +821,8 @@ impl<
         let instances: Vec<&dyn SumcheckInstanceVerifier<F, ProofTranscript>> =
             vec![&registers_read_write_checking, &ram_val_check];
 
+        self.opening_accumulator.take_missing_opening_error()?;
+
         let (batching_coefficients, r_stage4) = BatchedSumcheck::verify(
             &self.proof.stage4_sumcheck_proof,
             instances.clone(),
@@ -885,6 +893,8 @@ impl<
             &ram_ra_reduction,
             &registers_val_evaluation,
         ];
+
+        self.opening_accumulator.take_missing_opening_error()?;
 
         let (batching_coefficients, r_stage5) = BatchedSumcheck::verify(
             &self.proof.stage5_sumcheck_proof,
@@ -1002,6 +1012,8 @@ impl<
         if let Some(ref advice) = self.advice_reduction_verifier_untrusted {
             instances.push(advice);
         }
+
+        self.opening_accumulator.take_missing_opening_error()?;
 
         let (batching_coefficients, r_stage6) = BatchedSumcheck::verify(
             &self.proof.stage6_sumcheck_proof,
@@ -1337,6 +1349,8 @@ impl<
                 instances.push(advice_reduction_verifier_untrusted);
             }
         }
+
+        self.opening_accumulator.take_missing_opening_error()?;
 
         let (batching_coefficients, r_stage7) = BatchedSumcheck::verify(
             &self.proof.stage7_sumcheck_proof,

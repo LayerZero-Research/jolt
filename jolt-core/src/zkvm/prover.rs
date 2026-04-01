@@ -3351,9 +3351,8 @@ mod tests {
     #[test]
     #[serial]
     fn verifier_rejects_invalid_trace_lengths() {
-        let (verifier_preprocessing, proof, program_io) = prove_fibonacci(9);
+        let (verifier_preprocessing, mut zero_trace, program_io) = prove_fibonacci(9);
 
-        let mut zero_trace = proof.clone();
         zero_trace.trace_length = 0;
         assert!(matches!(
             RV64IMACVerifier::new(
@@ -3366,7 +3365,7 @@ mod tests {
             Err(ProofVerifyError::InvalidTraceLength(0))
         ));
 
-        let mut non_power_of_two = proof.clone();
+        let (verifier_preprocessing, mut non_power_of_two, program_io) = prove_fibonacci(9);
         non_power_of_two.trace_length = 3;
         assert!(matches!(
             RV64IMACVerifier::new(
@@ -3379,7 +3378,7 @@ mod tests {
             Err(ProofVerifyError::InvalidTraceLength(3))
         ));
 
-        let mut oversized = proof;
+        let (verifier_preprocessing, mut oversized, program_io) = prove_fibonacci(9);
         oversized.trace_length = verifier_preprocessing.shared.max_padded_trace_length * 2;
         assert!(matches!(
             RV64IMACVerifier::new(&verifier_preprocessing, oversized, program_io, None, None),
@@ -3390,14 +3389,12 @@ mod tests {
     #[test]
     #[serial]
     fn verifier_rejects_invalid_ram_k_bounds() {
-        let (verifier_preprocessing, proof, program_io) = prove_fibonacci(9);
+        let (verifier_preprocessing, mut undersized, program_io) = prove_fibonacci(9);
         let min_ram_k = compute_min_ram_K(
             &verifier_preprocessing.shared.ram,
             &verifier_preprocessing.shared.memory_layout,
         );
-        let max_ram_k = compute_max_ram_K(&verifier_preprocessing.shared.memory_layout);
 
-        let mut undersized = proof.clone();
         undersized.ram_K = min_ram_k.checked_shr(1).unwrap_or(0);
         assert!(matches!(
             RV64IMACVerifier::new(
@@ -3410,7 +3407,8 @@ mod tests {
             Err(ProofVerifyError::InvalidRamK(_, _))
         ));
 
-        let mut oversized = proof;
+        let (verifier_preprocessing, mut oversized, program_io) = prove_fibonacci(9);
+        let max_ram_k = compute_max_ram_K(&verifier_preprocessing.shared.memory_layout);
         oversized.ram_K = max_ram_k * 2;
         assert!(matches!(
             RV64IMACVerifier::new(&verifier_preprocessing, oversized, program_io, None, None),

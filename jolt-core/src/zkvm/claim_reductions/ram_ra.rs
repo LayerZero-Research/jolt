@@ -603,32 +603,19 @@ pub struct RaReductionParams<F: JoltField> {
 }
 
 impl<F: JoltField> RaReductionParams<F> {
-    /// Create params from the opening accumulator.
-    pub fn new(
-        trace_len: usize,
-        one_hot_params: &OneHotParams,
-        opening_accumulator: &dyn OpeningAccumulator<F>,
+    fn from_openings(
+        log_K: usize,
+        log_T: usize,
+        [(r_raf, claim_raf), (r_rw, claim_rw), (r_val, claim_val)]: [(OpeningPoint<BIG_ENDIAN, F>, F);
+            3],
         transcript: &mut impl Transcript,
     ) -> Self {
-        let log_K = one_hot_params.ram_k.log_2();
-        let log_T = trace_len.log_2();
-
-        // Get the three RA claims from the accumulator.
-        let (r_raf, claim_raf) = opening_accumulator
-            .get_virtual_polynomial_opening(VirtualPolynomial::RamRa, SumcheckId::RamRafEvaluation);
-        let (r_rw, claim_rw) = opening_accumulator.get_virtual_polynomial_opening(
-            VirtualPolynomial::RamRa,
-            SumcheckId::RamReadWriteChecking,
-        );
-        let (r_val, claim_val) = opening_accumulator
-            .get_virtual_polynomial_opening(VirtualPolynomial::RamRa, SumcheckId::RamValCheck);
-
         // Extract r_address and r_cycle from each opening point.
         let (r_address_raf, r_cycle_raf) = r_raf.split_at_r(log_K);
         let (r_address_rw, r_cycle_rw) = r_rw.split_at_r(log_K);
         let (r_address_val, r_cycle_val) = r_val.split_at_r(log_K);
 
-        // Verify unified address (these should hold by construction after Stage 2 alignment).
+        // These openings should share the same aligned RAM address after Stage 2.
         assert_eq!(r_address_raf, r_address_rw);
         assert_eq!(r_address_raf, r_address_val);
 
@@ -649,6 +636,88 @@ impl<F: JoltField> RaReductionParams<F> {
             log_K,
             log_T,
         }
+    }
+
+    /// Create params from the opening accumulator.
+    pub fn new(
+        trace_len: usize,
+        one_hot_params: &OneHotParams,
+        opening_accumulator: &dyn OpeningAccumulator<F>,
+        transcript: &mut impl Transcript,
+    ) -> Self {
+        let log_K = one_hot_params.ram_k.log_2();
+        let log_T = trace_len.log_2();
+
+        // Get the three RA claims from the accumulator.
+        let (r_raf, claim_raf) = opening_accumulator
+            .get_virtual_polynomial_opening(VirtualPolynomial::RamRa, SumcheckId::RamRafEvaluation);
+        let (r_rw, claim_rw) = opening_accumulator.get_virtual_polynomial_opening(
+            VirtualPolynomial::RamRa,
+            SumcheckId::RamReadWriteChecking,
+        );
+        let (r_val, claim_val) = opening_accumulator
+            .get_virtual_polynomial_opening(VirtualPolynomial::RamRa, SumcheckId::RamValCheck);
+
+        Self::from_openings(
+            log_K,
+            log_T,
+            [(r_raf, claim_raf), (r_rw, claim_rw), (r_val, claim_val)],
+            transcript,
+        )
+    }
+
+    /// Create verifier params while preserving deferred opening errors.
+    pub fn new_from_verifier(
+        trace_len: usize,
+        one_hot_params: &OneHotParams,
+        opening_accumulator: &VerifierOpeningAccumulator<F>,
+        transcript: &mut impl Transcript,
+    ) -> Self {
+        let log_K = one_hot_params.ram_k.log_2();
+        let log_T = trace_len.log_2();
+
+        let (r_raf, claim_raf) = opening_accumulator
+            .get_virtual_polynomial_opening(VirtualPolynomial::RamRa, SumcheckId::RamRafEvaluation);
+        let (r_rw, claim_rw) = opening_accumulator.get_virtual_polynomial_opening(
+            VirtualPolynomial::RamRa,
+            SumcheckId::RamReadWriteChecking,
+        );
+        let (r_val, claim_val) = opening_accumulator
+            .get_virtual_polynomial_opening(VirtualPolynomial::RamRa, SumcheckId::RamValCheck);
+
+        let (r_address_raf, r_cycle_raf) = r_raf.split_at_r(log_K);
+        let (r_address_rw, r_cycle_rw) = r_rw.split_at_r(log_K);
+        let (r_address_val, r_cycle_val) = r_val.split_at_r(log_K);
+
+        if r_address_raf != r_address_rw || r_address_raf != r_address_val {
+            if !opening_accumulator.has_deferred_opening_error() {
+                opening_accumulator.record_malformed_proof_once(
+                    "misaligned RamRa openings: RamRafEvaluation, RamReadWriteChecking, and RamValCheck must share the same r_address",
+                );
+            }
+            let gamma: F = transcript.challenge_scalar();
+            let gamma_squared = gamma * gamma;
+            return Self {
+                gamma,
+                gamma_squared,
+                r_address: r_address_raf.to_vec(),
+                r_cycle_raf: r_cycle_raf.to_vec(),
+                r_cycle_rw: r_cycle_rw.to_vec(),
+                r_cycle_val: r_cycle_val.to_vec(),
+                claim_raf,
+                claim_rw,
+                claim_val,
+                log_K,
+                log_T,
+            };
+        }
+
+        Self::from_openings(
+            log_K,
+            log_T,
+            [(r_raf, claim_raf), (r_rw, claim_rw), (r_val, claim_val)],
+            transcript,
+        )
     }
 }
 
@@ -726,8 +795,12 @@ impl<F: JoltField> RamRaClaimReductionSumcheckVerifier<F> {
         opening_accumulator: &VerifierOpeningAccumulator<F>,
         transcript: &mut impl Transcript,
     ) -> Self {
-        let params =
-            RaReductionParams::new(trace_len, one_hot_params, opening_accumulator, transcript);
+        let params = RaReductionParams::new_from_verifier(
+            trace_len,
+            one_hot_params,
+            opening_accumulator,
+            transcript,
+        );
         Self { params }
     }
 }
