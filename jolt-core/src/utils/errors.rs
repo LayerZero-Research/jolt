@@ -24,10 +24,6 @@ pub enum ProofVerifyError {
     InvalidKeyLength(usize),
     #[error("Invalid opening proof -- the proof failed to verify")]
     InvalidOpeningProof,
-    #[error("Invalid trace_length: {0}")]
-    InvalidTraceLength(usize),
-    #[error("trace_length {0} exceeds preprocessing maximum {1}")]
-    TraceLengthTooLarge(usize, usize),
     #[error("Invalid read-write checking configuration: {0}")]
     InvalidReadWriteConfig(String),
     #[error("Invalid one-hot configuration: {0}")]
@@ -40,6 +36,8 @@ pub enum ProofVerifyError {
     MalformedProof(String),
     #[error("Missing opening: {0}")]
     MissingOpening(String),
+    #[error("Invalid trace_length: got {0}, max allowed {1}")]
+    InvalidTraceLength(usize, usize),
     #[error("Dory proof verification failed: {0}")]
     DoryError(String),
     #[error("Sumcheck verification failed")]

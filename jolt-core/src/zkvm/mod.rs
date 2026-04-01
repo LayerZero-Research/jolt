@@ -1,17 +1,14 @@
 use std::fs::File;
 
-use crate::poly::commitment::dory::DoryLayout;
-use crate::zkvm::config::OneHotParams;
-use crate::zkvm::config::{OneHotConfig, ReadWriteConfig};
+use crate::zkvm::config::{OneHotConfig, OneHotParams, ReadWriteConfig};
 use crate::zkvm::witness::CommittedPolynomial;
 use crate::{
     curve::Bn254Curve,
     field::JoltField,
+    poly::commitment::commitment_scheme::CommitmentScheme,
+    poly::commitment::dory::{DoryCommitmentScheme, DoryLayout},
     poly::opening_proof::ProverOpeningAccumulator,
     poly::opening_proof::{OpeningId, SumcheckId},
-    poly::{
-        commitment::commitment_scheme::CommitmentScheme, commitment::dory::DoryCommitmentScheme,
-    },
     transcripts::Blake2bTranscript,
     transcripts::Transcript,
 };
