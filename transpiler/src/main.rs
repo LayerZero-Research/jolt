@@ -248,7 +248,7 @@ fn main() {
     // When verify() is called (Step 4), it executes the verification logic but records
     // all arithmetic operations to the AST instead of computing actual results.
     println!("\n=== Creating TranspilableVerifier ===");
-    let verifier = TranspilableVerifier::<
+    let verifier = match TranspilableVerifier::<
         MleAst,
         AstCurve,
         AstCommitmentScheme,
@@ -261,7 +261,13 @@ fn main() {
         symbolic_trusted_advice,
         transcript,
         accumulator,
-    );
+    ) {
+        Ok(verifier) => verifier,
+        Err(e) => {
+            println!("  Verifier setup error: {e:?}");
+            return;
+        }
+    };
 
     // =========================================================================
     // Step 4: Run symbolic verification

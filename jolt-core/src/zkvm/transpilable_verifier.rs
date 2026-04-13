@@ -269,13 +269,22 @@ impl<
         trusted_advice_commitment: Option<PCS::Commitment>,
         transcript: ProofTranscript,
         opening_accumulator: A,
-    ) -> Self {
+    ) -> Result<Self, ProofVerifyError> {
+        if !proof.trace_length.is_power_of_two()
+            || proof.trace_length > preprocessing.shared.max_padded_trace_length
+        {
+            return Err(ProofVerifyError::InvalidTraceLength(
+                proof.trace_length,
+                preprocessing.shared.max_padded_trace_length,
+            ));
+        }
+
         let spartan_key = UniformSpartanKey::new(proof.trace_length.next_power_of_two());
         let bytecode_K = preprocessing.shared.bytecode.code_size;
         let one_hot_params =
             OneHotParams::from_config(&proof.one_hot_config, bytecode_K, proof.ram_K);
 
-        Self {
+        Ok(Self {
             trusted_advice_commitment,
             program_io,
             proof,
@@ -286,7 +295,7 @@ impl<
             one_hot_params,
             advice_reduction_verifier_trusted: None,
             advice_reduction_verifier_untrusted: None,
-        }
+        })
     }
 
     /// Verify the Jolt proof (stages 1-7).
