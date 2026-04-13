@@ -41,6 +41,7 @@ use common::jolt_device::JoltDevice;
 use jolt_core::curve::Bn254Curve;
 use jolt_core::poly::commitment::dory::{ArkGT, DoryCommitmentScheme};
 use jolt_core::transcripts::Transcript;
+use jolt_core::utils::errors::ProofVerifyError;
 use jolt_core::zkvm::transpilable_verifier::TranspilableVerifier;
 use jolt_core::zkvm::verifier::JoltVerifierPreprocessing;
 use jolt_core::zkvm::RV64IMACProof;
@@ -165,6 +166,19 @@ fn main() {
             shared: real_preprocessing.shared.clone(),
             blindfold_setup: None,
         };
+
+    if !real_proof.trace_length.is_power_of_two()
+        || real_proof.trace_length > real_preprocessing.shared.max_padded_trace_length
+    {
+        println!(
+            "  Verifier setup error: {:?}",
+            ProofVerifyError::InvalidTraceLength(
+                real_proof.trace_length,
+                real_preprocessing.shared.max_padded_trace_length,
+            )
+        );
+        return;
+    }
 
     // =========================================================================
     // Step 2: Convert proof to symbolic representation
