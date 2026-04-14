@@ -215,12 +215,13 @@ fn reference_evaluate_and_fold<const D: usize>(
 
 #[test]
 fn polynomial_adapter_preserves_coefficients() {
-    let evals: Vec<JoltFp128> = (0..16).map(|i| JoltFp128::from_u64(i as u64)).collect();
+    let len = Cfg::D;
+    let evals: Vec<JoltFp128> = (0..len).map(|i| JoltFp128::from_u64(i as u64)).collect();
     let poly = MultilinearPolynomial::LargeScalars(DensePolynomial::new(evals.clone()));
 
     let ring_coeffs = poly_to_ring_coeffs::<{ Cfg::D }>(&poly);
 
-    assert_eq!(ring_coeffs.len() * Cfg::D, 16);
+    assert_eq!(ring_coeffs.len() * Cfg::D, len);
     for (i, (&jolt_val, hachi_val)) in evals
         .iter()
         .zip(

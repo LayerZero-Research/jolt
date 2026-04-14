@@ -1492,6 +1492,7 @@ impl<
                 AdviceKind::Trusted,
                 &self.program_io.memory_layout,
                 self.trace.len(),
+                self.one_hot_params.log_k_chunk,
                 &self.opening_accumulator,
             );
             // Note: We clone the advice polynomial here because Stage 8 needs the original polynomial
@@ -1514,6 +1515,7 @@ impl<
                 AdviceKind::Untrusted,
                 &self.program_io.memory_layout,
                 self.trace.len(),
+                self.one_hot_params.log_k_chunk,
                 &self.opening_accumulator,
             );
             // Note: We clone the advice polynomial here because Stage 8 needs the original polynomial

@@ -50,7 +50,6 @@ use crate::subprotocols::sumcheck_prover::SumcheckInstanceProver;
 use crate::subprotocols::sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier};
 use crate::transcripts::Transcript;
 use crate::utils::math::Math;
-use crate::zkvm::config::OneHotConfig;
 use allocative::Allocative;
 use common::jolt_device::MemoryLayout;
 use rayon::prelude::*;
@@ -128,6 +127,7 @@ impl<F: JoltField> AdviceClaimReductionParams<F> {
         kind: AdviceKind,
         memory_layout: &MemoryLayout,
         trace_len: usize,
+        log_k_chunk: usize,
         accumulator: &dyn OpeningAccumulator<F>,
     ) -> Self {
         let max_advice_size_bytes = match kind {
@@ -136,7 +136,6 @@ impl<F: JoltField> AdviceClaimReductionParams<F> {
         };
 
         let log_t = trace_len.log_2();
-        let log_k_chunk = OneHotConfig::new(log_t).log_k_chunk as usize;
         let (main_col_vars, main_row_vars) = DoryGlobals::main_sigma_nu(log_k_chunk, log_t);
 
         let r_val = accumulator
@@ -587,9 +586,11 @@ impl<F: JoltField> AdviceClaimReductionVerifier<F> {
         kind: AdviceKind,
         memory_layout: &MemoryLayout,
         trace_len: usize,
+        log_k_chunk: usize,
         accumulator: &dyn OpeningAccumulator<F>,
     ) -> Self {
-        let params = AdviceClaimReductionParams::new(kind, memory_layout, trace_len, accumulator);
+        let params =
+            AdviceClaimReductionParams::new(kind, memory_layout, trace_len, log_k_chunk, accumulator);
 
         Self {
             params: RefCell::new(params),

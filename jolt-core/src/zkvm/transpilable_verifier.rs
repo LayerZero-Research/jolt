@@ -590,6 +590,7 @@ impl<
                 AdviceKind::Trusted,
                 &self.program_io.memory_layout,
                 self.proof.trace_length,
+                self.one_hot_params.log_k_chunk,
                 &self.opening_accumulator,
             ));
         }
@@ -598,6 +599,7 @@ impl<
                 AdviceKind::Untrusted,
                 &self.program_io.memory_layout,
                 self.proof.trace_length,
+                self.one_hot_params.log_k_chunk,
                 &self.opening_accumulator,
             ));
         }
