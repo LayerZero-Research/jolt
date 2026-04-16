@@ -21,9 +21,10 @@ use hachi_pcs::algebra::ring::CyclotomicRing;
 use hachi_pcs::protocol::commitment::presets::fp128::D64StaticBounded;
 use hachi_pcs::protocol::commitment::{
     compute_num_digits, compute_num_digits_fold, CommitmentConfig, HachiCommitmentCore,
-    HachiCommitmentLayout, HachiScheduleInputs, RingCommitment,
+    HachiScheduleInputs, RingCommitment,
 };
 use hachi_pcs::protocol::opening_point::BasisMode;
+use hachi_pcs::protocol::params::LevelParams;
 use hachi_pcs::protocol::proof::{HachiBatchedCommitmentHint, HachiProof};
 use hachi_pcs::protocol::{HachiCommitmentScheme, HachiProverSetup, HachiVerifierSetup};
 use hachi_pcs::CommitmentScheme as HachiCommitmentSchemeTrait;
@@ -40,20 +41,27 @@ pub type Fp128Bounded64Config<const LOG_COMMIT_BOUND: u32> =
 
 pub type Fp128OneHot64Config = Fp128Bounded64Config<1>;
 
-fn level0_layout_params<Cfg: CommitmentConfig<Field = Fp128>>(
+fn level0_level_params<Cfg: CommitmentConfig<Field = Fp128>>(
     max_num_vars: usize,
     log_basis: u32,
-) -> (usize, usize) {
+) -> LevelParams {
     let current_w_len = 1usize.checked_shl(max_num_vars as u32).unwrap_or(0);
-    let params = Cfg::level_params_with_log_basis(
+    Cfg::level_params_with_log_basis(
         HachiScheduleInputs {
             max_num_vars,
             level: 0,
             current_w_len,
         },
         log_basis,
-    );
-    (params.n_a, params.challenge_l1_mass)
+    )
+}
+
+fn level0_layout_params<Cfg: CommitmentConfig<Field = Fp128>>(
+    max_num_vars: usize,
+    log_basis: u32,
+) -> (usize, usize) {
+    let params = level0_level_params::<Cfg>(max_num_vars, log_basis);
+    (params.a_key.row_len(), params.challenge_l1_mass())
 }
 
 fn optimal_advice_m_r_split<Cfg: CommitmentConfig<Field = Fp128>>(
@@ -150,31 +158,31 @@ fn advice_commit_layout<Cfg: CommitmentConfig<Field = Fp128>>(
     m_vars: usize,
     r_vars: usize,
     log_basis: u32,
-) -> HachiCommitmentLayout {
+) -> LevelParams {
     let alpha = Cfg::D.trailing_zeros() as usize;
     let max_num_vars = m_vars
         .checked_add(r_vars)
         .and_then(|vars| vars.checked_add(alpha))
         .expect("advice layout variable count overflow");
-    let (n_a, challenge_l1_mass) = level0_layout_params::<Cfg>(max_num_vars, log_basis);
-    HachiCommitmentLayout::new_with_decomp(
-        m_vars,
-        r_vars,
-        n_a,
-        compute_num_digits(64, log_basis),
-        compute_num_digits(128, log_basis),
-        compute_num_digits_fold(r_vars, challenge_l1_mass, log_basis),
-        log_basis,
-        0,
-    )
-    .unwrap()
+    let params = level0_level_params::<Cfg>(max_num_vars, log_basis);
+    let challenge_l1_mass = params.challenge_l1_mass();
+    params
+        .with_decomp(
+            m_vars,
+            r_vars,
+            compute_num_digits(64, log_basis),
+            compute_num_digits(128, log_basis),
+            compute_num_digits_fold(r_vars, challenge_l1_mass, log_basis),
+            0,
+        )
+        .unwrap()
 }
 
 /// Compute the advice commit layout using the polynomial's own optimal m/r split
 /// rather than inheriting from the setup envelope.
 fn compute_advice_layout<const D: usize, Cfg: CommitmentConfig<Field = Fp128>>(
     poly_num_vars: usize,
-) -> HachiCommitmentLayout {
+) -> LevelParams {
     let alpha = D.trailing_zeros() as usize;
     let reduced_vars = poly_num_vars.saturating_sub(alpha);
     if reduced_vars <= 1 {
@@ -190,7 +198,7 @@ fn choose_packed_layout_for_shape<const D: usize, Cfg: CommitmentConfig<Field = 
     log_k: usize,
     log_t: usize,
     log_packed: usize,
-) -> (PackedBitLayout, HachiCommitmentLayout) {
+) -> (PackedBitLayout, LevelParams) {
     let packed_layout = choose_packed_bit_layout::<D, Cfg>(log_k, log_t, log_packed);
     let hachi_layout = packed_layout.into_hachi_layout::<Cfg>(INITIAL_LOG_BASIS);
     (packed_layout, hachi_layout)
@@ -200,7 +208,7 @@ fn choose_packed_layout_for_dims<const D: usize, Cfg: CommitmentConfig<Field = F
     num_cycles: usize,
     num_polys: usize,
     onehot_k: usize,
-) -> (PackedBitLayout, HachiCommitmentLayout) {
+) -> (PackedBitLayout, LevelParams) {
     assert!(
         num_cycles.is_power_of_two(),
         "packed Hachi layout expects num_cycles to be a power of two (got {num_cycles})"
@@ -219,13 +227,12 @@ fn compute_packed_setup_layouts<const D: usize, Cfg>(
     max_log_t: usize,
     max_log_k: usize,
     log_packed: usize,
-) -> Vec<HachiCommitmentLayout>
+) -> Vec<LevelParams>
 where
     Cfg: CommitmentConfig<Field = Fp128> + Default,
 {
     let advice_num_vars = max_log_k + max_log_t;
     let advice_layout = compute_advice_layout::<D, Cfg>(advice_num_vars);
-    let mut setup_layouts = vec![advice_layout];
     let packed_log_ks = JoltHachiCommitmentScheme::<D, Cfg>::supported_log_k_chunks(max_log_k);
     if var_os("HACHI_SETUP_DIAGNOSTICS").is_some() {
         eprintln!(
@@ -233,6 +240,7 @@ where
         );
         eprintln!("  advice_layout={advice_layout:?}");
     }
+    let mut setup_layouts = vec![advice_layout];
     for log_k in packed_log_ks {
         let (_, packed_layout) =
             choose_packed_layout_for_shape::<D, Cfg>(log_k, max_log_t, log_packed);
@@ -268,7 +276,7 @@ fn hachi_commit_onehot<const D: usize, Cfg: CommitmentConfig<Field = Fp128>, I: 
     onehot_k: usize,
     indices: Vec<Option<I>>,
     setup: &HachiProverSetup<Fp128, D>,
-    layout: &HachiCommitmentLayout,
+    layout: &LevelParams,
 ) -> (RingCommitment<Fp128, D>, JoltHachiOpeningHint<D>) {
     let onehot_poly =
         OneHotPoly::<Fp128, D, I>::new(onehot_k, indices, layout.r_vars, layout.m_vars)

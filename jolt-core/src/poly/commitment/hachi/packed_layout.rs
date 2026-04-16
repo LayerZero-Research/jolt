@@ -1,7 +1,8 @@
 use hachi_pcs::protocol::commitment::{
     compute_num_digits, compute_num_digits_fold, optimal_m_r_split, CommitmentConfig,
-    HachiCommitmentLayout, HachiScheduleInputs,
+    HachiScheduleInputs,
 };
+use hachi_pcs::protocol::params::LevelParams;
 
 /// Avoid degenerate layouts that tile only across polynomials and barely any
 /// cycles; that would defeat the trace-locality goal of the packed layout.
@@ -11,20 +12,16 @@ const PACKED_MIN_CYCLE_TILE_BITS: usize = 6;
 /// polynomials instead of turning every block into an all-polys mega-tile.
 const PACKED_MAX_POLY_TILE_BITS: usize = 4;
 
-fn level0_layout_params<Cfg: CommitmentConfig>(
-    max_num_vars: usize,
-    log_basis: u32,
-) -> (usize, usize) {
+fn level0_level_params<Cfg: CommitmentConfig>(max_num_vars: usize, log_basis: u32) -> LevelParams {
     let current_w_len = 1usize.checked_shl(max_num_vars as u32).unwrap_or(0);
-    let params = Cfg::level_params_with_log_basis(
+    Cfg::level_params_with_log_basis(
         HachiScheduleInputs {
             max_num_vars,
             level: 0,
             current_w_len,
         },
         log_basis,
-    );
-    (params.n_a, params.challenge_l1_mass)
+    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -233,23 +230,19 @@ impl PackedBitLayout {
     }
 
     #[inline]
-    pub(super) fn into_hachi_layout<Cfg: CommitmentConfig>(
-        self,
-        log_basis: u32,
-    ) -> HachiCommitmentLayout {
-        let (n_a, challenge_l1_mass) =
-            level0_layout_params::<Cfg>(self.total_num_vars(), log_basis);
-        HachiCommitmentLayout::new_with_decomp(
-            self.m_vars(),
-            self.r_vars(),
-            n_a,
-            1,
-            compute_num_digits(128, log_basis),
-            compute_num_digits_fold(self.r_vars(), challenge_l1_mass, log_basis),
-            log_basis,
-            0,
-        )
-        .expect("invalid packed Hachi layout")
+    pub(super) fn into_hachi_layout<Cfg: CommitmentConfig>(self, log_basis: u32) -> LevelParams {
+        let params = level0_level_params::<Cfg>(self.total_num_vars(), log_basis);
+        let challenge_l1_mass = params.challenge_l1_mass();
+        params
+            .with_decomp(
+                self.m_vars(),
+                self.r_vars(),
+                1,
+                compute_num_digits(128, log_basis),
+                compute_num_digits_fold(self.r_vars(), challenge_l1_mass, log_basis),
+                0,
+            )
+            .expect("invalid packed Hachi layout")
     }
 
     /// Precomputed constants for the singleton locate fast path.
