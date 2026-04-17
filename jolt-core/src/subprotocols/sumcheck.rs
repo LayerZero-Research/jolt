@@ -425,11 +425,19 @@ impl BatchedSumcheck {
             .unwrap();
 
         let is_zk = matches!(proof, SumcheckInstanceProof::Zk(_));
+
+        // Compute per-instance input_claim once so we can both (a) feed the transcript
+        // (non-ZK path) and (b) emit detailed diagnostics on verification failure
+        // without recomputing them.
+        let per_instance_input_claims: Vec<F> = sumcheck_instances
+            .iter()
+            .map(|sumcheck| sumcheck.input_claim(opening_accumulator))
+            .collect();
+
         if !is_zk {
-            sumcheck_instances.iter().for_each(|sumcheck| {
-                let input_claim = sumcheck.input_claim(opening_accumulator);
-                transcript.append_scalar(b"sumcheck_claim", &input_claim);
-            });
+            for input_claim in &per_instance_input_claims {
+                transcript.append_scalar(b"sumcheck_claim", input_claim);
+            }
         }
         let batching_coeffs: Vec<F> = transcript.challenge_vector(sumcheck_instances.len());
 
@@ -444,17 +452,39 @@ impl BatchedSumcheck {
         //   = A * 2^N * claim_a + B * claim_b
         let claim: F = sumcheck_instances
             .iter()
+            .zip(per_instance_input_claims.iter())
             .zip(batching_coeffs.iter())
-            .map(|(sumcheck, coeff)| {
+            .map(|((sumcheck, input_claim), coeff)| {
                 let num_rounds = sumcheck.num_rounds();
-                let input_claim = sumcheck.input_claim(opening_accumulator);
                 input_claim.mul_pow_2(max_num_rounds - num_rounds) * coeff
             })
             .sum();
 
-        let (output_claim, r_sumcheck) =
-            proof.verify(claim, max_num_rounds, max_degree, transcript)?;
+        let (output_claim, r_sumcheck) = match proof
+            .verify(claim, max_num_rounds, max_degree, transcript)
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!(
+                    "BatchedSumcheck::verify proof.verify failed: {e:?} \
+                     (claim={claim:?}, max_num_rounds={max_num_rounds}, max_degree={max_degree}, instances={})",
+                    sumcheck_instances.len()
+                );
+                for (idx, (sumcheck, ic)) in sumcheck_instances
+                    .iter()
+                    .zip(per_instance_input_claims.iter())
+                    .enumerate()
+                {
+                    tracing::error!(
+                        "  instance={idx} num_rounds={} input_claim={ic:?}",
+                        sumcheck.num_rounds()
+                    );
+                }
+                return Err(e);
+            }
+        };
 
+        let mut per_instance_expected: Vec<F> = Vec::with_capacity(sumcheck_instances.len());
         let expected_output_claim: F = sumcheck_instances
             .iter()
             .zip(batching_coeffs.iter())
@@ -466,6 +496,7 @@ impl BatchedSumcheck {
                 // opening proof or sumcheck (in the case of virtual polynomials).
                 sumcheck.cache_openings(opening_accumulator, r_slice);
                 let claim = sumcheck.expected_output_claim(opening_accumulator, r_slice);
+                per_instance_expected.push(claim);
 
                 claim * coeff
             })
@@ -481,6 +512,25 @@ impl BatchedSumcheck {
 
         // In ZK mode, skip output claim verification — BlindFold proves this
         if !is_zk && output_claim != expected_output_claim {
+            tracing::error!(
+                "BatchedSumcheck::verify FAILED: output_claim={output_claim:?} \
+                 != expected_output_claim={expected_output_claim:?}, \
+                 max_num_rounds={max_num_rounds}, instances={}",
+                sumcheck_instances.len()
+            );
+            for (idx, ((sumcheck, ic), eoc)) in sumcheck_instances
+                .iter()
+                .zip(per_instance_input_claims.iter())
+                .zip(per_instance_expected.iter())
+                .enumerate()
+            {
+                let coeff = &batching_coeffs[idx];
+                tracing::error!(
+                    "  instance={idx} num_rounds={} input_claim={ic:?} \
+                     expected_output_claim={eoc:?} coeff={coeff:?}",
+                    sumcheck.num_rounds()
+                );
+            }
             return Err(ProofVerifyError::SumcheckVerificationError);
         }
 
