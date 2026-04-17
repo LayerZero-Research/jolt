@@ -18,14 +18,13 @@ use jolt_core::{
         r1cs::key::UniformSpartanKey,
         spartan::{
             outer::{
-                OuterRemainingStreamingSumcheck,
-                OuterRemainingStreamingSumcheckMTable, OuterSharedState, OuterUniSkipParams,
-                OuterUniSkipProver,
+                OuterRemainingStreamingSumcheck, OuterRemainingStreamingSumcheckMTable,
+                OuterSharedState, OuterUniSkipParams, OuterUniSkipProver,
             },
-            outer_split_eq::OuterSplitEqSumcheckProver,
             outer_delayed_reduction::OuterDelayedReductionSumcheckProver,
             outer_naive::OuterBaselineSumcheckProver,
             outer_round_batched::OuterRoundBatchedSumcheckProver,
+            outer_split_eq::OuterSplitEqSumcheckProver,
             outer_uni_skip_linear::{
                 OuterRemainingSumcheckProverNonStreaming, OuterUniSkipInstanceProver,
             },

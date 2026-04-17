@@ -13,13 +13,11 @@ use crate::zkvm::r1cs::evaluation::{BaselineConstraintEval, R1CSEval};
 use crate::zkvm::r1cs::inputs::{R1CSCycleInputs, ALL_R1CS_INPUTS};
 use crate::zkvm::witness::VirtualPolynomial;
 use crate::{
-    field::JoltField,
-    transcripts::Transcript,
-    utils::math::Math,
+    field::JoltField, transcripts::Transcript, utils::math::Math,
     zkvm::r1cs::constraints::R1CSConstraint,
 };
-use num_traits::Zero;
 use allocative::Allocative;
+use num_traits::Zero;
 use rayon::prelude::*;
 use std::sync::Arc;
 use tracer::instruction::Cycle;

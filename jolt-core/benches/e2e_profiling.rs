@@ -1,7 +1,7 @@
 use ark_serialize::CanonicalSerialize;
 use jolt_core::host;
-use jolt_core::zkvm::prover::JoltProverPreprocessing;
 use jolt_core::zkvm::proof_serialization::SpartanOuterStage1Kind;
+use jolt_core::zkvm::prover::JoltProverPreprocessing;
 use jolt_core::zkvm::verifier::{JoltSharedPreprocessing, JoltVerifierPreprocessing};
 use jolt_core::zkvm::{config::OuterStage1RemainderImpl, config::OuterStreamingScheduleKind};
 use jolt_core::zkvm::{RV64IMACProver, RV64IMACVerifier};

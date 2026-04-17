@@ -71,7 +71,9 @@ impl<F: JoltField> OuterBaselineSumcheckVerifier<F> {
     }
 }
 
-impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T> for OuterBaselineSumcheckVerifier<F> {
+impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
+    for OuterBaselineSumcheckVerifier<F>
+{
     fn degree(&self) -> usize {
         3
     }

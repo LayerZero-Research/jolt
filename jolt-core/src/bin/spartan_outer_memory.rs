@@ -7,9 +7,9 @@ use std::{
     time::Duration,
 };
 
-use ark_bn254::Fr;
 #[cfg(feature = "allocative")]
 use allocative::size_of_unique_allocated_data;
+use ark_bn254::Fr;
 use jolt_core::{
     field::JoltField,
     poly::opening_proof::ProverOpeningAccumulator,
@@ -17,11 +17,12 @@ use jolt_core::{
     subprotocols::{
         streaming_schedule::{HalfSplitSchedule, LinearOnlySchedule},
         sumcheck::BatchedSumcheck,
-        sumcheck_prover::SumcheckInstanceProver, univariate_skip::prove_uniskip_round,
+        sumcheck_prover::SumcheckInstanceProver,
+        univariate_skip::prove_uniskip_round,
     },
     transcripts::{KeccakTranscript, Transcript},
-    utils::profiling::print_current_memory_usage,
     utils::math::Math,
+    utils::profiling::print_current_memory_usage,
     zkvm::{
         bytecode::BytecodePreprocessing,
         r1cs::constraints::{R1CSConstraint, R1CS_CONSTRAINTS},
@@ -101,7 +102,11 @@ struct PhaseMemSampler {
 impl PhaseMemSampler {
     fn start() -> Self {
         let current_phase = Arc::new(AtomicUsize::new(PHASE_IDLE));
-        let max_by_phase = Arc::new((0..PHASE_COUNT).map(|_| AtomicU64::new(0)).collect::<Vec<_>>());
+        let max_by_phase = Arc::new(
+            (0..PHASE_COUNT)
+                .map(|_| AtomicU64::new(0))
+                .collect::<Vec<_>>(),
+        );
         let stop_flag = Arc::new(AtomicBool::new(false));
 
         let phase_clone = Arc::clone(&current_phase);
@@ -321,7 +326,8 @@ fn setup_for_spartan(
     let inputs = postcard::to_stdvec(&guest_input_tuple).unwrap();
 
     let (bytecode, _memory_init, _) = program.decode();
-    let (_lazy_trace, mut trace, _final_memory_state, _io_device) = program.trace(&inputs, &[], &[]);
+    let (_lazy_trace, mut trace, _final_memory_state, _io_device) =
+        program.trace(&inputs, &[], &[]);
 
     let padded_trace_length = (trace.len() + 1).next_power_of_two();
     trace.resize(padded_trace_length, Cycle::NoOp);
@@ -386,7 +392,8 @@ fn main() {
                 println!("outer_heap_mb={total_mb:.2}");
             }
 
-            let refs: Vec<&mut dyn SumcheckInstanceProver<F, ProofTranscript>> = vec![&mut instance];
+            let refs: Vec<&mut dyn SumcheckInstanceProver<F, ProofTranscript>> =
+                vec![&mut instance];
             let _ = BatchedSumcheck::prove(refs, &mut opening_accumulator, &mut transcript);
 
             #[cfg(feature = "allocative")]
@@ -414,7 +421,8 @@ fn main() {
                 println!("outer_heap_mb={total_mb:.2}");
             }
 
-            let refs: Vec<&mut dyn SumcheckInstanceProver<F, ProofTranscript>> = vec![&mut instance];
+            let refs: Vec<&mut dyn SumcheckInstanceProver<F, ProofTranscript>> =
+                vec![&mut instance];
             let _ = BatchedSumcheck::prove(refs, &mut opening_accumulator, &mut transcript);
 
             #[cfg(feature = "allocative")]
@@ -442,7 +450,8 @@ fn main() {
                 println!("outer_heap_mb={total_mb:.2}");
             }
 
-            let refs: Vec<&mut dyn SumcheckInstanceProver<F, ProofTranscript>> = vec![&mut instance];
+            let refs: Vec<&mut dyn SumcheckInstanceProver<F, ProofTranscript>> =
+                vec![&mut instance];
             let _ = BatchedSumcheck::prove(refs, &mut opening_accumulator, &mut transcript);
 
             #[cfg(feature = "allocative")]
@@ -465,7 +474,8 @@ fn main() {
                 println!("outer_heap_mb={total_mb:.2}");
             }
 
-            let refs: Vec<&mut dyn SumcheckInstanceProver<F, ProofTranscript>> = vec![&mut instance];
+            let refs: Vec<&mut dyn SumcheckInstanceProver<F, ProofTranscript>> =
+                vec![&mut instance];
             let _ = BatchedSumcheck::prove(refs, &mut opening_accumulator, &mut transcript);
 
             #[cfg(feature = "allocative")]
@@ -502,7 +512,8 @@ fn main() {
                 println!("outer_heap_mb={total_mb:.2}");
             }
 
-            let refs: Vec<&mut dyn SumcheckInstanceProver<F, ProofTranscript>> = vec![&mut instance];
+            let refs: Vec<&mut dyn SumcheckInstanceProver<F, ProofTranscript>> =
+                vec![&mut instance];
             let _ = BatchedSumcheck::prove(refs, &mut opening_accumulator, &mut transcript);
 
             #[cfg(feature = "allocative")]
@@ -534,17 +545,14 @@ fn main() {
             if let Some(s) = sampler.as_ref() {
                 s.set_phase(PHASE_UNI_COMPUTE);
             }
-            let uni_input_claim =
-                <OuterUniSkipInstanceProver<F> as SumcheckInstanceProver<F, ProofTranscript>>::input_claim(
-                    &uni_skip,
-                    &opening_accumulator,
-                );
-            let uni_poly =
-                <OuterUniSkipInstanceProver<F> as SumcheckInstanceProver<F, ProofTranscript>>::compute_message(
-                    &mut uni_skip,
-                    0,
-                    uni_input_claim,
-                );
+            let uni_input_claim = <OuterUniSkipInstanceProver<F> as SumcheckInstanceProver<
+                F,
+                ProofTranscript,
+            >>::input_claim(&uni_skip, &opening_accumulator);
+            let uni_poly = <OuterUniSkipInstanceProver<F> as SumcheckInstanceProver<
+                F,
+                ProofTranscript,
+            >>::compute_message(&mut uni_skip, 0, uni_input_claim);
             transcript.append_scalars(b"uniskip_poly", &uni_poly.coeffs);
             let r0: <F as JoltField>::Challenge = transcript.challenge_scalar_optimized::<F>();
             #[cfg(not(target_arch = "wasm32"))]
@@ -678,7 +686,8 @@ fn main() {
                 println!("outer_remainder_incremental_heap_mb={incremental_mb:.2}");
             }
 
-            let refs: Vec<&mut dyn SumcheckInstanceProver<F, ProofTranscript>> = vec![&mut instance];
+            let refs: Vec<&mut dyn SumcheckInstanceProver<F, ProofTranscript>> =
+                vec![&mut instance];
             let _ = BatchedSumcheck::prove(refs, &mut opening_accumulator, &mut transcript);
 
             #[cfg(feature = "allocative")]
@@ -722,7 +731,8 @@ fn main() {
                 println!("outer_remainder_incremental_heap_mb={incremental_mb:.2}");
             }
 
-            let refs: Vec<&mut dyn SumcheckInstanceProver<F, ProofTranscript>> = vec![&mut instance];
+            let refs: Vec<&mut dyn SumcheckInstanceProver<F, ProofTranscript>> =
+                vec![&mut instance];
             let _ = BatchedSumcheck::prove(refs, &mut opening_accumulator, &mut transcript);
 
             #[cfg(feature = "allocative")]

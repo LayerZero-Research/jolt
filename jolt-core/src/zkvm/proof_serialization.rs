@@ -91,9 +91,10 @@ impl CanonicalSerialize for SpartanOuterStage1Kind {
                     + remainder_impl.serialized_size(compress)
                     + schedule.serialized_size(compress)
             }
-            Self::FullBaseline | Self::FullSplitEq | Self::FullDelayedReduction | Self::FullRoundBatched => {
-                0u8.serialized_size(compress)
-            }
+            Self::FullBaseline
+            | Self::FullSplitEq
+            | Self::FullDelayedReduction
+            | Self::FullRoundBatched => 0u8.serialized_size(compress),
         }
     }
 }

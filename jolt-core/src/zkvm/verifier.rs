@@ -46,10 +46,10 @@ use crate::zkvm::{
     },
     spartan::{
         instruction_input::InstructionInputSumcheckVerifier, outer::OuterRemainingSumcheckVerifier,
-        outer_split_eq::OuterSplitEqSumcheckVerifier, outer_naive::OuterBaselineSumcheckVerifier,
+        outer_naive::OuterBaselineSumcheckVerifier,
         outer_round_batched::OuterRoundBatchedSumcheckVerifier,
-        product::ProductVirtualRemainderVerifier, shift::ShiftSumcheckVerifier,
-        verify_stage1_uni_skip, verify_stage2_uni_skip,
+        outer_split_eq::OuterSplitEqSumcheckVerifier, product::ProductVirtualRemainderVerifier,
+        shift::ShiftSumcheckVerifier, verify_stage1_uni_skip, verify_stage2_uni_skip,
     },
     ProverDebugInfo,
 };
