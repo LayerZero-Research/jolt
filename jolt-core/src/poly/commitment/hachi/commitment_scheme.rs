@@ -20,8 +20,8 @@ use common::constants::HACHI_ONEHOT_CHUNK_THRESHOLD_LOG_T;
 use hachi_pcs::algebra::ring::CyclotomicRing;
 use hachi_pcs::protocol::commitment::presets::fp128::D32OneHot;
 use hachi_pcs::protocol::commitment::{
-    compute_num_digits, compute_num_digits_fold, CommitmentConfig, HachiCommitmentCore,
-    HachiScheduleInputs, RingCommitment,
+    compute_num_digits, compute_num_digits_fold, CommitmentConfig, HachiScheduleInputs,
+    RingCommitment,
 };
 use hachi_pcs::protocol::opening_point::BasisMode;
 use hachi_pcs::protocol::params::LevelParams;
@@ -227,35 +227,6 @@ fn choose_packed_layout_for_dims<const D: usize, Cfg: CommitmentConfig<Field = F
     choose_packed_layout_for_shape::<D, Cfg>(log_k, log_t, log_packed)
 }
 
-fn compute_packed_setup_layouts<const D: usize, Cfg>(
-    max_log_t: usize,
-    max_log_k: usize,
-    log_packed: usize,
-) -> Vec<LevelParams>
-where
-    Cfg: CommitmentConfig<Field = Fp128> + Default,
-{
-    let advice_num_vars = max_log_k + max_log_t;
-    let advice_layout = compute_advice_layout::<D, Cfg>(advice_num_vars);
-    let packed_log_ks = JoltHachiCommitmentScheme::<D, Cfg>::supported_log_k_chunks(max_log_k);
-    if var_os("HACHI_SETUP_DIAGNOSTICS").is_some() {
-        eprintln!(
-            "[jolt hachi setup] max_log_t={max_log_t}, max_log_k={max_log_k}, log_packed={log_packed}"
-        );
-        eprintln!("  advice_layout={advice_layout:?}");
-    }
-    let mut setup_layouts = vec![advice_layout];
-    for log_k in packed_log_ks {
-        let (_, packed_layout) =
-            choose_packed_layout_for_shape::<D, Cfg>(log_k, max_log_t, log_packed);
-        if var_os("HACHI_SETUP_DIAGNOSTICS").is_some() {
-            eprintln!("  packed_layout(log_k={log_k})={packed_layout:?}");
-        }
-        setup_layouts.push(packed_layout);
-    }
-    setup_layouts
-}
-
 fn hachi_commit_dense<const D: usize, Cfg: CommitmentConfig<Field = Fp128>>(
     ring_coeffs: Vec<CyclotomicRing<Fp128, D>>,
     setup: &HachiProverSetup<Fp128, D>,
@@ -350,6 +321,7 @@ where
             <HachiCommitmentScheme<D, Cfg> as HachiCommitmentSchemeTrait<Fp128, D>>::setup_prover(
                 max_num_vars,
                 1,
+                1,
             ),
         )
     }
@@ -359,11 +331,25 @@ where
         max_log_k: usize,
         log_packed: Option<usize>,
     ) -> Self::ProverSetup {
-        let setup_layouts =
-            compute_packed_setup_layouts::<D, Cfg>(max_log_t, max_log_k, log_packed.unwrap_or(0));
-        let (setup, _) = HachiCommitmentCore::setup_with_layouts::<Fp128, D, Cfg>(&setup_layouts)
-            .expect("Hachi packed setup failed");
-        ArkBridge(setup)
+        let log_packed = log_packed.unwrap_or(0);
+        // The envelope must cover the largest single polynomial this setup
+        // will commit. Advice is one poly of `max_log_k + max_log_t` vars;
+        // the packed commit is one poly of `max_log_k + max_log_t + log_packed`
+        // vars (the `log_packed` bits are absorbed into the packed poly's
+        // own variable count). Packed commits are always single-poly.
+        let max_num_vars = max_log_t + max_log_k + log_packed;
+        if var_os("HACHI_SETUP_DIAGNOSTICS").is_some() {
+            eprintln!(
+                "[jolt hachi setup] max_log_t={max_log_t}, max_log_k={max_log_k}, log_packed={log_packed}, max_num_vars={max_num_vars}"
+            );
+        }
+        ArkBridge(
+            <HachiCommitmentScheme<D, Cfg> as HachiCommitmentSchemeTrait<Fp128, D>>::setup_prover(
+                max_num_vars,
+                1,
+                1,
+            ),
+        )
     }
 
     fn setup_verifier(setup: &Self::ProverSetup) -> Self::VerifierSetup {

@@ -6,7 +6,8 @@ use ark_serialize::{
 use hachi_pcs::algebra::Prime128Offset2355;
 use hachi_pcs::primitives::serialization::Compress as HachiCompress;
 use hachi_pcs::protocol::transcript::Transcript as HachiTranscript;
-use hachi_pcs::HachiSerialize;
+use hachi_pcs::protocol::HachiProverSetup;
+use hachi_pcs::{FieldCore, HachiSerialize};
 use std::io::{Read, Write};
 use std::sync::Arc;
 
@@ -158,20 +159,16 @@ fn ark_to_hachi_compress(c: Compress) -> HachiCompress {
     }
 }
 
-impl<T: Send + Sync + HachiSerialize> CanonicalSerialize for ArkBridge<T> {
-    fn serialize_with_mode<W: Write>(
-        &self,
-        writer: W,
-        compress: Compress,
-    ) -> Result<(), SerializationError> {
-        self.0
-            .serialize_with_mode(writer, ark_to_hachi_compress(compress))
-            .map_err(|e| SerializationError::IoError(std::io::Error::other(e.to_string())))
-    }
-
-    fn serialized_size(&self, compress: Compress) -> usize {
-        self.0.serialized_size(ark_to_hachi_compress(compress))
-    }
+/// Helper to bridge a `HachiSerialize` type's serializer through arkworks'
+/// `CanonicalSerialize` error channel.
+fn hachi_serialize_to_ark<W: Write, T: HachiSerialize>(
+    value: &T,
+    writer: W,
+    compress: Compress,
+) -> Result<(), SerializationError> {
+    value
+        .serialize_with_mode(writer, ark_to_hachi_compress(compress))
+        .map_err(|e| SerializationError::IoError(std::io::Error::other(e.to_string())))
 }
 
 impl<T: Send + Sync> CanonicalDeserialize for ArkBridge<T> {
@@ -181,5 +178,61 @@ impl<T: Send + Sync> CanonicalDeserialize for ArkBridge<T> {
         _validate: Validate,
     ) -> Result<Self, SerializationError> {
         unimplemented!("Hachi types use HachiDeserialize, not CanonicalDeserialize")
+    }
+}
+
+macro_rules! impl_ark_serialize_via_hachi {
+    ($ty:ty) => {
+        impl<F: FieldCore + HachiSerialize> CanonicalSerialize for ArkBridge<$ty> {
+            fn serialize_with_mode<W: Write>(
+                &self,
+                writer: W,
+                compress: Compress,
+            ) -> Result<(), SerializationError> {
+                hachi_serialize_to_ark(&self.0, writer, compress)
+            }
+            fn serialized_size(&self, compress: Compress) -> usize {
+                self.0.serialized_size(ark_to_hachi_compress(compress))
+            }
+        }
+    };
+}
+
+impl_ark_serialize_via_hachi!(hachi_pcs::protocol::proof::HachiProof<F>);
+impl_ark_serialize_via_hachi!(hachi_pcs::protocol::HachiVerifierSetup<F>);
+
+impl<F: FieldCore + HachiSerialize, const D: usize> CanonicalSerialize
+    for ArkBridge<hachi_pcs::protocol::commitment::RingCommitment<F, D>>
+{
+    fn serialize_with_mode<W: Write>(
+        &self,
+        writer: W,
+        compress: Compress,
+    ) -> Result<(), SerializationError> {
+        hachi_serialize_to_ark(&self.0, writer, compress)
+    }
+    fn serialized_size(&self, compress: Compress) -> usize {
+        self.0.serialized_size(ark_to_hachi_compress(compress))
+    }
+}
+
+/// `HachiProverSetup` intentionally does not implement `HachiSerialize` upstream
+/// (its NTT cache is derived). Delegate serialization to the inner expanded
+/// setup so Jolt's `CommitmentScheme::ProverSetup` bound is still satisfied.
+impl<F: FieldCore + HachiSerialize, const D: usize> CanonicalSerialize
+    for ArkBridge<HachiProverSetup<F, D>>
+{
+    fn serialize_with_mode<W: Write>(
+        &self,
+        writer: W,
+        compress: Compress,
+    ) -> Result<(), SerializationError> {
+        hachi_serialize_to_ark(&*self.0.expanded, writer, compress)
+    }
+
+    fn serialized_size(&self, compress: Compress) -> usize {
+        self.0
+            .expanded
+            .serialized_size(ark_to_hachi_compress(compress))
     }
 }
