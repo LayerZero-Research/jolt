@@ -94,7 +94,7 @@ impl Secp256k1Fq {
     /// creates a new Secp256k1Fq element from a [u64; 4] array (unchecked)
     /// the array is assumed to contain a value in the range [0, p)
     #[inline(always)]
-    pub(crate) fn from_u64_arr_unchecked(arr: &[u64; 4]) -> Self {
+    pub fn from_u64_arr_unchecked(arr: &[u64; 4]) -> Self {
         Secp256k1Fq { e: *arr }
     }
     /// get limbs
@@ -405,8 +405,7 @@ impl Secp256k1Fr {
     /// creates a new Secp256k1Fr element from a [u64; 4] array (unchecked)
     /// the array is assumed to contain a value in the range [0, n)
     #[inline(always)]
-    #[allow(dead_code)]
-    pub(crate) fn from_u64_arr_unchecked(arr: &[u64; 4]) -> Self {
+    pub fn from_u64_arr_unchecked(arr: &[u64; 4]) -> Self {
         Secp256k1Fr { e: *arr }
     }
     /// get limbs

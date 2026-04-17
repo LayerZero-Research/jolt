@@ -1,0 +1,23 @@
+[package]
+name = "stateless-evm"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "stateless-evm"
+path = "src/main.rs"
+
+[dependencies]
+jolt-sdk = { path = "../../../jolt-sdk", features = ["host"] }
+guest = { package = "stateless-evm-guest", path = "../guest" }
+alloy-consensus = { version = "1.6.3", default-features = false }
+clap.workspace = true
+eyre.workspace = true
+hex.workspace = true
+postcard = { workspace = true, features = ["use-std"] }
+reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", tag = "v1.11.0", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+stateless = { git = "https://github.com/paradigmxyz/stateless", rev = "ed189a51931e8589102f3139d48fdbb3bbe4c1f7", default-features = false }
+tracing.workspace = true
+tracing-subscriber.workspace = true
