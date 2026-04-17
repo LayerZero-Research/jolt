@@ -1,7 +1,7 @@
 use std::{array::from_fn, collections::HashSet, time::Instant};
 
 use super::commitment_scheme::{
-    poly_to_ring_coeffs, Fp128OneHot64Config, HachiBatchedProof, JoltHachiCommitmentScheme,
+    poly_to_ring_coeffs, Fp128OneHot32Config, HachiBatchedProof, JoltHachiCommitmentScheme,
 };
 use super::packed_layout::{choose_packed_bit_layout, PackedBitLayout};
 use super::packed_poly::{build_packed_poly, summarize_block_occupancy, JoltPackedPoly};
@@ -310,7 +310,7 @@ fn packed_layout_reorders_poly_bits_into_inner_prefix() {
 
 #[test]
 fn packed_layout_reorders_lifted_coeff_bits_for_k16() {
-    type FastCfg = Fp128OneHot64Config;
+    type FastCfg = Fp128OneHot32Config;
 
     let log_k = 4usize;
     let layout = choose_packed_bit_layout::<{ FastCfg::D }, FastCfg>(log_k, 8, 3);
@@ -495,7 +495,7 @@ fn packed_layout_live_entries_are_injective() {
 
 #[test]
 fn packed_layout_k16_uses_multi_coeff_entries() {
-    type FastCfg = Fp128OneHot64Config;
+    type FastCfg = Fp128OneHot32Config;
 
     let source = TestPackedSource::new(
         vec![
@@ -618,7 +618,7 @@ fn packed_commit_inner_generic_matches_reference_with_multiple_rows() {
 
 #[test]
 fn packed_commit_inner_column_sweep_matches_generic_in_k256_singleton_regime() {
-    type FastCfg = Fp128OneHot64Config;
+    type FastCfg = Fp128OneHot32Config;
 
     let source = TestPackedSource::new(
         vec![
@@ -693,7 +693,7 @@ fn packed_commit_inner_column_sweep_matches_generic_in_k256_singleton_regime() {
 
 #[test]
 fn packed_commit_inner_column_sweep_matches_generic_in_d64_k16_regime() {
-    type FastCfg = Fp128OneHot64Config;
+    type FastCfg = Fp128OneHot32Config;
 
     let source = TestPackedSource::new(
         vec![
@@ -786,92 +786,8 @@ fn packed_decompose_fold_fast_matches_generic_and_reference_helpers() {
 }
 
 #[test]
-fn packed_fast_paths_match_generic_in_d64_regime() {
-    type FastCfg = Fp128OneHot64Config;
-
-    let source = TestPackedSource::new(
-        vec![
-            vec![
-                Some(0),
-                Some(63),
-                Some(1),
-                Some(62),
-                Some(2),
-                Some(61),
-                Some(3),
-                Some(60),
-            ],
-            vec![
-                Some(63),
-                Some(0),
-                Some(62),
-                Some(1),
-                Some(61),
-                Some(2),
-                Some(60),
-                Some(3),
-            ],
-            vec![
-                Some(31),
-                Some(32),
-                Some(16),
-                Some(48),
-                Some(8),
-                Some(56),
-                Some(4),
-                Some(60),
-            ],
-            vec![
-                Some(5),
-                None,
-                Some(10),
-                Some(15),
-                None,
-                Some(20),
-                Some(25),
-                Some(30),
-            ],
-            vec![
-                Some(58),
-                Some(48),
-                Some(38),
-                Some(28),
-                Some(18),
-                Some(8),
-                Some(12),
-                Some(22),
-            ],
-        ],
-        FastCfg::D,
-    );
-    let (packed_poly, packed_layout) =
-        build_test_packed_poly_with_fn::<{ FastCfg::D }, FastCfg>(&source);
-    let log_basis = FastCfg::decomposition().log_basis;
-    let num_digits_open = compute_num_digits(128, log_basis);
-    let a_flat = make_test_a_matrix::<{ FastCfg::D }>(1, packed_layout.block_len(), 1);
-    let a_view = a_flat.ring_view::<{ FastCfg::D }>(1, packed_layout.block_len());
-    let generic_commit =
-        packed_poly.commit_inner_generic(&a_view, 1, 1, num_digits_open, log_basis);
-    let fast_commit = packed_poly.commit_inner_fast_singleton(&a_view, num_digits_open, log_basis);
-    let challenges = make_test_challenges::<{ FastCfg::D }>(packed_layout.num_blocks());
-    let generic_fold =
-        packed_poly.decompose_fold_generic(&challenges, packed_layout.block_len(), 1);
-    let fast_fold =
-        packed_poly.decompose_fold_fast_singleton(&challenges, packed_layout.block_len(), 1);
-
-    assert_eq!(
-        fast_commit, generic_commit,
-        "D=64 fast commit_inner must match generic"
-    );
-    assert_eq!(
-        fast_fold, generic_fold,
-        "D=64 fast decompose_fold must match generic"
-    );
-}
-
-#[test]
 fn packed_fast_paths_match_generic_in_k256_singleton_regime() {
-    type FastCfg = Fp128OneHot64Config;
+    type FastCfg = Fp128OneHot32Config;
 
     let source = TestPackedSource::new(
         vec![
@@ -955,7 +871,7 @@ fn packed_fast_paths_match_generic_in_k256_singleton_regime() {
 
 #[test]
 fn packed_fold_blocks_fast_singleton_matches_generic_in_k256_regime() {
-    type FastCfg = Fp128OneHot64Config;
+    type FastCfg = Fp128OneHot32Config;
 
     let source = TestPackedSource::new(
         vec![
@@ -1031,7 +947,7 @@ fn packed_fold_blocks_fast_singleton_matches_generic_in_k256_regime() {
 
 #[test]
 fn packed_evaluate_and_fold_fast_singleton_matches_generic_in_k256_regime() {
-    type FastCfg = Fp128OneHot64Config;
+    type FastCfg = Fp128OneHot32Config;
 
     let source = TestPackedSource::new(
         vec![
@@ -1125,7 +1041,7 @@ fn packed_evaluate_and_fold_fast_singleton_matches_generic_in_k256_regime() {
 
 #[test]
 fn packed_evaluate_and_fold_matches_reference_in_d64_k16_regime() {
-    type FastCfg = Fp128OneHot64Config;
+    type FastCfg = Fp128OneHot32Config;
 
     let source = TestPackedSource::new(
         vec![
@@ -1210,7 +1126,7 @@ fn packed_evaluate_and_fold_matches_reference_in_d64_k16_regime() {
 
 #[test]
 fn packed_commit_inner_generic_matches_multi_coeff_helpers_in_d64_k16_regime() {
-    type FastCfg = Fp128OneHot64Config;
+    type FastCfg = Fp128OneHot32Config;
 
     let source = TestPackedSource::new(
         vec![
@@ -1264,7 +1180,7 @@ fn packed_commit_inner_generic_matches_multi_coeff_helpers_in_d64_k16_regime() {
 
 #[test]
 fn packed_decompose_fold_generic_matches_multi_coeff_helpers_in_d64_k16_regime() {
-    type FastCfg = Fp128OneHot64Config;
+    type FastCfg = Fp128OneHot32Config;
 
     let source = TestPackedSource::new(
         vec![
@@ -1316,7 +1232,7 @@ fn packed_decompose_fold_generic_matches_multi_coeff_helpers_in_d64_k16_regime()
 #[test]
 #[ignore = "profiling helper for packed fast paths"]
 fn packed_fast_path_benchmark_smoke() {
-    type FastCfg = Fp128OneHot64Config;
+    type FastCfg = Fp128OneHot32Config;
 
     let source = TestPackedSource::new(
         (0..16)
@@ -1360,7 +1276,7 @@ fn packed_fast_path_benchmark_smoke() {
 #[test]
 #[ignore = "profiling helper for K=16 packed commit_inner"]
 fn packed_k16_commit_inner_benchmark_smoke() {
-    type FastCfg = Fp128OneHot64Config;
+    type FastCfg = Fp128OneHot32Config;
 
     let source = TestPackedSource::new(
         (0..32)
@@ -1399,7 +1315,7 @@ fn packed_k16_commit_inner_benchmark_smoke() {
 #[test]
 #[ignore = "profiling helper for K=256 packed commit_inner"]
 fn packed_k256_commit_inner_benchmark_smoke() {
-    type FastCfg = Fp128OneHot64Config;
+    type FastCfg = Fp128OneHot32Config;
 
     let source = TestPackedSource::new(
         (0..32)
@@ -1438,7 +1354,7 @@ fn packed_k256_commit_inner_benchmark_smoke() {
 #[test]
 #[ignore = "profiling helper for K=16 packed decompose_fold"]
 fn packed_k16_decompose_fold_benchmark_smoke() {
-    type FastCfg = Fp128OneHot64Config;
+    type FastCfg = Fp128OneHot32Config;
 
     let source = TestPackedSource::new(
         (0..32)
@@ -1474,7 +1390,7 @@ fn packed_k16_decompose_fold_benchmark_smoke() {
 #[test]
 #[ignore = "profiling helper for K=256 packed decompose_fold"]
 fn packed_k256_decompose_fold_benchmark_smoke() {
-    type FastCfg = Fp128OneHot64Config;
+    type FastCfg = Fp128OneHot32Config;
 
     let source = TestPackedSource::new(
         (0..32)
@@ -1573,7 +1489,7 @@ fn hachi_batch_roundtrip_with_packed_layout() {
 
 #[test]
 fn hachi_batch_roundtrip_with_packed_layout_k16() {
-    type FastCfg = Fp128OneHot64Config;
+    type FastCfg = Fp128OneHot32Config;
     type FastScheme = JoltHachiCommitmentScheme<{ FastCfg::D }, FastCfg>;
 
     let log_k = 4usize;
@@ -1665,7 +1581,7 @@ fn hachi_batch_roundtrip_with_packed_layout_k16() {
 
 #[test]
 fn hachi_k256_setup_envelope_supports_k16_roundtrip() {
-    type FastCfg = Fp128OneHot64Config;
+    type FastCfg = Fp128OneHot32Config;
     type FastScheme = JoltHachiCommitmentScheme<{ FastCfg::D }, FastCfg>;
 
     let num_cycles = 1usize << 4;

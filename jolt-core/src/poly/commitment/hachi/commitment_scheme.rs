@@ -18,7 +18,7 @@ use crate::utils::small_scalar::SmallScalar;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use common::constants::HACHI_ONEHOT_CHUNK_THRESHOLD_LOG_T;
 use hachi_pcs::algebra::ring::CyclotomicRing;
-use hachi_pcs::protocol::commitment::presets::fp128::D64StaticBounded;
+use hachi_pcs::protocol::commitment::presets::fp128::D32OneHot;
 use hachi_pcs::protocol::commitment::{
     compute_num_digits, compute_num_digits_fold, CommitmentConfig, HachiCommitmentCore,
     HachiScheduleInputs, RingCommitment,
@@ -31,29 +31,30 @@ use hachi_pcs::CommitmentScheme as HachiCommitmentSchemeTrait;
 use hachi_pcs::{CanonicalField, DensePoly, FieldCore, FromSmallInt, OneHotIndex, OneHotPoly};
 use rayon::prelude::*;
 
-/// Keep the initial Hachi decomposition basis fixed at 3 so the first-round
-/// layouts match the setup envelope used elsewhere in the scheme.
-const INITIAL_LOG_BASIS: u32 = 3;
+/// Onehot-friendly Hachi preset. Adaptive `D=32`, `LOG_COMMIT_BOUND=1`; the
+/// per-level decomposition basis is chosen by the preset's policy via
+/// [`CommitmentConfig::log_basis_at_level`].
+pub type Fp128OneHot32Config = D32OneHot;
 
-/// Mirror Hachi's bounded D=64 profile while keeping Jolt's level-0 basis fixed.
-pub type Fp128Bounded64Config<const LOG_COMMIT_BOUND: u32> =
-    D64StaticBounded<LOG_COMMIT_BOUND, INITIAL_LOG_BASIS, INITIAL_LOG_BASIS>;
+fn level0_schedule_inputs(max_num_vars: usize) -> HachiScheduleInputs {
+    let current_w_len = 1usize.checked_shl(max_num_vars as u32).unwrap_or(0);
+    HachiScheduleInputs {
+        max_num_vars,
+        level: 0,
+        current_w_len,
+    }
+}
 
-pub type Fp128OneHot64Config = Fp128Bounded64Config<1>;
+/// Level-0 `log_basis` chosen by the preset's policy for the given envelope.
+fn level0_log_basis<Cfg: CommitmentConfig<Field = Fp128>>(max_num_vars: usize) -> u32 {
+    Cfg::log_basis_at_level(level0_schedule_inputs(max_num_vars))
+}
 
 fn level0_level_params<Cfg: CommitmentConfig<Field = Fp128>>(
     max_num_vars: usize,
     log_basis: u32,
 ) -> LevelParams {
-    let current_w_len = 1usize.checked_shl(max_num_vars as u32).unwrap_or(0);
-    Cfg::level_params_with_log_basis(
-        HachiScheduleInputs {
-            max_num_vars,
-            level: 0,
-            current_w_len,
-        },
-        log_basis,
-    )
+    Cfg::level_params_with_log_basis(level0_schedule_inputs(max_num_vars), log_basis)
 }
 
 fn level0_layout_params<Cfg: CommitmentConfig<Field = Fp128>>(
@@ -186,12 +187,14 @@ fn compute_advice_layout<const D: usize, Cfg: CommitmentConfig<Field = Fp128>>(
     let alpha = D.trailing_zeros() as usize;
     let reduced_vars = poly_num_vars.saturating_sub(alpha);
     if reduced_vars <= 1 {
-        return advice_commit_layout::<Cfg>(reduced_vars.max(1), 0, INITIAL_LOG_BASIS);
+        let log_basis = level0_log_basis::<Cfg>(reduced_vars.max(1) + alpha);
+        return advice_commit_layout::<Cfg>(reduced_vars.max(1), 0, log_basis);
     }
     // Advice polynomials have log_commit_bound=64 even when the main one-hot
     // witness uses a narrower commit bound, so choose the split from that cost model.
-    let (m_vars, r_vars) = optimal_advice_m_r_split::<Cfg>(reduced_vars, INITIAL_LOG_BASIS);
-    advice_commit_layout::<Cfg>(m_vars, r_vars, INITIAL_LOG_BASIS)
+    let log_basis = level0_log_basis::<Cfg>(poly_num_vars);
+    let (m_vars, r_vars) = optimal_advice_m_r_split::<Cfg>(reduced_vars, log_basis);
+    advice_commit_layout::<Cfg>(m_vars, r_vars, log_basis)
 }
 
 fn choose_packed_layout_for_shape<const D: usize, Cfg: CommitmentConfig<Field = Fp128>>(
@@ -200,7 +203,8 @@ fn choose_packed_layout_for_shape<const D: usize, Cfg: CommitmentConfig<Field = 
     log_packed: usize,
 ) -> (PackedBitLayout, LevelParams) {
     let packed_layout = choose_packed_bit_layout::<D, Cfg>(log_k, log_t, log_packed);
-    let hachi_layout = packed_layout.into_hachi_layout::<Cfg>(INITIAL_LOG_BASIS);
+    let log_basis = level0_log_basis::<Cfg>(packed_layout.total_num_vars());
+    let hachi_layout = packed_layout.into_hachi_layout::<Cfg>(log_basis);
     (packed_layout, hachi_layout)
 }
 

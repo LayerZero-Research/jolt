@@ -2668,7 +2668,7 @@ mod tests {
     use crate::host;
     use crate::poly::commitment::dory::{DoryGlobals, DoryLayout};
     #[cfg(not(feature = "zk"))]
-    use crate::poly::commitment::hachi::{Fp128OneHot64Config, JoltHachiCommitmentScheme};
+    use crate::poly::commitment::hachi::{Fp128OneHot32Config, JoltHachiCommitmentScheme};
     #[cfg(feature = "zk")]
     use crate::poly::commitment::pedersen::PedersenGenerators;
     use crate::poly::{
@@ -2700,7 +2700,7 @@ mod tests {
     use jolt_inlines_sha2 as _;
 
     #[cfg(not(feature = "zk"))]
-    type HachiPcs = JoltHachiCommitmentScheme<{ Fp128OneHot64Config::D }, Fp128OneHot64Config>;
+    type HachiPcs = JoltHachiCommitmentScheme<{ Fp128OneHot32Config::D }, Fp128OneHot32Config>;
     #[cfg(not(feature = "zk"))]
     type RV64IMACHachiProver<'a> =
         JoltCpuProver<'a, JoltFp128, Fp128Curve, HachiPcs, Blake2bTranscript>;
