@@ -419,6 +419,20 @@ impl<F: JoltField, T: Transcript, A: AbstractVerifierOpeningAccumulator<F>>
         // Return unmap(r) * ra(r)
         let result = unmap_eval * ra_input_claim;
 
+        // Diagnostic: split expected_output_claim into unmap(r) and ra(r) so we
+        // can pinpoint which side disagrees with the prover when the batched
+        // sumcheck verification fails.
+        tracing::warn!(
+            "RafEvaluationSumcheckVerifier::expected_output_claim \
+             unmap(r)={unmap_eval:?} ra(r)={ra_input_claim:?} product={result:?} \
+             start_address={} log_K={} log_T={} phase1={} phase2={}",
+            self.params.start_address,
+            self.params.log_K,
+            self.params.log_T,
+            self.params.phase1_num_rounds,
+            self.params.phase2_num_rounds,
+        );
+
         #[cfg(test)]
         {
             use crate::subprotocols::sumcheck_claim::VerifierEvaluationParams;
