@@ -39,8 +39,14 @@ routed through Jolt inlines (`jolt-inlines-keccak256`,
 - `host/` — CLI that loads fixtures, pre-recovers signers, compiles
   the guest, and either traces (`--mode analyze`) or prove+verifies
   (`--mode prove`) a block.
-- `fixtures/` — small committed JSON fixtures from the Ethereum
-  Foundation's `zkevm-benchmark-workload` (v0.0.7).
+- `fixtures/` — committed JSON fixtures:
+  - `empty_block_osaka_1M.json` and `ether_transfers_osaka_1M.json`
+    from the Ethereum Foundation's `zkevm-benchmark-workload` (v0.0.7).
+  - `mainnet_block_22974576.json` — a real Ethereum mainnet block
+    (115 txs, 7.6M gas used, 2025-07-22) copied from
+    [`eth-act/ere-guests`](https://github.com/eth-act/ere-guests) at
+    commit `ec5feba` (`crates/integration-tests/fixtures/block.tar.gz`),
+    dual-licensed MIT OR Apache-2.0.
 
 ## Quickstart
 
@@ -55,6 +61,11 @@ cargo run --release -p stateless-evm -- \
 # Trace the 47-tx ether-transfer fixture (exercises secp256k1 recovery)
 cargo run --release -p stateless-evm -- \
     examples/stateless-evm/fixtures/ether_transfers_osaka_1M.json \
+    --mode analyze
+
+# Trace a real Ethereum mainnet block (~517M cycles, ~80s on a laptop)
+cargo run --release -p stateless-evm -- \
+    examples/stateless-evm/fixtures/mainnet_block_22974576.json \
     --mode analyze
 
 # Full prove + verify on a fixture
@@ -85,7 +96,8 @@ analysis complete: cycles=1862817 padded_cycles=2097152 success=true
 ```
 
 `ether_transfers_osaka_1M.json` adds 47 transactions and lands around
-17.6M cycles.
+17.6M cycles. `mainnet_block_22974576.json` is a full-size mainnet
+block (115 txs, 7.6M gas used) and lands at ~517M cycles / 2^29 padded.
 
 ## Fixture format
 
@@ -139,8 +151,15 @@ experiment.
 
 ## RPC-based fixtures
 
-If you have access to a Reth archival node, you can also feed real
-mainnet blocks directly:
+Generating fresh mainnet fixtures end-to-end requires either a Reth
+archival node that exposes `debug_executionWitness`, or a proxy such
+as [`zeth-rpc-proxy`](https://github.com/boundless-xyz/zeth) pointed
+at an RPC that supports archive `eth_getProof` / `eth_getCode` /
+`eth_getStorageAt` (Alchemy / Infura / QuickNode / a self-hosted
+Reth node). Free public RPCs (drpc, publicnode, llamarpc, flashbots,
+cloudflare, ...) do not expose `debug_executionWitness` and are
+unreliable partway through a local block replay. The typical flow
+with an archive-capable upstream URL is:
 
 ```bash
 cd ~/zkevm-benchmark-workload
@@ -149,7 +168,10 @@ cargo run -p witness-generator-cli --release -- \
     rpc --block 20000000 --rpc-url $RPC_URL
 ```
 
-The output JSON is the same `StatelessValidatorFixture` format.
+The output JSON is the same `StatelessValidatorFixture` format as our
+committed fixtures. For quick experimentation without any RPC access,
+the simplest option is to copy another block out of
+`eth-act/ere-guests`' `crates/integration-tests/fixtures/block.tar.gz`.
 
 ## Why this design is sound
 
