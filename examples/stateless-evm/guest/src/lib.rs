@@ -6,11 +6,17 @@ use alloy_consensus::crypto::{
     RecoveryError,
 };
 use alloy_primitives::Address;
+#[cfg(feature = "software-keccak")]
+use alloy_primitives::Keccak256 as SoftwareKeccak256;
+use core::sync::atomic::{AtomicU64, Ordering};
+use jolt_inlines_p256::{ecdsa_verify as ecdsa_verify_p256, P256Fr, P256Point};
 use jolt_inlines_secp256k1::{
     ecdsa_verify, Secp256k1Fq, Secp256k1Fr, Secp256k1Point, Secp256k1PointExt,
 };
+use jolt_inlines_sha2::Sha256;
 use reth_chainspec::ChainSpec;
 use reth_evm_ethereum::EthEvmConfig;
+use revm_precompile::{install_crypto, Crypto, DefaultCrypto, PrecompileError};
 use serde::{Deserialize, Serialize};
 use stateless::{stateless_validation_with_trie, Genesis, StatelessInput, UncompressedPublicKey};
 use tries::zeth::SparseState;
@@ -21,14 +27,32 @@ pub struct PreparedStatelessInput {
     pub public_keys: Vec<UncompressedPublicKey>,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CryptoTraceStats {
+    pub keccak_calls: u64,
+    pub keccak_input_bytes: u64,
+    pub signer_recover_calls: u64,
+    pub signer_verify_calls: u64,
+    pub precompile_sha256_calls: u64,
+    pub precompile_sha256_input_bytes: u64,
+    pub precompile_ecrecover_calls: u64,
+    pub precompile_ecrecover_fallbacks: u64,
+    pub precompile_p256verify_calls: u64,
+    pub precompile_p256verify_fallbacks: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValidationOutput {
     pub success: bool,
     pub block_hash: [u8; 32],
+    pub crypto_stats: CryptoTraceStats,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct JoltK256Provider;
+
+#[derive(Debug, Clone, Copy)]
+struct JoltRevmCrypto;
 
 const SECP256K1_ORDER: [u64; 4] = [
     0xbfd25e8cd0364141,
@@ -48,6 +72,45 @@ const SECP256K1_SQRT_EXP: [u64; 4] = [
     0xffffffffffffffff,
     0x3fffffffffffffff,
 ];
+
+static KECCAK_CALLS: AtomicU64 = AtomicU64::new(0);
+static KECCAK_INPUT_BYTES: AtomicU64 = AtomicU64::new(0);
+static SIGNER_RECOVER_CALLS: AtomicU64 = AtomicU64::new(0);
+static SIGNER_VERIFY_CALLS: AtomicU64 = AtomicU64::new(0);
+static PRECOMPILE_SHA256_CALLS: AtomicU64 = AtomicU64::new(0);
+static PRECOMPILE_SHA256_INPUT_BYTES: AtomicU64 = AtomicU64::new(0);
+static PRECOMPILE_ECRECOVER_CALLS: AtomicU64 = AtomicU64::new(0);
+static PRECOMPILE_ECRECOVER_FALLBACKS: AtomicU64 = AtomicU64::new(0);
+static PRECOMPILE_P256VERIFY_CALLS: AtomicU64 = AtomicU64::new(0);
+static PRECOMPILE_P256VERIFY_FALLBACKS: AtomicU64 = AtomicU64::new(0);
+
+fn reset_crypto_stats() {
+    KECCAK_CALLS.store(0, Ordering::Relaxed);
+    KECCAK_INPUT_BYTES.store(0, Ordering::Relaxed);
+    SIGNER_RECOVER_CALLS.store(0, Ordering::Relaxed);
+    SIGNER_VERIFY_CALLS.store(0, Ordering::Relaxed);
+    PRECOMPILE_SHA256_CALLS.store(0, Ordering::Relaxed);
+    PRECOMPILE_SHA256_INPUT_BYTES.store(0, Ordering::Relaxed);
+    PRECOMPILE_ECRECOVER_CALLS.store(0, Ordering::Relaxed);
+    PRECOMPILE_ECRECOVER_FALLBACKS.store(0, Ordering::Relaxed);
+    PRECOMPILE_P256VERIFY_CALLS.store(0, Ordering::Relaxed);
+    PRECOMPILE_P256VERIFY_FALLBACKS.store(0, Ordering::Relaxed);
+}
+
+fn snapshot_crypto_stats() -> CryptoTraceStats {
+    CryptoTraceStats {
+        keccak_calls: KECCAK_CALLS.load(Ordering::Relaxed),
+        keccak_input_bytes: KECCAK_INPUT_BYTES.load(Ordering::Relaxed),
+        signer_recover_calls: SIGNER_RECOVER_CALLS.load(Ordering::Relaxed),
+        signer_verify_calls: SIGNER_VERIFY_CALLS.load(Ordering::Relaxed),
+        precompile_sha256_calls: PRECOMPILE_SHA256_CALLS.load(Ordering::Relaxed),
+        precompile_sha256_input_bytes: PRECOMPILE_SHA256_INPUT_BYTES.load(Ordering::Relaxed),
+        precompile_ecrecover_calls: PRECOMPILE_ECRECOVER_CALLS.load(Ordering::Relaxed),
+        precompile_ecrecover_fallbacks: PRECOMPILE_ECRECOVER_FALLBACKS.load(Ordering::Relaxed),
+        precompile_p256verify_calls: PRECOMPILE_P256VERIFY_CALLS.load(Ordering::Relaxed),
+        precompile_p256verify_fallbacks: PRECOMPILE_P256VERIFY_FALLBACKS.load(Ordering::Relaxed),
+    }
+}
 
 fn be_bytes_to_limbs(bytes: &[u8; 32]) -> [u64; 4] {
     let mut limbs = [0u64; 4];
@@ -125,8 +188,45 @@ fn public_key_to_address(public_key: &[u8; 65]) -> Option<Address> {
     if public_key[0] != 0x04 {
         return None;
     }
-    let digest = jolt_inlines_keccak256::Keccak256::digest(&public_key[1..65]);
+    let digest = keccak256_digest(&public_key[1..65]);
     Some(Address::from_slice(&digest[12..]))
+}
+
+fn address_to_word(address: Address) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out[12..].copy_from_slice(address.as_slice());
+    out
+}
+
+fn public_key_to_p256_point(public_key: &[u8; 64]) -> Option<P256Point> {
+    let mut q_arr = [0u64; 8];
+
+    let mut qx_bytes = [0u8; 32];
+    qx_bytes.copy_from_slice(&public_key[..32]);
+    q_arr[..4].copy_from_slice(&be_bytes_to_limbs(&qx_bytes));
+
+    let mut qy_bytes = [0u8; 32];
+    qy_bytes.copy_from_slice(&public_key[32..64]);
+    q_arr[4..].copy_from_slice(&be_bytes_to_limbs(&qy_bytes));
+
+    P256Point::from_u64_arr(&q_arr).ok()
+}
+
+fn keccak256_digest(input: &[u8]) -> [u8; 32] {
+    KECCAK_CALLS.fetch_add(1, Ordering::Relaxed);
+    KECCAK_INPUT_BYTES.fetch_add(input.len() as u64, Ordering::Relaxed);
+
+    #[cfg(feature = "software-keccak")]
+    {
+        let mut hasher = SoftwareKeccak256::new();
+        hasher.update(input);
+        return hasher.finalize().0;
+    }
+
+    #[cfg(not(feature = "software-keccak"))]
+    {
+        jolt_inlines_keccak256::Keccak256::digest(input)
+    }
 }
 
 fn secp256k1_fq_pow(base: &Secp256k1Fq, exponent: [u64; 4]) -> Secp256k1Fq {
@@ -177,6 +277,7 @@ fn verify_and_compute_signer(
     sig: &[u8; 64],
     msg: &[u8; 32],
 ) -> Result<Address, RecoveryError> {
+    SIGNER_VERIFY_CALLS.fetch_add(1, Ordering::Relaxed);
     let mut r_bytes = [0u8; 32];
     r_bytes.copy_from_slice(&sig[..32]);
     let r = signature_to_secp256k1_scalar(&r_bytes).ok_or_else(RecoveryError::new)?;
@@ -193,6 +294,7 @@ fn verify_and_compute_signer(
 }
 
 fn recover_signer(sig: &[u8; 65], msg: &[u8; 32]) -> Result<Address, RecoveryError> {
+    SIGNER_RECOVER_CALLS.fetch_add(1, Ordering::Relaxed);
     let mut r_bytes = [0u8; 32];
     r_bytes.copy_from_slice(&sig[..32]);
     let r = signature_to_secp256k1_scalar(&r_bytes).ok_or_else(RecoveryError::new)?;
@@ -227,6 +329,41 @@ fn recover_signer(sig: &[u8; 65], msg: &[u8; 32]) -> Result<Address, RecoveryErr
     public_key_to_address(&encoded).ok_or_else(RecoveryError::new)
 }
 
+fn ecrecover_precompile_address(
+    sig: &[u8; 64],
+    recid: u8,
+    msg: &[u8; 32],
+) -> Result<[u8; 32], PrecompileError> {
+    let mut encoded_sig = [0u8; 65];
+    encoded_sig[..64].copy_from_slice(sig);
+    encoded_sig[64] = recid;
+    let address =
+        recover_signer(&encoded_sig, msg).map_err(|_| PrecompileError::Secp256k1RecoverFailed)?;
+    Ok(address_to_word(address))
+}
+
+fn verify_p256_signature(msg: &[u8; 32], sig: &[u8; 64], public_key: &[u8; 64]) -> Option<bool> {
+    // `jolt-inlines-p256` currently rejects z = 0, while the revm precompile
+    // accepts any 32-byte prehash. Preserve exact EVM semantics by falling
+    // back to revm for that edge case.
+    if msg.iter().all(|byte| *byte == 0) {
+        return None;
+    }
+
+    let z = P256Fr::from_u64_arr(&be_bytes_to_limbs(msg)).ok()?;
+
+    let mut r_bytes = [0u8; 32];
+    r_bytes.copy_from_slice(&sig[..32]);
+    let r = P256Fr::from_u64_arr(&be_bytes_to_limbs(&r_bytes)).ok()?;
+
+    let mut s_bytes = [0u8; 32];
+    s_bytes.copy_from_slice(&sig[32..]);
+    let s = P256Fr::from_u64_arr(&be_bytes_to_limbs(&s_bytes)).ok()?;
+
+    let q = public_key_to_p256_point(public_key)?;
+    Some(ecdsa_verify_p256(z, r, s, q).is_ok())
+}
+
 impl CryptoProvider for JoltK256Provider {
     fn recover_signer_unchecked(
         &self,
@@ -246,8 +383,40 @@ impl CryptoProvider for JoltK256Provider {
     }
 }
 
+impl Crypto for JoltRevmCrypto {
+    fn sha256(&self, input: &[u8]) -> [u8; 32] {
+        PRECOMPILE_SHA256_CALLS.fetch_add(1, Ordering::Relaxed);
+        PRECOMPILE_SHA256_INPUT_BYTES.fetch_add(input.len() as u64, Ordering::Relaxed);
+        Sha256::digest(input)
+    }
+
+    fn secp256k1_ecrecover(
+        &self,
+        sig: &[u8; 64],
+        recid: u8,
+        msg: &[u8; 32],
+    ) -> Result<[u8; 32], PrecompileError> {
+        PRECOMPILE_ECRECOVER_CALLS.fetch_add(1, Ordering::Relaxed);
+        ecrecover_precompile_address(sig, recid, msg).or_else(|_| {
+            PRECOMPILE_ECRECOVER_FALLBACKS.fetch_add(1, Ordering::Relaxed);
+            let fallback = DefaultCrypto;
+            fallback.secp256k1_ecrecover(sig, recid, msg)
+        })
+    }
+
+    fn secp256r1_verify_signature(&self, msg: &[u8; 32], sig: &[u8; 64], pk: &[u8; 64]) -> bool {
+        PRECOMPILE_P256VERIFY_CALLS.fetch_add(1, Ordering::Relaxed);
+        verify_p256_signature(msg, sig, pk).unwrap_or_else(|| {
+            PRECOMPILE_P256VERIFY_FALLBACKS.fetch_add(1, Ordering::Relaxed);
+            let fallback = DefaultCrypto;
+            fallback.secp256r1_verify_signature(msg, sig, pk)
+        })
+    }
+}
+
 fn install_jolt_crypto() {
     let _ = install_default_provider(Arc::new(JoltK256Provider));
+    let _ = install_crypto(JoltRevmCrypto);
 }
 
 /// `alloy-primitives` routes `keccak256(...)` through this hook when its
@@ -260,7 +429,7 @@ fn install_jolt_crypto() {
 #[no_mangle]
 pub unsafe extern "C" fn native_keccak256(bytes: *const u8, len: usize, output: *mut u8) {
     let input = unsafe { core::slice::from_raw_parts(bytes, len) };
-    let digest = jolt_inlines_keccak256::Keccak256::digest(input);
+    let digest = keccak256_digest(input);
     unsafe {
         core::ptr::copy_nonoverlapping(digest.as_ptr(), output, digest.len());
     }
@@ -270,11 +439,12 @@ pub unsafe extern "C" fn native_keccak256(bytes: *const u8, len: usize, output: 
     heap_size = 268435456,
     stack_size = 262144,
     max_input_size = 16777216,
-    max_output_size = 64,
+    max_output_size = 256,
     max_trace_length = 134217728
 )]
 pub fn stateless_validate(input: &[u8]) -> ValidationOutput {
     install_jolt_crypto();
+    reset_crypto_stats();
 
     let prepared = match postcard::from_bytes::<PreparedStatelessInput>(input) {
         Ok(prepared) => prepared,
@@ -282,6 +452,7 @@ pub fn stateless_validate(input: &[u8]) -> ValidationOutput {
             return ValidationOutput {
                 success: false,
                 block_hash: [0u8; 32],
+                crypto_stats: CryptoTraceStats::default(),
             };
         }
     };
@@ -302,9 +473,11 @@ pub fn stateless_validate(input: &[u8]) -> ValidationOutput {
         evm_config,
     )
     .is_ok();
+    let crypto_stats = snapshot_crypto_stats();
 
     ValidationOutput {
         success,
         block_hash,
+        crypto_stats,
     }
 }

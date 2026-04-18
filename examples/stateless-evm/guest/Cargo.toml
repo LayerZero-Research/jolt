@@ -5,14 +5,18 @@ edition = "2021"
 
 [features]
 guest = []
+software-keccak = []
 
 [dependencies]
 jolt = { package = "jolt-sdk", path = "../../../jolt-sdk", features = [
   "guest-std",
 ] }
 jolt-inlines-keccak256.workspace = true
+jolt-inlines-p256.workspace = true
 jolt-inlines-secp256k1.workspace = true
+jolt-inlines-sha2.workspace = true
 postcard.workspace = true
+revm-precompile = { version = "32.1.0", default-features = false }
 serde.workspace = true
 alloy-consensus = { version = "1.6.3", default-features = false, features = [
   "crypto-backend",

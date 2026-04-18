@@ -1,6 +1,6 @@
 use clap::{Parser, ValueEnum};
 use eyre::{bail, Context, Result};
-use guest::{PreparedStatelessInput, ValidationOutput};
+use guest::{CryptoTraceStats, PreparedStatelessInput, ValidationOutput};
 use jolt_sdk::{host::Program, F};
 use stateless::{StatelessInput, UncompressedPublicKey};
 use std::{
@@ -28,6 +28,10 @@ struct Args {
     #[arg(long, default_value = "/tmp/jolt-guest-targets")]
     target_dir: PathBuf,
 
+    /// Keccak backend to use when compiling the guest.
+    #[arg(long, value_enum, default_value_t = KeccakBackend::Inline)]
+    keccak_backend: KeccakBackend,
+
     /// Optional output path for the prepared postcard input. Only valid for a
     /// single input file.
     #[arg(long)]
@@ -52,6 +56,28 @@ enum Mode {
     Prove,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum KeccakBackend {
+    Inline,
+    Software,
+}
+
+impl KeccakBackend {
+    fn extra_guest_features(self) -> &'static [&'static str] {
+        match self {
+            Self::Inline => &[],
+            Self::Software => &["software-keccak"],
+        }
+    }
+
+    fn target_dir_component(self) -> &'static str {
+        match self {
+            Self::Inline => "keccak-inline",
+            Self::Software => "keccak-software",
+        }
+    }
+}
+
 #[derive(Debug, serde::Deserialize)]
 struct StatelessValidatorFixture {
     name: String,
@@ -74,11 +100,32 @@ struct AnalysisResult {
     success: bool,
 }
 
-fn compile_guest(target_dir: &Path) -> Program {
+fn make_guest_program() -> Program {
+    let mut program = Program::new("stateless-evm-guest");
+    program.set_func("stateless_validate");
+    program.set_std(true);
+    program.set_heap_size(268_435_456);
+    program.set_stack_size(262_144);
+    program.set_max_input_size(16_777_216);
+    program.set_max_output_size(256);
+    program
+}
+
+fn compile_guest(target_dir: &Path, keccak_backend: KeccakBackend) -> Program {
+    let target_dir = target_dir.join(keccak_backend.target_dir_component());
     let target_dir = target_dir.to_string_lossy();
     let compile_start = Instant::now();
-    let program = guest::compile_stateless_validate(&target_dir);
-    info!("guest compile time: {:?}", compile_start.elapsed());
+    let mut program = make_guest_program();
+    let extra_features = keccak_backend.extra_guest_features();
+    let mut compute_advice_features = Vec::with_capacity(1 + extra_features.len());
+    compute_advice_features.push("compute_advice");
+    compute_advice_features.extend(extra_features.iter().copied());
+    program.build_with_features(&target_dir, &compute_advice_features);
+    program.build_with_features(&target_dir, extra_features);
+    info!(
+        "guest compile time: {:?} keccak_backend={keccak_backend:?}",
+        compile_start.elapsed()
+    );
     program
 }
 
@@ -151,6 +198,33 @@ fn load_input(path: &Path) -> Result<LoadedInput> {
     })
 }
 
+fn log_crypto_stats(name: &str, stats: &CryptoTraceStats) {
+    let avg_keccak_input_bytes = if stats.keccak_calls == 0 {
+        0.0
+    } else {
+        stats.keccak_input_bytes as f64 / stats.keccak_calls as f64
+    };
+    let avg_sha256_input_bytes = if stats.precompile_sha256_calls == 0 {
+        0.0
+    } else {
+        stats.precompile_sha256_input_bytes as f64 / stats.precompile_sha256_calls as f64
+    };
+
+    info!(
+        "crypto detail: name={name} keccak_calls={} keccak_input_bytes={} avg_keccak_input_bytes={avg_keccak_input_bytes:.2} signer_recover_calls={} signer_verify_calls={} precompile_sha256_calls={} precompile_sha256_input_bytes={} avg_sha256_input_bytes={avg_sha256_input_bytes:.2} precompile_ecrecover_calls={} precompile_ecrecover_fallbacks={} precompile_p256verify_calls={} precompile_p256verify_fallbacks={}",
+        stats.keccak_calls,
+        stats.keccak_input_bytes,
+        stats.signer_recover_calls,
+        stats.signer_verify_calls,
+        stats.precompile_sha256_calls,
+        stats.precompile_sha256_input_bytes,
+        stats.precompile_ecrecover_calls,
+        stats.precompile_ecrecover_fallbacks,
+        stats.precompile_p256verify_calls,
+        stats.precompile_p256verify_fallbacks,
+    );
+}
+
 fn check_expected_success(expected_success: Option<bool>, output: ValidationOutput) -> Result<()> {
     if let Some(expected) = expected_success {
         if expected != output.success {
@@ -183,6 +257,7 @@ fn analyze_single(
     let output: ValidationOutput =
         postcard::from_bytes(&summary.io_device.outputs).wrap_err("failed to decode output")?;
     check_expected_success(expected_success, output)?;
+    log_crypto_stats(name, &output.crypto_stats);
 
     info!(
         "analysis complete: name={name} cycles={total_cycles} padded_cycles={padded_cycles} success={} block_hash=0x{} elapsed={elapsed:?}",
@@ -319,7 +394,7 @@ fn analyze_inputs(args: &Args) -> Result<()> {
     }
 
     let input_paths = collect_input_paths(&args.input, &args.filter, args.limit)?;
-    let program = compile_guest(&args.target_dir);
+    let program = compile_guest(&args.target_dir, args.keccak_backend);
     let batch_start = Instant::now();
     let mut results = Vec::with_capacity(input_paths.len());
     let mut first_error = None;
@@ -368,12 +443,12 @@ fn analyze_inputs(args: &Args) -> Result<()> {
 
 fn prove(
     target_dir: &Path,
+    keccak_backend: KeccakBackend,
     name: &str,
     input_bytes: &[u8],
     expected_success: Option<bool>,
 ) -> Result<()> {
-    let target_dir = target_dir.to_string_lossy();
-    let mut program = guest::compile_stateless_validate(&target_dir);
+    let mut program = compile_guest(target_dir, keccak_backend);
     let shared_preprocessing = guest::preprocess_shared_stateless_validate(&mut program)?;
     let prover_preprocessing =
         guest::preprocess_prover_stateless_validate(shared_preprocessing.clone());
@@ -433,6 +508,7 @@ fn main() -> Result<()> {
 
             prove(
                 &args.target_dir,
+                args.keccak_backend,
                 &loaded.name,
                 &input_bytes,
                 loaded.expected_success,
