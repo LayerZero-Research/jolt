@@ -277,18 +277,18 @@ Wiring lives in `examples/stateless-evm/guest/src/lib.rs`
 
 ## 9. Directions considered
 
-Preference established during this session: **no new inlines, no `unsafe`**.
-Under those constraints the clear leverage points, in order of expected impact
-and feasibility, are:
+Preference established during this session: **no new inlines, `unsafe` is
+acceptable inside shim crates when unavoidable with clear SAFETY comments,
+public helpers expose safe APIs**.
+Under those constraints the clear leverage points, in order of expected
+impact and feasibility, are:
 
-1. **Safe-Rust override of `memcpy` / `memcmp` / `memset`.**
-   Ship a crate that `#[no_mangle]`-exports these using only safe Rust
-   (`<[u8]>::chunks_exact(8)` + `u64::from_le_bytes(chunk.try_into().unwrap())`),
-   with explicit head-alignment + 8-byte-word body + tail-fixup.
-   Rough projection: saves ~85-100 M expanded cycles (~17-20 % of the block),
-   transparently improves rank-2/7/11/12/16/17 (revm `swap<N>`, `mstore`,
-   `transact`) because those dispatch through `llvm.memcpy.p0.p0.i64` for
-   32-byte `U256` copies.
+1. **Word-aligned `memset` + shared-alignment `memcmp` overrides (shipped).**
+   See section 10.
+   Current default saves ~11.4 M expanded cycles (~2.2 %) on the real mainnet
+   block, at the cost of a ~0.49 M regression (~2.7 %) on the small
+   `ether_transfers_osaka_1M.json` fixture. The target workload here is the
+   mainnet-sized block, so we keep the mainnet win.
 
 2. **RLP / MPT decoder reshape.**
    Rewrite `zeth_mpt::mpt::node::Node::decode` and `resolve_digests` to read
@@ -300,12 +300,74 @@ and feasibility, are:
 3. **Byte-array -> word-array representation in hot revm structures.**
    Represent `U256` stack slots and `SharedMemory` as `[u64; N]` with byte
    views for EVM semantics.
-   Big upstream surface, meaningful payoff.
+   Big upstream surface, meaningful payoff. This now looks even more attractive
+   because the top remaining hotspots are still `revm` stack swaps and memory
+   writes, not libc-style memops.
 
-4. **Allocator.** Partly out of scope unless swapping `zeroos_runtime_musl`
+4. **Targeted `revm` patches before a full `memcpy` rewrite.**
+   Patch `revm_interpreter::Stack::{dup,exchange}` and the `mstore` /
+   `SharedMemory` write path to move four `u64` limbs explicitly instead of
+   routing 32-byte `U256` values through generic byte-slice operations.
+   The trace still shows `swap::<1>`, `swap::<2>`, `swap::<3>`, and `mstore`
+   as large memop hotspots.
+
+5. **Shifted-write `memcpy` override.**
+   Match or beat `compiler_builtins`' mismatched-alignment path (LW on the
+   4-byte-aligned source into aligned SW writes through a moving shift/OR
+   window). Harder to get right than `memset`; only worth doing once we
+   have tests that cover all alignment corners.
+
+6. **Allocator.** Partly out of scope unless swapping `zeroos_runtime_musl`
    for a simpler bump allocator in this example.
 
-## 10. Instrumentation deltas (reference)
+## 10. `memops` crate: scope and measurement
+
+`examples/stateless-evm/memops/` is a small `no_std` crate that installs
+`#[no_mangle] memset` and `memcmp` (RV64IMAC only) and exposes safe helpers
+(`copy_words` / `zero_words` / `swap_words` / `cmp_words`) in `crate::safe`.
+
+### What we measured
+
+We measured six variants on the mainnet fixture:
+
+| Variant | `memcpy` cycles | `memcmp` cycles | `memset` cycles | Total expanded |
+|---|---:|---:|---:|---:|
+| Baseline (`compiler_builtins`) | 95.78 M | 14.27 M | 9.82 M | 510.28 M |
+| Naive overrides for all four   | 144.97 M | 2.91 M | - | 560.14 M |
+| Staged 8/4/2-byte overrides    | 120.83 M | 2.91 M | - | 534.90 M |
+| Alignment-minimised overrides  | 119.62 M | 2.91 M | - | 533.25 M |
+| `memset` override only         | 95.78 M | 14.27 M | ~1.4 M | 507.16 M |
+| `memset` + full-reassembly `memcmp` | 95.78 M | 1.29 M | ~1.4 M | 497.36 M |
+| **Shipped: `memset` + shared-alignment `memcmp`** | **95.78 M** | **2.88 M** | **~1.4 M** | **498.93 M** |
+
+Interpretation:
+
+- `compiler_builtins`'s `memcpy` runs a classic shifted-write algorithm
+  (`LW` on a 4-byte-aligned source through a moving shift/OR window into
+  aligned `SW` writes) that keeps mismatched-alignment copies in the
+  word-sized path.
+  A naive replacement that falls back to byte copies whenever
+  `(src ^ dst) & 7 != 0` regresses memcpy by ~25 M expanded cycles
+  (+26 %) on this block, because the `(src ^ dst) & 7` test fires often
+  in MPT / RLP / EVM memory paths.
+- `compiler_builtins`'s `memcmp` is a byte loop.
+  A full word-reassembly `memcmp` buys the biggest mainnet win
+  (`510.28 M -> 497.36 M` total expanded), but it regressed the small
+  EF transfer fixture from `17.70 M` to `18.22 M` cycles because the
+  setup cost is too eager on shorter compares.
+  The current shipped compromise only takes the word path when the two
+  pointers share the same 8-byte alignment.
+  That still cuts the mainnet `memcmp` hotspot from `14.27 M` down to
+  `2.88 M` while landing at `18.18 M` on the small fixture.
+- `memset` has no second pointer so the alignment-matching concern does
+  not apply. Our `SD`-per-8-byte loop straightforwardly beats
+  `compiler_builtins`' mixed `SW`/`SB` loop.
+
+Net shipped win on mainnet: **-11.36 M expanded cycles (-2.2 %)**, clean
+clippy, with a **+0.49 M expanded-cycle (+2.7 %)** regression on the small
+EF fixture.
+
+## 11. Instrumentation deltas (reference)
 
 Files touched to produce these numbers:
 

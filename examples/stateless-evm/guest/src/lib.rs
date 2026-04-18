@@ -471,6 +471,8 @@ pub unsafe extern "C" fn native_keccak256(bytes: *const u8, len: usize, output: 
     max_trace_length = 134217728
 )]
 pub fn stateless_validate(input: &[u8]) -> ValidationOutput {
+    #[cfg(target_arch = "riscv64")]
+    stateless_evm_memops::link_overrides();
     install_jolt_crypto();
     reset_crypto_stats();
 

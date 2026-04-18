@@ -32,3 +32,4 @@ tries = { git = "https://github.com/paradigmxyz/stateless", rev = "ed189a51931e8
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 critical-section = "1"
+stateless-evm-memops = { path = "../memops" }

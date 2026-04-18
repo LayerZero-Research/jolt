@@ -100,6 +100,7 @@ members = [
   "examples/sig-recovery/guest",
   "examples/stateless-evm/host",
   "examples/stateless-evm/guest",
+  "examples/stateless-evm/memops",
   "zklean-extractor",
   "z3-verifier",
   "transpiler",

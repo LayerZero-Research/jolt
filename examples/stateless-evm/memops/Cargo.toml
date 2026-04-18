@@ -1,0 +1,9 @@
+[package]
+name = "stateless-evm-memops"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Word-aligned mem* overrides for the Jolt stateless-evm guest"
+
+[lib]
+path = "src/lib.rs"

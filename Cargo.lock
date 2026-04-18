@@ -6199,8 +6199,13 @@ dependencies = [
  "revm-precompile",
  "serde",
  "stateless",
+ "stateless-evm-memops",
  "tries",
 ]
+
+[[package]]
+name = "stateless-evm-memops"
+version = "0.1.0"
 
 [[package]]
 name = "static_assertions"
