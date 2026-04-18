@@ -81,6 +81,8 @@ members = [
   "examples/backtrace/guest-std",
   "examples/recursion",
   "examples/recursion/guest",
+  "examples/binius-verifier",
+  "examples/binius-verifier/guest",
   "examples/recover-ecdsa",
   "examples/recover-ecdsa/guest",
   "examples/random",

@@ -88,6 +88,22 @@ impl Program {
             trace_file,
         )
     }
+
+    pub fn run(
+        &self,
+        inputs: &[u8],
+        untrusted_advice: &[u8],
+        trusted_advice: &[u8],
+    ) -> (Memory, JoltDevice) {
+        tracer::run(
+            &self.elf_contents,
+            self.elf.as_ref(),
+            inputs,
+            untrusted_advice,
+            trusted_advice,
+            &self.memory_config,
+        )
+    }
 }
 
 #[cfg(feature = "host")]

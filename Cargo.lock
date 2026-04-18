@@ -171,7 +171,7 @@ dependencies = [
  "auto_impl",
  "borsh",
  "c-kzg",
- "derive_more",
+ "derive_more 2.1.1",
  "either",
  "k256",
  "once_cell",
@@ -265,7 +265,7 @@ dependencies = [
  "auto_impl",
  "borsh",
  "c-kzg",
- "derive_more",
+ "derive_more 2.1.1",
  "either",
  "serde",
  "serde_with",
@@ -284,7 +284,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
  "auto_impl",
- "derive_more",
+ "derive_more 2.1.1",
  "revm",
  "thiserror 2.0.18",
 ]
@@ -352,7 +352,7 @@ dependencies = [
  "bytes",
  "cfg-if",
  "const-hex",
- "derive_more",
+ "derive_more 2.1.1",
  "foldhash",
  "hashbrown 0.16.1",
  "indexmap 2.13.0",
@@ -398,7 +398,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2145138f3214928f08cd13da3cb51ef7482b5920d8ac5a02ecd4e38d1a8f6d1e"
 dependencies = [
  "alloy-primitives",
- "derive_more",
+ "derive_more 2.1.1",
  "serde",
  "serde_with",
 ]
@@ -413,7 +413,7 @@ dependencies = [
  "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
- "derive_more",
+ "derive_more 2.1.1",
  "strum 0.27.2",
 ]
 
@@ -528,7 +528,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "arrayvec",
- "derive_more",
+ "derive_more 2.1.1",
  "nybbles 0.3.4",
  "smallvec",
  "tracing",
@@ -543,7 +543,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "arrayvec",
- "derive_more",
+ "derive_more 2.1.1",
  "nybbles 0.4.8",
  "serde",
  "smallvec",
@@ -933,6 +933,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "array-util"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e509844de8f09b90a2c3444684a2b6695f4071360e13d2fda0af9f749cc2ed6"
+dependencies = [
+ "arrayvec",
+]
+
+[[package]]
 name = "arrayref"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1059,6 +1068,191 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf95709a440f45e986983918d0e8a1f30a9b1df04918fc828670606804ac3c09"
 dependencies = [
  "virtue",
+]
+
+[[package]]
+name = "binius-core"
+version = "0.1.0"
+dependencies = [
+ "binius-utils",
+ "bytemuck",
+ "bytes",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "binius-field"
+version = "0.1.0"
+dependencies = [
+ "binius-utils",
+ "bytemuck",
+ "cfg-if",
+ "derive_more 0.99.20",
+ "rand 0.9.2",
+ "seq-macro",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "binius-hash"
+version = "0.1.0"
+dependencies = [
+ "binius-field",
+ "binius-math",
+ "binius-transcript",
+ "binius-utils",
+ "bytemuck",
+ "bytes",
+ "digest 0.10.7",
+ "itertools 0.14.0",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "binius-iop"
+version = "0.1.0"
+dependencies = [
+ "binius-field",
+ "binius-hash",
+ "binius-ip",
+ "binius-math",
+ "binius-transcript",
+ "binius-utils",
+ "bytes",
+ "digest 0.10.7",
+ "getset",
+ "itertools 0.14.0",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "binius-ip"
+version = "0.1.0"
+dependencies = [
+ "binius-field",
+ "binius-math",
+ "binius-transcript",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "binius-math"
+version = "0.1.0"
+dependencies = [
+ "binius-field",
+ "binius-utils",
+ "bytemuck",
+ "getset",
+ "itertools 0.14.0",
+ "rand 0.9.2",
+ "thiserror 2.0.18",
+ "tracing",
+ "uninit",
+]
+
+[[package]]
+name = "binius-spartan-frontend"
+version = "0.1.0"
+dependencies = [
+ "binius-field",
+ "binius-utils",
+ "bytemuck",
+ "getset",
+ "itertools 0.14.0",
+ "smallvec",
+]
+
+[[package]]
+name = "binius-spartan-verifier"
+version = "0.1.0"
+dependencies = [
+ "binius-field",
+ "binius-hash",
+ "binius-iop",
+ "binius-ip",
+ "binius-math",
+ "binius-spartan-frontend",
+ "binius-transcript",
+ "binius-utils",
+ "digest 0.10.7",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "binius-transcript"
+version = "0.1.0"
+dependencies = [
+ "auto_impl",
+ "binius-field",
+ "binius-utils",
+ "bytes",
+ "digest 0.10.7",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "binius-utils"
+version = "0.1.0"
+dependencies = [
+ "array-util",
+ "bytemuck",
+ "bytes",
+ "cfg-if",
+ "generic-array",
+ "itertools 0.14.0",
+ "rand 0.9.2",
+ "thiserror 2.0.18",
+ "trait-set",
+]
+
+[[package]]
+name = "binius-verifier"
+version = "0.1.0"
+dependencies = [
+ "binius-core",
+ "binius-field",
+ "binius-hash",
+ "binius-iop",
+ "binius-ip",
+ "binius-math",
+ "binius-spartan-frontend",
+ "binius-spartan-verifier",
+ "binius-transcript",
+ "binius-utils",
+ "bytemuck",
+ "bytes",
+ "digest 0.10.7",
+ "getset",
+ "itertools 0.14.0",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "binius-verifier-example"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "jolt-sdk",
+ "postcard",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "binius-verifier-guest"
+version = "0.1.0"
+dependencies = [
+ "binius-core",
+ "binius-utils",
+ "binius-verifier",
+ "jolt-sdk",
 ]
 
 [[package]]
@@ -1229,7 +1423,7 @@ version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e498c7ccbdde9f82e90826b8ffa37853d63c25ae75435a26ffcdb6ea8b9922ea"
 dependencies = [
- "derive_more",
+ "derive_more 2.1.1",
  "pipe-trait",
  "serde",
  "serde_yaml",
@@ -1253,6 +1447,9 @@ name = "bytemuck"
 version = "1.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8efb64bd706a16a1bdde310ae86b351e4d21550d98d056f22f8a7f7a2183fec"
+dependencies = [
+ "bytemuck_derive",
+]
 
 [[package]]
 name = "bytemuck_derive"
@@ -1503,6 +1700,12 @@ name = "constant_time_eq"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
+
+[[package]]
+name = "convert_case"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6245d59a3e82a7fc217c5828a6692dbc6dfb63a0c8c90495621f7b9d79704a0e"
 
 [[package]]
 name = "convert_case"
@@ -1817,6 +2020,19 @@ dependencies = [
 
 [[package]]
 name = "derive_more"
+version = "0.99.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6edb4b64a43d977b8e99788fe3a04d483834fba1215a7e02caa415b626497f7f"
+dependencies = [
+ "convert_case 0.4.0",
+ "proc-macro2",
+ "quote",
+ "rustc_version 0.4.1",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "derive_more"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d751e9e49156b02b44f9c1815bcb94b984cdcc4396ecc32521c739452808b134"
@@ -1830,7 +2046,7 @@ version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "799a97264921d8623a957f6c3b9011f3b5492f557bbb7a5a19b7fa6d06ba8dcb"
 dependencies = [
- "convert_case",
+ "convert_case 0.10.0",
  "proc-macro2",
  "quote",
  "rustc_version 0.4.1",
@@ -2376,6 +2592,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "getset"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9cf0fc11e47561d47397154977bc219f4cf809b2974facc3ccb3b89e2436f912"
+dependencies = [
+ "proc-macro-error2",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "gimli"
 version = "0.32.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2543,7 +2771,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b1e4910d3a9137442723dfb772c32dc10674c4181ca078d2fd227cd5dce9db0"
 dependencies = [
  "bincode 1.3.3",
- "derive_more",
+ "derive_more 2.1.1",
  "iai-callgrind-macros",
  "iai-callgrind-runner",
 ]
@@ -2554,7 +2782,7 @@ version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4d03775318d3f9f01b39ac6612b01464006dc397a654a89dd57df2fd34fb68c3"
 dependencies = [
- "derive_more",
+ "derive_more 2.1.1",
  "proc-macro-error2",
  "proc-macro2",
  "quote",
@@ -2932,7 +3160,7 @@ dependencies = [
  "clap",
  "common",
  "criterion",
- "derive_more",
+ "derive_more 2.1.1",
  "dory-pcs",
  "eyre",
  "fixedbitset 0.5.7",
@@ -3879,7 +4107,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "alloy-serde",
- "derive_more",
+ "derive_more 2.1.1",
  "serde",
  "serde_with",
  "thiserror 2.0.18",
@@ -3897,7 +4125,7 @@ dependencies = [
  "alloy-rlp",
  "alloy-rpc-types-eth",
  "alloy-serde",
- "derive_more",
+ "derive_more 2.1.1",
  "serde",
  "serde_with",
  "thiserror 2.0.18",
@@ -4715,7 +4943,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-trie 0.9.4",
  "auto_impl",
- "derive_more",
+ "derive_more 2.1.1",
  "reth-ethereum-forks",
  "reth-network-peers",
  "reth-primitives-traits 1.11.0",
@@ -4882,7 +5110,7 @@ dependencies = [
  "alloy-evm",
  "alloy-primitives",
  "auto_impl",
- "derive_more",
+ "derive_more 2.1.1",
  "futures-util",
  "reth-execution-errors",
  "reth-execution-types",
@@ -4935,7 +5163,7 @@ dependencies = [
  "alloy-eips",
  "alloy-evm",
  "alloy-primitives",
- "derive_more",
+ "derive_more 2.1.1",
  "reth-ethereum-primitives 1.11.0",
  "reth-primitives-traits 1.11.0",
  "reth-trie-common",
@@ -4969,7 +5197,7 @@ dependencies = [
  "auto_impl",
  "bytes",
  "dashmap",
- "derive_more",
+ "derive_more 2.1.1",
  "once_cell",
  "op-alloy-consensus 0.23.1",
  "reth-codecs 1.11.0",
@@ -4997,7 +5225,7 @@ dependencies = [
  "auto_impl",
  "bytes",
  "dashmap",
- "derive_more",
+ "derive_more 2.1.1",
  "once_cell",
  "op-alloy-consensus 0.24.0",
  "quanta",
@@ -5018,7 +5246,7 @@ version = "1.11.0"
 source = "git+https://github.com/paradigmxyz/reth?tag=v1.11.0#564ffa586845fa4a8bb066f0c7b015ff36b26c08"
 dependencies = [
  "alloy-primitives",
- "derive_more",
+ "derive_more 2.1.1",
  "strum 0.27.2",
  "thiserror 2.0.18",
  "tracing",
@@ -5039,7 +5267,7 @@ version = "1.11.0"
 source = "git+https://github.com/paradigmxyz/reth?tag=v1.11.0#564ffa586845fa4a8bb066f0c7b015ff36b26c08"
 dependencies = [
  "alloy-primitives",
- "derive_more",
+ "derive_more 2.1.1",
  "fixed-map",
  "reth-stages-types",
  "serde",
@@ -5076,7 +5304,7 @@ dependencies = [
  "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
- "derive_more",
+ "derive_more 2.1.1",
  "reth-primitives-traits 1.11.0",
  "reth-prune-types",
  "reth-static-file-types",
@@ -5094,7 +5322,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "alloy-trie 0.9.4",
- "derive_more",
+ "derive_more 2.1.1",
  "itertools 0.14.0",
  "nybbles 0.4.8",
  "reth-primitives-traits 1.11.0",
@@ -5732,6 +5960,12 @@ checksum = "9900206b54a3527fdc7b8a938bffd94a568bac4f4aa8113b209df75a09c0dec2"
 dependencies = [
  "pest",
 ]
+
+[[package]]
+name = "seq-macro"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bc711410fbe7399f390ca1c3b60ad0f53f80e95c5eb935e52268a0e2cd49acc"
 
 [[package]]
 name = "serde"
@@ -6572,7 +6806,7 @@ dependencies = [
  "ark-serialize 0.5.0",
  "clap",
  "common",
- "derive_more",
+ "derive_more 2.1.1",
  "fnv",
  "inventory",
  "itertools 0.14.0",
@@ -6659,6 +6893,17 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-log",
+]
+
+[[package]]
+name = "trait-set"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b79e2e9c9ab44c6d7c20d5976961b47e8f49ac199154daa514b77cd1ab536625"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -6868,6 +7113,12 @@ name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
+
+[[package]]
+name = "uninit"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "359fdaaabedff944f100847f2e0ea88918d8012fe64baf5b54c191ad010168c9"
 
 [[package]]
 name = "unsafe-libyaml"

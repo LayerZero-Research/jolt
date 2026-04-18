@@ -1,0 +1,16 @@
+[package]
+name = "binius-verifier-example"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "binius-verifier-example"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+jolt-sdk = { workspace = true, features = ["host"] }
+postcard.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

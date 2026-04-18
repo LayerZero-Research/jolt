@@ -157,6 +157,61 @@ pub fn trace_to_file(
     (final_mem, lazy.lazy_tracer.get_jolt_device())
 }
 
+pub fn run(
+    elf_contents: &[u8],
+    elf_path: Option<&std::path::PathBuf>,
+    inputs: &[u8],
+    untrusted_advice: &[u8],
+    trusted_advice: &[u8],
+    memory_config: &MemoryConfig,
+) -> (Memory, JoltDevice) {
+    let mut emulator = setup_emulator_with_backtraces(
+        elf_contents,
+        elf_path,
+        inputs,
+        untrusted_advice,
+        trusted_advice,
+        memory_config,
+        None,
+    );
+
+    let mut prev_pc = 0;
+    loop {
+        let pc = emulator.get_cpu().read_pc();
+        if prev_pc == pc {
+            break;
+        }
+        prev_pc = pc;
+        emulator.tick(None);
+    }
+
+    if emulator
+        .get_cpu()
+        .mmu
+        .jolt_device
+        .as_ref()
+        .is_some_and(|device| device.panic)
+    {
+        error!(
+            "Guest program terminated due to panic after {} cycles.",
+            emulator.get_cpu().trace_len
+        );
+        utils::panic::display_panic_backtrace(&emulator);
+    }
+
+    info!("trace length: {} cycles", emulator.get_cpu().trace_len);
+
+    let final_mem = emulator.get_mut_cpu().mmu.memory.memory.take_memory();
+    let jolt_device = emulator
+        .get_mut_cpu()
+        .get_mut_mmu()
+        .jolt_device
+        .take()
+        .expect("JoltDevice was not initialized");
+
+    (final_mem, jolt_device)
+}
+
 #[tracing::instrument(skip_all)]
 pub fn trace_lazy(
     elf_contents: &[u8],

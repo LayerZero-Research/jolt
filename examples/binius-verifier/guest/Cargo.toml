@@ -1,0 +1,18 @@
+[package]
+name = "binius-verifier-guest"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[features]
+guest = []
+
+[dependencies]
+jolt_sdk = { package = "jolt-sdk", path = "../../../jolt-sdk", features = [
+  "guest-verifier",
+  "thread",
+  "random",
+] }
+binius-core = { path = "../../../../binius64/crates/core" }
+binius-utils = { path = "../../../../binius64/crates/utils" }
+binius-verifier = { path = "../../../../binius64/crates/verifier" }
