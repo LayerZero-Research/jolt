@@ -39,6 +39,11 @@ pub struct CryptoTraceStats {
     pub precompile_ecrecover_fallbacks: u64,
     pub precompile_p256verify_calls: u64,
     pub precompile_p256verify_fallbacks: u64,
+    /// Histogram of Keccak input sizes, bucketed by multiples of Keccak's
+    /// 136-byte absorption rate. Bucket `i` counts calls with input length in
+    /// `[i * 136, (i + 1) * 136)` for `i < 7`; bucket 7 is the `>= 952 bytes`
+    /// tail.
+    pub keccak_size_hist_136: [u64; 8],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,6 +88,16 @@ static PRECOMPILE_ECRECOVER_CALLS: AtomicU64 = AtomicU64::new(0);
 static PRECOMPILE_ECRECOVER_FALLBACKS: AtomicU64 = AtomicU64::new(0);
 static PRECOMPILE_P256VERIFY_CALLS: AtomicU64 = AtomicU64::new(0);
 static PRECOMPILE_P256VERIFY_FALLBACKS: AtomicU64 = AtomicU64::new(0);
+static KECCAK_SIZE_HIST_136: [AtomicU64; 8] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
 
 fn reset_crypto_stats() {
     KECCAK_CALLS.store(0, Ordering::Relaxed);
@@ -95,9 +110,19 @@ fn reset_crypto_stats() {
     PRECOMPILE_ECRECOVER_FALLBACKS.store(0, Ordering::Relaxed);
     PRECOMPILE_P256VERIFY_CALLS.store(0, Ordering::Relaxed);
     PRECOMPILE_P256VERIFY_FALLBACKS.store(0, Ordering::Relaxed);
+    for bucket in KECCAK_SIZE_HIST_136.iter() {
+        bucket.store(0, Ordering::Relaxed);
+    }
 }
 
 fn snapshot_crypto_stats() -> CryptoTraceStats {
+    let mut keccak_size_hist_136 = [0u64; 8];
+    for (dst, src) in keccak_size_hist_136
+        .iter_mut()
+        .zip(KECCAK_SIZE_HIST_136.iter())
+    {
+        *dst = src.load(Ordering::Relaxed);
+    }
     CryptoTraceStats {
         keccak_calls: KECCAK_CALLS.load(Ordering::Relaxed),
         keccak_input_bytes: KECCAK_INPUT_BYTES.load(Ordering::Relaxed),
@@ -109,6 +134,7 @@ fn snapshot_crypto_stats() -> CryptoTraceStats {
         precompile_ecrecover_fallbacks: PRECOMPILE_ECRECOVER_FALLBACKS.load(Ordering::Relaxed),
         precompile_p256verify_calls: PRECOMPILE_P256VERIFY_CALLS.load(Ordering::Relaxed),
         precompile_p256verify_fallbacks: PRECOMPILE_P256VERIFY_FALLBACKS.load(Ordering::Relaxed),
+        keccak_size_hist_136,
     }
 }
 
@@ -215,6 +241,8 @@ fn public_key_to_p256_point(public_key: &[u8; 64]) -> Option<P256Point> {
 fn keccak256_digest(input: &[u8]) -> [u8; 32] {
     KECCAK_CALLS.fetch_add(1, Ordering::Relaxed);
     KECCAK_INPUT_BYTES.fetch_add(input.len() as u64, Ordering::Relaxed);
+    let bucket = (input.len() / 136).min(7);
+    KECCAK_SIZE_HIST_136[bucket].fetch_add(1, Ordering::Relaxed);
 
     #[cfg(feature = "software-keccak")]
     {

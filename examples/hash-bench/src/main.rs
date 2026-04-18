@@ -4,6 +4,15 @@ pub fn main() {
     tracing_subscriber::fmt::init();
 
     let target_dir = "/tmp/jolt-guest-targets";
+
+    if std::env::var("JOLT_ANALYZE_ONLY").is_ok() {
+        let now = Instant::now();
+        let summary = guest::analyze_hashbench();
+        println!("Trace runtime: {} s", now.elapsed().as_secs_f64());
+        println!("trace_len: {}", summary.trace_len());
+        return;
+    }
+
     let mut program = guest::compile_hashbench(target_dir);
 
     let shared_preprocessing = guest::preprocess_shared_hashbench(&mut program).unwrap();
