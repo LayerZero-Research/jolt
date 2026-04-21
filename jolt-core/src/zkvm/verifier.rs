@@ -354,14 +354,14 @@ impl<
             &mut self.transcript,
         );
 
-        // Initialize DoryGlobals with the layout from the proof
-        // This ensures the verifier uses the same layout as the prover
-        let _guard = DoryGlobals::initialize_context(
-            1 << self.one_hot_params.log_k_chunk,
-            self.proof.trace_length.next_power_of_two(),
-            DoryContext::Main,
-            Some(self.proof.dory_layout),
-        );
+        let _guard = PCS::dory_layout(&self.proof.pcs_config).map(|layout| {
+            DoryGlobals::initialize_context(
+                1 << self.one_hot_params.log_k_chunk,
+                self.proof.trace_length.next_power_of_two(),
+                DoryContext::Main,
+                Some(layout),
+            )
+        });
 
         // Append commitments to transcript
         for commitment in &self.proof.commitments {

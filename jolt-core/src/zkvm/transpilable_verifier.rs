@@ -298,16 +298,11 @@ impl<
     pub fn verify(mut self) -> Result<(), ProofVerifyError> {
         let _pprof_verify = pprof_scope!("verify");
 
-        let preprocessing_digest = self.preprocessing.shared.digest();
         fiat_shamir_preamble(
             &self.program_io,
             self.proof.ram_K,
             self.proof.trace_length,
             self.preprocessing.shared.bytecode.entry_address,
-            &self.proof.rw_config,
-            &self.proof.one_hot_config,
-            self.proof.dory_layout,
-            &preprocessing_digest,
             &mut self.transcript,
         );
 
@@ -564,6 +559,7 @@ impl<
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
+            PCS::uses_onehot_inc(),
         );
 
         let booleanity = BooleanitySumcheckVerifier::new(booleanity_params);
@@ -582,6 +578,7 @@ impl<
             self.proof.trace_length,
             &self.opening_accumulator,
             &mut self.transcript,
+            PCS::uses_onehot_inc(),
         );
 
         // Advice claim reduction (Phase 1 in Stage 6): trusted and untrusted are separate instances.
@@ -637,6 +634,7 @@ impl<
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
+            PCS::uses_onehot_inc(),
         );
 
         let mut instances: Vec<&dyn SumcheckInstanceVerifier<F, ProofTranscript, A>> =
