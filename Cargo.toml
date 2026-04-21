@@ -24,6 +24,8 @@ keywords = ["SNARK", "cryptography", "proofs"]
 
 [workspace]
 members = [
+  "crates/jolt-crypto",
+  "crates/jolt-trace",
   "crates/jolt-poly",
   "crates/jolt-lookup-tables",
   "crates/jolt-riscv",
@@ -101,7 +103,11 @@ members = [
   "zklean-extractor",
   "z3-verifier",
   "transpiler",
+  "jolt-eval",
+  "jolt-eval/macros",
+  "jolt-eval/guest-sandbox",
 ]
+exclude = ["jolt-eval/fuzz"]
 
 [features]
 host = ["jolt-sdk/host"]
