@@ -18,7 +18,12 @@
 //! `address_kernel_stack_vm_loop` are `#[inline(never)]` so they show up
 //! as standalone symbols.
 
-#![allow(clippy::print_stdout, clippy::print_stderr, unused_must_use, unused_results)]
+#![allow(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    unused_must_use,
+    unused_results
+)]
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use jolt_cpu::{compile_with_challenges, evaluate_ir_pair, CpuKernel};
@@ -248,40 +253,32 @@ fn bench_address_kernel(c: &mut Criterion) {
         // Throughput = pairs processed per call = n_pairs.
         group.throughput(Throughput::Elements(n_pairs as u64));
 
-        group.bench_with_input(
-            BenchmarkId::new("stack_vm", n_pairs),
-            &n_pairs,
-            |b, _| {
-                let mut out = [Fr::zero(); 2];
-                b.iter(|| {
-                    let r = address_kernel_stack_vm_loop(
-                        black_box(&kernel),
-                        black_box(&los),
-                        black_box(&his),
-                        &mut out,
-                    );
-                    black_box(r);
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("stack_vm", n_pairs), &n_pairs, |b, _| {
+            let mut out = [Fr::zero(); 2];
+            b.iter(|| {
+                let r = address_kernel_stack_vm_loop(
+                    black_box(&kernel),
+                    black_box(&los),
+                    black_box(&his),
+                    &mut out,
+                );
+                black_box(r);
+            });
+        });
 
-        group.bench_with_input(
-            BenchmarkId::new("kernel_ir", n_pairs),
-            &n_pairs,
-            |b, _| {
-                let mut out = [Fr::zero(); 2];
-                b.iter(|| {
-                    let r = address_kernel_ir_loop(
-                        black_box(&ir),
-                        black_box(&los),
-                        black_box(&his),
-                        black_box(&challenges),
-                        &mut out,
-                    );
-                    black_box(r);
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("kernel_ir", n_pairs), &n_pairs, |b, _| {
+            let mut out = [Fr::zero(); 2];
+            b.iter(|| {
+                let r = address_kernel_ir_loop(
+                    black_box(&ir),
+                    black_box(&los),
+                    black_box(&his),
+                    black_box(&challenges),
+                    &mut out,
+                );
+                black_box(r);
+            });
+        });
     }
 
     group.finish();

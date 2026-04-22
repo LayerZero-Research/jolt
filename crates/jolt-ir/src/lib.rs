@@ -26,6 +26,7 @@ mod claim;
 mod expr;
 mod kernel;
 mod kernel_ir;
+mod lower;
 mod normalize;
 mod visitor;
 
@@ -37,6 +38,7 @@ pub use claim::{ChallengeBinding, ChallengeSource, ClaimDefinition, OpeningBindi
 pub use expr::{Expr, ExprArena, ExprId, ExprNode, Var};
 pub use kernel::{KernelDescriptor, KernelShape, TensorSplit};
 pub use kernel_ir::{BindingOrder, BufId, ConstVal, KernelIR, KernelIteration, KernelOp, RegId};
+pub use lower::lower_custom_expr;
 pub use normalize::{SopTerm, SopValue, SumOfProducts};
 pub use visitor::ExprVisitor;
 

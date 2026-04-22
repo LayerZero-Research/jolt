@@ -1,7 +1,7 @@
 //! Core trait definitions for compute backends.
 
 use jolt_field::Field;
-use jolt_ir::KernelDescriptor;
+use jolt_ir::{KernelDescriptor, KernelIR};
 
 /// Marker trait for types that can be stored in device buffers.
 ///
@@ -90,6 +90,29 @@ pub trait ComputeBackend: Send + Sync + 'static {
         desc: &KernelDescriptor,
         challenges: &[F],
     ) -> Self::CompiledKernel<F>;
+
+    /// Compile a pre-lowered [`KernelIR`] into a backend-specific kernel.
+    ///
+    /// This is the IR-driven counterpart to
+    /// [`compile_kernel_with_challenges`](Self::compile_kernel_with_challenges).
+    /// Backends that have native IR codegen (CPU interpreter, future GPU
+    /// emitters) override this with a direct lowering. Backends that don't
+    /// yet support IR-driven compilation fall back to the default `panic!`
+    /// — call sites must check what their backend supports.
+    ///
+    /// `challenges[i]` is read at evaluation time by [`KernelOp::LoadChallenge`]
+    /// (`jolt_ir::KernelOp::LoadChallenge`); the slice must outlive any
+    /// invocation of the returned kernel and have length `> max_challenge_idx`.
+    ///
+    /// See `Notes/jolt-compute-backend-walk-the-walk-2026-04-21.md` §B.7
+    /// Step 3 for the migration plan from `compile_kernel*` to this method.
+    fn compile_kernel_ir<F: Field>(
+        &self,
+        _ir: &KernelIR,
+        _challenges: &[F],
+    ) -> Self::CompiledKernel<F> {
+        panic!("compile_kernel_ir is not implemented for this backend")
+    }
 
     /// Upload host data to a device buffer.
     fn upload<T: Scalar>(&self, data: &[T]) -> Self::Buffer<T>;

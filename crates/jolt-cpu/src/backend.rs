@@ -3,6 +3,9 @@
 use jolt_field::{Field, FieldAccumulator};
 
 use jolt_compute::{BindingOrder, ComputeBackend, Scalar};
+use jolt_ir::KernelIR;
+
+use crate::evaluate_ir_pair;
 
 /// Parallelism threshold: buffers smaller than this use sequential loops.
 ///
@@ -64,6 +67,17 @@ impl ComputeBackend for CpuBackend {
         challenges: &[F],
     ) -> CpuKernel<F> {
         crate::compile_with_challenges(desc, challenges)
+    }
+
+    fn compile_kernel_ir<F: Field>(&self, ir: &KernelIR, challenges: &[F]) -> CpuKernel<F> {
+        // The closure owns a clone of the IR + challenges. `evaluate_ir_pair`
+        // is `#[inline]` and operates on a stack-allocated register file, so
+        // the only allocations after compile time are the captures themselves.
+        let ir = ir.clone();
+        let challenges = challenges.to_vec();
+        CpuKernel::new(move |lo: &[F], hi: &[F], out: &mut [F]| {
+            evaluate_ir_pair(&ir, lo, hi, &challenges, out);
+        })
     }
 
     #[inline]

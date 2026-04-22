@@ -15,11 +15,12 @@
 //! Companion to `Notes/jolt-compute-backend-walk-the-walk-2026-04-21.md`
 //! Appendix A.
 
-use jolt_cpu::{compile_with_challenges, evaluate_ir_pair, CpuKernel};
+use jolt_compute::ComputeBackend;
+use jolt_cpu::{compile_with_challenges, evaluate_ir_pair, CpuBackend, CpuKernel};
 use jolt_field::{Field, Fr};
 use jolt_ir::{
-    BindingOrder, ConstVal, ExprBuilder, KernelDescriptor, KernelIR, KernelIteration, KernelOp,
-    KernelShape,
+    lower_custom_expr, BindingOrder, ConstVal, ExprBuilder, KernelDescriptor, KernelIR,
+    KernelIteration, KernelOp, KernelShape,
 };
 use num_traits::Zero;
 use rand_chacha::ChaCha20Rng;
@@ -497,6 +498,118 @@ fn negative_const_lifts_correctly() {
 
         let mut out_ir = vec![Fr::zero(); 1];
         evaluate_ir_pair(&ir, &lo, &hi, &[], &mut out_ir);
+
+        assert_eq!(out_stack, out_ir, "mismatch at seed {seed}");
+    }
+}
+
+/// End-to-end lowering test: drive the address-phase kernel through
+/// `lower_custom_expr` (rather than the hand-built IR) and confirm parity
+/// with the stack VM.
+///
+/// This is the critical proof that `Expr -> KernelIR` lowering is correct
+/// for a real production kernel. Together with the
+/// `address_kernel_parity_random` test (stack VM vs hand-lowered IR), it
+/// establishes the full chain: `Expr` -> stack VM == `Expr` -> auto-lowered IR.
+#[test]
+fn address_kernel_lowered_parity_random() {
+    let desc = build_address_descriptor();
+    let KernelShape::Custom { expr, num_inputs } = &desc.shape else {
+        panic!("expected Custom shape");
+    };
+    let ir = lower_custom_expr(expr, *num_inputs, desc.degree, BindingOrder::LowToHigh);
+    assert!(ir.is_valid(), "lowered IR failed validation");
+
+    for seed in 0..256u64 {
+        let mut rng = ChaCha20Rng::seed_from_u64(seed);
+
+        let challenges: Vec<Fr> = (0..6).map(|_| Fr::random(&mut rng)).collect();
+        let lo: Vec<Fr> = (0..12).map(|_| Fr::random(&mut rng)).collect();
+        let hi: Vec<Fr> = (0..12).map(|_| Fr::random(&mut rng)).collect();
+
+        let kernel: CpuKernel<Fr> = compile_with_challenges(&desc, &challenges);
+        let mut out_stack = vec![Fr::zero(); 2];
+        kernel.evaluate(&lo, &hi, &mut out_stack);
+
+        let mut out_ir = vec![Fr::zero(); 2];
+        evaluate_ir_pair(&ir, &lo, &hi, &challenges, &mut out_ir);
+
+        assert_eq!(
+            out_stack, out_ir,
+            "mismatch at seed {seed}: stack={out_stack:?}, ir={out_ir:?}"
+        );
+    }
+}
+
+/// Same as above but for the booleanity kernel.
+#[test]
+fn booleanity_lowered_parity_random() {
+    let b = ExprBuilder::new();
+    let h = b.opening(0);
+    let gamma = b.challenge(0);
+    let expr = b.build(gamma * (h * h - h));
+    let desc = KernelDescriptor {
+        shape: KernelShape::Custom {
+            expr: expr.clone(),
+            num_inputs: 1,
+        },
+        degree: 2,
+        tensor_split: None,
+    };
+
+    let ir = lower_custom_expr(&expr, 1, desc.degree, BindingOrder::LowToHigh);
+    assert!(ir.is_valid());
+
+    for seed in 0..64u64 {
+        let mut rng = ChaCha20Rng::seed_from_u64(seed * 17 + 3);
+        let challenges = vec![Fr::random(&mut rng)];
+        let lo = vec![Fr::random(&mut rng)];
+        let hi = vec![Fr::random(&mut rng)];
+
+        let kernel = compile_with_challenges::<Fr>(&desc, &challenges);
+        let mut out_stack = vec![Fr::zero(); 2];
+        kernel.evaluate(&lo, &hi, &mut out_stack);
+
+        let mut out_ir = vec![Fr::zero(); 2];
+        evaluate_ir_pair(&ir, &lo, &hi, &challenges, &mut out_ir);
+
+        assert_eq!(out_stack, out_ir, "mismatch at seed {seed}");
+    }
+}
+
+/// `CpuBackend::compile_kernel_ir` end-to-end: lower an Expr, hand the IR to
+/// the backend trait, and confirm the resulting `CpuKernel` matches the
+/// stack-VM compiler on random inputs.
+///
+/// This validates the full ComputeBackend trait integration —
+/// `lower_custom_expr` + `compile_kernel_ir` should be bit-identical to
+/// `compile_kernel_with_challenges` on the same descriptor.
+#[test]
+fn compute_backend_compile_kernel_ir_parity() {
+    let desc = build_address_descriptor();
+    let KernelShape::Custom { expr, num_inputs } = &desc.shape else {
+        panic!("expected Custom shape");
+    };
+    let ir = lower_custom_expr(expr, *num_inputs, desc.degree, BindingOrder::LowToHigh);
+
+    let backend = CpuBackend;
+
+    for seed in 0..64u64 {
+        let mut rng = ChaCha20Rng::seed_from_u64(seed * 31 + 7);
+
+        let challenges: Vec<Fr> = (0..6).map(|_| Fr::random(&mut rng)).collect();
+        let lo: Vec<Fr> = (0..12).map(|_| Fr::random(&mut rng)).collect();
+        let hi: Vec<Fr> = (0..12).map(|_| Fr::random(&mut rng)).collect();
+
+        let stack_kernel: CpuKernel<Fr> =
+            backend.compile_kernel_with_challenges(&desc, &challenges);
+        let ir_kernel: CpuKernel<Fr> = backend.compile_kernel_ir(&ir, &challenges);
+
+        let mut out_stack = vec![Fr::zero(); 2];
+        stack_kernel.evaluate(&lo, &hi, &mut out_stack);
+
+        let mut out_ir = vec![Fr::zero(); 2];
+        ir_kernel.evaluate(&lo, &hi, &mut out_ir);
 
         assert_eq!(out_stack, out_ir, "mismatch at seed {seed}");
     }
