@@ -1,0 +1,113 @@
+graph TD
+  classDef wrapPub fill:#d3f9d8,stroke:#2f9e44,color:#1b4332;
+  classDef wrapProof fill:#dbe4ff,stroke:#3b5bdb,color:#1c3050;
+  classDef wrapChall fill:#ffe8cc,stroke:#e8590c,color:#5c2a02;
+  classDef constant fill:#f1f3f5,stroke:#868e96,color:#212529;
+  classDef arith fill:#fff3bf,stroke:#f08c00,color:#5c3700;
+  classDef multi fill:#ffd8a8,stroke:#e8590c,color:#5c2a02;
+  classDef inv fill:#ffe3e3,stroke:#c92a2a,color:#5c0000;
+  classDef assertion fill:#fff5f5,stroke:#c92a2a,color:#c92a2a;
+  n0["#0 proof: S₀ claim"]:::wrapProof
+  n1["#1 proof: p₀.c0"]:::wrapProof
+  n2["#2 proof: p₀.c1"]:::wrapProof
+  n3["#3 proof: p₀.c2"]:::wrapProof
+  n4["#4 +"]:::arith
+  n5["#5 +"]:::arith
+  n6["#6 +"]:::arith
+  n7["#7 chall: r₀"]:::wrapChall
+  n8["#8 *"]:::multi
+  n9["#9 +"]:::arith
+  n10["#10 *"]:::multi
+  n11["#11 +"]:::arith
+  n12["#12 proof: p₁.c0"]:::wrapProof
+  n13["#13 proof: p₁.c1"]:::wrapProof
+  n14["#14 proof: p₁.c2"]:::wrapProof
+  n15["#15 +"]:::arith
+  n16["#16 +"]:::arith
+  n17["#17 +"]:::arith
+  n18["#18 chall: r₁"]:::wrapChall
+  n19["#19 *"]:::multi
+  n20["#20 +"]:::arith
+  n21["#21 *"]:::multi
+  n22["#22 +"]:::arith
+  n23["#23 proof: P(ρ)"]:::wrapProof
+  n24["#24 public: ρ₀"]:::wrapPub
+  n25["#25 public: ρ₁"]:::wrapPub
+  n26["#26 const 1"]:::constant
+  n27["#27 const 1"]:::constant
+  n28["#28 -"]:::arith
+  n29["#29 -"]:::arith
+  n30["#30 *"]:::multi
+  n31["#31 *"]:::multi
+  n32["#32 +"]:::arith
+  n33["#33 *"]:::multi
+  n34["#34 -"]:::arith
+  n35["#35 -"]:::arith
+  n36["#36 *"]:::multi
+  n37["#37 *"]:::multi
+  n38["#38 +"]:::arith
+  n39["#39 *"]:::multi
+  n40["#40 *"]:::multi
+  n1 -- a --> n4
+  n2 -- b --> n4
+  n4 -- a --> n5
+  n3 -- b --> n5
+  n1 -- a --> n6
+  n5 -- b --> n6
+  n3 -- a --> n8
+  n7 -- b --> n8
+  n8 -- a --> n9
+  n2 -- b --> n9
+  n9 -- a --> n10
+  n7 -- b --> n10
+  n10 -- a --> n11
+  n1 -- b --> n11
+  n12 -- a --> n15
+  n13 -- b --> n15
+  n15 -- a --> n16
+  n14 -- b --> n16
+  n12 -- a --> n17
+  n16 -- b --> n17
+  n14 -- a --> n19
+  n18 -- b --> n19
+  n19 -- a --> n20
+  n13 -- b --> n20
+  n20 -- a --> n21
+  n18 -- b --> n21
+  n21 -- a --> n22
+  n12 -- b --> n22
+  n26 -- a --> n28
+  n7 -- b --> n28
+  n26 -- a --> n29
+  n24 -- b --> n29
+  n7 -- a --> n30
+  n24 -- b --> n30
+  n28 -- a --> n31
+  n29 -- b --> n31
+  n30 -- a --> n32
+  n31 -- b --> n32
+  n27 -- a --> n33
+  n32 -- b --> n33
+  n26 -- a --> n34
+  n18 -- b --> n34
+  n26 -- a --> n35
+  n25 -- b --> n35
+  n18 -- a --> n36
+  n25 -- b --> n36
+  n34 -- a --> n37
+  n35 -- b --> n37
+  n36 -- a --> n38
+  n37 -- b --> n38
+  n33 -- a --> n39
+  n38 -- b --> n39
+  n39 -- a --> n40
+  n23 -- b --> n40
+  a0{{assert: round consistency}}:::assertion
+  n6 -.-> a0
+  a0 -.-> n0
+  a1{{assert: round consistency}}:::assertion
+  n17 -.-> a1
+  a1 -.-> n11
+  a2{{assert: final eq*g check}}:::assertion
+  n40 -.-> a2
+  a2 -.-> n22

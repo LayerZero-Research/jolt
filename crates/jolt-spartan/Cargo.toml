@@ -19,6 +19,7 @@ jolt-transcript = { path = "../jolt-transcript" }
 jolt-sumcheck = { path = "../jolt-sumcheck" }
 jolt-ir = { path = "../jolt-ir" }
 jolt-openings = { path = "../jolt-openings" }
+jolt-verifier-backend = { path = "../jolt-verifier-backend" }
 num-traits = { workspace = true }
 rayon = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }

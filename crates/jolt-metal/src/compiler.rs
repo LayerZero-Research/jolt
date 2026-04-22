@@ -150,34 +150,33 @@ pub fn compile_with_mode<F: Field>(
         }
     } else {
         // Single-pass path for small D and non-ProductSum shapes.
-        let (eval_body_weighted, eval_body_unweighted, weight_folded) =
-            match &descriptor.shape {
-                KernelShape::ProductSum {
-                    num_inputs_per_product,
-                    num_products,
-                } => {
-                    let d = *num_inputs_per_product;
-                    let p = *num_products;
-                    let fold = d > 2 * p;
-                    let body = generate_product_sum_body(d, p, fold);
-                    let body_unw = if fold {
-                        generate_product_sum_body(d, p, false)
-                    } else {
-                        body.clone()
-                    };
-                    (body, body_unw, fold)
-                }
-                KernelShape::EqProduct => {
-                    let body = r"
+        let (eval_body_weighted, eval_body_unweighted, weight_folded) = match &descriptor.shape {
+            KernelShape::ProductSum {
+                num_inputs_per_product,
+                num_products,
+            } => {
+                let d = *num_inputs_per_product;
+                let p = *num_products;
+                let fold = d > 2 * p;
+                let body = generate_product_sum_body(d, p, fold);
+                let body_unw = if fold {
+                    generate_product_sum_body(d, p, false)
+                } else {
+                    body.clone()
+                };
+                (body, body_unw, fold)
+            }
+            KernelShape::EqProduct => {
+                let body = r"
         evals[0] = fr_mul(lo[0], lo[1]);
         Fr a2 = fr_sub(fr_add(hi[0], hi[0]), lo[0]);
         Fr b2 = fr_sub(fr_add(hi[1], hi[1]), lo[1]);
         evals[1] = fr_mul(a2, b2);"
-                        .to_string();
-                    (body.clone(), body, false)
-                }
-                KernelShape::HammingBooleanity => {
-                    let body = r"
+                    .to_string();
+                (body.clone(), body, false)
+            }
+            KernelShape::HammingBooleanity => {
+                let body = r"
         Fr d_eq = fr_sub(hi[0], lo[0]);
         Fr d_h = fr_sub(hi[1], lo[1]);
         evals[0] = fr_mul(fr_mul(lo[0], lo[1]), fr_sub(lo[1], fr_one()));
@@ -187,15 +186,15 @@ pub fn compile_with_mode<F: Field>(
         eq_val = fr_add(eq_val, d_eq);
         h_val = fr_add(h_val, d_h);
         evals[2] = fr_mul(fr_mul(eq_val, h_val), fr_sub(h_val, fr_one()));"
-                        .to_string();
-                    (body.clone(), body, false)
-                }
-                KernelShape::Custom { expr, num_inputs } => {
-                    let body =
-                        generate_custom_body::<F>(expr, *num_inputs, descriptor.degree, challenges);
-                    (body.clone(), body, false)
-                }
-            };
+                    .to_string();
+                (body.clone(), body, false)
+            }
+            KernelShape::Custom { expr, num_inputs } => {
+                let body =
+                    generate_custom_body::<F>(expr, *num_inputs, descriptor.degree, challenges);
+                (body.clone(), body, false)
+            }
+        };
 
         for variant in [
             KernelVariant::LowToHigh,
@@ -494,10 +493,7 @@ fn generate_reduce_kernel(
         }
         let _ = writeln!(s, "    }}");
         if stride > 1 {
-            let _ = writeln!(
-                s,
-                "    threadgroup_barrier(mem_flags::mem_threadgroup);"
-            );
+            let _ = writeln!(s, "    threadgroup_barrier(mem_flags::mem_threadgroup);");
         }
         stride /= 2;
     }
@@ -665,16 +661,10 @@ fn generate_split_pass_reduce_kernel(
                 // Load pair
                 if matches!(variant, KernelVariant::HighToLow) {
                     let _ = writeln!(s, "            Fr lo = input_{input_idx}[i];");
-                    let _ = writeln!(
-                        s,
-                        "            Fr hi = input_{input_idx}[i + n_pairs];"
-                    );
+                    let _ = writeln!(s, "            Fr hi = input_{input_idx}[i + n_pairs];");
                 } else {
                     let _ = writeln!(s, "            Fr lo = input_{input_idx}[2u * i];");
-                    let _ = writeln!(
-                        s,
-                        "            Fr hi = input_{input_idx}[2u * i + 1u];"
-                    );
+                    let _ = writeln!(s, "            Fr hi = input_{input_idx}[2u * i + 1u];");
                 }
                 let _ = writeln!(s, "            Fr diff = fr_sub(hi, lo);");
 
@@ -689,19 +679,13 @@ fn generate_split_pass_reduce_kernel(
                         let _ = writeln!(s, "            Fr val_{c} = hi;");
                     } else if c > 0 && (base + c - 1) < d - 1 {
                         // Incremental: val_c = val_{c-1} + diff
-                        let _ = writeln!(
-                            s,
-                            "            Fr val_{c} = fr_add(val_{}, diff);",
-                            c - 1
-                        );
+                        let _ =
+                            writeln!(s, "            Fr val_{c} = fr_add(val_{}, diff);", c - 1);
                     } else {
                         // From scratch: hi + eval_idx * diff
                         let _ = writeln!(s, "            Fr val_{c} = hi;");
                         for _ in 0..eval_idx {
-                            let _ = writeln!(
-                                s,
-                                "            val_{c} = fr_add(val_{c}, diff);"
-                            );
+                            let _ = writeln!(s, "            val_{c} = fr_add(val_{c}, diff);");
                         }
                     }
                 }
@@ -711,10 +695,7 @@ fn generate_split_pass_reduce_kernel(
                     if j == 0 {
                         let _ = writeln!(s, "            prod_{c} = val_{c};");
                     } else {
-                        let _ = writeln!(
-                            s,
-                            "            prod_{c} = fr_mul(prod_{c}, val_{c});"
-                        );
+                        let _ = writeln!(s, "            prod_{c} = fr_mul(prod_{c}, val_{c});");
                     }
                 }
 
@@ -735,8 +716,7 @@ fn generate_split_pass_reduce_kernel(
         match strategy {
             AccumulationStrategy::WeightedFmadd => {
                 for c in 0..chunk_size {
-                    let _ =
-                        writeln!(s, "        acc_fmadd(wa_{c}, w, {acc_var}_{c});");
+                    let _ = writeln!(s, "        acc_fmadd(wa_{c}, w, {acc_var}_{c});");
                 }
             }
             AccumulationStrategy::DirectAdd => {
@@ -777,10 +757,7 @@ fn generate_split_pass_reduce_kernel(
                     "        sh[{sh_base}u + simd_id] = fr_to_mont(acc_reduce(wa_{c}));",
                 );
             } else {
-                let _ = writeln!(
-                    s,
-                    "        sh[{sh_base}u + simd_id] = acc_reduce(wa_{c});",
-                );
+                let _ = writeln!(s, "        sh[{sh_base}u + simd_id] = acc_reduce(wa_{c});",);
             }
         }
         let _ = writeln!(s, "    }}");
@@ -801,10 +778,7 @@ fn generate_split_pass_reduce_kernel(
             }
             let _ = writeln!(s, "    }}");
             if stride > 1 {
-                let _ = writeln!(
-                    s,
-                    "    threadgroup_barrier(mem_flags::mem_threadgroup);"
-                );
+                let _ = writeln!(s, "    threadgroup_barrier(mem_flags::mem_threadgroup);");
             }
             stride /= 2;
         }

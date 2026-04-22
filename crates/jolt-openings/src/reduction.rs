@@ -16,6 +16,7 @@
 
 use jolt_field::Field;
 use jolt_transcript::{AppendToTranscript, Transcript};
+use jolt_verifier_backend::FieldBackend;
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::claims::{ProverClaim, VerifierClaim};
@@ -173,6 +174,100 @@ impl<PCS: AdditivelyHomomorphic> OpeningReduction<PCS> for RlcReduction {
     }
 }
 
+impl RlcReduction {
+    /// Backend-aware sibling of [`OpeningReduction::reduce_verifier`].
+    ///
+    /// Performs the same per-group RLC reduction as the trait method, but the
+    /// scalar combination of opening evaluations is routed through `backend`
+    /// while the commitment combination stays native (group operations belong
+    /// to a future `GroupBackend`).
+    ///
+    /// Inputs:
+    ///
+    /// - `claims` carries the native-side commitments and raw `F` evals; this
+    ///   is what feeds [`PCS::verify`] downstream.
+    /// - `evals_w` is parallel to `claims`: it carries each eval's
+    ///   backend handle so the AST records the RLC computation.
+    ///
+    /// Outputs:
+    ///
+    /// - The reduced [`VerifierClaim`]s (with natively-combined commitments and
+    ///   natively-combined `F` evals — needed for `PCS::verify`).
+    /// - The matching reduced backend handles, asserted equal to the native
+    ///   reduced evals via [`FieldBackend::assert_eq`] so the AST proves the
+    ///   reductions consistent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpeningsError`] if `claims.len() != evals_w.len()`. Backend
+    /// assertion failures bubble up as
+    /// [`OpeningsError::VerificationFailed`].
+    #[allow(clippy::type_complexity)]
+    #[tracing::instrument(skip_all, name = "RlcReduction::reduce_verifier_with_backend")]
+    pub fn reduce_verifier_with_backend<B, PCS, T>(
+        backend: &mut B,
+        claims: Vec<VerifierClaim<B::F, PCS::Output>>,
+        evals_w: Vec<B::Scalar>,
+        transcript: &mut T,
+    ) -> Result<(Vec<VerifierClaim<B::F, PCS::Output>>, Vec<B::Scalar>), OpeningsError>
+    where
+        B: FieldBackend,
+        PCS: AdditivelyHomomorphic<Field = B::F>,
+        T: Transcript<Challenge = B::F>,
+    {
+        if claims.len() != evals_w.len() {
+            return Err(OpeningsError::VerificationFailed);
+        }
+        if claims.is_empty() {
+            return Ok((Vec::new(), Vec::new()));
+        }
+
+        for claim in &claims {
+            claim.eval.append_to_transcript(transcript);
+        }
+
+        let groups = group_verifier_claims_by_point_with_index(claims);
+
+        let mut reduced_claims = Vec::with_capacity(groups.len());
+        let mut reduced_evals_w = Vec::with_capacity(groups.len());
+
+        for (point, group) in groups {
+            let rho_f: B::F = transcript.challenge();
+            let rho_w = backend.wrap_challenge(rho_f, "rlc_rho");
+
+            let commitments: Vec<PCS::Output> =
+                group.iter().map(|(_, c)| c.commitment.clone()).collect();
+            let evals_native: Vec<B::F> = group.iter().map(|(_, c)| c.eval).collect();
+
+            let powers = rho_powers(rho_f, commitments.len());
+            let combined_commitment = PCS::combine(&commitments, &powers);
+            let combined_eval_native = rlc_combine_scalars(&evals_native, rho_f);
+
+            // Mirror Horner from rlc_combine_scalars through the backend:
+            // result = sum_{i=k-1..0} v_i * rho^(i)  computed bottom-up.
+            let mut combined_w = backend.const_zero();
+            for &(idx, _) in group.iter().rev() {
+                let scaled = backend.mul(&combined_w, &rho_w);
+                combined_w = backend.add(&scaled, &evals_w[idx]);
+            }
+
+            let combined_native_w = backend.wrap_public(combined_eval_native, "rlc_combined_eval");
+            backend
+                .assert_eq(&combined_w, &combined_native_w, "rlc reduction consistency")
+                .map_err(|_| OpeningsError::VerificationFailed)?;
+
+            reduced_claims.push(VerifierClaim {
+                commitment: combined_commitment,
+                point,
+                eval: combined_eval_native,
+            });
+            reduced_evals_w.push(combined_w);
+        }
+
+        Ok((reduced_claims, reduced_evals_w))
+    }
+}
+
 /// Computes the RLC of polynomial evaluation tables.
 ///
 /// Given evaluation tables $p_1, \ldots, p_k$ (each of length $2^n$) and a
@@ -276,6 +371,30 @@ fn group_verifier_claims_by_point<F: Field, C>(
         } else {
             let point = claim.point.clone();
             groups.push((point, vec![claim]));
+        }
+    }
+
+    groups
+}
+
+type IndexedVerifierGroup<F, C> = Vec<(Vec<F>, Vec<(usize, VerifierClaim<F, C>)>)>;
+
+/// Same grouping as [`group_verifier_claims_by_point`], but each output claim
+/// is paired with its original index in `claims`.
+///
+/// The index lets backend-aware reductions look up parallel data (e.g., the
+/// `B::Scalar` eval handles) without modifying [`VerifierClaim`] itself.
+fn group_verifier_claims_by_point_with_index<F: Field, C>(
+    claims: Vec<VerifierClaim<F, C>>,
+) -> IndexedVerifierGroup<F, C> {
+    let mut groups: IndexedVerifierGroup<F, C> = Vec::new();
+
+    for (idx, claim) in claims.into_iter().enumerate() {
+        if let Some((_, group)) = groups.iter_mut().find(|(point, _)| *point == claim.point) {
+            group.push((idx, claim));
+        } else {
+            let point = claim.point.clone();
+            groups.push((point, vec![(idx, claim)]));
         }
     }
 

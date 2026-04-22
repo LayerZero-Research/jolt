@@ -58,6 +58,30 @@ pub fn univariate_horner<B: FieldBackend>(
     acc
 }
 
+/// Materializes the table `[eq(r, x) : x ∈ {0,1}^n]` of length `2^n`.
+///
+/// Mirrors [`EqPolynomial::evaluations`](https://docs.rs/jolt-poly/) using the
+/// same big-endian index convention (`r[0]` is the most-significant bit), but
+/// every multiplication and subtraction routes through `backend`. Used by the
+/// backend-aware Spartan matrix MLE evaluator.
+pub fn eq_evals_table<B: FieldBackend>(backend: &mut B, point: &[B::Scalar]) -> Vec<B::Scalar> {
+    let one = backend.const_one();
+    let mut table: Vec<B::Scalar> = vec![one.clone()];
+
+    for r_i in point {
+        let one_minus_r = backend.sub(&one, r_i);
+        let prev_len = table.len();
+        let mut next: Vec<B::Scalar> = Vec::with_capacity(prev_len * 2);
+        for v in &table {
+            next.push(backend.mul(v, &one_minus_r));
+            next.push(backend.mul(v, r_i));
+        }
+        table = next;
+    }
+
+    table
+}
+
 /// Computes `base^exp` via repeated squaring through the backend.
 pub fn pow_u64<B: FieldBackend>(backend: &mut B, base: &B::Scalar, exp: u64) -> B::Scalar {
     if exp == 0 {
@@ -162,6 +186,22 @@ mod tests {
         let pt = backend.const_one();
         let v = univariate_horner(&mut backend, &[], &pt);
         assert_eq!(v, Fr::zero());
+    }
+
+    #[test]
+    fn eq_evals_table_matches_jolt_poly() {
+        use jolt_poly::EqPolynomial;
+        let mut rng = ChaCha8Rng::seed_from_u64(0xeed);
+        for n in 0..5 {
+            let r: Vec<Fr> = (0..n).map(|_| Fr::random(&mut rng)).collect();
+            let direct = EqPolynomial::new(r.clone()).evaluations();
+
+            let mut backend = Native::<Fr>::new();
+            let rw = wrap_slice(&mut backend, &r);
+            let via_backend = eq_evals_table(&mut backend, &rw);
+
+            assert_eq!(direct, via_backend, "n = {n}");
+        }
     }
 
     #[test]

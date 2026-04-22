@@ -247,15 +247,15 @@ where
 ///
 /// - Sumcheck verification dispatches to
 ///   [`BatchedSumcheckVerifier::verify_with_backend`].
-/// - The eq-polynomial evaluation runs through
-///   [`eq_eval`].
+/// - The eq-polynomial evaluation runs through [`eq_eval`].
 /// - The output expression evaluates through [`evaluate_expr`].
 /// - The final equality `eq * g == final_eval` is asserted via
 ///   [`FieldBackend::assert_eq`].
 ///
-/// Returns the same opening claims as [`verify_stage`]; their `eval` field
-/// stays in raw `F` because PCS verification still uses the native group
-/// path (see future `GroupBackend` work).
+/// Returns `(claims, evals_w)` where `claims` carries the native commitments +
+/// raw `F` evals (consumed by PCS) and `evals_w` carries the backend handle for
+/// each eval (consumed by [`RlcReduction::reduce_verifier_with_backend`]).
+#[allow(clippy::type_complexity)]
 fn verify_stage_with_backend<B, C, T>(
     backend: &mut B,
     stage_index: usize,
@@ -263,7 +263,7 @@ fn verify_stage_with_backend<B, C, T>(
     stage_proof: &SumcheckStageProof<B::F>,
     commitments: &[C],
     transcript: &mut T,
-) -> Result<Vec<VerifierClaim<B::F, C>>, JoltError>
+) -> Result<(Vec<VerifierClaim<B::F, C>>, Vec<B::Scalar>), JoltError>
 where
     B: FieldBackend,
     C: Clone,
@@ -339,7 +339,8 @@ where
             reason: e.to_string(),
         })?;
 
-    desc.commitment_indices
+    let claims_out: Vec<VerifierClaim<B::F, C>> = desc
+        .commitment_indices
         .iter()
         .zip(stage_proof.evaluations.iter())
         .map(|(&idx, &eval)| {
@@ -355,21 +356,77 @@ where
                 eval,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, JoltError>>()?;
+
+    Ok((claims_out, openings_w))
+}
+
+/// Backend-aware sibling of [`verify_openings`].
+///
+/// Routes RLC reduction of opening evaluations through `backend` via
+/// [`RlcReduction::reduce_verifier_with_backend`]. Commitment combination and
+/// PCS opening verification stay native (group ops belong to a future
+/// `GroupBackend`).
+///
+/// `claims` carries the native side; `evals_w` is parallel to `claims` and
+/// carries each eval as a backend handle. Both must have the same length.
+fn verify_openings_with_backend<B, PCS, T>(
+    backend: &mut B,
+    claims: Vec<VerifierClaim<B::F, PCS::Output>>,
+    evals_w: Vec<B::Scalar>,
+    opening_proofs: &[PCS::Proof],
+    verifier_setup: &PCS::VerifierSetup,
+    transcript: &mut T,
+) -> Result<(), JoltError>
+where
+    B: FieldBackend,
+    PCS: AdditivelyHomomorphic<Field = B::F>,
+    T: Transcript<Challenge = B::F>,
+{
+    let (reduced, _reduced_evals_w) = RlcReduction::reduce_verifier_with_backend::<B, PCS, T>(
+        backend, claims, evals_w, transcript,
+    )
+    .map_err(JoltError::Opening)?;
+
+    if reduced.len() != opening_proofs.len() {
+        return Err(JoltError::Opening(OpeningsError::VerificationFailed));
+    }
+
+    for (claim, proof) in reduced.iter().zip(opening_proofs.iter()) {
+        PCS::verify(
+            &claim.commitment,
+            &claim.point,
+            claim.eval,
+            proof,
+            verifier_setup,
+            transcript,
+        )
+        .map_err(JoltError::Opening)?;
+    }
+
+    Ok(())
 }
 
 /// Backend-aware verification entry point.
 ///
-/// Mirrors [`verify`] but routes every per-stage algebraic check through a
-/// pluggable [`FieldBackend`]:
+/// Mirrors [`verify`] but routes every algebraic check through a pluggable
+/// [`FieldBackend`]:
 ///
 /// - **`Native`** is a zero-overhead pass-through (matches [`verify`] exactly).
 /// - **`Tracing`** records the entire verifier into an [`AstGraph`] suitable
 ///   for recursion lowering, R1CS generation, or Lean export.
 ///
-/// The Spartan IOP (S1) and PCS opening proofs (S8) currently still use the
-/// native group path. Lifting those into a `GroupBackend` is the natural
-/// next step once this prototype is reviewed.
+/// What flows through the backend in this version:
+///
+/// 1. **S1 (Spartan)** — outer + inner sumchecks, eq evaluations, sparse
+///    matrix MLE evaluation, and final consistency checks all dispatch through
+///    [`UniformSpartanVerifier::verify_with_backend`].
+/// 2. **S2–S7** — per-stage sumcheck + expression evaluation flow through
+///    [`BatchedSumcheckVerifier::verify_with_backend`] and [`evaluate_expr`].
+/// 3. **S8 (Opening RLC reduction)** — scalar combination of opening evals
+///    flows through [`RlcReduction::reduce_verifier_with_backend`]. The
+///    commitment combination and final [`PCS::verify`] still use the native
+///    group operations; lifting those into a `GroupBackend` is Phase 2.
 ///
 /// # Errors
 ///
@@ -394,7 +451,12 @@ where
 {
     transcript.append_bytes(format!("{:?}", proof.witness_commitment).as_bytes());
 
-    let (r_x, r_y) = verify_spartan(&vk.spartan_key, &proof.spartan_proof, transcript)?;
+    let (_r_x_w, r_y_w, r_x, r_y, witness_eval_w) = UniformSpartanVerifier::verify_with_backend(
+        backend,
+        &vk.spartan_key,
+        &proof.spartan_proof,
+        transcript,
+    )?;
 
     let descriptors = build_descriptors(&r_x, &r_y, transcript);
 
@@ -407,9 +469,10 @@ where
     }
 
     let mut all_opening_claims: Vec<VerifierClaim<PCS::Field, PCS::Output>> = Vec::new();
+    let mut all_evals_w: Vec<B::Scalar> = Vec::new();
 
     for (i, (desc, stage_proof)) in descriptors.iter().zip(&proof.stage_proofs).enumerate() {
-        let new_claims = verify_stage_with_backend(
+        let (new_claims, new_evals_w) = verify_stage_with_backend(
             backend,
             i + 2,
             desc,
@@ -423,16 +486,21 @@ where
         }
 
         all_opening_claims.extend(new_claims);
+        all_evals_w.extend(new_evals_w);
     }
 
+    let _ = r_y_w;
     all_opening_claims.push(VerifierClaim {
         commitment: proof.witness_commitment.clone(),
         point: r_y.clone(),
         eval: proof.spartan_proof.witness_eval,
     });
+    all_evals_w.push(witness_eval_w);
 
-    verify_openings::<PCS, T>(
+    verify_openings_with_backend::<B, PCS, T>(
+        backend,
         all_opening_claims,
+        all_evals_w,
         &proof.opening_proofs[..],
         &vk.pcs_setup,
         transcript,

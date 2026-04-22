@@ -3262,6 +3262,7 @@ dependencies = [
  "jolt-hyperkzg",
  "jolt-poly",
  "jolt-transcript",
+ "jolt-verifier-backend",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
@@ -3367,6 +3368,7 @@ dependencies = [
  "jolt-poly",
  "jolt-sumcheck",
  "jolt-transcript",
+ "jolt-verifier-backend",
  "num-traits",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
@@ -3439,6 +3441,7 @@ version = "0.1.0"
 dependencies = [
  "jolt-field",
  "jolt-ir",
+ "jolt-poly",
  "num-traits",
  "rand 0.8.5",
  "rand_chacha 0.3.1",

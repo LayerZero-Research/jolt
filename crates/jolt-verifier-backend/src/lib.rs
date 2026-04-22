@@ -49,10 +49,12 @@ mod expr_eval;
 pub mod helpers;
 mod native;
 pub mod tracing;
+pub mod viz;
 
 pub use backend::{FieldBackend, ScalarOrigin};
 pub use error::BackendError;
 pub use expr_eval::evaluate_expr;
-pub use helpers::{eq_eval, pow_u64, univariate_horner};
+pub use helpers::{eq_eval, eq_evals_table, pow_u64, univariate_horner};
 pub use native::Native;
 pub use tracing::{replay as replay_trace, AstAssertion, AstGraph, AstNodeId, AstOp, Tracing};
+pub use viz::{to_dot, to_mermaid};

@@ -15,6 +15,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 jolt-field = { path = "../jolt-field", features = ["bn254"] }
+jolt-poly = { path = "../jolt-poly" }
 num-traits = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }

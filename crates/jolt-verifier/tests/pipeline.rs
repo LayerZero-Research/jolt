@@ -17,7 +17,7 @@ use jolt_verifier::{
     verify, verify_openings, verify_spartan, verify_with_backend, JoltError, JoltProof,
     JoltVerifyingKey,
 };
-use jolt_verifier_backend::{replay_trace, Native, Tracing};
+use jolt_verifier_backend::{replay_trace, to_dot, to_mermaid, Native, Tracing};
 use num_traits::Zero;
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
@@ -322,7 +322,8 @@ fn sumcheck_eq_g_final_eval_matches() {
         eq: eq_table,
         g: poly_table.clone(),
     })];
-    let proof = BatchedSumcheckProver::prove(&[claim.clone()], &mut sc_witnesses, &mut pt);
+    let proof =
+        BatchedSumcheckProver::prove(std::slice::from_ref(&claim), &mut sc_witnesses, &mut pt);
 
     let mut vt = Blake2bTranscript::new(b"eq-g-test");
     let (final_eval, challenges) =
@@ -391,7 +392,8 @@ fn full_pipeline_spartan_plus_one_stage() {
         eq: eq_table.clone(),
         g: g_table,
     })];
-    let sumcheck_proof = BatchedSumcheckProver::prove(&[claim.clone()], &mut sc_witnesses, &mut pt);
+    let sumcheck_proof =
+        BatchedSumcheckProver::prove(std::slice::from_ref(&claim), &mut sc_witnesses, &mut pt);
 
     // Replay verifier transcript to extract challenges
     let mut vt_replay = Blake2bTranscript::new(b"full-pipeline");
@@ -548,7 +550,8 @@ fn backend_pipeline_native_and_tracing_match() {
         eq: eq_table.clone(),
         g: g_table,
     })];
-    let sumcheck_proof = BatchedSumcheckProver::prove(&[claim.clone()], &mut sc_witnesses, &mut pt);
+    let sumcheck_proof =
+        BatchedSumcheckProver::prove(std::slice::from_ref(&claim), &mut sc_witnesses, &mut pt);
 
     // Replay verifier transcript to extract challenges so we can compute
     // per-poly evaluations the verifier will check.
@@ -689,6 +692,14 @@ fn backend_pipeline_native_and_tracing_match() {
     );
 
     let _values = replay_trace(&graph, &wraps).expect("tracing replay should succeed");
+
+    if std::env::var("JOLT_AST_DUMP").is_ok() {
+        let dot_path = "/tmp/jolt-pipeline-ast.dot";
+        let mmd_path = "/tmp/jolt-pipeline-ast.mmd";
+        std::fs::write(dot_path, to_dot(&graph)).expect("write dot");
+        std::fs::write(mmd_path, to_mermaid(&graph)).expect("write mermaid");
+        eprintln!("[backend_pipeline] dumped AST to {dot_path} and {mmd_path}");
+    }
 }
 
 mod dory {
@@ -804,7 +815,7 @@ mod dory {
             g: g_table,
         })];
         let sumcheck_proof =
-            BatchedSumcheckProver::prove(&[claim.clone()], &mut sc_witnesses, &mut pt);
+            BatchedSumcheckProver::prove(std::slice::from_ref(&claim), &mut sc_witnesses, &mut pt);
 
         let mut vt_replay = Blake2bTranscript::new(b"dory-full-pipeline");
         let _ = commit_and_append::<DoryScheme>(&flat, &prover_setup, &mut vt_replay);
@@ -962,7 +973,7 @@ mod dory {
             g: g_table,
         })];
         let sumcheck_proof =
-            BatchedSumcheckProver::prove(&[claim.clone()], &mut sc_witnesses, &mut pt);
+            BatchedSumcheckProver::prove(std::slice::from_ref(&claim), &mut sc_witnesses, &mut pt);
 
         let mut vt_replay = Blake2bTranscript::new(b"dory-backend-pipeline");
         let _ = commit_and_append::<DoryScheme>(&flat, &prover_setup, &mut vt_replay);

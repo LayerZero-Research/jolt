@@ -761,10 +761,7 @@ fn pairwise_reduce_product_sum_d8_sizes() {
             BindingOrder::LowToHigh,
         );
 
-        assert_eq!(
-            expected, got,
-            "D=8 mismatch at n_pairs={n_pairs}"
-        );
+        assert_eq!(expected, got, "D=8 mismatch at n_pairs={n_pairs}");
     }
 }
 

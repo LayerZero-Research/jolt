@@ -1,0 +1,654 @@
+graph TD
+  classDef wrapPub fill:#d3f9d8,stroke:#2f9e44,color:#1b4332;
+  classDef wrapProof fill:#dbe4ff,stroke:#3b5bdb,color:#1c3050;
+  classDef wrapChall fill:#ffe8cc,stroke:#e8590c,color:#5c2a02;
+  classDef constant fill:#f1f3f5,stroke:#868e96,color:#212529;
+  classDef arith fill:#fff3bf,stroke:#f08c00,color:#5c3700;
+  classDef multi fill:#ffd8a8,stroke:#e8590c,color:#5c2a02;
+  classDef inv fill:#ffe3e3,stroke:#c92a2a,color:#5c0000;
+  classDef assertion fill:#fff5f5,stroke:#c92a2a,color:#c92a2a;
+  n0["#0 chall: spartan_tau"]:::wrapChall
+  n1["#1 const 0"]:::constant
+  n2["#2 const 0"]:::constant
+  n3["#3 const 1"]:::constant
+  n4["#4 proof: round_poly_coeff"]:::wrapProof
+  n5["#5 proof: round_poly_coeff"]:::wrapProof
+  n6["#6 proof: round_poly_coeff"]:::wrapProof
+  n7["#7 proof: round_poly_coeff"]:::wrapProof
+  n8["#8 *"]:::multi
+  n9["#9 +"]:::arith
+  n10["#10 *"]:::multi
+  n11["#11 +"]:::arith
+  n12["#12 *"]:::multi
+  n13["#13 +"]:::arith
+  n14["#14 *"]:::multi
+  n15["#15 +"]:::arith
+  n16["#16 *"]:::multi
+  n17["#17 +"]:::arith
+  n18["#18 *"]:::multi
+  n19["#19 +"]:::arith
+  n20["#20 +"]:::arith
+  n21["#21 chall: sumcheck_r"]:::wrapChall
+  n22["#22 *"]:::multi
+  n23["#23 +"]:::arith
+  n24["#24 *"]:::multi
+  n25["#25 +"]:::arith
+  n26["#26 *"]:::multi
+  n27["#27 +"]:::arith
+  n28["#28 proof: spartan_az"]:::wrapProof
+  n29["#29 proof: spartan_bz"]:::wrapProof
+  n30["#30 proof: spartan_cz"]:::wrapProof
+  n31["#31 const 1"]:::constant
+  n32["#32 const 1"]:::constant
+  n33["#33 -"]:::arith
+  n34["#34 -"]:::arith
+  n35["#35 *"]:::multi
+  n36["#36 *"]:::multi
+  n37["#37 +"]:::arith
+  n38["#38 *"]:::multi
+  n39["#39 *"]:::multi
+  n40["#40 -"]:::arith
+  n41["#41 *"]:::multi
+  n42["#42 chall: spartan_rho_a"]:::wrapChall
+  n43["#43 chall: spartan_rho_b"]:::wrapChall
+  n44["#44 chall: spartan_rho_c"]:::wrapChall
+  n45["#45 *"]:::multi
+  n46["#46 *"]:::multi
+  n47["#47 *"]:::multi
+  n48["#48 +"]:::arith
+  n49["#49 +"]:::arith
+  n50["#50 const 0"]:::constant
+  n51["#51 const 1"]:::constant
+  n52["#52 proof: round_poly_coeff"]:::wrapProof
+  n53["#53 proof: round_poly_coeff"]:::wrapProof
+  n54["#54 proof: round_poly_coeff"]:::wrapProof
+  n55["#55 *"]:::multi
+  n56["#56 +"]:::arith
+  n57["#57 *"]:::multi
+  n58["#58 +"]:::arith
+  n59["#59 *"]:::multi
+  n60["#60 +"]:::arith
+  n61["#61 *"]:::multi
+  n62["#62 +"]:::arith
+  n63["#63 +"]:::arith
+  n64["#64 chall: sumcheck_r"]:::wrapChall
+  n65["#65 *"]:::multi
+  n66["#66 +"]:::arith
+  n67["#67 *"]:::multi
+  n68["#68 +"]:::arith
+  n69["#69 proof: round_poly_coeff"]:::wrapProof
+  n70["#70 proof: round_poly_coeff"]:::wrapProof
+  n71["#71 proof: round_poly_coeff"]:::wrapProof
+  n72["#72 *"]:::multi
+  n73["#73 +"]:::arith
+  n74["#74 *"]:::multi
+  n75["#75 +"]:::arith
+  n76["#76 *"]:::multi
+  n77["#77 +"]:::arith
+  n78["#78 *"]:::multi
+  n79["#79 +"]:::arith
+  n80["#80 +"]:::arith
+  n81["#81 chall: sumcheck_r"]:::wrapChall
+  n82["#82 *"]:::multi
+  n83["#83 +"]:::arith
+  n84["#84 *"]:::multi
+  n85["#85 +"]:::arith
+  n86["#86 proof: round_poly_coeff"]:::wrapProof
+  n87["#87 proof: round_poly_coeff"]:::wrapProof
+  n88["#88 proof: round_poly_coeff"]:::wrapProof
+  n89["#89 *"]:::multi
+  n90["#90 +"]:::arith
+  n91["#91 *"]:::multi
+  n92["#92 +"]:::arith
+  n93["#93 *"]:::multi
+  n94["#94 +"]:::arith
+  n95["#95 *"]:::multi
+  n96["#96 +"]:::arith
+  n97["#97 +"]:::arith
+  n98["#98 chall: sumcheck_r"]:::wrapChall
+  n99["#99 *"]:::multi
+  n100["#100 +"]:::arith
+  n101["#101 *"]:::multi
+  n102["#102 +"]:::arith
+  n103["#103 const 1"]:::constant
+  n104["#104 const 1"]:::constant
+  n105["#105 -"]:::arith
+  n106["#106 -"]:::arith
+  n107["#107 *"]:::multi
+  n108["#108 *"]:::multi
+  n109["#109 +"]:::arith
+  n110["#110 *"]:::multi
+  n111["#111 const 1"]:::constant
+  n112["#112 const 1"]:::constant
+  n113["#113 -"]:::arith
+  n114["#114 *"]:::multi
+  n115["#115 *"]:::multi
+  n116["#116 -"]:::arith
+  n117["#117 *"]:::multi
+  n118["#118 *"]:::multi
+  n119["#119 *"]:::multi
+  n120["#120 *"]:::multi
+  n121["#121 const 0"]:::constant
+  n122["#122 const 0"]:::constant
+  n123["#123 const 0"]:::constant
+  n124["#124 const 0"]:::constant
+  n125["#125 public: spartan_a_coeff"]:::wrapPub
+  n126["#126 *"]:::multi
+  n127["#127 +"]:::arith
+  n128["#128 *"]:::multi
+  n129["#129 +"]:::arith
+  n130["#130 const 0"]:::constant
+  n131["#131 public: spartan_b_coeff"]:::wrapPub
+  n132["#132 *"]:::multi
+  n133["#133 +"]:::arith
+  n134["#134 *"]:::multi
+  n135["#135 +"]:::arith
+  n136["#136 const 0"]:::constant
+  n137["#137 public: spartan_c_coeff"]:::wrapPub
+  n138["#138 *"]:::multi
+  n139["#139 +"]:::arith
+  n140["#140 *"]:::multi
+  n141["#141 +"]:::arith
+  n142["#142 *"]:::multi
+  n143["#143 *"]:::multi
+  n144["#144 *"]:::multi
+  n145["#145 *"]:::multi
+  n146["#146 *"]:::multi
+  n147["#147 *"]:::multi
+  n148["#148 +"]:::arith
+  n149["#149 +"]:::arith
+  n150["#150 proof: spartan_witness_eval"]:::wrapProof
+  n151["#151 *"]:::multi
+  n152["#152 chall: sumcheck_alpha"]:::wrapChall
+  n153["#153 const 0"]:::constant
+  n154["#154 const 1"]:::constant
+  n155["#155 public: claimed_sum_scaled"]:::wrapPub
+  n156["#156 *"]:::multi
+  n157["#157 +"]:::arith
+  n158["#158 *"]:::multi
+  n159["#159 const 0"]:::constant
+  n160["#160 const 1"]:::constant
+  n161["#161 proof: round_poly_coeff"]:::wrapProof
+  n162["#162 proof: round_poly_coeff"]:::wrapProof
+  n163["#163 proof: round_poly_coeff"]:::wrapProof
+  n164["#164 *"]:::multi
+  n165["#165 +"]:::arith
+  n166["#166 *"]:::multi
+  n167["#167 +"]:::arith
+  n168["#168 *"]:::multi
+  n169["#169 +"]:::arith
+  n170["#170 *"]:::multi
+  n171["#171 +"]:::arith
+  n172["#172 +"]:::arith
+  n173["#173 chall: sumcheck_r"]:::wrapChall
+  n174["#174 *"]:::multi
+  n175["#175 +"]:::arith
+  n176["#176 *"]:::multi
+  n177["#177 +"]:::arith
+  n178["#178 proof: round_poly_coeff"]:::wrapProof
+  n179["#179 proof: round_poly_coeff"]:::wrapProof
+  n180["#180 proof: round_poly_coeff"]:::wrapProof
+  n181["#181 *"]:::multi
+  n182["#182 +"]:::arith
+  n183["#183 *"]:::multi
+  n184["#184 +"]:::arith
+  n185["#185 *"]:::multi
+  n186["#186 +"]:::arith
+  n187["#187 *"]:::multi
+  n188["#188 +"]:::arith
+  n189["#189 +"]:::arith
+  n190["#190 chall: sumcheck_r"]:::wrapChall
+  n191["#191 *"]:::multi
+  n192["#192 +"]:::arith
+  n193["#193 *"]:::multi
+  n194["#194 +"]:::arith
+  n195["#195 proof: round_poly_coeff"]:::wrapProof
+  n196["#196 proof: round_poly_coeff"]:::wrapProof
+  n197["#197 proof: round_poly_coeff"]:::wrapProof
+  n198["#198 *"]:::multi
+  n199["#199 +"]:::arith
+  n200["#200 *"]:::multi
+  n201["#201 +"]:::arith
+  n202["#202 *"]:::multi
+  n203["#203 +"]:::arith
+  n204["#204 *"]:::multi
+  n205["#205 +"]:::arith
+  n206["#206 +"]:::arith
+  n207["#207 chall: sumcheck_r"]:::wrapChall
+  n208["#208 *"]:::multi
+  n209["#209 +"]:::arith
+  n210["#210 *"]:::multi
+  n211["#211 +"]:::arith
+  n212["#212 public: eq_point"]:::wrapPub
+  n213["#213 public: eq_point"]:::wrapPub
+  n214["#214 public: eq_point"]:::wrapPub
+  n215["#215 const 1"]:::constant
+  n216["#216 const 1"]:::constant
+  n217["#217 -"]:::arith
+  n218["#218 -"]:::arith
+  n219["#219 *"]:::multi
+  n220["#220 *"]:::multi
+  n221["#221 +"]:::arith
+  n222["#222 *"]:::multi
+  n223["#223 -"]:::arith
+  n224["#224 -"]:::arith
+  n225["#225 *"]:::multi
+  n226["#226 *"]:::multi
+  n227["#227 +"]:::arith
+  n228["#228 *"]:::multi
+  n229["#229 -"]:::arith
+  n230["#230 -"]:::arith
+  n231["#231 *"]:::multi
+  n232["#232 *"]:::multi
+  n233["#233 +"]:::arith
+  n234["#234 *"]:::multi
+  n235["#235 proof: stage_eval"]:::wrapProof
+  n236["#236 proof: stage_eval"]:::wrapProof
+  n237["#237 public: output_challenge"]:::wrapPub
+  n238["#238 public: output_challenge"]:::wrapPub
+  n239["#239 *"]:::multi
+  n240["#240 *"]:::multi
+  n241["#241 +"]:::arith
+  n242["#242 *"]:::multi
+  n243["#243 chall: rlc_rho"]:::wrapChall
+  n244["#244 const 0"]:::constant
+  n245["#245 *"]:::multi
+  n246["#246 +"]:::arith
+  n247["#247 *"]:::multi
+  n248["#248 +"]:::arith
+  n249["#249 public: rlc_combined_eval"]:::wrapPub
+  n250["#250 chall: rlc_rho"]:::wrapChall
+  n251["#251 const 0"]:::constant
+  n252["#252 *"]:::multi
+  n253["#253 +"]:::arith
+  n254["#254 public: rlc_combined_eval"]:::wrapPub
+  n7 -- a --> n8
+  n2 -- b --> n8
+  n8 -- a --> n9
+  n6 -- b --> n9
+  n9 -- a --> n10
+  n2 -- b --> n10
+  n10 -- a --> n11
+  n5 -- b --> n11
+  n11 -- a --> n12
+  n2 -- b --> n12
+  n12 -- a --> n13
+  n4 -- b --> n13
+  n7 -- a --> n14
+  n3 -- b --> n14
+  n14 -- a --> n15
+  n6 -- b --> n15
+  n15 -- a --> n16
+  n3 -- b --> n16
+  n16 -- a --> n17
+  n5 -- b --> n17
+  n17 -- a --> n18
+  n3 -- b --> n18
+  n18 -- a --> n19
+  n4 -- b --> n19
+  n13 -- a --> n20
+  n19 -- b --> n20
+  n7 -- a --> n22
+  n21 -- b --> n22
+  n22 -- a --> n23
+  n6 -- b --> n23
+  n23 -- a --> n24
+  n21 -- b --> n24
+  n24 -- a --> n25
+  n5 -- b --> n25
+  n25 -- a --> n26
+  n21 -- b --> n26
+  n26 -- a --> n27
+  n4 -- b --> n27
+  n31 -- a --> n33
+  n0 -- b --> n33
+  n31 -- a --> n34
+  n21 -- b --> n34
+  n0 -- a --> n35
+  n21 -- b --> n35
+  n33 -- a --> n36
+  n34 -- b --> n36
+  n35 -- a --> n37
+  n36 -- b --> n37
+  n32 -- a --> n38
+  n37 -- b --> n38
+  n28 -- a --> n39
+  n29 -- b --> n39
+  n39 -- a --> n40
+  n30 -- b --> n40
+  n38 -- a --> n41
+  n40 -- b --> n41
+  n42 -- a --> n45
+  n28 -- b --> n45
+  n43 -- a --> n46
+  n29 -- b --> n46
+  n44 -- a --> n47
+  n30 -- b --> n47
+  n45 -- a --> n48
+  n46 -- b --> n48
+  n48 -- a --> n49
+  n47 -- b --> n49
+  n54 -- a --> n55
+  n50 -- b --> n55
+  n55 -- a --> n56
+  n53 -- b --> n56
+  n56 -- a --> n57
+  n50 -- b --> n57
+  n57 -- a --> n58
+  n52 -- b --> n58
+  n54 -- a --> n59
+  n51 -- b --> n59
+  n59 -- a --> n60
+  n53 -- b --> n60
+  n60 -- a --> n61
+  n51 -- b --> n61
+  n61 -- a --> n62
+  n52 -- b --> n62
+  n58 -- a --> n63
+  n62 -- b --> n63
+  n54 -- a --> n65
+  n64 -- b --> n65
+  n65 -- a --> n66
+  n53 -- b --> n66
+  n66 -- a --> n67
+  n64 -- b --> n67
+  n67 -- a --> n68
+  n52 -- b --> n68
+  n71 -- a --> n72
+  n50 -- b --> n72
+  n72 -- a --> n73
+  n70 -- b --> n73
+  n73 -- a --> n74
+  n50 -- b --> n74
+  n74 -- a --> n75
+  n69 -- b --> n75
+  n71 -- a --> n76
+  n51 -- b --> n76
+  n76 -- a --> n77
+  n70 -- b --> n77
+  n77 -- a --> n78
+  n51 -- b --> n78
+  n78 -- a --> n79
+  n69 -- b --> n79
+  n75 -- a --> n80
+  n79 -- b --> n80
+  n71 -- a --> n82
+  n81 -- b --> n82
+  n82 -- a --> n83
+  n70 -- b --> n83
+  n83 -- a --> n84
+  n81 -- b --> n84
+  n84 -- a --> n85
+  n69 -- b --> n85
+  n88 -- a --> n89
+  n50 -- b --> n89
+  n89 -- a --> n90
+  n87 -- b --> n90
+  n90 -- a --> n91
+  n50 -- b --> n91
+  n91 -- a --> n92
+  n86 -- b --> n92
+  n88 -- a --> n93
+  n51 -- b --> n93
+  n93 -- a --> n94
+  n87 -- b --> n94
+  n94 -- a --> n95
+  n51 -- b --> n95
+  n95 -- a --> n96
+  n86 -- b --> n96
+  n92 -- a --> n97
+  n96 -- b --> n97
+  n88 -- a --> n99
+  n98 -- b --> n99
+  n99 -- a --> n100
+  n87 -- b --> n100
+  n100 -- a --> n101
+  n98 -- b --> n101
+  n101 -- a --> n102
+  n86 -- b --> n102
+  n103 -- a --> n105
+  n21 -- b --> n105
+  n103 -- a --> n106
+  n64 -- b --> n106
+  n21 -- a --> n107
+  n64 -- b --> n107
+  n105 -- a --> n108
+  n106 -- b --> n108
+  n107 -- a --> n109
+  n108 -- b --> n109
+  n104 -- a --> n110
+  n109 -- b --> n110
+  n112 -- a --> n113
+  n81 -- b --> n113
+  n112 -- a --> n114
+  n113 -- b --> n114
+  n112 -- a --> n115
+  n81 -- b --> n115
+  n112 -- a --> n116
+  n98 -- b --> n116
+  n114 -- a --> n117
+  n116 -- b --> n117
+  n114 -- a --> n118
+  n98 -- b --> n118
+  n115 -- a --> n119
+  n116 -- b --> n119
+  n115 -- a --> n120
+  n98 -- b --> n120
+  n125 -- a --> n126
+  n118 -- b --> n126
+  n124 -- a --> n127
+  n126 -- b --> n127
+  n111 -- a --> n128
+  n127 -- b --> n128
+  n121 -- a --> n129
+  n128 -- b --> n129
+  n131 -- a --> n132
+  n118 -- b --> n132
+  n130 -- a --> n133
+  n132 -- b --> n133
+  n111 -- a --> n134
+  n133 -- b --> n134
+  n122 -- a --> n135
+  n134 -- b --> n135
+  n137 -- a --> n138
+  n119 -- b --> n138
+  n136 -- a --> n139
+  n138 -- b --> n139
+  n111 -- a --> n140
+  n139 -- b --> n140
+  n123 -- a --> n141
+  n140 -- b --> n141
+  n110 -- a --> n142
+  n129 -- b --> n142
+  n110 -- a --> n143
+  n135 -- b --> n143
+  n110 -- a --> n144
+  n141 -- b --> n144
+  n42 -- a --> n145
+  n142 -- b --> n145
+  n43 -- a --> n146
+  n143 -- b --> n146
+  n44 -- a --> n147
+  n144 -- b --> n147
+  n145 -- a --> n148
+  n146 -- b --> n148
+  n148 -- a --> n149
+  n147 -- b --> n149
+  n149 -- a --> n151
+  n150 -- b --> n151
+  n154 -- a --> n156
+  n155 -- b --> n156
+  n153 -- a --> n157
+  n156 -- b --> n157
+  n154 -- a --> n158
+  n152 -- b --> n158
+  n163 -- a --> n164
+  n159 -- b --> n164
+  n164 -- a --> n165
+  n162 -- b --> n165
+  n165 -- a --> n166
+  n159 -- b --> n166
+  n166 -- a --> n167
+  n161 -- b --> n167
+  n163 -- a --> n168
+  n160 -- b --> n168
+  n168 -- a --> n169
+  n162 -- b --> n169
+  n169 -- a --> n170
+  n160 -- b --> n170
+  n170 -- a --> n171
+  n161 -- b --> n171
+  n167 -- a --> n172
+  n171 -- b --> n172
+  n163 -- a --> n174
+  n173 -- b --> n174
+  n174 -- a --> n175
+  n162 -- b --> n175
+  n175 -- a --> n176
+  n173 -- b --> n176
+  n176 -- a --> n177
+  n161 -- b --> n177
+  n180 -- a --> n181
+  n159 -- b --> n181
+  n181 -- a --> n182
+  n179 -- b --> n182
+  n182 -- a --> n183
+  n159 -- b --> n183
+  n183 -- a --> n184
+  n178 -- b --> n184
+  n180 -- a --> n185
+  n160 -- b --> n185
+  n185 -- a --> n186
+  n179 -- b --> n186
+  n186 -- a --> n187
+  n160 -- b --> n187
+  n187 -- a --> n188
+  n178 -- b --> n188
+  n184 -- a --> n189
+  n188 -- b --> n189
+  n180 -- a --> n191
+  n190 -- b --> n191
+  n191 -- a --> n192
+  n179 -- b --> n192
+  n192 -- a --> n193
+  n190 -- b --> n193
+  n193 -- a --> n194
+  n178 -- b --> n194
+  n197 -- a --> n198
+  n159 -- b --> n198
+  n198 -- a --> n199
+  n196 -- b --> n199
+  n199 -- a --> n200
+  n159 -- b --> n200
+  n200 -- a --> n201
+  n195 -- b --> n201
+  n197 -- a --> n202
+  n160 -- b --> n202
+  n202 -- a --> n203
+  n196 -- b --> n203
+  n203 -- a --> n204
+  n160 -- b --> n204
+  n204 -- a --> n205
+  n195 -- b --> n205
+  n201 -- a --> n206
+  n205 -- b --> n206
+  n197 -- a --> n208
+  n207 -- b --> n208
+  n208 -- a --> n209
+  n196 -- b --> n209
+  n209 -- a --> n210
+  n207 -- b --> n210
+  n210 -- a --> n211
+  n195 -- b --> n211
+  n215 -- a --> n217
+  n212 -- b --> n217
+  n215 -- a --> n218
+  n173 -- b --> n218
+  n212 -- a --> n219
+  n173 -- b --> n219
+  n217 -- a --> n220
+  n218 -- b --> n220
+  n219 -- a --> n221
+  n220 -- b --> n221
+  n216 -- a --> n222
+  n221 -- b --> n222
+  n215 -- a --> n223
+  n213 -- b --> n223
+  n215 -- a --> n224
+  n190 -- b --> n224
+  n213 -- a --> n225
+  n190 -- b --> n225
+  n223 -- a --> n226
+  n224 -- b --> n226
+  n225 -- a --> n227
+  n226 -- b --> n227
+  n222 -- a --> n228
+  n227 -- b --> n228
+  n215 -- a --> n229
+  n214 -- b --> n229
+  n215 -- a --> n230
+  n207 -- b --> n230
+  n214 -- a --> n231
+  n207 -- b --> n231
+  n229 -- a --> n232
+  n230 -- b --> n232
+  n231 -- a --> n233
+  n232 -- b --> n233
+  n228 -- a --> n234
+  n233 -- b --> n234
+  n237 -- a --> n239
+  n235 -- b --> n239
+  n238 -- a --> n240
+  n236 -- b --> n240
+  n239 -- a --> n241
+  n240 -- b --> n241
+  n234 -- a --> n242
+  n241 -- b --> n242
+  n244 -- a --> n245
+  n243 -- b --> n245
+  n245 -- a --> n246
+  n236 -- b --> n246
+  n246 -- a --> n247
+  n243 -- b --> n247
+  n247 -- a --> n248
+  n235 -- b --> n248
+  n251 -- a --> n252
+  n250 -- b --> n252
+  n252 -- a --> n253
+  n150 -- b --> n253
+  a0{{assert: sumcheck round consistency}}:::assertion
+  n20 -.-> a0
+  a0 -.-> n1
+  a1{{assert: spartan outer check}}:::assertion
+  n41 -.-> a1
+  a1 -.-> n27
+  a2{{assert: sumcheck round consistency}}:::assertion
+  n63 -.-> a2
+  a2 -.-> n49
+  a3{{assert: sumcheck round consistency}}:::assertion
+  n80 -.-> a3
+  a3 -.-> n68
+  a4{{assert: sumcheck round consistency}}:::assertion
+  n97 -.-> a4
+  a4 -.-> n85
+  a5{{assert: spartan inner check}}:::assertion
+  n151 -.-> a5
+  a5 -.-> n102
+  a6{{assert: sumcheck round consistency}}:::assertion
+  n172 -.-> a6
+  a6 -.-> n157
+  a7{{assert: sumcheck round consistency}}:::assertion
+  n189 -.-> a7
+  a7 -.-> n177
+  a8{{assert: sumcheck round consistency}}:::assertion
+  n206 -.-> a8
+  a8 -.-> n194
+  a9{{assert: stage final eval check}}:::assertion
+  n242 -.-> a9
+  a9 -.-> n211
+  a10{{assert: rlc reduction consistency}}:::assertion
+  n248 -.-> a10
+  a10 -.-> n249
+  a11{{assert: rlc reduction consistency}}:::assertion
+  n253 -.-> a11
+  a11 -.-> n254

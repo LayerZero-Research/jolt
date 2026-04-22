@@ -26,6 +26,7 @@
 
 use jolt_field::Field;
 use jolt_poly::EqPolynomial;
+use jolt_verifier_backend::{eq_eval, eq_evals_table, FieldBackend};
 use serde::{Deserialize, Serialize};
 
 /// A Spartan key for uniform (repeated-constraint) R1CS instances.
@@ -207,6 +208,120 @@ impl<F: Field> UniformSpartanKey<F> {
         let (a_local, b_local, c_local) = self.evaluate_local_mles(r_x_constraint, r_y_var);
 
         (cycle_eq * a_local, cycle_eq * b_local, cycle_eq * c_local)
+    }
+
+    /// Backend-aware sibling of [`evaluate_local_mles`](Self::evaluate_local_mles).
+    ///
+    /// Walks the same sparse representation, but every multiplication and
+    /// addition flows through `backend`. Produces three [`B::Scalar`] handles
+    /// for $(A_{\text{local}}, B_{\text{local}}, C_{\text{local}})$.
+    ///
+    /// Sparse coefficients are wrapped via [`FieldBackend::wrap_public`] —
+    /// they are baked into the verifying key. Eq-table entries are constructed
+    /// through [`eq_evals_table`] so the AST records the full big-endian
+    /// expansion of `eq_constraint` and `eq_var`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `constraint_point.len() != self.num_constraint_vars()` or
+    /// `var_point.len() != self.num_var_vars()`.
+    pub fn evaluate_local_mles_with_backend<B>(
+        &self,
+        backend: &mut B,
+        constraint_point: &[B::Scalar],
+        var_point: &[B::Scalar],
+    ) -> (B::Scalar, B::Scalar, B::Scalar)
+    where
+        B: FieldBackend<F = F>,
+    {
+        assert_eq!(constraint_point.len(), self.num_constraint_vars());
+        assert_eq!(var_point.len(), self.num_var_vars());
+
+        let eq_constraint = eq_evals_table(backend, constraint_point);
+        let eq_var = eq_evals_table(backend, var_point);
+
+        let mut a_eval = backend.const_zero();
+        let mut b_eval = backend.const_zero();
+        let mut c_eval = backend.const_zero();
+
+        for (k, (a_row_entries, (b_row_entries, c_row_entries))) in self
+            .a_sparse
+            .iter()
+            .zip(self.b_sparse.iter().zip(self.c_sparse.iter()))
+            .enumerate()
+        {
+            let w = &eq_constraint[k];
+
+            let mut a_row = backend.const_zero();
+            for &(j, coeff) in a_row_entries {
+                let coeff_w = backend.wrap_public(coeff, "spartan_a_coeff");
+                let term = backend.mul(&coeff_w, &eq_var[j]);
+                a_row = backend.add(&a_row, &term);
+            }
+            let scaled = backend.mul(w, &a_row);
+            a_eval = backend.add(&a_eval, &scaled);
+
+            let mut b_row = backend.const_zero();
+            for &(j, coeff) in b_row_entries {
+                let coeff_w = backend.wrap_public(coeff, "spartan_b_coeff");
+                let term = backend.mul(&coeff_w, &eq_var[j]);
+                b_row = backend.add(&b_row, &term);
+            }
+            let scaled = backend.mul(w, &b_row);
+            b_eval = backend.add(&b_eval, &scaled);
+
+            let mut c_row = backend.const_zero();
+            for &(j, coeff) in c_row_entries {
+                let coeff_w = backend.wrap_public(coeff, "spartan_c_coeff");
+                let term = backend.mul(&coeff_w, &eq_var[j]);
+                c_row = backend.add(&c_row, &term);
+            }
+            let scaled = backend.mul(w, &c_row);
+            c_eval = backend.add(&c_eval, &scaled);
+        }
+
+        (a_eval, b_eval, c_eval)
+    }
+
+    /// Backend-aware sibling of [`evaluate_matrix_mles`](Self::evaluate_matrix_mles).
+    ///
+    /// Computes $(\tilde{A}, \tilde{B}, \tilde{C})$ at $(r_x, r_y)$ purely
+    /// through `backend`. The cycle-level eq factor and the local sparse
+    /// expansion both go through the backend, so the resulting AST records
+    /// every operation needed to recompute the matrix MLE values from the
+    /// verifying key plus $r_x$, $r_y$.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `r_x.len() != num_cycle_vars + num_constraint_vars` or
+    /// `r_y.len() != num_cycle_vars + num_var_vars`.
+    pub fn evaluate_matrix_mles_with_backend<B>(
+        &self,
+        backend: &mut B,
+        r_x: &[B::Scalar],
+        r_y: &[B::Scalar],
+    ) -> (B::Scalar, B::Scalar, B::Scalar)
+    where
+        B: FieldBackend<F = F>,
+    {
+        let cycle_vars = self.num_cycle_vars();
+        let constraint_vars = self.num_constraint_vars();
+        let var_vars = self.num_var_vars();
+
+        assert_eq!(r_x.len(), cycle_vars + constraint_vars);
+        assert_eq!(r_y.len(), cycle_vars + var_vars);
+
+        let (r_x_cycle, r_x_constraint) = r_x.split_at(cycle_vars);
+        let (r_y_cycle, r_y_var) = r_y.split_at(cycle_vars);
+
+        let cycle_eq = eq_eval(backend, r_x_cycle, r_y_cycle);
+        let (a_local, b_local, c_local) =
+            self.evaluate_local_mles_with_backend(backend, r_x_constraint, r_y_var);
+
+        let a = backend.mul(&cycle_eq, &a_local);
+        let b = backend.mul(&cycle_eq, &b_local);
+        let c = backend.mul(&cycle_eq, &c_local);
+        (a, b, c)
     }
 
     /// Evaluates the combined matrix
