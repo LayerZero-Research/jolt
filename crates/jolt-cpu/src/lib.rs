@@ -17,11 +17,13 @@
 
 mod backend;
 mod custom;
+mod kernel_ir_interp;
 mod product_sum;
 mod specialized;
 pub use jolt_ir::toom_cook;
 
 pub use backend::{CpuBackend, CpuKernel};
+pub use kernel_ir_interp::{evaluate_ir_pair, MAX_REGS};
 
 use jolt_field::Field;
 use jolt_ir::{KernelDescriptor, KernelShape};

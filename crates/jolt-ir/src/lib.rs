@@ -25,6 +25,7 @@ mod builder;
 mod claim;
 mod expr;
 mod kernel;
+mod kernel_ir;
 mod normalize;
 mod visitor;
 
@@ -35,6 +36,7 @@ pub use builder::{ExprBuilder, ExprHandle};
 pub use claim::{ChallengeBinding, ChallengeSource, ClaimDefinition, OpeningBinding};
 pub use expr::{Expr, ExprArena, ExprId, ExprNode, Var};
 pub use kernel::{KernelDescriptor, KernelShape, TensorSplit};
+pub use kernel_ir::{BindingOrder, BufId, ConstVal, KernelIR, KernelIteration, KernelOp, RegId};
 pub use normalize::{SopTerm, SopValue, SumOfProducts};
 pub use visitor::ExprVisitor;
 
