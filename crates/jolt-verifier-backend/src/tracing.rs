@@ -156,10 +156,17 @@ impl<F: Field> AstScalar<F> {
 /// `Tracing` itself is just a handle to the shared graph — clone it freely
 /// and every clone records into the same DAG. This makes it easy to thread
 /// through code that wants to take ownership of a backend per stage.
+///
+/// In addition to the side-effect-free [`AstGraph`], `Tracing` keeps an
+/// internal sidecar of the concrete wrap values it received. The graph and
+/// the value list are independent: graph consumers (Lean export, R1CS lower)
+/// ignore the values, while differential testing against [`Native`] uses
+/// them via [`replay`] without the caller having to reconstruct the wrap
+/// sequence.
 #[derive(Clone, Debug)]
 pub struct Tracing<F: Field> {
     graph: Rc<RefCell<AstGraph>>,
-    _marker: std::marker::PhantomData<F>,
+    wrap_values: Rc<RefCell<Vec<F>>>,
 }
 
 impl<F: Field> Default for Tracing<F> {
@@ -173,13 +180,22 @@ impl<F: Field> Tracing<F> {
     pub fn new() -> Self {
         Self {
             graph: Rc::new(RefCell::new(AstGraph::new())),
-            _marker: std::marker::PhantomData,
+            wrap_values: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
     /// Returns a deep clone of the recorded graph (immutable snapshot).
     pub fn snapshot(&self) -> AstGraph {
         self.graph.borrow().clone()
+    }
+
+    /// Returns a clone of the wrap values in the order they were recorded.
+    ///
+    /// Pair with [`replay`] to re-execute the trace against [`Native`] for
+    /// differential testing. Production graph consumers (Lean, R1CS) should
+    /// ignore this and walk [`AstGraph`] directly.
+    pub fn wrap_values(&self) -> Vec<F> {
+        self.wrap_values.borrow().clone()
     }
 
     /// Borrows the underlying graph for read-only inspection.
@@ -192,8 +208,9 @@ impl<F: Field> FieldBackend for Tracing<F> {
     type F = F;
     type Scalar = AstScalar<F>;
 
-    fn wrap(&mut self, _value: F, origin: ScalarOrigin, label: &'static str) -> Self::Scalar {
+    fn wrap(&mut self, value: F, origin: ScalarOrigin, label: &'static str) -> Self::Scalar {
         let id = self.graph.borrow_mut().push(AstOp::Wrap { origin, label });
+        self.wrap_values.borrow_mut().push(value);
         AstScalar::new(id)
     }
 
@@ -254,9 +271,10 @@ impl<F: Field> FieldBackend for Tracing<F> {
     }
 
     fn unwrap(&self, _scalar: &Self::Scalar) -> Option<F> {
-        // Tracing intentionally does not retain concrete witness values —
-        // the whole point is to record the *symbolic* execution so the same
-        // graph can be replayed against many witness assignments.
+        // Tracing intentionally does not expose concrete values through the
+        // backend interface — that would let downstream code branch on
+        // witness data and leak symbolic faithfulness. Replay uses the
+        // sidecar wrap-value list explicitly via [`Tracing::wrap_values`].
         None
     }
 }
@@ -404,7 +422,8 @@ mod tests {
             let result = evaluate_expr(&mut tracer, &expr, &[h_w], &[gamma_w, alpha_w]);
 
             let graph = tracer.snapshot();
-            let values = replay(&graph, &[h_v, gamma_v, alpha_v]).unwrap();
+            let wraps = tracer.wrap_values();
+            let values = replay(&graph, &wraps).unwrap();
             assert_eq!(values[result.id.0 as usize], direct);
         }
     }
@@ -430,8 +449,7 @@ mod tests {
             let traced_handle = eq_eval(&mut tracer, &ta, &tb);
 
             let graph = tracer.snapshot();
-            let mut wraps = a_vals.clone();
-            wraps.extend(b_vals.iter().copied());
+            let wraps = tracer.wrap_values();
             let values = replay(&graph, &wraps).unwrap();
             assert_eq!(values[traced_handle.id.0 as usize], native_value, "n = {n}");
         }

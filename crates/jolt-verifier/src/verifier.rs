@@ -17,6 +17,7 @@ use jolt_poly::EqPolynomial;
 use jolt_spartan::{SpartanError, UniformSpartanKey, UniformSpartanProof, UniformSpartanVerifier};
 use jolt_sumcheck::{BatchedSumcheckVerifier, SumcheckClaim};
 use jolt_transcript::{AppendToTranscript, Transcript};
+use jolt_verifier_backend::{evaluate_expr, helpers::eq_eval, FieldBackend};
 
 use crate::error::JoltError;
 use crate::key::JoltVerifyingKey;
@@ -223,6 +224,207 @@ where
     }
 
     // Witness opening claim from Spartan — must be added last to match prover ordering.
+    all_opening_claims.push(VerifierClaim {
+        commitment: proof.witness_commitment.clone(),
+        point: r_y.clone(),
+        eval: proof.spartan_proof.witness_eval,
+    });
+
+    verify_openings::<PCS, T>(
+        all_opening_claims,
+        &proof.opening_proofs[..],
+        &vk.pcs_setup,
+        transcript,
+    )?;
+
+    Ok((r_x, r_y))
+}
+
+/// Backend-aware sibling of [`verify_stage`].
+///
+/// Runs the same algebraic check as [`verify_stage`], but every field
+/// operation flows through `backend`. Concretely:
+///
+/// - Sumcheck verification dispatches to
+///   [`BatchedSumcheckVerifier::verify_with_backend`].
+/// - The eq-polynomial evaluation runs through
+///   [`eq_eval`].
+/// - The output expression evaluates through [`evaluate_expr`].
+/// - The final equality `eq * g == final_eval` is asserted via
+///   [`FieldBackend::assert_eq`].
+///
+/// Returns the same opening claims as [`verify_stage`]; their `eval` field
+/// stays in raw `F` because PCS verification still uses the native group
+/// path (see future `GroupBackend` work).
+fn verify_stage_with_backend<B, C, T>(
+    backend: &mut B,
+    stage_index: usize,
+    desc: &StageDescriptor<B::F>,
+    stage_proof: &SumcheckStageProof<B::F>,
+    commitments: &[C],
+    transcript: &mut T,
+) -> Result<Vec<VerifierClaim<B::F, C>>, JoltError>
+where
+    B: FieldBackend,
+    C: Clone,
+    T: Transcript<Challenge = B::F>,
+{
+    let _span = tracing::info_span!("verify_stage_with_backend", stage = stage_index).entered();
+
+    let claims = [SumcheckClaim {
+        num_vars: desc.num_vars,
+        degree: desc.degree,
+        claimed_sum: desc.claimed_sum,
+    }];
+
+    let (final_eval_w, challenges_w, challenges_f) = BatchedSumcheckVerifier::verify_with_backend(
+        backend,
+        &claims,
+        &stage_proof.sumcheck_proof,
+        transcript,
+    )
+    .map_err(|e| JoltError::StageVerification {
+        stage: stage_index,
+        reason: e.to_string(),
+    })?;
+
+    if stage_proof.evaluations.len() != desc.commitment_indices.len() {
+        return Err(JoltError::InvalidProof(format!(
+            "stage {stage_index}: expected {} evaluations, got {}",
+            desc.commitment_indices.len(),
+            stage_proof.evaluations.len(),
+        )));
+    }
+
+    let eval_point_w: Vec<B::Scalar> = if desc.reverse_challenges {
+        challenges_w.iter().rev().cloned().collect()
+    } else {
+        challenges_w
+    };
+    let eval_point_f: Vec<B::F> = if desc.reverse_challenges {
+        challenges_f.iter().rev().copied().collect()
+    } else {
+        challenges_f
+    };
+
+    let eq_point_w: Vec<B::Scalar> = desc
+        .eq_point
+        .iter()
+        .map(|p| backend.wrap_public(*p, "eq_point"))
+        .collect();
+    let eq_eval_w = eq_eval(backend, &eq_point_w, &eval_point_w);
+
+    let openings_w: Vec<B::Scalar> = stage_proof
+        .evaluations
+        .iter()
+        .map(|e| backend.wrap_proof(*e, "stage_eval"))
+        .collect();
+    let challenges_for_expr_w: Vec<B::Scalar> = desc
+        .output_challenges
+        .iter()
+        .map(|c| backend.wrap_public(*c, "output_challenge"))
+        .collect();
+    let g_eval_w = evaluate_expr(
+        backend,
+        &desc.output_expr,
+        &openings_w,
+        &challenges_for_expr_w,
+    );
+
+    let expected_w = backend.mul(&eq_eval_w, &g_eval_w);
+    backend
+        .assert_eq(&expected_w, &final_eval_w, "stage final eval check")
+        .map_err(|e| JoltError::EvaluationMismatch {
+            stage: stage_index,
+            reason: e.to_string(),
+        })?;
+
+    desc.commitment_indices
+        .iter()
+        .zip(stage_proof.evaluations.iter())
+        .map(|(&idx, &eval)| {
+            let commitment = commitments.get(idx).ok_or_else(|| {
+                JoltError::InvalidProof(format!(
+                    "stage {stage_index}: commitment index {idx} out of bounds ({})",
+                    commitments.len(),
+                ))
+            })?;
+            Ok(VerifierClaim {
+                commitment: commitment.clone(),
+                point: eval_point_f.clone(),
+                eval,
+            })
+        })
+        .collect()
+}
+
+/// Backend-aware verification entry point.
+///
+/// Mirrors [`verify`] but routes every per-stage algebraic check through a
+/// pluggable [`FieldBackend`]:
+///
+/// - **`Native`** is a zero-overhead pass-through (matches [`verify`] exactly).
+/// - **`Tracing`** records the entire verifier into an [`AstGraph`] suitable
+///   for recursion lowering, R1CS generation, or Lean export.
+///
+/// The Spartan IOP (S1) and PCS opening proofs (S8) currently still use the
+/// native group path. Lifting those into a `GroupBackend` is the natural
+/// next step once this prototype is reviewed.
+///
+/// # Errors
+///
+/// See [`verify`] — same error semantics.
+#[allow(clippy::type_complexity)]
+#[tracing::instrument(skip_all, name = "verify_with_backend")]
+pub fn verify_with_backend<B, PCS, T>(
+    backend: &mut B,
+    proof: &JoltProof<PCS::Field, PCS>,
+    vk: &JoltVerifyingKey<PCS::Field, PCS>,
+    build_descriptors: impl FnOnce(
+        &[PCS::Field],
+        &[PCS::Field],
+        &mut T,
+    ) -> Vec<StageDescriptor<PCS::Field>>,
+    transcript: &mut T,
+) -> Result<(Vec<PCS::Field>, Vec<PCS::Field>), JoltError>
+where
+    PCS: AdditivelyHomomorphic,
+    B: FieldBackend<F = PCS::Field>,
+    T: Transcript<Challenge = PCS::Field>,
+{
+    transcript.append_bytes(format!("{:?}", proof.witness_commitment).as_bytes());
+
+    let (r_x, r_y) = verify_spartan(&vk.spartan_key, &proof.spartan_proof, transcript)?;
+
+    let descriptors = build_descriptors(&r_x, &r_y, transcript);
+
+    if proof.stage_proofs.len() != descriptors.len() {
+        return Err(JoltError::InvalidProof(format!(
+            "expected {} stage proofs, got {}",
+            descriptors.len(),
+            proof.stage_proofs.len(),
+        )));
+    }
+
+    let mut all_opening_claims: Vec<VerifierClaim<PCS::Field, PCS::Output>> = Vec::new();
+
+    for (i, (desc, stage_proof)) in descriptors.iter().zip(&proof.stage_proofs).enumerate() {
+        let new_claims = verify_stage_with_backend(
+            backend,
+            i + 2,
+            desc,
+            stage_proof,
+            &proof.commitments,
+            transcript,
+        )?;
+
+        for claim in &new_claims {
+            claim.eval.append_to_transcript(transcript);
+        }
+
+        all_opening_claims.extend(new_claims);
+    }
+
     all_opening_claims.push(VerifierClaim {
         commitment: proof.witness_commitment.clone(),
         point: r_y.clone(),

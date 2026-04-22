@@ -28,4 +28,4 @@ pub use error::JoltError;
 pub use key::JoltVerifyingKey;
 pub use proof::{JoltProof, SumcheckStageProof};
 pub use stage::StageDescriptor;
-pub use verifier::{verify, verify_openings, verify_spartan};
+pub use verifier::{verify, verify_openings, verify_spartan, verify_with_backend};

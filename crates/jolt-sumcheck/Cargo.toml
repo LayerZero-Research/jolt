@@ -16,6 +16,7 @@ jolt-field = { path = "../jolt-field" }
 jolt-openings = { path = "../jolt-openings" }
 jolt-poly = { path = "../jolt-poly" }
 jolt-transcript = { path = "../jolt-transcript" }
+jolt-verifier-backend = { path = "../jolt-verifier-backend" }
 rayon = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 tracing.workspace = true

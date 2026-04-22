@@ -8,8 +8,9 @@
 //! maximum `num_vars` across all claims.
 
 use jolt_field::Field;
-use jolt_poly::UnivariatePoly;
+use jolt_poly::{UnivariatePoly, UnivariatePolynomial};
 use jolt_transcript::{AppendToTranscript, Transcript};
+use jolt_verifier_backend::{helpers::univariate_horner, FieldBackend};
 
 use crate::claim::SumcheckClaim;
 use crate::error::SumcheckError;
@@ -258,6 +259,119 @@ impl BatchedSumcheckVerifier {
             transcript,
             &ClearRoundVerifier,
         )
+    }
+
+    /// Verifies a batched sumcheck proof through a [`FieldBackend`].
+    ///
+    /// Returns the same `(final_eval, challenges)` pair as [`verify`], but
+    /// every field operation is routed through `backend`. The transcript is
+    /// driven natively (Fiat-Shamir bytes are deterministic), but every
+    /// arithmetic check, every polynomial evaluation, and every assertion is
+    /// recorded by the backend.
+    ///
+    /// `Native` is a zero-overhead pass-through. `Tracing` records the entire
+    /// verifier into an [`AstGraph`](jolt_verifier_backend::AstGraph) for
+    /// recursion / Lean export / fuzzing. R1CS lowering will use the same
+    /// trace in a future commit.
+    ///
+    /// The returned `final_eval`/`challenges` carry [`B::Scalar`] handles
+    /// (concrete in `Native`, AST node ids in `Tracing`). The corresponding
+    /// raw field values from the transcript are also returned so the caller
+    /// can drive downstream PCS verification (which currently still uses the
+    /// native group operations).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SumcheckError`] for round-shape errors. Backend assertion
+    /// failures are bubbled up as [`SumcheckError::RoundCheckFailed`].
+    #[allow(clippy::type_complexity)]
+    #[tracing::instrument(skip_all, name = "BatchedSumcheckVerifier::verify_with_backend")]
+    pub fn verify_with_backend<B, T>(
+        backend: &mut B,
+        claims: &[SumcheckClaim<B::F>],
+        proof: &SumcheckProof<B::F>,
+        transcript: &mut T,
+    ) -> Result<(B::Scalar, Vec<B::Scalar>, Vec<B::F>), SumcheckError>
+    where
+        B: FieldBackend,
+        T: Transcript<Challenge = B::F>,
+    {
+        assert!(!claims.is_empty(), "must have at least one claim");
+
+        let max_num_vars = claims.iter().map(|c| c.num_vars).max().unwrap();
+        let max_degree = claims.iter().map(|c| c.degree).max().unwrap();
+
+        for claim in claims {
+            claim.claimed_sum.append_to_transcript(transcript);
+        }
+
+        let alpha_f: B::F = transcript.challenge();
+        let alpha_w = backend.wrap_challenge(alpha_f, "sumcheck_alpha");
+
+        // combined = sum_j alpha^j * (claim_j.claimed_sum * 2^offset_j)
+        let mut combined_w = backend.const_zero();
+        let mut alpha_pow_w = backend.const_one();
+        for claim in claims {
+            let scaled_f = claim.claimed_sum.mul_pow_2(max_num_vars - claim.num_vars);
+            let scaled_w = backend.wrap_public(scaled_f, "claimed_sum_scaled");
+            let term = backend.mul(&alpha_pow_w, &scaled_w);
+            combined_w = backend.add(&combined_w, &term);
+            alpha_pow_w = backend.mul(&alpha_pow_w, &alpha_w);
+        }
+
+        if proof.round_polynomials.len() != max_num_vars {
+            return Err(SumcheckError::WrongNumberOfRounds {
+                expected: max_num_vars,
+                got: proof.round_polynomials.len(),
+            });
+        }
+
+        let zero_w = backend.const_zero();
+        let one_w = backend.const_one();
+
+        let mut running_sum_w = combined_w;
+        let mut challenges_w: Vec<B::Scalar> = Vec::with_capacity(max_num_vars);
+        let mut challenges_f: Vec<B::F> = Vec::with_capacity(max_num_vars);
+
+        for (round, round_proof) in proof.round_polynomials.iter().enumerate() {
+            if round_proof.degree() > max_degree {
+                return Err(SumcheckError::DegreeBoundExceeded {
+                    got: round_proof.degree(),
+                    max: max_degree,
+                });
+            }
+
+            let coeffs_w: Vec<B::Scalar> = round_proof
+                .coefficients()
+                .iter()
+                .map(|c| backend.wrap_proof(*c, "round_poly_coeff"))
+                .collect();
+
+            let s_at_zero = univariate_horner(backend, &coeffs_w, &zero_w);
+            let s_at_one = univariate_horner(backend, &coeffs_w, &one_w);
+            let sum_w = backend.add(&s_at_zero, &s_at_one);
+
+            backend
+                .assert_eq(&sum_w, &running_sum_w, "sumcheck round consistency")
+                .map_err(|e| SumcheckError::RoundCheckFailed {
+                    round,
+                    expected: format!("running_sum (round {round})"),
+                    actual: e.to_string(),
+                })?;
+
+            for coeff in round_proof.coefficients() {
+                coeff.append_to_transcript(transcript);
+            }
+
+            let r_f: B::F = transcript.challenge();
+            let r_w = backend.wrap_challenge(r_f, "sumcheck_r");
+
+            running_sum_w = univariate_horner(backend, &coeffs_w, &r_w);
+            challenges_w.push(r_w);
+            challenges_f.push(r_f);
+        }
+
+        Ok((running_sum_w, challenges_w, challenges_f))
     }
 }
 
