@@ -494,6 +494,10 @@ fn full_pipeline_spartan_plus_one_stage() {
 /// trace can be re-evaluated, which is exactly what downstream consumers
 /// (recursion lowering, R1CS emit, Lean export) need.
 #[test]
+#[expect(
+    clippy::print_stderr,
+    reason = "diagnostic to surface AST stats during prototype review"
+)]
 fn backend_pipeline_native_and_tracing_match() {
     let mut rng = ChaCha20Rng::seed_from_u64(99);
 
@@ -668,6 +672,12 @@ fn backend_pipeline_native_and_tracing_match() {
 
     let graph = tracer.snapshot();
     let wraps = tracer.wrap_values();
+    eprintln!(
+        "[backend_pipeline] mock graph: {} nodes, {} assertions, {} wraps",
+        graph.node_count(),
+        graph.assertion_count(),
+        wraps.len()
+    );
     assert!(
         graph.node_count() > 50,
         "tracing graph should be non-trivial, got {} nodes",
@@ -894,6 +904,10 @@ mod dory {
     /// stages still flow through the native group code, while the S2
     /// algebraic checks route through the backend.
     #[test]
+    #[expect(
+        clippy::print_stderr,
+        reason = "diagnostic to surface AST stats during prototype review"
+    )]
     fn dory_backend_pipeline_native_and_tracing_match() {
         let mut rng = ChaCha20Rng::seed_from_u64(99);
 
@@ -1067,6 +1081,12 @@ mod dory {
 
         let graph = tracer.snapshot();
         let wraps = tracer.wrap_values();
+        eprintln!(
+            "[backend_pipeline] dory graph: {} nodes, {} assertions, {} wraps",
+            graph.node_count(),
+            graph.assertion_count(),
+            wraps.len()
+        );
         assert!(graph.node_count() > 50);
         assert!(graph.assertion_count() >= 1);
         let _ = replay_trace(&graph, &wraps).expect("Dory tracing replay should succeed");
