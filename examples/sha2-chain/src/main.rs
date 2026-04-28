@@ -33,7 +33,11 @@ pub fn main() {
     let verify_sha2_chain = guest::build_verifier_sha2_chain(verifier_preprocessing);
 
     let input = [5u8; 32];
-    let iters = 1000;
+    let iters: u32 = std::env::args()
+        .skip_while(|arg| arg != "--iters")
+        .nth(1)
+        .map(|arg| arg.parse().unwrap())
+        .unwrap_or(1000);
     let native_output = guest::sha2_chain(input, iters);
     let now = Instant::now();
     let (output, proof, program_io) = prove_sha2_chain(input, iters);

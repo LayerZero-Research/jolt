@@ -14,3 +14,7 @@ tracing.workspace = true
 ark-serialize.workspace = true
 postcard.workspace = true
 clap.workspace = true
+jolt-inlines-sha2 = { workspace = true, features = ["host"] }
+
+[package.metadata.cargo-machete]
+ignored = ["jolt-inlines-sha2"]

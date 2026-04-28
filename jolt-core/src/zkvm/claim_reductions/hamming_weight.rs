@@ -107,9 +107,10 @@ use crate::subprotocols::{
 use crate::transcripts::Transcript;
 use crate::zkvm::{
     config::OneHotParams,
-    prover::JoltProverPreprocessing,
     witness::{CommittedPolynomial, VirtualPolynomial},
 };
+#[cfg(feature = "prover")]
+use crate::zkvm::prover::JoltProverPreprocessing;
 
 // Degree bound of the sumcheck round polynomials.
 // The fused relation includes `G(k) * eq(k)` terms where both are multilinear in k,
@@ -423,8 +424,7 @@ pub struct HammingWeightClaimReductionProver<F: JoltField> {
 }
 
 impl<F: JoltField> HammingWeightClaimReductionProver<F> {
-    /// Initialize the prover by computing all G_i polynomials.
-    /// Returns (prover, ram_hw_claims) where ram_hw_claims contains the computed H_i for RAM polynomials.
+    #[cfg(feature = "prover")]
     #[tracing::instrument(skip_all, name = "HammingWeightClaimReductionProver::initialize")]
     pub fn initialize<C, PCS>(
         params: HammingWeightClaimReductionParams<F>,

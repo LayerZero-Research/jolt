@@ -294,11 +294,12 @@ impl DoryGlobals {
         CURRENT_LAYOUT.load(Ordering::SeqCst).into()
     }
 
-    /// Set the Dory matrix layout directly (test-only).
-    ///
-    /// In production code, prefer passing the layout to `initialize_context` instead.
     #[cfg(test)]
     pub fn set_layout(layout: DoryLayout) {
+        CURRENT_LAYOUT.store(layout as u8, Ordering::SeqCst);
+    }
+
+    pub fn set_layout_from_env(layout: DoryLayout) {
         CURRENT_LAYOUT.store(layout as u8, Ordering::SeqCst);
     }
 

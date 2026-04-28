@@ -421,8 +421,8 @@ impl<
         );
 
         let unpadded_trace_len = trace.len();
-        let padded_trace_len = if unpadded_trace_len < 256 {
-            256 // ensures that T >= k^{1/D}
+        let mut padded_trace_len = if unpadded_trace_len < 256 {
+            256
         } else {
             (trace.len() + 1).next_power_of_two()
         };
@@ -433,6 +433,38 @@ impl<
                 exceeds max_trace_length ({max_padded_trace_length}) configured in MemoryConfig. \
                 Increase max_trace_length to at least {padded_trace_len}."
             );
+        }
+
+        if std::env::var("JOLT_NAIVE_PAD").is_ok() {
+            let log_t = padded_trace_len.log_2();
+            let log_k_guess = 4usize; // minimum K for small programs
+            let native_vars = log_t + log_k_guess;
+            let candidates = preprocessing.shared.precommitted_candidate_total_vars(
+                preprocessing.is_committed_mode(),
+                !program_io.trusted_advice.is_empty(),
+                !program_io.untrusted_advice.is_empty(),
+            );
+            let max_candidate = candidates.iter().copied().max().unwrap_or(0);
+            if max_candidate > native_vars {
+                let naive_log_t = max_candidate - log_k_guess;
+                let naive_t = 1usize << naive_log_t;
+                tracing::info!(
+                    "JOLT_NAIVE_PAD: inflating trace from {} to {} (log_t: {} -> {})",
+                    padded_trace_len,
+                    naive_t,
+                    log_t,
+                    naive_log_t,
+                );
+                padded_trace_len = naive_t;
+            }
+        }
+
+        if let Ok(layout_str) = std::env::var("JOLT_LAYOUT") {
+            let layout = match layout_str.to_uppercase().as_str() {
+                "AM" | "ADDRESSMAJOR" | "1" => DoryLayout::AddressMajor,
+                _ => DoryLayout::CycleMajor,
+            };
+            DoryGlobals::set_layout_from_env(layout);
         }
 
         trace.resize(padded_trace_len, Cycle::NoOp);
@@ -526,6 +558,26 @@ impl<
     ) {
         let _pprof_prove = pprof_scope!("prove");
 
+        {
+            let trace_log_t = self.trace.len().log_2();
+            let log_k = self.one_hot_params.log_k_chunk;
+            let native_vars = trace_log_t + log_k;
+            let candidates = self.preprocessing.shared.precommitted_candidate_total_vars(
+                self.preprocessing.is_committed_mode(),
+                !self.program_io.trusted_advice.is_empty(),
+                !self.program_io.untrusted_advice.is_empty(),
+            );
+            let main_total = self.main_total_vars();
+            tracing::info!(
+                "DIMENSIONS: padded_trace={} (log_T={}), K={} (log_K={}), native_vars={}, candidates={:?}, main_total_vars={}",
+                self.trace.len(), trace_log_t,
+                1usize << log_k, log_k,
+                native_vars,
+                candidates,
+                main_total,
+            );
+        }
+
         #[cfg(not(target_arch = "wasm32"))]
         let start = Instant::now();
         let preprocessing_digest = self.preprocessing.shared.digest();
@@ -582,6 +634,7 @@ impl<
             );
         }
 
+        let t_s16a = Instant::now();
         let (stage1_uni_skip_first_round_proof, stage1_sumcheck_proof, r_stage1) =
             self.prove_stage1();
         let (stage2_uni_skip_first_round_proof, stage2_sumcheck_proof, r_stage2) =
@@ -591,15 +644,29 @@ impl<
         let (stage5_sumcheck_proof, r_stage5) = self.prove_stage5();
         let (stage6a_sumcheck_proof, bytecode_read_raf_params, booleanity_params) =
             self.prove_stage6a();
+        let stages_1_6a_ms = t_s16a.elapsed().as_secs_f64() * 1000.0;
+
+        let t_s6b = Instant::now();
         let (stage6b_sumcheck_proof, r_stage6) =
             self.prove_stage6b(bytecode_read_raf_params, booleanity_params);
+        let stage_6b_ms = t_s6b.elapsed().as_secs_f64() * 1000.0;
+
+        let t_s7 = Instant::now();
         let (stage7_sumcheck_proof, r_stage7) = self.prove_stage7();
+        let stage_7_ms = t_s7.elapsed().as_secs_f64() * 1000.0;
 
         let _sumcheck_challenges = [
             r_stage1, r_stage2, r_stage3, r_stage4, r_stage5, r_stage6, r_stage7,
         ];
 
+        let t_s8 = Instant::now();
         let joint_opening_proof = self.prove_stage8(opening_proof_hints);
+        let stage_8_ms = t_s8.elapsed().as_secs_f64() * 1000.0;
+
+        tracing::info!(
+            "STAGE_TIMES: stages_1_6a={:.1}ms stage_6b={:.1}ms stage_7={:.1}ms stage_8={:.1}ms",
+            stages_1_6a_ms, stage_6b_ms, stage_7_ms, stage_8_ms,
+        );
         #[cfg(feature = "zk")]
         let blindfold_proof = self.prove_blindfold(&joint_opening_proof);
 
@@ -662,6 +729,31 @@ impl<
                 prove_duration.as_secs_f64(),
                 self.unpadded_trace_len as f64 / prove_duration.as_secs_f64() / 1000.0,
                 self.padded_trace_len as f64 / prove_duration.as_secs_f64() / 1000.0,
+            );
+        }
+
+        {
+            use ark_serialize::CanonicalSerialize;
+            let c = ark_serialize::Compress::Yes;
+            let commitments_sz: usize = proof.commitments.iter().map(|v| CanonicalSerialize::serialized_size(v, c)).sum();
+            let s1_sz = proof.stage1_sumcheck_proof.serialized_size(c) + proof.stage1_uni_skip_first_round_proof.serialized_size(c);
+            let s2_sz = proof.stage2_sumcheck_proof.serialized_size(c) + proof.stage2_uni_skip_first_round_proof.serialized_size(c);
+            let s3_sz = proof.stage3_sumcheck_proof.serialized_size(c);
+            let s4_sz = proof.stage4_sumcheck_proof.serialized_size(c);
+            let s5_sz = proof.stage5_sumcheck_proof.serialized_size(c);
+            let s6a_sz = proof.stage6a_sumcheck_proof.serialized_size(c);
+            let s6b_sz = proof.stage6b_sumcheck_proof.serialized_size(c);
+            let s7_sz = proof.stage7_sumcheck_proof.serialized_size(c);
+            let s8_sz = CanonicalSerialize::serialized_size(&proof.joint_opening_proof, c);
+            let total_sz = CanonicalSerialize::serialized_size(&proof, c);
+            tracing::info!(
+                "PROOF_SIZES: commitments={}B stages_1_6a={}B stage_6b={}B stage_7={}B stage_8_dory={}B total={}B",
+                commitments_sz,
+                s1_sz + s2_sz + s3_sz + s4_sz + s5_sz + s6a_sz,
+                s6b_sz,
+                s7_sz,
+                s8_sz,
+                total_sz,
             );
         }
 
@@ -3997,3 +4089,4 @@ mod tests {
         assert_eq!(io_device.outputs, expected_output);
     }
 }
+

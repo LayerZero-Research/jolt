@@ -10,6 +10,7 @@ use crate::curve::JoltCurve;
 use crate::poly::commitment::commitment_scheme::StreamingCommitmentScheme;
 use crate::zkvm::config::{OneHotParams, ProgramMode};
 use crate::zkvm::instruction::InstructionFlags;
+#[cfg(feature = "prover")]
 use crate::zkvm::prover::JoltProverPreprocessing;
 use crate::{
     field::JoltField,
@@ -79,7 +80,7 @@ pub fn all_proof_commitment_polynomials(
 }
 
 impl CommittedPolynomial {
-    /// Generate witness data and compute tier 1 commitment for a single row
+    #[cfg(feature = "prover")]
     pub fn stream_witness_and_commit_rows<F, C, PCS>(
         &self,
         preprocessing: &JoltProverPreprocessing<F, C, PCS>,

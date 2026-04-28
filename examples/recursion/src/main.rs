@@ -1,6 +1,7 @@
 use ark_serialize::CanonicalDeserialize;
 use ark_serialize::CanonicalSerialize;
 use clap::{Parser, Subcommand};
+use jolt_inlines_sha2 as _;
 use jolt_sdk::{
     JoltDevice, JoltProverPreprocessing, JoltSharedPreprocessing, MemoryConfig, MemoryLayout,
     ProgramPreprocessing, RV64IMACProof, Serializable,
@@ -121,6 +122,7 @@ enum Commands {
 enum GuestProgram {
     Fibonacci,
     Muldiv,
+    Sha2Chain,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -135,6 +137,7 @@ impl GuestProgram {
         match s.to_lowercase().as_str() {
             "fibonacci" => Some(GuestProgram::Fibonacci),
             "muldiv" => Some(GuestProgram::Muldiv),
+            "sha2-chain" | "sha2chain" | "sha2_chain" => Some(GuestProgram::Sha2Chain),
             _ => None,
         }
     }
@@ -143,6 +146,7 @@ impl GuestProgram {
         match self {
             GuestProgram::Fibonacci => "fibonacci-guest",
             GuestProgram::Muldiv => "muldiv-guest",
+            GuestProgram::Sha2Chain => "sha2-chain-guest",
         }
     }
 
@@ -150,6 +154,7 @@ impl GuestProgram {
         match self {
             GuestProgram::Fibonacci => "fib",
             GuestProgram::Muldiv => "muldiv",
+            GuestProgram::Sha2Chain => "sha2_chain",
         }
     }
 
@@ -160,6 +165,13 @@ impl GuestProgram {
             }
             GuestProgram::Muldiv => {
                 vec![postcard::to_stdvec(&(10u32, 5u32, 2u32)).unwrap()]
+            }
+            GuestProgram::Sha2Chain => {
+                let input = [5u8; 32];
+                let iters = 4000u32;
+                let mut bytes = postcard::to_stdvec(&input).unwrap();
+                bytes.append(&mut postcard::to_stdvec(&iters).unwrap());
+                vec![bytes]
             }
         }
     }
@@ -212,6 +224,29 @@ impl GuestProgram {
                     }
                 }
             }
+            GuestProgram::Sha2Chain => {
+                if use_embed {
+                    MemoryConfig {
+                        max_input_size: 4096,
+                        max_output_size: 4096,
+                        max_untrusted_advice_size: 0,
+                        max_trusted_advice_size: 0,
+                        heap_size: 134217728,
+                        stack_size: 33554432,
+                        program_size: None,
+                    }
+                } else {
+                    MemoryConfig {
+                        max_input_size: 2000000,
+                        max_output_size: 4096,
+                        max_untrusted_advice_size: 0,
+                        max_trusted_advice_size: 0,
+                        heap_size: 33554432,
+                        stack_size: 33554432,
+                        program_size: None,
+                    }
+                }
+            }
         }
     }
 
@@ -229,6 +264,13 @@ impl GuestProgram {
                     800000
                 } else {
                     3000000
+                }
+            }
+            GuestProgram::Sha2Chain => {
+                if use_embed {
+                    67108864
+                } else {
+                    20000000
                 }
             }
         }
@@ -693,7 +735,7 @@ fn main() {
             let guest = match GuestProgram::from_str(example) {
                 Some(guest) => guest,
                 None => {
-                    info!("Unknown example: {example}. Supported examples: fibonacci, muldiv");
+                    info!("Unknown example: {example}. Supported: fibonacci, muldiv, sha2-chain");
                     return;
                 }
             };
@@ -707,7 +749,7 @@ fn main() {
             let guest = match GuestProgram::from_str(example) {
                 Some(guest) => guest,
                 None => {
-                    info!("Unknown example: {example}. Supported examples: fibonacci, muldiv");
+                    info!("Unknown example: {example}. Supported: fibonacci, muldiv, sha2-chain");
                     return;
                 }
             };
@@ -734,7 +776,7 @@ fn main() {
             let guest = match GuestProgram::from_str(example) {
                 Some(guest) => guest,
                 None => {
-                    info!("Unknown example: {example}. Supported examples: fibonacci, muldiv");
+                    info!("Unknown example: {example}. Supported: fibonacci, muldiv, sha2-chain");
                     return;
                 }
             };

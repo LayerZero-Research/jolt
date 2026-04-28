@@ -1747,8 +1747,6 @@ dependencies = [
 [[package]]
 name = "dory-derive"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc9c63de9e3d87d5be179ce2ddde4f31d95c12c1f20ccdbc3a70b004813959ca"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1758,8 +1756,6 @@ dependencies = [
 [[package]]
 name = "dory-pcs"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8c58baea9f0ed973489cd1981b0e6a8c91aafddb05e3903b1dd54175ddcb52d"
 dependencies = [
  "ark-bn254",
  "ark-ec",
@@ -4137,6 +4133,7 @@ version = "0.1.0"
 dependencies = [
  "ark-serialize 0.5.0",
  "clap",
+ "jolt-inlines-sha2",
  "jolt-sdk",
  "postcard",
  "tracing",
