@@ -4,9 +4,12 @@ use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use crate::field::JoltField;
 use crate::utils::math::Math;
 use crate::zkvm::instruction_lookups::LOG_K;
-use common::constants::{
-    INSTRUCTION_PHASES_THRESHOLD_LOG_T, ONEHOT_CHUNK_THRESHOLD_LOG_T, REGISTER_COUNT,
-};
+use common::constants::{INSTRUCTION_PHASES_THRESHOLD_LOG_T, REGISTER_COUNT, XLEN};
+
+/// Bits needed to represent the unsigned offset increment.
+/// Increment range is `[-(2^XLEN - 1), 2^XLEN - 1]`; adding `2^XLEN` maps to `[1, 2^{XLEN+1} - 1]`,
+/// which requires XLEN+1 bits.
+const INC_BITS: usize = XLEN + 1;
 
 /// Returns the number of phases for instruction sumcheck based on trace length.
 ///
@@ -130,18 +133,13 @@ pub struct OneHotConfig {
 }
 
 impl OneHotConfig {
-    /// Create a OneHotConfig with default values based on trace length.
-    pub fn new(log_T: usize) -> Self {
-        let log_k_chunk = if log_T < ONEHOT_CHUNK_THRESHOLD_LOG_T {
-            4
-        } else {
-            8
-        };
-        let lookups_ra_virtual_log_k_chunk = if log_T < ONEHOT_CHUNK_THRESHOLD_LOG_T {
-            LOG_K / 8
-        } else {
-            LOG_K / 4
-        };
+    /// Create a OneHotConfig from a pre-computed log_k_chunk value.
+    ///
+    /// The caller is responsible for choosing `log_k_chunk` (e.g. via
+    /// `CommitmentScheme::log_k_chunk_for_trace`). The `lookups_ra_virtual_log_k_chunk`
+    /// is derived as `4 * log_k_chunk`.
+    pub fn new(log_k_chunk: usize) -> Self {
+        let lookups_ra_virtual_log_k_chunk = 4 * log_k_chunk;
 
         Self {
             log_k_chunk: log_k_chunk as u8,
@@ -213,6 +211,9 @@ pub struct OneHotParams {
     pub instruction_d: usize,
     pub bytecode_d: usize,
     pub ram_d: usize,
+    /// Number of one-hot chunks per increment polynomial.
+    /// `d_inc = ceil(INC_BITS / log_k_chunk)` where INC_BITS = 65 (signed 64-bit range).
+    pub d_inc: usize,
 
     instruction_shifts: Vec<usize>,
     ram_shifts: Vec<usize>,
@@ -231,6 +232,7 @@ impl OneHotParams {
         let instruction_d = LOG_K.div_ceil(log_k_chunk);
         let bytecode_d = bytecode_k.log_2().div_ceil(log_k_chunk);
         let ram_d = ram_k.log_2().div_ceil(log_k_chunk);
+        let d_inc = INC_BITS.div_ceil(log_k_chunk);
 
         let instruction_shifts = (0..instruction_d)
             .map(|i| log_k_chunk * (instruction_d - 1 - i))
@@ -249,17 +251,16 @@ impl OneHotParams {
             instruction_d,
             bytecode_d,
             ram_d,
+            d_inc,
             instruction_shifts,
             ram_shifts,
             bytecode_shifts,
         }
     }
 
-    /// Create OneHotParams for the given trace parameters using default config.
-    ///
-    /// This is a convenience constructor for the prover.
-    pub fn new(log_T: usize, bytecode_k: usize, ram_k: usize) -> Self {
-        let config = OneHotConfig::new(log_T);
+    /// Create OneHotParams from a pre-computed `log_k_chunk` and proof parameters.
+    pub fn new(log_k_chunk: usize, bytecode_k: usize, ram_k: usize) -> Self {
+        let config = OneHotConfig::new(log_k_chunk);
         Self::from_config(&config, bytecode_k, ram_k)
     }
 
@@ -269,6 +270,13 @@ impl OneHotParams {
             log_k_chunk: self.log_k_chunk as u8,
             lookups_ra_virtual_log_k_chunk: self.lookups_ra_virtual_log_k_chunk as u8,
         }
+    }
+
+    /// Number of one-hot byte chunks (the lower 64 bits, excluding the MSB).
+    /// `d_inc - 1` because the MSB is committed separately as `RdIncMsb`/`RamIncMsb`
+    /// (also OneHot(K=256) with indices 0 or 1).
+    pub fn inc_onehot_d(&self) -> usize {
+        self.d_inc - 1
     }
 
     pub fn ram_address_chunk(&self, address: u64, idx: usize) -> u8 {
@@ -281,6 +289,16 @@ impl OneHotParams {
 
     pub fn lookup_index_chunk(&self, index: u128, idx: usize) -> u8 {
         ((index >> self.instruction_shifts[idx]) & (self.k_chunk - 1) as u128) as u8
+    }
+
+    /// Extract the `idx`-th chunk from an unsigned-offset increment value.
+    ///
+    /// `unsigned_inc = (post_value as i128 - pre_value as i128) + (1 << XLEN)`,
+    /// which maps the signed range to `[1, 2^{XLEN+1} - 1]`.
+    /// Chunk 0 is the MOST significant chunk (big-endian, matching instruction/bytecode/ram ordering).
+    pub fn inc_chunk(&self, unsigned_inc: u128, idx: usize) -> u8 {
+        let shift = self.log_k_chunk * (self.d_inc - 1 - idx);
+        ((unsigned_inc >> shift) & (self.k_chunk - 1) as u128) as u8
     }
 
     pub fn compute_r_address_chunks<F: JoltField>(
@@ -306,5 +324,70 @@ impl OneHotParams {
             .collect();
 
         r_address_chunks
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inc_chunk_roundtrip() {
+        let params = OneHotParams::new(8, 256, 256);
+        assert_eq!(params.log_k_chunk, 8);
+        assert_eq!(params.d_inc, INC_BITS.div_ceil(8));
+        assert_eq!(params.d_inc, 9);
+
+        let test_cases: Vec<i128> = vec![
+            0,
+            1,
+            -1,
+            127,
+            -128,
+            255,
+            -256,
+            (1i128 << 63) - 1,
+            -(1i128 << 63),
+            (1i128 << 64) - 1,
+            -((1i128 << 64) - 1),
+        ];
+
+        for inc in test_cases {
+            let unsigned = (inc + (1i128 << XLEN)) as u128;
+            let mut reconstructed: u128 = 0;
+            for d in 0..params.d_inc {
+                let chunk = params.inc_chunk(unsigned, d) as u128;
+                assert!(chunk < params.k_chunk as u128);
+                let shift = params.log_k_chunk * (params.d_inc - 1 - d);
+                reconstructed |= chunk << shift;
+            }
+            assert_eq!(
+                reconstructed, unsigned,
+                "roundtrip failed for inc={inc}: unsigned={unsigned}, reconstructed={reconstructed}"
+            );
+            let recovered_inc = reconstructed as i128 - (1i128 << XLEN);
+            assert_eq!(recovered_inc, inc, "value recovery failed for inc={inc}");
+        }
+    }
+
+    #[test]
+    fn inc_chunk_roundtrip_k4() {
+        let params = OneHotParams::new(4, 16, 16);
+        assert_eq!(params.log_k_chunk, 4);
+        assert_eq!(params.d_inc, INC_BITS.div_ceil(4));
+        assert_eq!(params.d_inc, 17);
+
+        let test_cases: Vec<i128> = vec![0, 1, -1, (1i128 << 64) - 1, -((1i128 << 64) - 1)];
+        for inc in test_cases {
+            let unsigned = (inc + (1i128 << XLEN)) as u128;
+            let mut reconstructed: u128 = 0;
+            for d in 0..params.d_inc {
+                let chunk = params.inc_chunk(unsigned, d) as u128;
+                assert!(chunk < params.k_chunk as u128);
+                let shift = params.log_k_chunk * (params.d_inc - 1 - d);
+                reconstructed |= chunk << shift;
+            }
+            assert_eq!(reconstructed, unsigned);
+        }
     }
 }

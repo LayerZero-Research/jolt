@@ -84,6 +84,7 @@ pub struct IncClaimReductionSumcheckParams<F: JoltField> {
     pub r_cycle_stage4: OpeningPoint<BIG_ENDIAN, F>, // RamInc from RamValCheck
     pub s_cycle_stage4: OpeningPoint<BIG_ENDIAN, F>, // RdInc from RegistersReadWriteChecking
     pub s_cycle_stage5: OpeningPoint<BIG_ENDIAN, F>, // RdInc from RegistersValEvaluation
+    pub onehot_inc: bool,
 }
 
 impl<F: JoltField> IncClaimReductionSumcheckParams<F> {
@@ -91,6 +92,7 @@ impl<F: JoltField> IncClaimReductionSumcheckParams<F> {
         trace_len: usize,
         accumulator: &dyn OpeningAccumulator<F>,
         transcript: &mut impl Transcript,
+        onehot_inc: bool,
     ) -> Self {
         let gamma: F = transcript.challenge_scalar();
         let gamma_sqr = gamma.square();
@@ -120,6 +122,7 @@ impl<F: JoltField> IncClaimReductionSumcheckParams<F> {
             r_cycle_stage4,
             s_cycle_stage4,
             s_cycle_stage5,
+            onehot_inc,
         }
     }
 }
@@ -300,7 +303,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
         accumulator.append_dense(
             CommittedPolynomial::RdInc,
             SumcheckId::IncClaimReduction,
-            opening_point.r,
+            opening_point.r.clone(),
             rd_inc_claim,
         );
     }
@@ -504,7 +507,6 @@ impl<F: JoltField> IncClaimReductionPhase1State<F> {
 struct IncClaimReductionPhase2State<F: JoltField> {
     ram_inc: MultilinearPolynomial<F>,
     rd_inc: MultilinearPolynomial<F>,
-    // Combined eq polynomials
     eq_ram: MultilinearPolynomial<F>, // eq(r_stage2, ·) + γ·eq(r_stage4, ·)
     eq_rd: MultilinearPolynomial<F>,  // eq(s_stage4, ·) + γ·eq(s_stage5, ·)
 }
@@ -680,8 +682,10 @@ impl<F: JoltField> IncClaimReductionSumcheckVerifier<F> {
         trace_len: usize,
         accumulator: &A,
         transcript: &mut impl Transcript,
+        onehot_inc: bool,
     ) -> Self {
-        let params = IncClaimReductionSumcheckParams::new(trace_len, accumulator, transcript);
+        let params =
+            IncClaimReductionSumcheckParams::new(trace_len, accumulator, transcript, onehot_inc);
         Self { params }
     }
 }
@@ -733,7 +737,7 @@ impl<F: JoltField, T: Transcript, A: AbstractVerifierOpeningAccumulator<F>>
         accumulator.append_dense(
             CommittedPolynomial::RdInc,
             SumcheckId::IncClaimReduction,
-            opening_point.r,
+            opening_point.r.clone(),
         );
     }
 }

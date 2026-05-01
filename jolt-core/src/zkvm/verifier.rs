@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -6,14 +6,10 @@ use std::sync::Arc;
 
 use crate::curve::JoltCurve;
 use crate::poly::commitment::commitment_scheme::{CommitmentScheme, ZkEvalCommitment};
-#[cfg(feature = "zk")]
-use crate::poly::commitment::dory::bind_opening_inputs_zk;
-use crate::poly::commitment::dory::{bind_opening_inputs, DoryContext, DoryGlobals};
+use crate::poly::commitment::dory::{DoryContext, DoryGlobals};
 use crate::poly::commitment::pedersen::PedersenGenerators;
 #[cfg(feature = "zk")]
 use crate::poly::lagrange_poly::LagrangeHelper;
-#[cfg(feature = "zk")]
-use crate::poly::opening_proof::AbstractVerifierOpeningAccumulator;
 #[cfg(feature = "zk")]
 use crate::subprotocols::blindfold::{
     pedersen_generator_count_for_r1cs, BakedPublicInputs, BlindFoldVerifier,
@@ -56,7 +52,8 @@ use crate::zkvm::{
     proof_serialization::JoltProof,
     r1cs::key::UniformSpartanKey,
     ram::{
-        compute_min_ram_K, hamming_booleanity::HammingBooleanitySumcheckVerifier,
+        compute_min_ram_K, gen_ram_initial_memory_state,
+        hamming_booleanity::HammingBooleanitySumcheckVerifier,
         output_check::OutputSumcheckVerifier, ra_virtual::RamRaVirtualSumcheckVerifier,
         raf_evaluation::RafEvaluationSumcheckVerifier as RamRafEvaluationSumcheckVerifier,
         read_write_checking::RamReadWriteCheckingVerifier, val_check::RamValCheckSumcheckVerifier,
@@ -75,12 +72,9 @@ use crate::zkvm::{
 };
 use crate::{
     field::JoltField,
-    poly::{
-        eq_poly::EqPolynomial,
-        opening_proof::{
-            compute_advice_lagrange_factor, DoryOpeningState, OpeningAccumulator, OpeningId,
-            SumcheckId, VerifierOpeningAccumulator,
-        },
+    poly::opening_proof::{
+        compute_advice_lagrange_factor, OpeningAccumulator, OpeningId, SumcheckId,
+        VerifierOpeningAccumulator,
     },
     pprof_scope,
     subprotocols::{
@@ -165,12 +159,8 @@ impl<F: JoltField> StageVerifyResult<F> {
 }
 
 #[cfg(feature = "zk")]
-fn batch_output_constraints<
-    F: JoltField,
-    T: Transcript,
-    A: AbstractVerifierOpeningAccumulator<F>,
->(
-    instances: &[&dyn SumcheckInstanceVerifier<F, T, A>],
+fn batch_output_constraints<F: JoltField, T: Transcript>(
+    instances: &[&dyn SumcheckInstanceVerifier<F, T, VerifierOpeningAccumulator<F>>],
 ) -> Option<OutputClaimConstraint> {
     let constraints: Vec<Option<OutputClaimConstraint>> = instances
         .iter()
@@ -180,12 +170,8 @@ fn batch_output_constraints<
 }
 
 #[cfg(feature = "zk")]
-fn batch_input_constraints<
-    F: JoltField,
-    T: Transcript,
-    A: AbstractVerifierOpeningAccumulator<F>,
->(
-    instances: &[&dyn SumcheckInstanceVerifier<F, T, A>],
+fn batch_input_constraints<F: JoltField, T: Transcript>(
+    instances: &[&dyn SumcheckInstanceVerifier<F, T, VerifierOpeningAccumulator<F>>],
 ) -> InputClaimConstraint {
     let constraints: Vec<InputClaimConstraint> = instances
         .iter()
@@ -195,13 +181,9 @@ fn batch_input_constraints<
 }
 
 #[cfg(feature = "zk")]
-fn scale_batching_coefficients<
-    F: JoltField,
-    T: Transcript,
-    A: AbstractVerifierOpeningAccumulator<F>,
->(
+fn scale_batching_coefficients<F: JoltField, T: Transcript>(
     batching_coefficients: &[F],
-    instances: &[&dyn SumcheckInstanceVerifier<F, T, A>],
+    instances: &[&dyn SumcheckInstanceVerifier<F, T, VerifierOpeningAccumulator<F>>],
 ) -> Vec<F> {
     let max_num_rounds = instances.iter().map(|i| i.num_rounds()).max().unwrap_or(0);
     batching_coefficients
@@ -274,21 +256,7 @@ impl<
             return Err(ProofVerifyError::OutputTooLarge);
         }
 
-        // Validate trace_length: must be a power of 2 and within the preprocessed bound
-        if !proof.trace_length.is_power_of_two()
-            || proof.trace_length > preprocessing.shared.max_padded_trace_length
-        {
-            return Err(ProofVerifyError::InvalidTraceLength(
-                proof.trace_length,
-                preprocessing.shared.max_padded_trace_length,
-            ));
-        }
-
-        // Truncate trailing zero bytes from outputs. Both prover and verifier
-        // apply the same truncation so the proof is internally consistent.
-        // WARNING: callers reading `program_io.outputs` directly after verification
-        // will see truncated data. The SDK re-pads to `max_output_size` before
-        // deserialization, but direct consumers must account for this.
+        // truncate trailing zeros on device outputs
         program_io.outputs.truncate(
             program_io
                 .outputs
@@ -372,55 +340,28 @@ impl<
     }
 
     #[tracing::instrument(skip_all)]
-    pub fn verify(self) -> Result<(), ProofVerifyError> {
-        // In test/debug builds, let panics propagate for full backtraces.
-        // In release builds, catch panics from malformed proofs (e.g., missing
-        // opening claims) and convert them to clean error returns.
-        #[cfg(any(test, debug_assertions))]
-        {
-            self.verify_inner()
-        }
-        #[cfg(not(any(test, debug_assertions)))]
-        {
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.verify_inner()))
-                .unwrap_or_else(|payload| {
-                    let msg = payload
-                        .downcast_ref::<&str>()
-                        .map(|s| s.to_string())
-                        .or_else(|| payload.downcast_ref::<String>().cloned())
-                        .unwrap_or_else(|| "unknown panic".to_string());
-                    tracing::error!("Verifier panicked on malformed proof: {msg}");
-                    Err(ProofVerifyError::InternalError)
-                })
-        }
-    }
-
     #[cfg_attr(not(feature = "zk"), allow(unused_variables))]
-    fn verify_inner(mut self) -> Result<(), ProofVerifyError> {
+    pub fn verify(mut self) -> Result<(), ProofVerifyError> {
         let _pprof_verify = pprof_scope!("verify");
+        tracing::info!("starting verify");
         let zk_mode = self.opening_accumulator.zk_mode;
 
-        let preprocessing_digest = self.preprocessing.shared.digest();
         fiat_shamir_preamble(
             &self.program_io,
             self.proof.ram_K,
             self.proof.trace_length,
             self.preprocessing.shared.bytecode.entry_address,
-            &self.proof.rw_config,
-            &self.proof.one_hot_config,
-            self.proof.dory_layout,
-            &preprocessing_digest,
             &mut self.transcript,
         );
 
-        // Initialize DoryGlobals with the layout from the proof
-        // This ensures the verifier uses the same layout as the prover
-        let _guard = DoryGlobals::initialize_context(
-            1 << self.one_hot_params.log_k_chunk,
-            self.proof.trace_length.next_power_of_two(),
-            DoryContext::Main,
-            Some(self.proof.dory_layout),
-        );
+        let _guard = PCS::dory_layout(&self.proof.pcs_config).map(|layout| {
+            DoryGlobals::initialize_context(
+                1 << self.one_hot_params.log_k_chunk,
+                self.proof.trace_length.next_power_of_two(),
+                DoryContext::Main,
+                Some(layout),
+            )
+        });
 
         // Append commitments to transcript
         for commitment in &self.proof.commitments {
@@ -459,6 +400,7 @@ impl<
         let stage7_result = self
             .verify_stage7()
             .inspect_err(|e| tracing::error!("Stage 7: {e}"))?;
+        #[cfg_attr(not(feature = "zk"), allow(unused_variables))]
         let stage8_data = self
             .verify_stage8()
             .inspect_err(|e| tracing::error!("Stage 8: {e}"))?;
@@ -864,7 +806,7 @@ impl<
             &mut self.transcript,
             &self.proof.rw_config,
         );
-        verifier_accumulate_advice::<F, VerifierOpeningAccumulator<F>>(
+        verifier_accumulate_advice(
             self.proof.ram_K,
             &self.program_io,
             self.proof.untrusted_advice_commitment.is_some(),
@@ -874,7 +816,7 @@ impl<
         // Domain-separate the batching challenge.
         self.transcript.append_bytes(b"ram_val_check_gamma", &[]);
         let ram_val_check_gamma: F = self.transcript.challenge_scalar::<F>();
-        let initial_ram_state = crate::zkvm::ram::gen_ram_initial_memory_state::<F>(
+        let initial_ram_state = gen_ram_initial_memory_state::<F>(
             self.proof.ram_K,
             &self.preprocessing.shared.ram,
             &self.program_io,
@@ -1031,6 +973,7 @@ impl<
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
+            PCS::uses_onehot_inc(),
         );
 
         let booleanity = BooleanitySumcheckVerifier::new(booleanity_params);
@@ -1049,6 +992,7 @@ impl<
             self.proof.trace_length,
             &self.opening_accumulator,
             &mut self.transcript,
+            PCS::uses_onehot_inc(),
         );
 
         // Advice claim reduction (Phase 1 in Stage 6): trusted and untrusted are separate instances.
@@ -1057,6 +1001,7 @@ impl<
                 AdviceKind::Trusted,
                 &self.program_io.memory_layout,
                 self.proof.trace_length,
+                self.one_hot_params.log_k_chunk,
                 &self.opening_accumulator,
             ));
         }
@@ -1065,6 +1010,7 @@ impl<
                 AdviceKind::Untrusted,
                 &self.program_io.memory_layout,
                 self.proof.trace_length,
+                self.one_hot_params.log_k_chunk,
                 &self.opening_accumulator,
             ));
         }
@@ -1420,6 +1366,7 @@ impl<
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
+            PCS::uses_onehot_inc(),
         );
 
         let mut instances: Vec<
@@ -1503,29 +1450,54 @@ impl<
         let log_k_chunk = self.one_hot_params.log_k_chunk;
         let r_address_stage7 = &opening_point.r[..log_k_chunk];
 
-        // 1. Collect all (polynomial, claim) pairs
         let mut polynomial_claims = Vec::new();
         let mut scaling_factors = Vec::new();
 
-        // Dense polynomials: RamInc and RdInc (from IncClaimReduction in Stage 6)
-        let (_, ram_inc_claim) = self.opening_accumulator.get_committed_polynomial_opening(
-            CommittedPolynomial::RamInc,
-            SumcheckId::IncClaimReduction,
-        );
-        let (_, rd_inc_claim) = self.opening_accumulator.get_committed_polynomial_opening(
-            CommittedPolynomial::RdInc,
-            SumcheckId::IncClaimReduction,
-        );
+        if PCS::uses_onehot_inc() {
+            for i in 0..self.one_hot_params.inc_onehot_d() {
+                let (_, claim) = self.opening_accumulator.get_committed_polynomial_opening(
+                    CommittedPolynomial::RdIncRa(i),
+                    SumcheckId::HammingWeightClaimReduction,
+                );
+                polynomial_claims.push((CommittedPolynomial::RdIncRa(i), claim));
+                scaling_factors.push(F::one());
+            }
+            let (_, rd_msb_claim) = self.opening_accumulator.get_committed_polynomial_opening(
+                CommittedPolynomial::RdIncMsb,
+                SumcheckId::HammingWeightClaimReduction,
+            );
+            polynomial_claims.push((CommittedPolynomial::RdIncMsb, rd_msb_claim));
+            scaling_factors.push(F::one());
+            for i in 0..self.one_hot_params.inc_onehot_d() {
+                let (_, claim) = self.opening_accumulator.get_committed_polynomial_opening(
+                    CommittedPolynomial::RamIncRa(i),
+                    SumcheckId::HammingWeightClaimReduction,
+                );
+                polynomial_claims.push((CommittedPolynomial::RamIncRa(i), claim));
+                scaling_factors.push(F::one());
+            }
+            let (_, ram_msb_claim) = self.opening_accumulator.get_committed_polynomial_opening(
+                CommittedPolynomial::RamIncMsb,
+                SumcheckId::HammingWeightClaimReduction,
+            );
+            polynomial_claims.push((CommittedPolynomial::RamIncMsb, ram_msb_claim));
+            scaling_factors.push(F::one());
+        } else {
+            let (_, ram_inc_claim) = self.opening_accumulator.get_committed_polynomial_opening(
+                CommittedPolynomial::RamInc,
+                SumcheckId::IncClaimReduction,
+            );
+            let (_, rd_inc_claim) = self.opening_accumulator.get_committed_polynomial_opening(
+                CommittedPolynomial::RdInc,
+                SumcheckId::IncClaimReduction,
+            );
+            let lagrange_factor: F = r_address_stage7.iter().map(|r| F::one() - *r).product();
+            polynomial_claims.push((CommittedPolynomial::RamInc, ram_inc_claim * lagrange_factor));
+            scaling_factors.push(lagrange_factor);
+            polynomial_claims.push((CommittedPolynomial::RdInc, rd_inc_claim * lagrange_factor));
+            scaling_factors.push(lagrange_factor);
+        }
 
-        // Dense polynomials are zero-padded in the Dory matrix, so their evaluation
-        // includes a factor eq(r_addr, 0) = ∏(1 − r_addr_i).
-        let lagrange_factor: F = EqPolynomial::zero_selector(r_address_stage7);
-        polynomial_claims.push((CommittedPolynomial::RamInc, ram_inc_claim * lagrange_factor));
-        scaling_factors.push(lagrange_factor);
-        polynomial_claims.push((CommittedPolynomial::RdInc, rd_inc_claim * lagrange_factor));
-        scaling_factors.push(lagrange_factor);
-
-        // Sparse polynomials: all RA polys (from HammingWeightClaimReduction)
         for i in 0..self.one_hot_params.instruction_d {
             let (_, claim) = self.opening_accumulator.get_committed_polynomial_opening(
                 CommittedPolynomial::InstructionRa(i),
@@ -1585,12 +1557,114 @@ impl<
             include_untrusted_advice = true;
         }
 
-        // 2. Sample gamma and compute powers for RLC
-        let claims: Vec<F> = polynomial_claims.iter().map(|(_, c)| *c).collect();
-        // In non-ZK mode, absorb claims before sampling gamma for Fiat-Shamir binding.
-        // In ZK mode, claims are secret; binding comes from BlindFold constraints instead.
+        let main_polys = all_committed_polynomials(&self.one_hot_params, PCS::uses_onehot_inc());
+        let mut commitments_map: HashMap<CommittedPolynomial, PCS::Commitment> =
+            if let Some(arity) = PCS::packed_main_commitment_arity() {
+                if arity != 1 {
+                    return Err(ProofVerifyError::InvalidInputLength(1, arity));
+                }
+                if self.proof.commitments.len() != arity {
+                    return Err(ProofVerifyError::InvalidInputLength(
+                        arity,
+                        self.proof.commitments.len(),
+                    ));
+                }
+                main_polys
+                    .clone()
+                    .into_iter()
+                    .map(|p| (p, self.proof.commitments[0].clone()))
+                    .collect()
+            } else {
+                if self.proof.commitments.len() != main_polys.len() {
+                    return Err(ProofVerifyError::InvalidInputLength(
+                        main_polys.len(),
+                        self.proof.commitments.len(),
+                    ));
+                }
+                main_polys
+                    .iter()
+                    .copied()
+                    .zip(&self.proof.commitments)
+                    .map(|(p, c)| (p, c.clone()))
+                    .collect()
+            };
+        if let Some(ref commitment) = self.trusted_advice_commitment {
+            commitments_map.insert(CommittedPolynomial::TrustedAdvice, commitment.clone());
+        }
+        if let Some(ref commitment) = self.proof.untrusted_advice_commitment {
+            commitments_map.insert(CommittedPolynomial::UntrustedAdvice, commitment.clone());
+        }
+
+        if PCS::packed_main_commitment_arity().is_some() {
+            let mut claim_map: HashMap<CommittedPolynomial, F> = HashMap::new();
+            for (poly, claim) in polynomial_claims {
+                let prev = claim_map.insert(poly, claim);
+                if prev.is_some() {
+                    return Err(ProofVerifyError::InternalError);
+                }
+            }
+
+            let mut sorted_claims = Vec::with_capacity(main_polys.len() + 2);
+            for poly in &main_polys {
+                let claim = claim_map
+                    .remove(poly)
+                    .ok_or(ProofVerifyError::InternalError)?;
+                sorted_claims.push(claim);
+            }
+
+            let mut individual_ids = Vec::new();
+            for advice_poly in [
+                CommittedPolynomial::TrustedAdvice,
+                CommittedPolynomial::UntrustedAdvice,
+            ] {
+                if let Some(claim) = claim_map.remove(&advice_poly) {
+                    sorted_claims.push(claim);
+                    individual_ids.push(advice_poly);
+                }
+            }
+            if !claim_map.is_empty() {
+                return Err(ProofVerifyError::InternalError);
+            }
+
+            let packed_commitment = commitments_map
+                .remove(main_polys.first().ok_or(ProofVerifyError::InternalError)?)
+                .ok_or(ProofVerifyError::InternalError)?;
+            let mut commitment_refs = Vec::with_capacity(1 + individual_ids.len());
+            commitment_refs.push(packed_commitment);
+            for id in &individual_ids {
+                commitment_refs.push(
+                    commitments_map
+                        .remove(id)
+                        .ok_or(ProofVerifyError::InternalError)?,
+                );
+            }
+            let commitment_ref_slice: Vec<&PCS::Commitment> = commitment_refs.iter().collect();
+
+            PCS::validate_batch_proof_shape(
+                &self.proof.joint_opening_proof,
+                self.one_hot_params.log_k_chunk,
+            )?;
+
+            PCS::default().batch_verify(
+                &self.proof.joint_opening_proof,
+                &self.preprocessing.generators,
+                &mut self.transcript,
+                &opening_point.r,
+                &commitment_ref_slice,
+                &sorted_claims,
+                &[],
+            )?;
+            return Ok(Stage8VerifyData {
+                opening_ids: vec![],
+                constraint_coeffs: vec![],
+            });
+        }
+
         #[cfg(not(feature = "zk"))]
-        self.transcript.append_scalars(b"rlc_claims", &claims);
+        {
+            let claims: Vec<F> = polynomial_claims.iter().map(|(_, c)| *c).collect();
+            self.transcript.append_scalars(b"rlc_claims", &claims);
+        }
         let gamma_powers: Vec<F> = self
             .transcript
             .challenge_scalar_powers(polynomial_claims.len());
@@ -1605,125 +1679,54 @@ impl<
             include_trusted_advice,
             include_untrusted_advice,
         );
-        let joint_claim: F = gamma_powers
+
+        let mut rlc_map = BTreeMap::new();
+        for (gamma, (poly, claim)) in gamma_powers.iter().zip(polynomial_claims.iter()) {
+            let prev = rlc_map.insert(*poly, (*gamma, *claim));
+            if prev.is_some() {
+                return Err(ProofVerifyError::InternalError);
+            }
+        }
+
+        let mut poly_ids: Vec<CommittedPolynomial> = main_polys
             .iter()
-            .zip(claims.iter())
-            .map(|(gamma, claim)| *gamma * claim)
-            .sum();
-
-        // Build state for computing joint commitment/claim
-        let state = DoryOpeningState {
-            opening_point: opening_point.r.clone(),
-            gamma_powers: gamma_powers.clone(),
-            polynomial_claims,
-        };
-
-        // Build commitments map
-        let mut commitments_map = HashMap::new();
-        let expected_polynomials = all_committed_polynomials(&self.one_hot_params);
-        if expected_polynomials.len() != self.proof.commitments.len() {
-            return Err(ProofVerifyError::InvalidInputLength(
-                expected_polynomials.len(),
-                self.proof.commitments.len(),
-            ));
-        }
-        for (polynomial, commitment) in expected_polynomials
-            .into_iter()
-            .zip(&self.proof.commitments)
-        {
-            commitments_map.insert(polynomial, commitment.clone());
-        }
-
-        // Add advice commitments if they're part of the batch
-        if let Some(ref commitment) = self.trusted_advice_commitment {
-            if state
-                .polynomial_claims
-                .iter()
-                .any(|(p, _)| *p == CommittedPolynomial::TrustedAdvice)
-            {
-                commitments_map.insert(CommittedPolynomial::TrustedAdvice, commitment.clone());
+            .copied()
+            .filter(|poly| rlc_map.contains_key(poly))
+            .collect();
+        for advice_poly in [
+            CommittedPolynomial::TrustedAdvice,
+            CommittedPolynomial::UntrustedAdvice,
+        ] {
+            if rlc_map.contains_key(&advice_poly) {
+                poly_ids.push(advice_poly);
             }
         }
-        if let Some(ref commitment) = self.proof.untrusted_advice_commitment {
-            if state
-                .polynomial_claims
-                .iter()
-                .any(|(p, _)| *p == CommittedPolynomial::UntrustedAdvice)
-            {
-                commitments_map.insert(CommittedPolynomial::UntrustedAdvice, commitment.clone());
-            }
-        }
+        let coeffs_and_claims: Vec<(F, F)> = poly_ids
+            .iter()
+            .map(|poly| *rlc_map.get(poly).expect("missing RLC entry"))
+            .collect();
+        let (coeffs, sorted_claims): (Vec<F>, Vec<F>) = coeffs_and_claims.into_iter().unzip();
 
-        let joint_commitment = self.compute_joint_commitment(&mut commitments_map, &state)?;
+        let commitment_refs: Vec<PCS::Commitment> = poly_ids
+            .iter()
+            .map(|id| commitments_map.remove(id).unwrap())
+            .collect();
+        let commitment_ref_slice: Vec<&PCS::Commitment> = commitment_refs.iter().collect();
 
-        let zk_mode = self.opening_accumulator.zk_mode;
-        if zk_mode {
-            PCS::verify(
-                &self.proof.joint_opening_proof,
-                &self.preprocessing.generators,
-                &mut self.transcript,
-                &opening_point.r,
-                &F::zero(),
-                &joint_commitment,
-            )?;
-
-            #[cfg(feature = "zk")]
-            {
-                let y_com: C::G1 = PCS::eval_commitment(&self.proof.joint_opening_proof)
-                    .ok_or(ProofVerifyError::InvalidOpeningProof)?;
-                bind_opening_inputs_zk::<F, C, _>(&mut self.transcript, &opening_point.r, &y_com);
-            }
-            #[cfg(not(feature = "zk"))]
-            {
-                return Err(ProofVerifyError::ZkFeatureRequired);
-            }
-        } else {
-            PCS::verify(
-                &self.proof.joint_opening_proof,
-                &self.preprocessing.generators,
-                &mut self.transcript,
-                &opening_point.r,
-                &joint_claim,
-                &joint_commitment,
-            )?;
-
-            bind_opening_inputs::<F, _>(&mut self.transcript, &opening_point.r, &joint_claim);
-        }
+        PCS::from_proof(&self.proof.joint_opening_proof).batch_verify(
+            &self.proof.joint_opening_proof,
+            &self.preprocessing.generators,
+            &mut self.transcript,
+            &opening_point.r,
+            &commitment_ref_slice,
+            &sorted_claims,
+            &coeffs,
+        )?;
 
         Ok(Stage8VerifyData {
             opening_ids,
             constraint_coeffs,
         })
-    }
-
-    /// Compute joint commitment for the batch opening.
-    fn compute_joint_commitment(
-        &self,
-        commitment_map: &mut HashMap<CommittedPolynomial, PCS::Commitment>,
-        state: &DoryOpeningState<F>,
-    ) -> Result<PCS::Commitment, ProofVerifyError> {
-        let mut rlc_map = HashMap::new();
-        for (gamma, (poly, _claim)) in state
-            .gamma_powers
-            .iter()
-            .zip(state.polynomial_claims.iter())
-        {
-            *rlc_map.entry(*poly).or_insert(F::zero()) += *gamma;
-        }
-
-        let (coeffs, commitments): (Vec<F>, Vec<PCS::Commitment>) = rlc_map
-            .into_iter()
-            .map(|(k, v)| {
-                commitment_map
-                    .remove(&k)
-                    .map(|c| (v, c))
-                    .ok_or(ProofVerifyError::InternalError)
-            })
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .unzip();
-
-        Ok(PCS::combine_commitments(&commitments, &coeffs))
     }
 }
 
@@ -1733,19 +1736,6 @@ pub struct JoltSharedPreprocessing {
     pub ram: RAMPreprocessing,
     pub memory_layout: MemoryLayout,
     pub max_padded_trace_length: usize,
-}
-
-impl JoltSharedPreprocessing {
-    /// Blake2b-256 digest of the serialized preprocessing, used to bind
-    /// the program identity to the Fiat-Shamir transcript.
-    pub fn digest(&self) -> [u8; 32] {
-        use ark_serialize::CanonicalSerialize;
-        use blake2::{digest::consts::U32, Blake2b, Digest};
-        let mut buf = Vec::new();
-        self.serialize_compressed(&mut buf)
-            .expect("serialization cannot fail for in-memory buffer");
-        Blake2b::<U32>::digest(&buf).into()
-    }
 }
 
 impl CanonicalSerialize for JoltSharedPreprocessing {

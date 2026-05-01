@@ -1,4 +1,3 @@
-use std::borrow::Borrow;
 use std::marker::PhantomData;
 
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
@@ -6,15 +5,24 @@ use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use crate::{
     field::JoltField,
     poly::multilinear_polynomial::MultilinearPolynomial,
+    poly::opening_proof::BatchPolynomialSource,
     transcripts::Transcript,
     utils::{errors::ProofVerifyError, small_scalar::SmallScalar},
 };
 
-use super::commitment_scheme::CommitmentScheme;
+use super::commitment_scheme::{CommitmentScheme, PolynomialBatchSource};
 
 #[derive(Clone)]
 pub struct MockCommitScheme<F: JoltField> {
     _marker: PhantomData<F>,
+}
+
+impl<F: JoltField> Default for MockCommitScheme<F> {
+    fn default() -> Self {
+        Self {
+            _marker: PhantomData,
+        }
+    }
 }
 
 #[derive(Default, Debug, PartialEq, Clone, CanonicalDeserialize, CanonicalSerialize)]
@@ -32,56 +40,54 @@ where
     F: JoltField,
 {
     type Field = F;
+    type Config = ();
     type ProverSetup = ();
     type VerifierSetup = ();
     type Commitment = MockCommitment<F>;
     type Proof = MockProof<F>;
     type BatchedProof = MockProof<F>;
     type OpeningProofHint = ();
+    type BatchOpeningHint = ();
 
     fn setup_prover(_num_vars: usize) -> Self::ProverSetup {}
 
     fn setup_verifier(_setup: &Self::ProverSetup) -> Self::VerifierSetup {}
 
+    fn from_proof(_proof: &Self::BatchedProof) -> Self {
+        Self::default()
+    }
+
+    fn config(&self) -> &() {
+        &()
+    }
+
     fn commit(
+        &self,
         _poly: &MultilinearPolynomial<Self::Field>,
         _setup: &Self::ProverSetup,
     ) -> (Self::Commitment, Self::OpeningProofHint) {
         (MockCommitment::default(), ())
     }
 
-    fn batch_commit<P>(
-        polys: &[P],
+    fn batch_commit<S: PolynomialBatchSource<Self::Field>>(
+        &self,
+        source: &S,
         gens: &Self::ProverSetup,
-    ) -> Vec<(Self::Commitment, Self::OpeningProofHint)>
-    where
-        P: Borrow<MultilinearPolynomial<Self::Field>>,
-    {
-        polys
-            .iter()
-            .map(|poly| (Self::commit(poly.borrow(), gens).0, ()))
-            .collect()
-    }
-
-    fn combine_commitments<C: Borrow<Self::Commitment>>(
-        _commitments: &[C],
-        _coeffs: &[Self::Field],
-    ) -> Self::Commitment {
-        MockCommitment::default()
-    }
-
-    fn combine_hints(
-        _hints: Vec<Self::OpeningProofHint>,
-        _coeffs: &[Self::Field],
-    ) -> Self::OpeningProofHint {
+    ) -> (Vec<Self::Commitment>, Self::BatchOpeningHint) {
+        let commitments = (0..source.num_polys())
+            .map(|i| self.commit(source.get_poly(i).unwrap(), gens).0)
+            .collect();
+        (commitments, ())
     }
 
     fn prove<ProofTranscript: Transcript>(
+        &self,
         _setup: &Self::ProverSetup,
         _poly: &MultilinearPolynomial<Self::Field>,
         opening_point: &[<Self::Field as JoltField>::Challenge],
         _hint: Option<Self::OpeningProofHint>,
         _transcript: &mut ProofTranscript,
+        _commitment: &Self::Commitment,
     ) -> (Self::Proof, Option<Self::Field>) {
         (
             MockProof {
@@ -92,6 +98,7 @@ where
     }
 
     fn verify<ProofTranscript: Transcript>(
+        &self,
         proof: &Self::Proof,
         _setup: &Self::VerifierSetup,
         _transcript: &mut ProofTranscript,
@@ -101,6 +108,41 @@ where
     ) -> Result<(), ProofVerifyError> {
         assert_eq!(proof.opening_point, opening_point);
         Ok(())
+    }
+
+    fn batch_prove<ProofTranscript: Transcript, S: BatchPolynomialSource<Self::Field>>(
+        &self,
+        _setup: &Self::ProverSetup,
+        _poly_source: &S,
+        _batch_hint: Self::BatchOpeningHint,
+        _individual_hints: Vec<Self::OpeningProofHint>,
+        _commitments: &[&Self::Commitment],
+        opening_point: &[<Self::Field as JoltField>::Challenge],
+        _claims: &[Self::Field],
+        _coeffs: &[Self::Field],
+        _transcript: &mut ProofTranscript,
+    ) -> Self::BatchedProof {
+        MockProof {
+            opening_point: opening_point.to_owned(),
+        }
+    }
+
+    fn batch_verify<ProofTranscript: Transcript>(
+        &self,
+        proof: &Self::BatchedProof,
+        _setup: &Self::VerifierSetup,
+        _transcript: &mut ProofTranscript,
+        opening_point: &[<Self::Field as JoltField>::Challenge],
+        _commitments: &[&Self::Commitment],
+        _claims: &[Self::Field],
+        _coeffs: &[Self::Field],
+    ) -> Result<(), ProofVerifyError> {
+        assert_eq!(proof.opening_point, opening_point);
+        Ok(())
+    }
+
+    fn split_batch_hint(_batch_hint: &Self::BatchOpeningHint) -> Vec<Self::OpeningProofHint> {
+        vec![]
     }
 
     fn protocol_name() -> &'static [u8] {
@@ -114,10 +156,20 @@ where
 {
     type ChunkState = ();
 
-    fn process_chunk<T: SmallScalar>(_setup: &Self::ProverSetup, _chunk: &[T]) -> Self::ChunkState {
+    #[allow(non_snake_case)]
+    fn streaming_chunk_size(&self, _K: usize, _T: usize) -> Option<usize> {
+        None
+    }
+
+    fn process_chunk<T: SmallScalar>(
+        &self,
+        _setup: &Self::ProverSetup,
+        _chunk: &[T],
+    ) -> Self::ChunkState {
     }
 
     fn process_chunk_onehot(
+        &self,
         _setup: &Self::ProverSetup,
         _onehot_k: usize,
         _chunk: &[Option<usize>],
@@ -125,10 +177,13 @@ where
     }
 
     fn aggregate_chunks(
+        &self,
         _setup: &Self::ProverSetup,
         _onehot_k: Option<usize>,
         _tier1_commitments: &[Self::ChunkState],
     ) -> (Self::Commitment, Self::OpeningProofHint) {
         (MockCommitment::default(), ())
     }
+
+    fn streaming_batch_hint(_hints: Vec<Self::OpeningProofHint>) -> Self::BatchOpeningHint {}
 }

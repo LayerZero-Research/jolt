@@ -6,6 +6,7 @@
 //! necessarily of the same size, each opened at a different point) into a single opening.
 
 use crate::{
+    poly::matrix_layout::MatrixLayout,
     poly::rlc_polynomial::{RLCPolynomial, RLCStreamingData, TraceSource},
     zkvm::{claim_reductions::AdviceKind, config::OneHotParams},
 };
@@ -24,6 +25,65 @@ use crate::{
     transcripts::Transcript,
     zkvm::witness::{CommittedPolynomial, VirtualPolynomial},
 };
+
+/// Provides lazy access to polynomial data for batch opening proofs.
+/// Constructed by the Jolt prover from trace + preprocessing data.
+/// Each PCS calls methods on the source as needed:
+/// - Dory calls `build_joint_polynomial` to get a streaming RLC polynomial
+/// - Hachi ignores the source and uses ring coefficients from its opening proof hint
+pub trait BatchPolynomialSource<F: JoltField>: Send + Sync {
+    /// Construct the joint (RLC) polynomial: `sum_i coeffs[i] * poly_i`.
+    /// The returned polynomial may evaluate lazily, for example by streaming from trace data.
+    fn build_joint_polynomial(&self, coeffs: &[F]) -> MultilinearPolynomial<F>;
+
+    fn onehot_index(&self, _cycle_idx: usize, _poly_idx: usize) -> Option<u8> {
+        None
+    }
+
+    fn batch_onehot_indices(&self, cycle_idx: usize, poly_start: usize, buf: &mut [Option<u8>]) {
+        for (i, slot) in buf.iter_mut().enumerate() {
+            *slot = self.onehot_index(cycle_idx, poly_start + i);
+        }
+    }
+
+    fn num_cycles(&self) -> Option<usize> {
+        None
+    }
+
+    fn onehot_k(&self) -> Option<usize> {
+        None
+    }
+
+    fn num_polys(&self) -> Option<usize> {
+        None
+    }
+}
+
+/// Streams polynomial data from the execution trace for Dory batch opening.
+/// Wraps the existing `RLCPolynomial::new_streaming` path so that Dory's
+/// `batch_prove` avoids regenerating witness polynomials.
+pub struct StreamingBatchSource<F: JoltField> {
+    pub one_hot_params: OneHotParams,
+    pub trace_source: TraceSource,
+    pub streaming_data: Arc<RLCStreamingData>,
+    pub advice_polys: HashMap<CommittedPolynomial, MultilinearPolynomial<F>>,
+    pub poly_ids: Vec<CommittedPolynomial>,
+    pub layout: MatrixLayout,
+}
+
+impl<F: JoltField> BatchPolynomialSource<F> for StreamingBatchSource<F> {
+    fn build_joint_polynomial(&self, coeffs: &[F]) -> MultilinearPolynomial<F> {
+        MultilinearPolynomial::RLC(RLCPolynomial::new_streaming(
+            self.one_hot_params.clone(),
+            Arc::clone(&self.streaming_data),
+            self.trace_source.clone(),
+            self.poly_ids.clone(),
+            coeffs,
+            self.advice_polys.clone(),
+            self.layout,
+        ))
+    }
+}
 
 pub type Endianness = bool;
 pub const BIG_ENDIAN: Endianness = false;
@@ -353,6 +413,7 @@ impl<F: JoltField> DoryOpeningState<F> {
             poly_ids.clone(),
             &coeffs,
             advice_polys,
+            crate::poly::commitment::dory::DoryGlobals::matrix_layout(),
         ));
 
         let hints: Vec<PCS::OpeningProofHint> = rlc_map

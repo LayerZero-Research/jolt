@@ -309,6 +309,136 @@ impl JoltCurve for Bn254Curve {
     }
 }
 
+/// Phantom curve for `JoltFp128` — satisfies `JoltCurve<F = JoltFp128>` at the type level.
+/// Hachi PCS does not use pairing-based ZK, so all group operations panic if called.
+pub mod fp128_curve {
+    use super::*;
+    use crate::field::fp128::JoltFp128;
+    use ark_serialize::{Compress, SerializationError, Valid, Validate};
+
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub struct Fp128PhantomG;
+
+    impl CanonicalSerialize for Fp128PhantomG {
+        fn serialize_with_mode<W: std::io::Write>(
+            &self,
+            _: W,
+            _: Compress,
+        ) -> Result<(), SerializationError> {
+            Ok(())
+        }
+        fn serialized_size(&self, _: Compress) -> usize {
+            0
+        }
+    }
+    impl Valid for Fp128PhantomG {
+        fn check(&self) -> Result<(), SerializationError> {
+            Ok(())
+        }
+    }
+    impl CanonicalDeserialize for Fp128PhantomG {
+        fn deserialize_with_mode<R: std::io::Read>(
+            _: R,
+            _: Compress,
+            _: Validate,
+        ) -> Result<Self, SerializationError> {
+            Ok(Self)
+        }
+    }
+
+    impl Add for Fp128PhantomG {
+        type Output = Self;
+        fn add(self, _: Self) -> Self {
+            Self
+        }
+    }
+    impl<'a> Add<&'a Fp128PhantomG> for Fp128PhantomG {
+        type Output = Self;
+        fn add(self, _: &'a Self) -> Self {
+            Self
+        }
+    }
+    impl Sub for Fp128PhantomG {
+        type Output = Self;
+        fn sub(self, _: Self) -> Self {
+            Self
+        }
+    }
+    impl<'a> Sub<&'a Fp128PhantomG> for Fp128PhantomG {
+        type Output = Self;
+        fn sub(self, _: &'a Self) -> Self {
+            Self
+        }
+    }
+    impl Neg for Fp128PhantomG {
+        type Output = Self;
+        fn neg(self) -> Self {
+            Self
+        }
+    }
+    impl AddAssign for Fp128PhantomG {
+        fn add_assign(&mut self, _: Self) {}
+    }
+    impl SubAssign for Fp128PhantomG {
+        fn sub_assign(&mut self, _: Self) {}
+    }
+
+    impl JoltGroupElement for Fp128PhantomG {
+        type Scalar = JoltFp128;
+        fn zero() -> Self {
+            Self
+        }
+        fn is_zero(&self) -> bool {
+            true
+        }
+        fn double(&self) -> Self {
+            Self
+        }
+        fn scalar_mul(&self, _: &JoltFp128) -> Self {
+            Self
+        }
+    }
+
+    #[derive(Clone, Debug, Default)]
+    pub struct Fp128Curve;
+
+    impl JoltCurve for Fp128Curve {
+        type F = JoltFp128;
+        type G1 = Fp128PhantomG;
+        type G2 = Fp128PhantomG;
+        type G1Affine = Fp128PhantomG;
+        type GT = Fp128PhantomG;
+
+        fn g1_generator() -> Self::G1 {
+            unimplemented!("Fp128Curve is a type-level placeholder")
+        }
+        fn g2_generator() -> Self::G2 {
+            unimplemented!("Fp128Curve is a type-level placeholder")
+        }
+        fn g1_to_affine(_: &Self::G1) -> Self::G1Affine {
+            Fp128PhantomG
+        }
+        fn pairing(_: &Self::G1, _: &Self::G2) -> Self::GT {
+            unimplemented!("Fp128Curve is a type-level placeholder")
+        }
+        fn multi_pairing(_: &[Self::G1], _: &[Self::G2]) -> Self::GT {
+            unimplemented!("Fp128Curve is a type-level placeholder")
+        }
+        fn g1_msm(_: &[Self::G1], _: &[Self::F]) -> Self::G1 {
+            unimplemented!("Fp128Curve is a type-level placeholder")
+        }
+        fn g1_affine_msm(_: &[Self::G1Affine], _: &[Self::F]) -> Self::G1 {
+            unimplemented!("Fp128Curve is a type-level placeholder")
+        }
+        fn g2_msm(_: &[Self::G2], _: &[Self::F]) -> Self::G2 {
+            unimplemented!("Fp128Curve is a type-level placeholder")
+        }
+        fn random_g1<R: rand_core::RngCore>(_: &mut R) -> Self::G1 {
+            unimplemented!("Fp128Curve is a type-level placeholder")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
