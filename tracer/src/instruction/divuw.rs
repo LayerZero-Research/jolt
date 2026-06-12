@@ -54,13 +54,7 @@ impl RISCVTrace for DIVUW {
             Xlen::Bit32 => {
                 panic!("DIVUW is invalid in 32b mode");
             }
-            Xlen::Bit64 => {
-                if y == 0 {
-                    u32::MAX as u64 // 32-bit operation: quotient is u32::MAX
-                } else {
-                    (x / y) as u64
-                }
-            }
+            Xlen::Bit64 => x.checked_div(y).map_or(u32::MAX as u64, u64::from),
         };
 
         let mut inline_sequence = self.inline_sequence(&cpu.vr_allocator, cpu.xlen);
