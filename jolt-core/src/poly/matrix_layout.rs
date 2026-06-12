@@ -1,7 +1,7 @@
 /// PCS-agnostic matrix geometry for laying out 1D polynomial coefficients
 /// into a 2D matrix (rows × columns).
 ///
-/// For Dory, this is derived from `DoryGlobals`. For Hachi, it will be
+/// For Dory, this is derived from `DoryGlobals`. For Akita, it will be
 /// derived from ring packing parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MatrixLayout {

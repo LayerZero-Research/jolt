@@ -1,5 +1,9 @@
 # Hachi PCS Integration into Jolt
 
+> Historical note: this document describes the original Hachi integration.
+> The implementation has since moved to Akita crates on `lz/integrate-akita`,
+> while some local module/type names remain `Hachi` until a mechanical rename.
+
 Tracking document for replacing Dory (pairing-based) with Hachi (lattice-based) PCS in Jolt.
 
 Branch: `lz/integrate-hachi`

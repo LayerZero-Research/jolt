@@ -266,7 +266,7 @@ impl PackedBitLayout {
                 compute_num_digits(128, log_basis),
                 0,
             )
-            .expect("invalid packed Hachi layout")
+            .expect("invalid packed Akita layout")
     }
 
     /// Precomputed constants for the singleton locate fast path.

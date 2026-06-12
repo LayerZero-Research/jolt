@@ -60,7 +60,7 @@ enum Format {
 
 fn main() {
     // D=512 CyclotomicRing elements are ~8KB each; deep call stacks in
-    // hachi-pcs overflow the default 8MB rayon worker thread stack.
+    // Akita PCS routines overflow the default 8MB rayon worker thread stack.
     rayon::ThreadPoolBuilder::new()
         .stack_size(64 * 1024 * 1024)
         .build_global()

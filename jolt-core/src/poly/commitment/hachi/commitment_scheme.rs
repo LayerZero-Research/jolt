@@ -347,11 +347,11 @@ fn choose_packed_layout_for_dims<
 ) -> (PackedBitLayout, LevelParams) {
     assert!(
         num_cycles.is_power_of_two(),
-        "packed Hachi layout expects num_cycles to be a power of two (got {num_cycles})"
+        "packed Akita layout expects num_cycles to be a power of two (got {num_cycles})"
     );
     assert!(
         onehot_k.is_power_of_two(),
-        "packed Hachi layout expects onehot_k to be a power of two (got {onehot_k})"
+        "packed Akita layout expects onehot_k to be a power of two (got {onehot_k})"
     );
     let log_k = onehot_k.trailing_zeros() as usize;
     let log_t = num_cycles.trailing_zeros() as usize;
@@ -374,7 +374,7 @@ fn hachi_commit_dense<
     >>::commit(
         setup, &CpuBackend, &prepared, from_ref(&dense_poly)
     )
-    .expect("Hachi commit failed");
+    .expect("Akita commit failed");
     let ring_coeffs = take(&mut dense_poly.coeffs);
     (
         commitment,
@@ -404,7 +404,7 @@ fn hachi_commit_onehot<
     >>::commit(
         setup, &CpuBackend, &prepared, from_ref(&onehot_poly)
     )
-    .expect("Hachi commit_onehot failed");
+    .expect("Akita commit_onehot failed");
     (
         commitment,
         JoltHachiOpeningHint {
@@ -446,7 +446,7 @@ where
         &prepared,
         from_ref(&packed_poly),
     )
-    .expect("Hachi packed poly commit failed")
+    .expect("Akita packed poly commit failed")
 }
 
 impl<const D: usize, Cfg> CommitmentScheme for JoltHachiCommitmentScheme<D, Cfg>
@@ -488,7 +488,7 @@ where
         let max_num_vars = max_log_t + max_log_k + log_packed;
         if var_os("HACHI_SETUP_DIAGNOSTICS").is_some() {
             eprintln!(
-                "[jolt hachi setup] max_log_t={max_log_t}, max_log_k={max_log_k}, log_packed={log_packed}, max_num_vars={max_num_vars}"
+                "[jolt akita setup] max_log_t={max_log_t}, max_log_k={max_log_k}, log_packed={log_packed}, max_num_vars={max_num_vars}"
             );
         }
         ArkBridge(
@@ -861,7 +861,7 @@ where
     }
 
     fn protocol_name() -> &'static [u8] {
-        b"Hachi"
+        b"Akita"
     }
 
     fn packed_main_commitment_arity() -> Option<usize> {
@@ -919,7 +919,7 @@ where
         _setup: &Self::ProverSetup,
         _chunk: &[T],
     ) -> Self::ChunkState {
-        unreachable!("Hachi uses batch_commit via PolynomialBatchSource, not streaming")
+        unreachable!("Akita uses batch_commit via PolynomialBatchSource, not streaming")
     }
 
     fn process_chunk_onehot(
@@ -928,7 +928,7 @@ where
         _onehot_k: usize,
         _chunk: &[Option<usize>],
     ) -> Self::ChunkState {
-        unreachable!("Hachi uses batch_commit via PolynomialBatchSource, not streaming")
+        unreachable!("Akita uses batch_commit via PolynomialBatchSource, not streaming")
     }
 
     fn aggregate_chunks(
@@ -937,7 +937,7 @@ where
         _onehot_k: Option<usize>,
         _tier1_commitments: &[Self::ChunkState],
     ) -> (Self::Commitment, Self::OpeningProofHint) {
-        unreachable!("Hachi uses batch_commit via PolynomialBatchSource, not streaming")
+        unreachable!("Akita uses batch_commit via PolynomialBatchSource, not streaming")
     }
 
     fn aggregate_streaming_batch(
@@ -950,7 +950,7 @@ where
     }
 
     fn streaming_batch_hint(_hints: Vec<Self::OpeningProofHint>) -> Self::BatchOpeningHint {
-        panic!("Hachi uses batch_commit via PolynomialBatchSource, not streaming")
+        panic!("Akita uses batch_commit via PolynomialBatchSource, not streaming")
     }
 }
 
@@ -1008,7 +1008,7 @@ pub(super) fn poly_to_ring_coeffs<const D: usize>(
             }
         }),
         MultilinearPolynomial::OneHot(_) | MultilinearPolynomial::RLC(_) => {
-            panic!("OneHot and RLC polynomials cannot be materialized for Hachi commit")
+            panic!("OneHot and RLC polynomials cannot be materialized for Akita commit")
         }
     }
 }

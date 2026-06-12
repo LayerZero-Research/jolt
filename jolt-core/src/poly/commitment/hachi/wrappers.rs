@@ -39,6 +39,8 @@ pub type HachiVerifierSetup<F> = AkitaVerifierSetup<F>;
 pub type HachiProverSetup<F, const D: usize> = AkitaProverSetup<F, D>;
 
 /// Bridge adapter: wraps a Jolt transcript pointer and implements Akita's Transcript trait.
+/// The type name is legacy and will be mechanically renamed with the rest of
+/// the adapter.
 ///
 /// Uses a raw pointer internally because Akita's `Transcript` trait requires `'static`,
 /// but we need to borrow a Jolt transcript that has a limited lifetime. The adapter is

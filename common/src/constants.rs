@@ -12,8 +12,8 @@ pub const ALIGNMENT_FACTOR_BYTECODE: usize = 2;
 /// This value was empirically determined.
 pub const ONEHOT_CHUNK_THRESHOLD_LOG_T: usize = 25;
 
-/// Hachi-specific threshold for the one-hot chunking switch.
-/// Smaller Hachi traces (`log_t < 21`) use `log_k_chunk = 4`; larger traces use
+/// Akita-specific threshold for the one-hot chunking switch.
+/// Smaller Akita traces (`log_t < 21`) use `log_k_chunk = 4`; larger traces use
 /// `log_k_chunk = 8`.
 pub const HACHI_ONEHOT_CHUNK_THRESHOLD_LOG_T: usize = 21;
 

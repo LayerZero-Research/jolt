@@ -92,12 +92,12 @@ pub struct RaIndices {
     /// RAM RA chunk indices (None for non-memory cycles)
     pub ram: [Option<u8>; MAX_RAM_D],
     /// Register increment one-hot chunk indices (chunks 1..d_inc-1 of unsigned_rd_inc).
-    /// Populated only when `onehot_inc` is true (Hachi path).
+    /// Populated only when `onehot_inc` is true (Akita path).
     pub rd_inc: [u8; MAX_INC_D],
     /// MSB (bit 64) of unsigned_rd_inc. Always 0 or 1.
     pub rd_inc_msb: u8,
     /// RAM increment one-hot chunk indices (chunks 1..d_inc-1 of unsigned_ram_inc).
-    /// Populated only when `onehot_inc` is true (Hachi path).
+    /// Populated only when `onehot_inc` is true (Akita path).
     pub ram_inc: [u8; MAX_INC_D],
     /// MSB (bit 64) of unsigned_ram_inc. Always 0 or 1.
     pub ram_inc_msb: u8,

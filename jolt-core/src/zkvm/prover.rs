@@ -2329,7 +2329,7 @@ impl<
             for poly in &main_polys {
                 let claim = claim_map
                     .remove(poly)
-                    .expect("missing main polynomial claim for packed Hachi opening");
+                    .expect("missing main polynomial claim for packed Akita opening");
                 sorted_claims.push(claim);
             }
 
@@ -2345,7 +2345,7 @@ impl<
             }
             assert!(
                 claim_map.is_empty(),
-                "unexpected leftover claims in packed Hachi opening"
+                "unexpected leftover claims in packed Akita opening"
             );
 
             let mut individual_hints = Vec::with_capacity(individual_ids.len());
@@ -2353,7 +2353,7 @@ impl<
             for id in &individual_ids {
                 let hint = remaining_advice_hints
                     .remove(id)
-                    .expect("missing advice hint for packed Hachi opening");
+                    .expect("missing advice hint for packed Akita opening");
                 individual_hints.push(hint);
             }
 
@@ -2362,7 +2362,7 @@ impl<
                 .remove(
                     main_polys
                         .first()
-                        .expect("missing main polynomial ids for packed Hachi opening"),
+                        .expect("missing main polynomial ids for packed Akita opening"),
                 )
                 .expect("missing packed main commitment");
             let mut commitment_refs = Vec::with_capacity(1 + individual_ids.len());
@@ -2371,7 +2371,7 @@ impl<
                 commitment_refs.push(
                     commit_map
                         .remove(id)
-                        .expect("missing advice commitment for packed Hachi opening"),
+                        .expect("missing advice commitment for packed Akita opening"),
                 );
             }
             let commitment_ref_slice: Vec<&PCS::Commitment> = commitment_refs.iter().collect();
@@ -2450,7 +2450,8 @@ impl<
         let (coeffs, sorted_claims): (Vec<F>, Vec<F>) = coeffs_and_claims.into_iter().unzip();
 
         // Reconstruct per-polynomial hints from batch_hint (for Dory: clones
-        // per-poly hints; for Hachi: returns empty Vec) and merge with advice hints.
+        // per-poly hints; for the packed Akita path: returns empty Vec) and
+        // merge with advice hints.
         let per_poly_hints = PCS::split_batch_hint(&batch_hint);
         let mut all_hints: HashMap<CommittedPolynomial, PCS::OpeningProofHint> =
             main_polys.into_iter().zip(per_poly_hints).collect();

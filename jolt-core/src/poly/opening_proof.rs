@@ -30,7 +30,7 @@ use crate::{
 /// Constructed by the Jolt prover from trace + preprocessing data.
 /// Each PCS calls methods on the source as needed:
 /// - Dory calls `build_joint_polynomial` to get a streaming RLC polynomial
-/// - Hachi ignores the source and uses ring coefficients from its opening proof hint
+/// - Akita ignores the source and uses ring coefficients from its opening proof hint
 pub trait BatchPolynomialSource<F: JoltField>: Send + Sync {
     /// Construct the joint (RLC) polynomial: `sum_i coeffs[i] * poly_i`.
     /// The returned polynomial may evaluate lazily, for example by streaming from trace data.

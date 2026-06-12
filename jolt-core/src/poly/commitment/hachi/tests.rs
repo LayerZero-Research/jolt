@@ -1490,7 +1490,7 @@ fn hachi_batch_roundtrip_with_packed_layout() {
     assert_eq!(
         commitments.len(),
         1,
-        "packed Hachi should produce one commitment"
+        "packed Akita should produce one commitment"
     );
 
     let opening_point: Vec<JoltFp128> = (0..(log_k + num_cycles.trailing_zeros() as usize))
@@ -1530,7 +1530,7 @@ fn hachi_batch_roundtrip_with_packed_layout() {
         &claims,
         &[],
     )
-    .expect("packed Hachi batch verify should succeed");
+    .expect("packed Akita batch verify should succeed");
 }
 
 #[test]
@@ -1582,7 +1582,7 @@ fn hachi_batch_roundtrip_with_packed_layout_k16() {
     assert_eq!(
         commitments.len(),
         1,
-        "packed Hachi should produce one commitment for K=16"
+        "packed Akita should produce one commitment for K=16"
     );
 
     let opening_point: Vec<JoltFp128> = (0..(log_k + num_cycles.trailing_zeros() as usize))
@@ -1622,7 +1622,7 @@ fn hachi_batch_roundtrip_with_packed_layout_k16() {
         &claims,
         &[],
     )
-    .expect("packed Hachi batch verify should succeed for K=16");
+    .expect("packed Akita batch verify should succeed for K=16");
 }
 
 #[test]
