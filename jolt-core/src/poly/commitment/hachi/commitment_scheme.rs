@@ -1,8 +1,16 @@
-use std::{env::var_os, marker::PhantomData, mem::take, slice::from_raw_parts};
+use std::{
+    env::var_os,
+    marker::PhantomData,
+    mem::take,
+    slice::{from_raw_parts, from_ref},
+};
 
 use super::packed_layout::{choose_packed_bit_layout, PackedBitLayout};
 use super::packed_poly::{build_packed_poly, JoltPackedPoly};
-use super::wrappers::{jolt_to_hachi, ArkBridge, Fp128, JoltToHachiTranscript};
+use super::wrappers::{
+    jolt_to_hachi, ArkBridge, Fp128, HachiProof, HachiProverSetup, HachiVerifierSetup,
+    JoltToHachiTranscript,
+};
 use crate::curve::JoltCurve;
 use crate::field::fp128::JoltFp128;
 use crate::field::JoltField;
@@ -15,57 +23,97 @@ use crate::poly::opening_proof::BatchPolynomialSource;
 use crate::transcripts::Transcript;
 use crate::utils::errors::ProofVerifyError;
 use crate::utils::small_scalar::SmallScalar;
+use akita_algebra::CyclotomicRing;
+use akita_config::proof_optimized::fp128::D32OneHot;
+use akita_config::CommitmentConfig;
+use akita_field::CanonicalField;
+use akita_pcs::AkitaCommitmentScheme as HachiCommitmentScheme;
+use akita_prover::{
+    AkitaPolyOps, CommitmentProver as HachiCommitmentSchemeTrait, CommittedPolynomials,
+    ComputeBackendSetup, CpuBackend, DensePoly, OneHotIndex, OneHotPoly,
+};
+use akita_types::BasisMode;
+use akita_types::{
+    sis::{num_digits_fold, num_digits_for_bound, FoldChallengeNorms},
+    AkitaCommitmentHint as HachiBatchedCommitmentHint, ClaimIncidenceSummary,
+    CommitmentVerifier as HachiCommitmentVerifierTrait, CommittedOpenings, LevelParams,
+    RingCommitment, SetupContributionMode,
+};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use common::constants::HACHI_ONEHOT_CHUNK_THRESHOLD_LOG_T;
-use hachi_pcs::algebra::ring::CyclotomicRing;
-use hachi_pcs::protocol::commitment::presets::fp128::D32OneHot;
-use hachi_pcs::protocol::commitment::{
-    compute_num_digits, compute_num_digits_fold, CommitmentConfig, HachiScheduleInputs,
-    RingCommitment,
-};
-use hachi_pcs::protocol::opening_point::BasisMode;
-use hachi_pcs::protocol::params::LevelParams;
-use hachi_pcs::protocol::proof::{HachiBatchedCommitmentHint, HachiProof};
-use hachi_pcs::protocol::{HachiCommitmentScheme, HachiProverSetup, HachiVerifierSetup};
-use hachi_pcs::CommitmentScheme as HachiCommitmentSchemeTrait;
-use hachi_pcs::{CanonicalField, DensePoly, FieldCore, FromSmallInt, OneHotIndex, OneHotPoly};
 use rayon::prelude::*;
 
-/// Onehot-friendly Hachi preset. Adaptive `D=32`, `LOG_COMMIT_BOUND=1`; the
-/// per-level decomposition basis is chosen by the preset's policy via
-/// [`CommitmentConfig::log_basis_at_level`].
+const FIELD_BITS: u32 = 128;
+
+/// Onehot-friendly Akita preset. Adaptive `D=32`; the per-level decomposition
+/// basis is chosen by the preset's runtime schedule.
 pub type Fp128OneHot32Config = D32OneHot;
 
-fn level0_schedule_inputs(max_num_vars: usize) -> HachiScheduleInputs {
-    let current_w_len = 1usize.checked_shl(max_num_vars as u32).unwrap_or(0);
-    HachiScheduleInputs {
-        max_num_vars,
-        level: 0,
-        current_w_len,
-    }
+fn root_level_params<
+    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
+>(
+    max_num_vars: usize,
+    num_polys: usize,
+) -> LevelParams {
+    let incidence = ClaimIncidenceSummary::same_point(max_num_vars, num_polys)
+        .expect("root level incidence should be valid");
+    Cfg::get_params_for_batched_commitment(&incidence)
+        .expect("Akita runtime schedule should produce root commit params")
 }
 
 /// Level-0 `log_basis` chosen by the preset's policy for the given envelope.
-fn level0_log_basis<Cfg: CommitmentConfig<Field = Fp128>>(max_num_vars: usize) -> u32 {
-    Cfg::log_basis_at_level(level0_schedule_inputs(max_num_vars))
+fn level0_log_basis<
+    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
+>(
+    max_num_vars: usize,
+) -> u32 {
+    root_level_params::<Cfg>(max_num_vars, 1).log_basis
 }
 
-fn level0_level_params<Cfg: CommitmentConfig<Field = Fp128>>(
+fn level0_level_params<
+    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
+>(
+    max_num_vars: usize,
+    _log_basis: u32,
+) -> LevelParams {
+    root_level_params::<Cfg>(max_num_vars, 1)
+}
+
+fn compute_num_digits(log_bound: u32, log_basis: u32) -> usize {
+    num_digits_for_bound(log_bound, FIELD_BITS, log_basis)
+}
+
+fn compute_num_digits_fold_for_params(
+    params: &LevelParams,
+    r_vars: usize,
+    num_claims: usize,
+) -> usize {
+    num_digits_fold(
+        r_vars,
+        num_claims,
+        FIELD_BITS,
+        params.log_basis,
+        FoldChallengeNorms {
+            infinity_norm: params.challenge_infinity_norm() as u128,
+            l1_norm: params.challenge_l1_mass() as u128,
+        },
+        params.fold_witness_norms(),
+    )
+    .expect("Akita fold digit count should be valid")
+}
+
+fn level0_layout_params<
+    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
+>(
     max_num_vars: usize,
     log_basis: u32,
 ) -> LevelParams {
-    Cfg::level_params_with_log_basis(level0_schedule_inputs(max_num_vars), log_basis)
+    level0_level_params::<Cfg>(max_num_vars, log_basis)
 }
 
-fn level0_layout_params<Cfg: CommitmentConfig<Field = Fp128>>(
-    max_num_vars: usize,
-    log_basis: u32,
-) -> (usize, usize) {
-    let params = level0_level_params::<Cfg>(max_num_vars, log_basis);
-    (params.a_key.row_len(), params.challenge_l1_mass())
-}
-
-fn optimal_advice_m_r_split<Cfg: CommitmentConfig<Field = Fp128>>(
+fn optimal_advice_m_r_split<
+    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
+>(
     reduced_vars: usize,
     log_basis: u32,
 ) -> (usize, usize) {
@@ -78,7 +126,8 @@ fn optimal_advice_m_r_split<Cfg: CommitmentConfig<Field = Fp128>>(
     let max_num_vars = reduced_vars
         .checked_add(alpha)
         .expect("advice layout variable count overflow");
-    let (n_a, challenge_l1_mass) = level0_layout_params::<Cfg>(max_num_vars, log_basis);
+    let params = level0_layout_params::<Cfg>(max_num_vars, log_basis);
+    let n_a = params.a_key.row_len();
     let delta_open = compute_num_digits(128, log_basis) as u64;
     let delta_commit = compute_num_digits(64, log_basis) as u64;
     let c1 = delta_open + n_a as u64 * delta_commit;
@@ -87,7 +136,7 @@ fn optimal_advice_m_r_split<Cfg: CommitmentConfig<Field = Fp128>>(
     let mut best_cost = u64::MAX;
     for r in 1..reduced_vars {
         let m = reduced_vars - r;
-        let delta_fold = compute_num_digits_fold(r, challenge_l1_mass, log_basis) as u64;
+        let delta_fold = compute_num_digits_fold_for_params(&params, r, 1) as u64;
         let cost = c1 * (1u64 << r) + delta_commit * delta_fold * (1u64 << m);
         if cost < best_cost {
             best_cost = cost;
@@ -99,7 +148,10 @@ fn optimal_advice_m_r_split<Cfg: CommitmentConfig<Field = Fp128>>(
 }
 
 #[derive(Clone, Default)]
-pub struct JoltHachiCommitmentScheme<const D: usize, Cfg: CommitmentConfig<Field = Fp128>> {
+pub struct JoltHachiCommitmentScheme<
+    const D: usize,
+    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
+> {
     _cfg: PhantomData<Cfg>,
 }
 
@@ -134,6 +186,77 @@ pub enum HachiChunkState<const D: usize> {
     },
 }
 
+fn prepare_cpu<const D: usize>(
+    setup: &HachiProverSetup<Fp128, D>,
+) -> <CpuBackend as ComputeBackendSetup<Fp128>>::PreparedSetup<D> {
+    CpuBackend
+        .prepare_setup(setup)
+        .expect("Akita CPU backend setup preparation failed")
+}
+
+fn hachi_prove_one<
+    const D: usize,
+    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
+    P: AkitaPolyOps<Fp128, D>,
+    ProofTranscript: akita_transcript::Transcript<Fp128>,
+>(
+    setup: &HachiProverSetup<Fp128, D>,
+    poly: &P,
+    opening_point: &[Fp128],
+    hint: HachiBatchedCommitmentHint<Fp128, D>,
+    transcript: &mut ProofTranscript,
+    commitment: &RingCommitment<Fp128, D>,
+) -> HachiProof<Fp128> {
+    let prepared = prepare_cpu(setup);
+    <HachiCommitmentScheme<D, Cfg> as HachiCommitmentSchemeTrait<Fp128, D>>::batched_prove(
+        setup,
+        &CpuBackend,
+        &prepared,
+        vec![(
+            opening_point,
+            CommittedPolynomials {
+                polynomials: from_ref(poly),
+                commitment,
+                hint,
+            },
+        )],
+        transcript,
+        BasisMode::Lagrange,
+        SetupContributionMode::Direct,
+    )
+    .expect("Akita batched prove failed")
+}
+
+fn hachi_verify_one<
+    const D: usize,
+    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
+    ProofTranscript: akita_transcript::Transcript<Fp128>,
+>(
+    proof: &HachiProof<Fp128>,
+    setup: &HachiVerifierSetup<Fp128>,
+    transcript: &mut ProofTranscript,
+    opening_point: &[Fp128],
+    opening: &Fp128,
+    commitment: &RingCommitment<Fp128, D>,
+) -> Result<(), ProofVerifyError> {
+    let openings = [*opening];
+    <HachiCommitmentScheme<D, Cfg> as HachiCommitmentVerifierTrait<Fp128, D>>::batched_verify(
+        proof,
+        setup,
+        transcript,
+        vec![(
+            opening_point,
+            CommittedOpenings {
+                openings: &openings,
+                commitment,
+            },
+        )],
+        BasisMode::Lagrange,
+        SetupContributionMode::Direct,
+    )
+    .map_err(|_| ProofVerifyError::InternalError)
+}
+
 fn to_hachi_opening_point<const D: usize>(point: &[JoltFp128]) -> Vec<Fp128> {
     point.iter().rev().map(jolt_to_hachi).collect()
 }
@@ -155,7 +278,9 @@ fn to_hachi_packed_opening_point<const D: usize>(
     packed_layout.reorder_packed_point(&reversed[..log_t], &reversed[log_t..], &rho_le)
 }
 
-fn advice_commit_layout<Cfg: CommitmentConfig<Field = Fp128>>(
+fn advice_commit_layout<
+    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
+>(
     m_vars: usize,
     r_vars: usize,
     log_basis: u32,
@@ -166,14 +291,12 @@ fn advice_commit_layout<Cfg: CommitmentConfig<Field = Fp128>>(
         .and_then(|vars| vars.checked_add(alpha))
         .expect("advice layout variable count overflow");
     let params = level0_level_params::<Cfg>(max_num_vars, log_basis);
-    let challenge_l1_mass = params.challenge_l1_mass();
     params
         .with_decomp(
             m_vars,
             r_vars,
             compute_num_digits(64, log_basis),
             compute_num_digits(128, log_basis),
-            compute_num_digits_fold(r_vars, challenge_l1_mass, log_basis),
             0,
         )
         .unwrap()
@@ -181,7 +304,10 @@ fn advice_commit_layout<Cfg: CommitmentConfig<Field = Fp128>>(
 
 /// Compute the advice commit layout using the polynomial's own optimal m/r split
 /// rather than inheriting from the setup envelope.
-fn compute_advice_layout<const D: usize, Cfg: CommitmentConfig<Field = Fp128>>(
+fn compute_advice_layout<
+    const D: usize,
+    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
+>(
     poly_num_vars: usize,
 ) -> LevelParams {
     let alpha = D.trailing_zeros() as usize;
@@ -197,7 +323,10 @@ fn compute_advice_layout<const D: usize, Cfg: CommitmentConfig<Field = Fp128>>(
     advice_commit_layout::<Cfg>(m_vars, r_vars, log_basis)
 }
 
-fn choose_packed_layout_for_shape<const D: usize, Cfg: CommitmentConfig<Field = Fp128>>(
+fn choose_packed_layout_for_shape<
+    const D: usize,
+    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
+>(
     log_k: usize,
     log_t: usize,
     log_packed: usize,
@@ -208,7 +337,10 @@ fn choose_packed_layout_for_shape<const D: usize, Cfg: CommitmentConfig<Field = 
     (packed_layout, hachi_layout)
 }
 
-fn choose_packed_layout_for_dims<const D: usize, Cfg: CommitmentConfig<Field = Fp128>>(
+fn choose_packed_layout_for_dims<
+    const D: usize,
+    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
+>(
     num_cycles: usize,
     num_polys: usize,
     onehot_k: usize,
@@ -227,15 +359,21 @@ fn choose_packed_layout_for_dims<const D: usize, Cfg: CommitmentConfig<Field = F
     choose_packed_layout_for_shape::<D, Cfg>(log_k, log_t, log_packed)
 }
 
-fn hachi_commit_dense<const D: usize, Cfg: CommitmentConfig<Field = Fp128>>(
+fn hachi_commit_dense<
+    const D: usize,
+    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
+>(
     ring_coeffs: Vec<CyclotomicRing<Fp128, D>>,
     setup: &HachiProverSetup<Fp128, D>,
 ) -> (RingCommitment<Fp128, D>, JoltHachiOpeningHint<D>) {
     let mut dense_poly = DensePoly::from_ring_coeffs(ring_coeffs);
+    let prepared = prepare_cpu(setup);
     let (commitment, hachi_hint) = <HachiCommitmentScheme<D, Cfg> as HachiCommitmentSchemeTrait<
         Fp128,
         D,
-    >>::commit(std::slice::from_ref(&dense_poly), setup)
+    >>::commit(
+        setup, &CpuBackend, &prepared, from_ref(&dense_poly)
+    )
     .expect("Hachi commit failed");
     let ring_coeffs = take(&mut dense_poly.coeffs);
     (
@@ -247,19 +385,25 @@ fn hachi_commit_dense<const D: usize, Cfg: CommitmentConfig<Field = Fp128>>(
     )
 }
 
-fn hachi_commit_onehot<const D: usize, Cfg: CommitmentConfig<Field = Fp128>, I: OneHotIndex>(
+fn hachi_commit_onehot<
+    const D: usize,
+    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
+    I: OneHotIndex,
+>(
     onehot_k: usize,
     indices: Vec<Option<I>>,
     setup: &HachiProverSetup<Fp128, D>,
-    layout: &LevelParams,
+    _layout: &LevelParams,
 ) -> (RingCommitment<Fp128, D>, JoltHachiOpeningHint<D>) {
     let onehot_poly =
-        OneHotPoly::<Fp128, D, I>::new(onehot_k, indices, layout.r_vars, layout.m_vars)
-            .expect("OneHotPoly construction failed");
+        OneHotPoly::<Fp128, D, I>::new(onehot_k, indices).expect("OneHotPoly construction failed");
+    let prepared = prepare_cpu(setup);
     let (commitment, hachi_hint) = <HachiCommitmentScheme<D, Cfg> as HachiCommitmentSchemeTrait<
         Fp128,
         D,
-    >>::commit(std::slice::from_ref(&onehot_poly), setup)
+    >>::commit(
+        setup, &CpuBackend, &prepared, from_ref(&onehot_poly)
+    )
     .expect("Hachi commit_onehot failed");
     (
         commitment,
@@ -283,7 +427,7 @@ fn fused_build_and_commit<const D: usize, Cfg, F, B>(
     HachiBatchedCommitmentHint<Fp128, D>,
 )
 where
-    Cfg: CommitmentConfig<Field = Fp128>,
+    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
     F: Fn(usize, usize) -> Option<u8> + Clone + Send + Sync,
     B: Fn(usize, usize, &mut [Option<u8>]) + Clone + Send + Sync,
 {
@@ -294,17 +438,20 @@ where
         num_cycles,
         num_polys,
     };
+    let prepared = prepare_cpu(setup);
 
     <HachiCommitmentScheme<D, Cfg> as HachiCommitmentSchemeTrait<Fp128, D>>::commit(
-        std::slice::from_ref(&packed_poly),
         setup,
+        &CpuBackend,
+        &prepared,
+        from_ref(&packed_poly),
     )
     .expect("Hachi packed poly commit failed")
 }
 
 impl<const D: usize, Cfg> CommitmentScheme for JoltHachiCommitmentScheme<D, Cfg>
 where
-    Cfg: CommitmentConfig<Field = Fp128> + Default,
+    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128> + Default,
 {
     type Field = JoltFp128;
     type Config = ();
@@ -322,7 +469,8 @@ where
                 max_num_vars,
                 1,
                 1,
-            ),
+            )
+            .expect("Akita setup_prover failed"),
         )
     }
 
@@ -348,7 +496,8 @@ where
                 max_num_vars,
                 1,
                 1,
-            ),
+            )
+            .expect("Akita setup_prover failed"),
         )
     }
 
@@ -435,21 +584,17 @@ where
         let hachi_point = to_hachi_opening_point::<D>(opening_point);
         let mut adapter = JoltToHachiTranscript::new(transcript);
 
-        let layout = compute_advice_layout::<D, Cfg>(opening_point.len());
-
         let proof = if let MultilinearPolynomial::OneHot(onehot) = poly {
             let indices: Vec<Option<u8>> = onehot.nonzero_indices.as_ref().clone();
-            let onehot_poly =
-                OneHotPoly::<Fp128, D, u8>::new(onehot.K, indices, layout.r_vars, layout.m_vars)
-                    .expect("OneHotPoly construction failed");
-            <HachiCommitmentScheme<D, Cfg> as HachiCommitmentSchemeTrait<Fp128, D>>::prove(
+            let onehot_poly = OneHotPoly::<Fp128, D, u8>::new(onehot.K, indices)
+                .expect("OneHotPoly construction failed");
+            hachi_prove_one::<D, Cfg, _, _>(
                 &setup.0,
                 &onehot_poly,
                 &hachi_point,
                 hint.hachi_hint,
                 &mut adapter,
                 &commitment.0,
-                BasisMode::Lagrange,
             )
         } else {
             let dense_poly = if hint.ring_coeffs.is_empty() {
@@ -458,17 +603,15 @@ where
             } else {
                 DensePoly::from_ring_coeffs(hint.ring_coeffs)
             };
-            <HachiCommitmentScheme<D, Cfg> as HachiCommitmentSchemeTrait<Fp128, D>>::prove(
+            hachi_prove_one::<D, Cfg, _, _>(
                 &setup.0,
                 &dense_poly,
                 &hachi_point,
                 hint.hachi_hint,
                 &mut adapter,
                 &commitment.0,
-                BasisMode::Lagrange,
             )
-        }
-        .expect("Hachi prove failed");
+        };
         (ArkBridge(proof), None)
     }
 
@@ -485,16 +628,14 @@ where
         let hachi_opening = jolt_to_hachi(opening);
         let mut adapter = JoltToHachiTranscript::new(transcript);
 
-        <HachiCommitmentScheme<D, Cfg> as HachiCommitmentSchemeTrait<Fp128, D>>::verify(
+        hachi_verify_one::<D, Cfg, _>(
             &proof.0,
             &setup.0,
             &mut adapter,
             &hachi_point,
             &hachi_opening,
             &commitment.0,
-            BasisMode::Lagrange,
         )
-        .map_err(|_| ProofVerifyError::InternalError)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -576,17 +717,14 @@ where
 
         let mut adapter = JoltToHachiTranscript::new(transcript);
 
-        let packed_proof =
-            <HachiCommitmentScheme<D, Cfg> as HachiCommitmentSchemeTrait<Fp128, D>>::prove(
-                &setup.0,
-                &packed_poly,
-                &packed_point,
-                batch_hint.hachi_hint,
-                &mut adapter,
-                &packed_commitment.0,
-                BasisMode::Lagrange,
-            )
-            .expect("Hachi packed poly prove failed");
+        let packed_proof = hachi_prove_one::<D, Cfg, _, _>(
+            &setup.0,
+            &packed_poly,
+            &packed_point,
+            batch_hint.hachi_hint,
+            &mut adapter,
+            &packed_commitment.0,
+        );
 
         let hachi_point = to_hachi_opening_point::<D>(opening_point);
 
@@ -599,17 +737,14 @@ where
                 transcript.append_bytes(b"hachi_individual_item", &(i as u64).to_le_bytes());
                 let individual_poly = DensePoly::from_ring_coeffs(hint.ring_coeffs);
                 let mut adapter = JoltToHachiTranscript::new(transcript);
-                let proof =
-                    <HachiCommitmentScheme<D, Cfg> as HachiCommitmentSchemeTrait<Fp128, D>>::prove(
-                        &setup.0,
-                        &individual_poly,
-                        &hachi_point,
-                        hint.hachi_hint,
-                        &mut adapter,
-                        &commitment.0,
-                        BasisMode::Lagrange,
-                    )
-                    .expect("Hachi individual prove failed");
+                let proof = hachi_prove_one::<D, Cfg, _, _>(
+                    &setup.0,
+                    &individual_poly,
+                    &hachi_point,
+                    hint.hachi_hint,
+                    &mut adapter,
+                    &commitment.0,
+                );
                 ArkBridge(proof)
             })
             .collect();
@@ -692,16 +827,14 @@ where
             &hachi_combined.to_canonical_u128().to_le_bytes(),
         );
         let mut adapter = JoltToHachiTranscript::new(transcript);
-        <HachiCommitmentScheme<D, Cfg> as HachiCommitmentSchemeTrait<Fp128, D>>::verify(
+        hachi_verify_one::<D, Cfg, _>(
             &proof.packed_poly_proof.0,
             &setup.0,
             &mut adapter,
             &packed_point,
             &hachi_combined,
             &packed_commitment.0,
-            BasisMode::Lagrange,
-        )
-        .map_err(|_| ProofVerifyError::InternalError)?;
+        )?;
 
         let hachi_point = to_hachi_opening_point::<D>(opening_point);
 
@@ -710,16 +843,14 @@ where
             transcript.append_bytes(b"hachi_individual_item", &(i as u64).to_le_bytes());
             let hachi_claim = jolt_to_hachi(&individual_claims[i]);
             let mut adapter = JoltToHachiTranscript::new(transcript);
-            <HachiCommitmentScheme<D, Cfg> as HachiCommitmentSchemeTrait<Fp128, D>>::verify(
+            hachi_verify_one::<D, Cfg, _>(
                 &proof.individual_proofs[i].0,
                 &setup.0,
                 &mut adapter,
                 &hachi_point,
                 &hachi_claim,
                 &individual_commitments[i].0,
-                BasisMode::Lagrange,
-            )
-            .map_err(|_| ProofVerifyError::InternalError)?;
+            )?;
         }
 
         Ok(())
@@ -774,7 +905,7 @@ where
 
 impl<const D: usize, Cfg> StreamingCommitmentScheme for JoltHachiCommitmentScheme<D, Cfg>
 where
-    Cfg: CommitmentConfig<Field = Fp128> + Default,
+    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128> + Default,
 {
     type ChunkState = HachiChunkState<D>;
 
@@ -914,7 +1045,7 @@ fn pack_field_to_ring<const D: usize>(field_coeffs: &[Fp128]) -> Vec<CyclotomicR
 
 impl<const D: usize, Cfg, C> ZkEvalCommitment<C> for JoltHachiCommitmentScheme<D, Cfg>
 where
-    Cfg: CommitmentConfig<Field = Fp128> + Default,
+    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128> + Default,
     C: JoltCurve<F = <Self as CommitmentScheme>::Field>,
 {
     fn eval_commitment(_proof: &Self::BatchedProof) -> Option<C::G1> {

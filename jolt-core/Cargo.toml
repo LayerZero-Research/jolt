@@ -82,7 +82,16 @@ tracer = { workspace = true, default-features = false, features = ["std"] }
 bincode.workspace = true
 derive_more.workspace = true
 dory.workspace = true
-hachi-pcs.workspace = true
+akita-pcs.workspace = true
+akita-prover.workspace = true
+akita-verifier.workspace = true
+akita-algebra.workspace = true
+akita-challenges.workspace = true
+akita-config.workspace = true
+akita-types.workspace = true
+akita-field.workspace = true
+akita-serialization.workspace = true
+akita-transcript.workspace = true
 allocative.workspace = true
 inferno = { workspace = true, optional = true }
 jolt-inlines-sha2 = { workspace = true, features = ["host"], optional = true }

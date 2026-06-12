@@ -2655,9 +2655,9 @@ impl<F: JoltField, C: JoltCurve<F = F>, PCS: CommitmentScheme<Field = F>> Serial
 mod tests {
     use std::sync::Arc;
 
-    use ark_bn254::Fr;
     #[cfg(not(feature = "zk"))]
-    use hachi_pcs::protocol::commitment::CommitmentConfig;
+    use akita_config::CommitmentConfig;
+    use ark_bn254::Fr;
     use serial_test::serial;
 
     #[cfg(not(feature = "zk"))]

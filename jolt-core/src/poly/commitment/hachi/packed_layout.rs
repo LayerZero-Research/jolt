@@ -1,8 +1,7 @@
-use hachi_pcs::protocol::commitment::{
-    compute_num_digits, compute_num_digits_fold, optimal_m_r_split, CommitmentConfig,
-    HachiScheduleInputs,
+use akita_config::CommitmentConfig;
+use akita_types::{
+    sis::num_digits_for_bound, AkitaScheduleLookupKey, ClaimIncidenceSummary, LevelParams, Step,
 };
-use hachi_pcs::protocol::params::LevelParams;
 
 /// Avoid degenerate layouts that tile only across polynomials and barely any
 /// cycles; that would defeat the trace-locality goal of the packed layout.
@@ -12,16 +11,42 @@ const PACKED_MIN_CYCLE_TILE_BITS: usize = 6;
 /// polynomials instead of turning every block into an all-polys mega-tile.
 const PACKED_MAX_POLY_TILE_BITS: usize = 4;
 
-fn level0_level_params<Cfg: CommitmentConfig>(max_num_vars: usize, log_basis: u32) -> LevelParams {
-    let current_w_len = 1usize.checked_shl(max_num_vars as u32).unwrap_or(0);
-    Cfg::level_params_with_log_basis(
-        HachiScheduleInputs {
-            max_num_vars,
-            level: 0,
-            current_w_len,
-        },
-        log_basis,
-    )
+const FIELD_BITS: u32 = 128;
+
+fn level0_level_params<Cfg: CommitmentConfig>(max_num_vars: usize) -> LevelParams {
+    let incidence = ClaimIncidenceSummary::same_point(max_num_vars, 1)
+        .expect("singleton packed layout incidence should be valid");
+    Cfg::get_params_for_batched_commitment(&incidence)
+        .or_else(|_| {
+            Cfg::runtime_schedule(AkitaScheduleLookupKey::singleton(max_num_vars)).and_then(
+                |schedule| match schedule.steps.first() {
+                    Some(Step::Fold(root)) => Ok(root.params.clone()),
+                    Some(Step::Direct(direct)) => direct.params.clone().ok_or_else(|| {
+                        akita_field::AkitaError::InvalidSetup(
+                            "runtime schedule has no root commit params".to_string(),
+                        )
+                    }),
+                    None => Err(akita_field::AkitaError::InvalidSetup(
+                        "runtime schedule has no steps".to_string(),
+                    )),
+                },
+            )
+        })
+        .expect("Akita runtime schedule should produce root commit params")
+}
+
+fn compute_num_digits(log_bound: u32, log_basis: u32) -> usize {
+    num_digits_for_bound(log_bound, FIELD_BITS, log_basis)
+}
+
+fn optimal_m_r_split<Cfg: CommitmentConfig>(reduced_vars: usize) -> (usize, usize) {
+    if reduced_vars <= 2 || reduced_vars >= 53 {
+        let r = reduced_vars / 2;
+        return (reduced_vars - r, r);
+    }
+
+    let params = level0_level_params::<Cfg>(reduced_vars + Cfg::D.trailing_zeros() as usize);
+    (params.m_vars, params.r_vars)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -230,16 +255,15 @@ impl PackedBitLayout {
     }
 
     #[inline]
-    pub(super) fn into_hachi_layout<Cfg: CommitmentConfig>(self, log_basis: u32) -> LevelParams {
-        let params = level0_level_params::<Cfg>(self.total_num_vars(), log_basis);
-        let challenge_l1_mass = params.challenge_l1_mass();
+    pub(super) fn into_hachi_layout<Cfg: CommitmentConfig>(self, _log_basis: u32) -> LevelParams {
+        let params = level0_level_params::<Cfg>(self.total_num_vars());
+        let log_basis = params.log_basis;
         params
             .with_decomp(
                 self.m_vars(),
                 self.r_vars(),
                 1,
                 compute_num_digits(128, log_basis),
-                compute_num_digits_fold(self.r_vars(), challenge_l1_mass, log_basis),
                 0,
             )
             .expect("invalid packed Hachi layout")

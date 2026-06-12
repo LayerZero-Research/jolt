@@ -2,16 +2,15 @@ use std::{array::from_fn, mem::size_of, slice::from_ref};
 
 use super::packed_layout::{PackedBitLayout, SingletonLocateParams};
 use super::wrappers::Fp128;
-use hachi_pcs::algebra::fields::wide::Fp128x8i32;
-use hachi_pcs::algebra::ring::sparse_challenge::SparseChallenge;
-use hachi_pcs::algebra::ring::{CyclotomicRing, WideCyclotomicRing};
-use hachi_pcs::protocol::commitment::utils::crt_ntt::NttSlotCache;
-use hachi_pcs::protocol::commitment::utils::flat_matrix::{FlatMatrix, RingMatrixView};
-use hachi_pcs::protocol::commitment::utils::linear::decompose_rows_i8;
-use hachi_pcs::protocol::hachi_poly_ops::{CommitInnerWitness, DecomposeFoldWitness};
-use hachi_pcs::protocol::proof::FlatDigitBlocks;
-use hachi_pcs::HachiError;
-use hachi_pcs::{CanonicalField, FieldCore, HachiPolyOps};
+use akita_algebra::{ring::cyclotomic::WideCyclotomicRing, CyclotomicRing};
+use akita_challenges::SparseChallenge;
+use akita_field::unreduced::Fp128x8i32;
+use akita_field::{AkitaError, CanonicalField};
+use akita_prover::kernels::linear::decompose_rows_i8;
+use akita_prover::{
+    AkitaPolyOps, CommitInnerWitness, CommitmentComputeBackend, DecomposeFoldWitness,
+};
+use akita_types::{FlatDigitBlocks, RingMatrixView};
 use rayon::prelude::*;
 
 /// Tile size for commit_inner A-matrix tiling. Each tile occupies
@@ -331,44 +330,14 @@ impl<
         F: Fn(usize, usize) -> Option<u8> + Clone + Send + Sync,
         B: Fn(usize, usize, &mut [Option<u8>]) + Clone + Send + Sync,
         const D: usize,
-    > HachiPolyOps<Fp128, D> for JoltPackedPoly<F, B, D>
+    > AkitaPolyOps<Fp128, D> for JoltPackedPoly<F, B, D>
 {
-    type CommitCache = NttSlotCache<D>;
-
     fn num_ring_elems(&self) -> usize {
         self.num_blocks() * self.packed_layout.block_len()
     }
 
-    #[tracing::instrument(skip_all, name = "JoltPackedPoly::evaluate_ring")]
-    fn evaluate_ring(&self, scalars: &[Fp128]) -> CyclotomicRing<Fp128, D> {
-        let block_len = self.packed_layout.block_len();
-        let total = (0..self.num_blocks())
-            .into_par_iter()
-            .map(|block_idx| {
-                let mut acc = [Fp128::zero(); D];
-
-                self.for_each_entry_in_block(block_idx, |pos_in_block, coeffs| {
-                    let global_ring = block_idx * block_len + pos_in_block;
-                    if global_ring < scalars.len() {
-                        let scalar = scalars[global_ring];
-                        for &coeff_idx in coeffs {
-                            acc[coeff_idx as usize] += scalar;
-                        }
-                    }
-                });
-                acc
-            })
-            .reduce(
-                || [Fp128::zero(); D],
-                |mut a, b| {
-                    for i in 0..D {
-                        a[i] += b[i];
-                    }
-                    a
-                },
-            );
-
-        CyclotomicRing::from_coefficients(total)
+    fn onehot_chunk_size(&self) -> Option<usize> {
+        Some(1usize << self.packed_layout.log_k())
     }
 
     #[tracing::instrument(skip_all, name = "JoltPackedPoly::fold_blocks")]
@@ -430,7 +399,7 @@ impl<
             .max()
             .unwrap_or(0);
         DecomposeFoldWitness {
-            z_pre,
+            z_folded_rings: z_pre,
             centered_coeffs: total_z,
             centered_inf_norm,
         }
@@ -438,44 +407,33 @@ impl<
 
     #[allow(non_snake_case)]
     #[tracing::instrument(skip_all, name = "JoltPackedPoly::commit_inner")]
-    fn commit_inner(
+    fn commit_inner<Backend>(
         &self,
-        a_matrix: &FlatMatrix<Fp128>,
-        _ntt_a: &NttSlotCache<D>,
+        backend: &Backend,
+        prepared: &Backend::PreparedSetup<D>,
         n_a: usize,
         block_len: usize,
+        _num_blocks: usize,
         num_digits_commit: usize,
         num_digits_open: usize,
         log_basis: u32,
-        matrix_stride: usize,
-    ) -> Result<FlatDigitBlocks<D>, HachiError> {
+    ) -> Result<CommitInnerWitness<Fp128, D>, AkitaError>
+    where
+        Backend: CommitmentComputeBackend<Fp128>,
+    {
         debug_assert_eq!(block_len, self.packed_layout.block_len());
-        let a_view = a_matrix.ring_view::<D>(n_a, matrix_stride);
-        let output =
-            self.commit_inner_output(&a_view, n_a, num_digits_commit, num_digits_open, log_basis);
-        Ok(FlatDigitBlocks::from_blocks(output.t_hat))
-    }
-
-    #[allow(non_snake_case)]
-    #[tracing::instrument(skip_all, name = "JoltPackedPoly::commit_inner")]
-    fn commit_inner_witness(
-        &self,
-        a_matrix: &FlatMatrix<Fp128>,
-        _ntt_a: &NttSlotCache<D>,
-        n_a: usize,
-        block_len: usize,
-        num_digits_commit: usize,
-        num_digits_open: usize,
-        log_basis: u32,
-        matrix_stride: usize,
-    ) -> Result<CommitInnerWitness<Fp128, D>, HachiError> {
-        debug_assert_eq!(block_len, self.packed_layout.block_len());
-        let a_view = a_matrix.ring_view::<D>(n_a, matrix_stride);
+        let matrix_stride = block_len.checked_mul(num_digits_commit).ok_or_else(|| {
+            AkitaError::InvalidSetup("packed inner matrix stride overflow".into())
+        })?;
+        let a_view = backend
+            .prepared_expanded_setup::<D>(prepared)
+            .shared_matrix()
+            .ring_view::<D>(n_a, matrix_stride)?;
         let output =
             self.commit_inner_output(&a_view, n_a, num_digits_commit, num_digits_open, log_basis);
         Ok(CommitInnerWitness {
-            t_hat: FlatDigitBlocks::from_blocks(output.t_hat),
-            t: output.t,
+            recomposed_inner_rows: output.t,
+            decomposed_inner_rows: FlatDigitBlocks::from_blocks(output.t_hat),
         })
     }
 }
@@ -761,7 +719,11 @@ impl<
             .into_par_iter()
             .flat_map_iter(|pos| {
                 let col = pos * num_digits_commit;
-                (0..n_a).map(move |a| WideCyclotomicRing::from_ring(&a_view.row(a)[col]))
+                (0..n_a).map(move |a| {
+                    WideCyclotomicRing::from_ring(
+                        &a_view.row(a).expect("A matrix row should exist")[col],
+                    )
+                })
             })
             .collect();
 
@@ -814,11 +776,9 @@ impl<
         let block_len = self.packed_layout.block_len();
         let wide_ring_bytes = size_of::<WideCyclotomicRing<Fp128x8i32, D>>().max(1);
         let accum_bytes = n_a.saturating_mul(wide_ring_bytes);
-        let block_tile = if accum_bytes == 0 {
-            num_blocks.max(1)
-        } else {
-            (COMMIT_COLUMN_SWEEP_TILE_BYTES / accum_bytes).max(1)
-        };
+        let block_tile = COMMIT_COLUMN_SWEEP_TILE_BYTES
+            .checked_div(accum_bytes)
+            .map_or_else(|| num_blocks.max(1), |tile| tile.max(1));
         let num_threads = rayon::current_num_threads().min(num_blocks).max(1);
         let blocks_per_thread = num_blocks.div_ceil(num_threads);
 
@@ -873,7 +833,9 @@ impl<
                         let entries = &position_entries[pos_in_block];
                         let col = pos_in_block * num_digits_commit;
                         for a_idx in 0..n_a {
-                            let a_wide = WideCyclotomicRing::from_ring(&a_view.row(a_idx)[col]);
+                            let a_wide = WideCyclotomicRing::from_ring(
+                                &a_view.row(a_idx).expect("A matrix row should exist")[col],
+                            );
                             for &(local_block, coeff_idx) in entries.iter() {
                                 let accum_idx = local_block as usize * n_a + a_idx;
                                 Self::shift_accumulate_into_fast(
@@ -921,8 +883,7 @@ impl<
         let mut t: Vec<Vec<CyclotomicRing<Fp128, D>>> = vec![Vec::new(); num_blocks];
         let mut t_hat: Vec<Vec<[i8; D]>> = vec![Vec::new(); num_blocks];
         for (block_start, t_chunk, t_hat_chunk) in thread_results {
-            for (offset, (t_block, t_hat_block)) in
-                t_chunk.into_iter().zip(t_hat_chunk.into_iter()).enumerate()
+            for (offset, (t_block, t_hat_block)) in t_chunk.into_iter().zip(t_hat_chunk).enumerate()
             {
                 let block_idx = block_start + offset;
                 t[block_idx] = t_block;
@@ -1002,7 +963,7 @@ impl<
         log_basis: u32,
     ) -> PackedCommitInnerOutput<D> {
         let block_len = self.packed_layout.block_len();
-        let a_row = a_view.row(0);
+        let a_row = a_view.row(0).expect("A matrix row should exist");
         let a_wide_row: Vec<WideCyclotomicRing<Fp128x8i32, D>> = (0..block_len)
             .into_par_iter()
             .map(|pos| WideCyclotomicRing::from_ring(&a_row[pos]))
@@ -1046,7 +1007,7 @@ impl<
         let block_len = self.packed_layout.block_len();
         let tile_size = COMMIT_TILE_SIZE.min(block_len.max(1));
         let num_tiles = block_len.div_ceil(tile_size);
-        let a_row = a_view.row(0);
+        let a_row = a_view.row(0).expect("A matrix row should exist");
         let wide_ring_bytes = size_of::<WideCyclotomicRing<Fp128x8i32, D>>().max(1);
         let chunk_parallelism = rayon::current_num_threads()
             .max(1)
@@ -1353,7 +1314,11 @@ impl<
             .into_par_iter()
             .flat_map_iter(|pos| {
                 let col = pos * num_digits_commit;
-                (0..n_a).map(move |a| WideCyclotomicRing::from_ring(&a_view.row(a)[col]))
+                (0..n_a).map(move |a| {
+                    WideCyclotomicRing::from_ring(
+                        &a_view.row(a).expect("A matrix row should exist")[col],
+                    )
+                })
             })
             .collect();
 
@@ -1406,7 +1371,11 @@ impl<
                     .flat_map_iter(|local_pos| {
                         let pos = tile_start + local_pos;
                         let col = pos * num_digits_commit;
-                        (0..n_a).map(move |a| WideCyclotomicRing::from_ring(&a_view.row(a)[col]))
+                        (0..n_a).map(move |a| {
+                            WideCyclotomicRing::from_ring(
+                                &a_view.row(a).expect("A matrix row should exist")[col],
+                            )
+                        })
                     })
                     .collect()
             })

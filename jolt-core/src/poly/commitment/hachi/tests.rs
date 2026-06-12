@@ -5,7 +5,7 @@ use super::commitment_scheme::{
 };
 use super::packed_layout::{choose_packed_bit_layout, PackedBitLayout};
 use super::packed_poly::{build_packed_poly, summarize_block_occupancy, JoltPackedPoly};
-use super::wrappers::{jolt_to_hachi, ArkBridge, Fp128};
+use super::wrappers::{jolt_to_hachi, ArkBridge, Fp128, HachiProof};
 use crate::field::fp128::JoltFp128;
 use crate::field::JoltField;
 use crate::poly::commitment::commitment_scheme::{CommitmentScheme, PolynomialBatchSource};
@@ -16,16 +16,41 @@ use crate::poly::one_hot_polynomial::OneHotPolynomial;
 use crate::poly::opening_proof::BatchPolynomialSource;
 use crate::transcripts::{Blake2bTranscript, Transcript};
 use crate::utils::errors::ProofVerifyError;
-use hachi_pcs::algebra::ring::sparse_challenge::SparseChallenge;
-use hachi_pcs::algebra::ring::CyclotomicRing;
-use hachi_pcs::protocol::commitment::presets::fp128::D32OneHot;
-use hachi_pcs::protocol::commitment::utils::flat_matrix::FlatMatrix;
-use hachi_pcs::protocol::commitment::{compute_num_digits, optimal_m_r_split, CommitmentConfig};
-use hachi_pcs::protocol::proof::HachiProof;
-use hachi_pcs::{FieldCore, FromSmallInt, HachiPolyOps};
+use akita_algebra::CyclotomicRing;
+use akita_challenges::SparseChallenge;
+use akita_config::proof_optimized::fp128::D32OneHot;
+use akita_config::CommitmentConfig;
+use akita_prover::AkitaPolyOps as HachiPolyOps;
+use akita_types::{
+    sis::num_digits_for_bound, AkitaBatchedRootProof, ClaimIncidenceSummary, FlatMatrix,
+};
 
 type Cfg = D32OneHot;
 type Scheme = JoltHachiCommitmentScheme<{ Cfg::D }, Cfg>;
+
+fn dummy_hachi_proof() -> HachiProof<Fp128> {
+    HachiProof {
+        root: AkitaBatchedRootProof::new_zero_fold(Vec::new()),
+        steps: Vec::new(),
+    }
+}
+
+fn compute_num_digits(log_bound: u32, log_basis: u32) -> usize {
+    num_digits_for_bound(log_bound, 128, log_basis)
+}
+
+fn optimal_m_r_split<Cfg: CommitmentConfig>(reduced_vars: usize) -> (usize, usize) {
+    if reduced_vars <= 2 || reduced_vars >= 53 {
+        let r = reduced_vars / 2;
+        return (reduced_vars - r, r);
+    }
+    let num_vars = reduced_vars + Cfg::D.trailing_zeros() as usize;
+    let incidence =
+        ClaimIncidenceSummary::same_point(num_vars, 1).expect("test incidence should be valid");
+    let params = Cfg::get_params_for_batched_commitment(&incidence)
+        .expect("test config should produce root commit params");
+    (params.m_vars, params.r_vars)
+}
 
 #[derive(Clone)]
 struct TestPackedSource {
@@ -139,7 +164,10 @@ fn make_test_challenges<const D: usize>(num_blocks: usize) -> Vec<SparseChalleng
     (0..num_blocks)
         .map(|block_idx| {
             if block_idx % 5 == 0 {
-                SparseChallenge::zero()
+                SparseChallenge {
+                    positions: vec![],
+                    coeffs: vec![],
+                }
             } else {
                 SparseChallenge {
                     positions: vec![
@@ -570,7 +598,9 @@ fn packed_commit_inner_fast_matches_generic_and_reference_helpers() {
     let log_basis = Cfg::decomposition().log_basis;
     let num_digits_open = compute_num_digits(128, log_basis);
     let a_flat = make_test_a_matrix::<{ Cfg::D }>(1, block_len, 1);
-    let a_view = a_flat.ring_view::<{ Cfg::D }>(1, block_len);
+    let a_view = a_flat
+        .ring_view::<{ Cfg::D }>(1, block_len)
+        .expect("test A matrix view");
 
     let generic = packed_poly.commit_inner_generic(&a_view, 1, 1, num_digits_open, log_basis);
     let fast = packed_poly.commit_inner_fast_singleton(&a_view, num_digits_open, log_basis);
@@ -606,7 +636,9 @@ fn packed_commit_inner_generic_matches_reference_with_multiple_rows() {
     let log_basis = Cfg::decomposition().log_basis;
     let num_digits_open = compute_num_digits(128, log_basis);
     let a_flat = make_test_a_matrix::<{ Cfg::D }>(2, block_len, 2);
-    let a_view = a_flat.ring_view::<{ Cfg::D }>(2, block_len * 2);
+    let a_view = a_flat
+        .ring_view::<{ Cfg::D }>(2, block_len * 2)
+        .expect("test A matrix view");
 
     let generic = packed_poly.commit_inner_generic(&a_view, 2, 2, num_digits_open, log_basis);
     let small = packed_poly.commit_inner_small(&a_view, 2, 2, num_digits_open, log_basis);
@@ -680,7 +712,9 @@ fn packed_commit_inner_column_sweep_matches_generic_in_k256_singleton_regime() {
     let log_basis = FastCfg::decomposition().log_basis;
     let num_digits_open = compute_num_digits(128, log_basis);
     let a_flat = make_test_a_matrix::<{ FastCfg::D }>(1, packed_layout.block_len(), 1);
-    let a_view = a_flat.ring_view::<{ FastCfg::D }>(1, packed_layout.block_len());
+    let a_view = a_flat
+        .ring_view::<{ FastCfg::D }>(1, packed_layout.block_len())
+        .expect("test A matrix view");
 
     let generic = packed_poly.commit_inner_generic(&a_view, 1, 1, num_digits_open, log_basis);
     let sweep = packed_poly.commit_inner_column_sweep(&a_view, 1, 1, num_digits_open, log_basis);
@@ -729,7 +763,9 @@ fn packed_commit_inner_column_sweep_matches_generic_in_d64_k16_regime() {
     let log_basis = FastCfg::decomposition().log_basis;
     let num_digits_open = compute_num_digits(128, log_basis);
     let a_flat = make_test_a_matrix::<{ FastCfg::D }>(2, packed_layout.block_len(), 2);
-    let a_view = a_flat.ring_view::<{ FastCfg::D }>(2, packed_layout.block_len() * 2);
+    let a_view = a_flat
+        .ring_view::<{ FastCfg::D }>(2, packed_layout.block_len() * 2)
+        .expect("test A matrix view");
 
     let generic = packed_poly.commit_inner_generic(&a_view, 2, 2, num_digits_open, log_basis);
     let sweep = packed_poly.commit_inner_column_sweep(&a_view, 2, 2, num_digits_open, log_basis);
@@ -849,7 +885,9 @@ fn packed_fast_paths_match_generic_in_k256_singleton_regime() {
     let log_basis = FastCfg::decomposition().log_basis;
     let num_digits_open = compute_num_digits(128, log_basis);
     let a_flat = make_test_a_matrix::<{ FastCfg::D }>(1, packed_layout.block_len(), 1);
-    let a_view = a_flat.ring_view::<{ FastCfg::D }>(1, packed_layout.block_len());
+    let a_view = a_flat
+        .ring_view::<{ FastCfg::D }>(1, packed_layout.block_len())
+        .expect("test A matrix view");
     let generic_commit =
         packed_poly.commit_inner_generic(&a_view, 1, 1, num_digits_open, log_basis);
     let fast_commit = packed_poly.commit_inner_fast_singleton(&a_view, num_digits_open, log_basis);
@@ -1162,7 +1200,9 @@ fn packed_commit_inner_generic_matches_multi_coeff_helpers_in_d64_k16_regime() {
     let log_basis = FastCfg::decomposition().log_basis;
     let num_digits_open = compute_num_digits(128, log_basis);
     let a_flat = make_test_a_matrix::<{ FastCfg::D }>(2, packed_layout.block_len(), 2);
-    let a_view = a_flat.ring_view::<{ FastCfg::D }>(2, packed_layout.block_len() * 2);
+    let a_view = a_flat
+        .ring_view::<{ FastCfg::D }>(2, packed_layout.block_len() * 2)
+        .expect("test A matrix view");
 
     let generic = packed_poly.commit_inner_generic(&a_view, 2, 2, num_digits_open, log_basis);
     let small = packed_poly.commit_inner_small(&a_view, 2, 2, num_digits_open, log_basis);
@@ -1249,7 +1289,9 @@ fn packed_fast_path_benchmark_smoke() {
     let log_basis = FastCfg::decomposition().log_basis;
     let num_digits_open = compute_num_digits(128, log_basis);
     let a_flat = make_test_a_matrix::<{ FastCfg::D }>(1, packed_layout.block_len(), 1);
-    let a_view = a_flat.ring_view::<{ FastCfg::D }>(1, packed_layout.block_len());
+    let a_view = a_flat
+        .ring_view::<{ FastCfg::D }>(1, packed_layout.block_len())
+        .expect("test A matrix view");
     let challenges = make_test_challenges::<{ FastCfg::D }>(packed_layout.num_blocks());
 
     let generic_commit_start = Instant::now();
@@ -1299,7 +1341,9 @@ fn packed_k16_commit_inner_benchmark_smoke() {
     let log_basis = FastCfg::decomposition().log_basis;
     let num_digits_open = compute_num_digits(128, log_basis);
     let a_flat = make_test_a_matrix::<{ FastCfg::D }>(2, packed_layout.block_len(), 2);
-    let a_view = a_flat.ring_view::<{ FastCfg::D }>(2, packed_layout.block_len() * 2);
+    let a_view = a_flat
+        .ring_view::<{ FastCfg::D }>(2, packed_layout.block_len() * 2)
+        .expect("test A matrix view");
 
     let generic_start = Instant::now();
     let _ = packed_poly.commit_inner_generic(&a_view, 2, 2, num_digits_open, log_basis);
@@ -1338,7 +1382,9 @@ fn packed_k256_commit_inner_benchmark_smoke() {
     let log_basis = FastCfg::decomposition().log_basis;
     let num_digits_open = compute_num_digits(128, log_basis);
     let a_flat = make_test_a_matrix::<{ FastCfg::D }>(1, packed_layout.block_len(), 1);
-    let a_view = a_flat.ring_view::<{ FastCfg::D }>(1, packed_layout.block_len());
+    let a_view = a_flat
+        .ring_view::<{ FastCfg::D }>(1, packed_layout.block_len())
+        .expect("test A matrix view");
 
     let fast_start = Instant::now();
     let _ = packed_poly.commit_inner_fast_singleton(&a_view, num_digits_open, log_basis);
@@ -1670,8 +1716,8 @@ fn hachi_batch_verify_rejects_truncated_individual_commitments() {
     let pcs = Scheme::default();
     let opening_point = vec![JoltFp128::from_u64(3), JoltFp128::from_u64(5)];
 
-    let packed_poly_proof = ArkBridge(HachiProof { steps: vec![] });
-    let indiv_proof = ArkBridge(HachiProof { steps: vec![] });
+    let packed_poly_proof = ArkBridge(dummy_hachi_proof());
+    let indiv_proof = ArkBridge(dummy_hachi_proof());
     let proof = HachiBatchedProof {
         packed_poly_proof,
         num_packed_polys: 2,
@@ -1711,7 +1757,7 @@ fn hachi_batch_verify_rejects_invalid_num_packed() {
     let pcs = Scheme::default();
     let opening_point = vec![JoltFp128::from_u64(3), JoltFp128::from_u64(5)];
 
-    let packed_poly_proof = ArkBridge(HachiProof { steps: vec![] });
+    let packed_poly_proof = ArkBridge(dummy_hachi_proof());
     let proof = HachiBatchedProof {
         packed_poly_proof,
         num_packed_polys: 0,
@@ -1747,7 +1793,7 @@ fn hachi_batch_verify_rejects_invalid_log_k() {
     let opening_point = vec![JoltFp128::from_u64(3), JoltFp128::from_u64(5)];
     let claim = JoltFp128::from_u64(7);
 
-    let packed_poly_proof = ArkBridge(HachiProof { steps: vec![] });
+    let packed_poly_proof = ArkBridge(dummy_hachi_proof());
     let proof = HachiBatchedProof {
         packed_poly_proof,
         num_packed_polys: 1,
