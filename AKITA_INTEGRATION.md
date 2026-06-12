@@ -1,12 +1,8 @@
-# Hachi PCS Integration into Jolt
+# Akita PCS Integration into Jolt
 
-> Historical note: this document describes the original Hachi integration.
-> The implementation has since moved to Akita crates on `lz/integrate-akita`,
-> while some local module/type names remain `Hachi` until a mechanical rename.
+Tracking document for replacing Dory (pairing-based) with Akita (lattice-based) PCS in Jolt.
 
-Tracking document for replacing Dory (pairing-based) with Hachi (lattice-based) PCS in Jolt.
-
-Branch: `lz/integrate-hachi`
+Branch: `lz/integrate-akita`
 
 ---
 
@@ -14,13 +10,13 @@ Branch: `lz/integrate-hachi`
 
 ### Mega-polynomial approach
 
-All main witness polynomials are committed as a single Hachi commitment using `log₂(N)` selector variables. Given N polynomials P_0, ..., P_{N-1}, the mega-polynomial is:
+All main witness polynomials are committed as a single Akita commitment using `log₂(N)` selector variables. Given N polynomials P_0, ..., P_{N-1}, the mega-polynomial is:
 
 ```
 P*(x, y) = Σ_i eq(y, i) · P_i(x)    where y ∈ {0,1}^{log₂ N}
 ```
 
-**Batch opening** reduces to a single Hachi opening: after Stages 1–7 produce claims v_i = P_i(r), the verifier samples ρ ∈ F^{log₂ N} and the combined claim is `P*(r, ρ) = Σ_i eq(ρ, i) · v_i`. One Hachi proof suffices.
+**Batch opening** reduces to a single Akita opening: after Stages 1–7 produce claims v_i = P_i(r), the verifier samples ρ ∈ F^{log₂ N} and the combined claim is `P*(r, ρ) = Σ_i eq(ρ, i) · v_i`. One Akita proof suffices.
 
 This eliminates the need for homomorphic batching (`combine_commitments` / `combine_hints`), which is impossible for Ajtai commitments due to nonlinear gadget decomposition G^{-1}.
 
@@ -50,7 +46,7 @@ Advice polynomials (TrustedAdvice, UntrustedAdvice) remain on separate Dory comm
 - [x] `DoryBatchedProof` wraps `ArkDoryProof` + `DoryLayout`
 - [x] `balanced_sigma_nu` extracted as standalone function
 - [x] Partial DoryGlobals removal from `commit`, `prove`, `process_chunk`, `aggregate_chunks`
-- [x] Merged into `lz/integrate-hachi`, clippy clean
+- [x] Merged into `lz/integrate-akita`, clippy clean
 
 ### Phase 1 — Prerequisites
 
@@ -60,7 +56,7 @@ Advice polynomials (TrustedAdvice, UntrustedAdvice) remain on separate Dory comm
   - ~15 DoryGlobals call sites in `one_hot_polynomial.rs`
 - [ ] Abstract layout out of `RLCPolynomial`
   - ~11 DoryGlobals call sites
-  - Hachi path won't use RLCPolynomial (no homomorphic RLC), but need clean separation
+  - Akita path won't use RLCPolynomial (no homomorphic RLC), but need clean separation
 - [ ] Add `streaming_layout()` to `StreamingCommitmentScheme` trait
   - Returns chunk size, alignment, num_chunks for a given polynomial length
   - Replaces `DoryGlobals::get_num_columns()` in `prover.rs:604`
@@ -71,18 +67,18 @@ Advice polynomials (TrustedAdvice, UntrustedAdvice) remain on separate Dory comm
   - `DoryGlobals::initialize_context` → PCS config
   - `DoryLayout::AddressMajor` branching → PCS-level decision
 
-### Phase 2 — Hachi streaming commitment
+### Phase 2 — Akita streaming commitment
 
-- [ ] Implement `StreamingCommitmentScheme` for `HachiCommitmentScheme`
+- [ ] Implement `StreamingCommitmentScheme` for `AkitaCommitmentScheme`
   - `ChunkState`: `(partial_u, s, t_hat, ring_coeffs)` — partial outer Ajtai contribution + hint material
   - `process_chunk`: field → ring packing + inner Ajtai per block
   - `process_chunk_onehot`: sparse ring construction + `inner_ajtai_onehot`
-  - `aggregate_chunks`: sum partial_u vectors + assemble `HachiCommitmentHint`
+  - `aggregate_chunks`: sum partial_u vectors + assemble `AkitaCommitmentHint`
 - [ ] Small-scalar path for `process_chunk` (generic over SmallScalar or upcast)
-- [ ] Implement `JoltToHachiTranscript` adapter (mirror `JoltToDoryTranscript`)
-- [ ] Create `jolt-core/src/poly/commitment/hachi/` module
+- [ ] Implement `JoltToAkitaTranscript` adapter (mirror `JoltToDoryTranscript`)
+- [ ] Create `jolt-core/src/poly/commitment/akita/` module
   - `mod.rs`, `commitment_scheme.rs` implementing Jolt's `CommitmentScheme` trait
-  - Delegates to `hachi-pcs` crate
+  - Delegates to `akita-pcs` crate
 
 ### Phase 3 — Increment → one-hot
 
@@ -101,21 +97,21 @@ Advice polynomials (TrustedAdvice, UntrustedAdvice) remain on separate Dory comm
   - Group by size class (dense T, one-hot K·T)
   - Zero-pad shorter polynomials
   - Determine selector variable ordering
-- [ ] Implement `HachiCommitmentScheme::batch_prove` / `batch_verify`
+- [ ] Implement `AkitaCommitmentScheme::batch_prove` / `batch_verify`
   - Selector sumcheck (~6 rounds)
   - Phase 0 inner evaluation (α = log₂ D rounds)
-  - Standard Hachi opening
+  - Standard Akita opening
 - [ ] Adapt `ProverOpeningAccumulator` / `VerifierOpeningAccumulator`
   - Selector challenge sampling
   - Combined claim computation: `Σ eq(ρ, i) · v_i`
-- [ ] Remove Dory-specific batch infrastructure from Hachi path
+- [ ] Remove Dory-specific batch infrastructure from Akita path
   - `BatchPolynomialSource`, `StreamingBatchSource` (keep for Dory)
   - `RLCPolynomial` streaming RLC (keep for Dory)
 
 ### Phase 5 — End-to-end + cleanup
 
 - [ ] Wire up `JoltProof` generic over PCS
-- [ ] Run `muldiv` e2e test with Hachi PCS
+- [ ] Run `muldiv` e2e test with Akita PCS
 - [ ] Advice → one-hot conversion (deferred from Phase 3)
 - [ ] Full DoryGlobals removal (~79 remaining call sites across 8 files)
 
@@ -137,7 +133,7 @@ Advice polynomials (TrustedAdvice, UntrustedAdvice) remain on separate Dory comm
 | File | Role |
 |------|------|
 | `jolt-core/src/poly/commitment/commitment_scheme.rs` | `CommitmentScheme` + `StreamingCommitmentScheme` traits |
-| `jolt-core/src/poly/commitment/dory/commitment_scheme.rs` | Dory impl (reference for Hachi impl) |
+| `jolt-core/src/poly/commitment/dory/commitment_scheme.rs` | Dory impl (reference for Akita impl) |
 | `jolt-core/src/poly/one_hot_polynomial.rs` | OneHotPolynomial (needs layout abstraction) |
 | `jolt-core/src/poly/opening_proof.rs` | Accumulator, batch source, lagrange factors |
 | `jolt-core/src/zkvm/prover.rs` | Streaming commit orchestration, Stage 8 |
@@ -146,14 +142,14 @@ Advice polynomials (TrustedAdvice, UntrustedAdvice) remain on separate Dory comm
 | `jolt-core/src/zkvm/claim_reductions/increments.rs` | IncClaimReduction (to be replaced) |
 | `jolt-core/src/zkvm/claim_reductions/advice.rs` | Advice claim reduction (deferred) |
 | `jolt-core/src/zkvm/ram/raf_evaluation.rs` | RAF evaluation sumcheck (template for fused Inc) |
-| `jolt-core/src/field/fp128.rs` | JoltFp128 wrapper over hachi's Prime128M8M4M1M0 |
-| `../hachi/src/protocol/commitment_scheme.rs` | Hachi's HachiCommitmentScheme |
-| `../hachi/src/protocol/commitment/commit.rs` | Hachi commit_coeffs, commit_onehot |
-| `../hachi/docs/HACHI_FOR_JOLT.md` | Integration design doc |
+| `jolt-core/src/field/fp128.rs` | JoltFp128 wrapper over akita's Prime128M8M4M1M0 |
+| `../akita/src/protocol/commitment_scheme.rs` | Akita's AkitaCommitmentScheme |
+| `../akita/src/protocol/commitment/commit.rs` | Akita commit_coeffs, commit_onehot |
+| `../akita/docs/AKITA_FOR_JOLT.md` | Integration design doc |
 
 ## Non-goals (explicit)
 
-- Full DoryGlobals removal: deferred, not blocking Hachi integration
-- Hachi recursion: out of scope for initial integration
-- DA layer / Data Proof migration: separate workstream (see `../hachi/docs/DATA_PROOF_HACHI_MIGRATION.md`)
+- Full DoryGlobals removal: deferred, not blocking Akita integration
+- Akita recursion: out of scope for initial integration
+- DA layer / Data Proof migration: separate workstream (see `../akita/docs/DATA_PROOF_AKITA_MIGRATION.md`)
 - Backward compatibility shims: full cutover, no dual-PCS runtime

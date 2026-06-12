@@ -2667,9 +2667,9 @@ mod tests {
     #[cfg(not(feature = "zk"))]
     use crate::field::fp128::JoltFp128;
     use crate::host;
-    use crate::poly::commitment::dory::{DoryGlobals, DoryLayout};
     #[cfg(not(feature = "zk"))]
-    use crate::poly::commitment::hachi::{Fp128OneHot32Config, JoltHachiCommitmentScheme};
+    use crate::poly::commitment::akita::{Fp128OneHot32Config, JoltAkitaCommitmentScheme};
+    use crate::poly::commitment::dory::{DoryGlobals, DoryLayout};
     #[cfg(feature = "zk")]
     use crate::poly::commitment::pedersen::PedersenGenerators;
     use crate::poly::{
@@ -2701,13 +2701,13 @@ mod tests {
     use jolt_inlines_sha2 as _;
 
     #[cfg(not(feature = "zk"))]
-    type HachiPcs = JoltHachiCommitmentScheme<{ Fp128OneHot32Config::D }, Fp128OneHot32Config>;
+    type AkitaPcs = JoltAkitaCommitmentScheme<{ Fp128OneHot32Config::D }, Fp128OneHot32Config>;
     #[cfg(not(feature = "zk"))]
-    type RV64IMACHachiProver<'a> =
-        JoltCpuProver<'a, JoltFp128, Fp128Curve, HachiPcs, Blake2bTranscript>;
+    type RV64IMACAkitaProver<'a> =
+        JoltCpuProver<'a, JoltFp128, Fp128Curve, AkitaPcs, Blake2bTranscript>;
     #[cfg(not(feature = "zk"))]
-    type RV64IMACHachiVerifier<'a> =
-        JoltVerifier<'a, JoltFp128, Fp128Curve, HachiPcs, Blake2bTranscript>;
+    type RV64IMACAkitaVerifier<'a> =
+        JoltVerifier<'a, JoltFp128, Fp128Curve, AkitaPcs, Blake2bTranscript>;
 
     #[cfg(feature = "zk")]
     fn round_commitment_data<F: JoltField, C: JoltCurve<F = F>, R: rand_core::RngCore>(
@@ -3689,7 +3689,7 @@ mod tests {
     #[cfg(not(feature = "zk"))]
     #[test]
     #[serial]
-    fn muldiv_e2e_hachi() {
+    fn muldiv_e2e_akita() {
         // D=512 rings are ~8KB each; the prove path needs more than the default
         // 8MB thread stack. Rayon workers get 64MB below, and we run the test
         // body on a 64MB thread so the main thread doesn't overflow either.
@@ -3699,14 +3699,14 @@ mod tests {
             .ok();
         std::thread::Builder::new()
             .stack_size(64 * 1024 * 1024)
-            .spawn(muldiv_e2e_hachi_inner)
+            .spawn(muldiv_e2e_akita_inner)
             .unwrap()
             .join()
             .unwrap();
     }
 
     #[cfg(not(feature = "zk"))]
-    fn muldiv_e2e_hachi_inner() {
+    fn muldiv_e2e_akita_inner() {
         let mut program = host::Program::new("muldiv-guest");
         let (bytecode, init_memory_state, _, e_entry) = program.decode();
         let inputs = postcard::to_stdvec(&[9u32, 5u32, 3u32]).unwrap();
@@ -3721,12 +3721,12 @@ mod tests {
         )
         .unwrap();
 
-        let prover_preprocessing = JoltProverPreprocessing::<JoltFp128, Fp128Curve, HachiPcs>::new(
+        let prover_preprocessing = JoltProverPreprocessing::<JoltFp128, Fp128Curve, AkitaPcs>::new(
             shared_preprocessing.clone(),
         );
         let elf_contents_opt = program.get_elf_contents();
         let elf_contents = elf_contents_opt.as_deref().expect("elf contents is None");
-        let prover = RV64IMACHachiProver::gen_from_elf(
+        let prover = RV64IMACAkitaProver::gen_from_elf(
             &prover_preprocessing,
             elf_contents,
             &inputs,
@@ -3740,12 +3740,12 @@ mod tests {
         let (jolt_proof, debug_info) = prover.prove();
 
         let verifier_preprocessing =
-            JoltVerifierPreprocessing::<JoltFp128, Fp128Curve, HachiPcs>::new(
+            JoltVerifierPreprocessing::<JoltFp128, Fp128Curve, AkitaPcs>::new(
                 prover_preprocessing.shared.clone(),
-                HachiPcs::setup_verifier(&prover_preprocessing.generators),
+                AkitaPcs::setup_verifier(&prover_preprocessing.generators),
                 None,
             );
-        let verifier = RV64IMACHachiVerifier::new(
+        let verifier = RV64IMACAkitaVerifier::new(
             &verifier_preprocessing,
             jolt_proof,
             io_device,

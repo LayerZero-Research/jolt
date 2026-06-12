@@ -1,11 +1,11 @@
 use std::{array::from_fn, collections::HashSet, time::Instant};
 
 use super::commitment_scheme::{
-    poly_to_ring_coeffs, Fp128OneHot32Config, HachiBatchedProof, JoltHachiCommitmentScheme,
+    poly_to_ring_coeffs, AkitaBatchedProof, Fp128OneHot32Config, JoltAkitaCommitmentScheme,
 };
 use super::packed_layout::{choose_packed_bit_layout, PackedBitLayout};
 use super::packed_poly::{build_packed_poly, summarize_block_occupancy, JoltPackedPoly};
-use super::wrappers::{jolt_to_hachi, ArkBridge, Fp128, HachiProof};
+use super::wrappers::{jolt_to_akita, AkitaProof, ArkBridge, Fp128};
 use crate::field::fp128::JoltFp128;
 use crate::field::JoltField;
 use crate::poly::commitment::commitment_scheme::{CommitmentScheme, PolynomialBatchSource};
@@ -20,16 +20,16 @@ use akita_algebra::CyclotomicRing;
 use akita_challenges::SparseChallenge;
 use akita_config::proof_optimized::fp128::D32OneHot;
 use akita_config::CommitmentConfig;
-use akita_prover::AkitaPolyOps as HachiPolyOps;
+use akita_prover::AkitaPolyOps;
 use akita_types::{
     sis::num_digits_for_bound, AkitaBatchedRootProof, ClaimIncidenceSummary, FlatMatrix,
 };
 
 type Cfg = D32OneHot;
-type Scheme = JoltHachiCommitmentScheme<{ Cfg::D }, Cfg>;
+type Scheme = JoltAkitaCommitmentScheme<{ Cfg::D }, Cfg>;
 
-fn dummy_hachi_proof() -> HachiProof<Fp128> {
-    HachiProof {
+fn dummy_akita_proof() -> AkitaProof<Fp128> {
+    AkitaProof {
         root: AkitaBatchedRootProof::new_zero_fold(Vec::new()),
         steps: Vec::new(),
     }
@@ -250,7 +250,7 @@ fn polynomial_adapter_preserves_coefficients() {
     let ring_coeffs = poly_to_ring_coeffs::<{ Cfg::D }>(&poly);
 
     assert_eq!(ring_coeffs.len() * Cfg::D, len);
-    for (i, (&jolt_val, hachi_val)) in evals
+    for (i, (&jolt_val, akita_val)) in evals
         .iter()
         .zip(
             ring_coeffs
@@ -263,8 +263,8 @@ fn polynomial_adapter_preserves_coefficients() {
         .enumerate()
     {
         assert_eq!(
-            jolt_to_hachi(&jolt_val),
-            *hachi_val,
+            jolt_to_akita(&jolt_val),
+            *akita_val,
             "coefficient mismatch at index {i}"
         );
     }
@@ -393,7 +393,7 @@ fn packed_layout_reorders_lifted_coeff_bits_for_k16() {
 }
 
 #[test]
-fn packed_layout_preserves_hachi_optimal_total_split() {
+fn packed_layout_preserves_akita_optimal_total_split() {
     let alpha = Cfg::D.trailing_zeros() as usize;
     let log_k = alpha;
 
@@ -1466,7 +1466,7 @@ fn packed_k256_decompose_fold_benchmark_smoke() {
 }
 
 #[test]
-fn hachi_batch_roundtrip_with_packed_layout() {
+fn akita_batch_roundtrip_with_packed_layout() {
     let log_k = Cfg::D.trailing_zeros() as usize;
     let num_cycles = 1usize << 3;
     let source = TestPackedSource::new(
@@ -1507,7 +1507,7 @@ fn hachi_batch_roundtrip_with_packed_layout() {
         .collect();
     let commitment_refs = vec![&commitments[0]];
 
-    let mut prove_transcript = Blake2bTranscript::new(b"hachi_batch_roundtrip");
+    let mut prove_transcript = Blake2bTranscript::new(b"akita_batch_roundtrip");
     let proof = pcs.batch_prove(
         &setup,
         &source,
@@ -1520,7 +1520,7 @@ fn hachi_batch_roundtrip_with_packed_layout() {
         &mut prove_transcript,
     );
 
-    let mut verify_transcript = Blake2bTranscript::new(b"hachi_batch_roundtrip");
+    let mut verify_transcript = Blake2bTranscript::new(b"akita_batch_roundtrip");
     pcs.batch_verify(
         &proof,
         &verifier_setup,
@@ -1534,9 +1534,9 @@ fn hachi_batch_roundtrip_with_packed_layout() {
 }
 
 #[test]
-fn hachi_batch_roundtrip_with_packed_layout_k16() {
+fn akita_batch_roundtrip_with_packed_layout_k16() {
     type FastCfg = Fp128OneHot32Config;
-    type FastScheme = JoltHachiCommitmentScheme<{ FastCfg::D }, FastCfg>;
+    type FastScheme = JoltAkitaCommitmentScheme<{ FastCfg::D }, FastCfg>;
 
     let log_k = 4usize;
     let num_cycles = 1usize << 4;
@@ -1599,7 +1599,7 @@ fn hachi_batch_roundtrip_with_packed_layout_k16() {
         .collect();
     let commitment_refs = vec![&commitments[0]];
 
-    let mut prove_transcript = Blake2bTranscript::new(b"hachi_batch_roundtrip_k16");
+    let mut prove_transcript = Blake2bTranscript::new(b"akita_batch_roundtrip_k16");
     let proof = pcs.batch_prove(
         &setup,
         &source,
@@ -1612,7 +1612,7 @@ fn hachi_batch_roundtrip_with_packed_layout_k16() {
         &mut prove_transcript,
     );
 
-    let mut verify_transcript = Blake2bTranscript::new(b"hachi_batch_roundtrip_k16");
+    let mut verify_transcript = Blake2bTranscript::new(b"akita_batch_roundtrip_k16");
     pcs.batch_verify(
         &proof,
         &verifier_setup,
@@ -1626,9 +1626,9 @@ fn hachi_batch_roundtrip_with_packed_layout_k16() {
 }
 
 #[test]
-fn hachi_k256_setup_envelope_supports_k16_roundtrip() {
+fn akita_k256_setup_envelope_supports_k16_roundtrip() {
     type FastCfg = Fp128OneHot32Config;
-    type FastScheme = JoltHachiCommitmentScheme<{ FastCfg::D }, FastCfg>;
+    type FastScheme = JoltAkitaCommitmentScheme<{ FastCfg::D }, FastCfg>;
 
     let num_cycles = 1usize << 4;
     let source = TestPackedSource::new(
@@ -1683,7 +1683,7 @@ fn hachi_k256_setup_envelope_supports_k16_roundtrip() {
         .collect();
     let commitment_refs = vec![&commitments[0]];
 
-    let mut prove_transcript = Blake2bTranscript::new(b"hachi_setup_envelope_k16");
+    let mut prove_transcript = Blake2bTranscript::new(b"akita_setup_envelope_k16");
     let proof = pcs.batch_prove(
         &setup,
         &source,
@@ -1696,7 +1696,7 @@ fn hachi_k256_setup_envelope_supports_k16_roundtrip() {
         &mut prove_transcript,
     );
 
-    let mut verify_transcript = Blake2bTranscript::new(b"hachi_setup_envelope_k16");
+    let mut verify_transcript = Blake2bTranscript::new(b"akita_setup_envelope_k16");
     pcs.batch_verify(
         &proof,
         &verifier_setup,
@@ -1710,15 +1710,15 @@ fn hachi_k256_setup_envelope_supports_k16_roundtrip() {
 }
 
 #[test]
-fn hachi_batch_verify_rejects_truncated_individual_commitments() {
+fn akita_batch_verify_rejects_truncated_individual_commitments() {
     let setup = Scheme::setup_prover(16);
     let verifier_setup = Scheme::setup_verifier(&setup);
     let pcs = Scheme::default();
     let opening_point = vec![JoltFp128::from_u64(3), JoltFp128::from_u64(5)];
 
-    let packed_poly_proof = ArkBridge(dummy_hachi_proof());
-    let indiv_proof = ArkBridge(dummy_hachi_proof());
-    let proof = HachiBatchedProof {
+    let packed_poly_proof = ArkBridge(dummy_akita_proof());
+    let indiv_proof = ArkBridge(dummy_akita_proof());
+    let proof = AkitaBatchedProof {
         packed_poly_proof,
         num_packed_polys: 2,
         log_k: 1,
@@ -1734,7 +1734,7 @@ fn hachi_batch_verify_rejects_truncated_individual_commitments() {
     ];
     let verify_commitments = vec![&commitment];
 
-    let mut verify_transcript = Blake2bTranscript::new(b"hachi_batch_truncated");
+    let mut verify_transcript = Blake2bTranscript::new(b"akita_batch_truncated");
     let result = pcs.batch_verify(
         &proof,
         &verifier_setup,
@@ -1751,14 +1751,14 @@ fn hachi_batch_verify_rejects_truncated_individual_commitments() {
 }
 
 #[test]
-fn hachi_batch_verify_rejects_invalid_num_packed() {
+fn akita_batch_verify_rejects_invalid_num_packed() {
     let setup = Scheme::setup_prover(16);
     let verifier_setup = Scheme::setup_verifier(&setup);
     let pcs = Scheme::default();
     let opening_point = vec![JoltFp128::from_u64(3), JoltFp128::from_u64(5)];
 
-    let packed_poly_proof = ArkBridge(dummy_hachi_proof());
-    let proof = HachiBatchedProof {
+    let packed_poly_proof = ArkBridge(dummy_akita_proof());
+    let proof = AkitaBatchedProof {
         packed_poly_proof,
         num_packed_polys: 0,
         log_k: 1,
@@ -1769,7 +1769,7 @@ fn hachi_batch_verify_rejects_invalid_num_packed() {
     let claims = vec![JoltFp128::from_u64(1), JoltFp128::from_u64(2)];
     let commitment_refs = vec![&commitment];
 
-    let mut verify_transcript = Blake2bTranscript::new(b"hachi_batch_bad_num_packed");
+    let mut verify_transcript = Blake2bTranscript::new(b"akita_batch_bad_num_packed");
     let result = pcs.batch_verify(
         &proof,
         &verifier_setup,
@@ -1786,15 +1786,15 @@ fn hachi_batch_verify_rejects_invalid_num_packed() {
 }
 
 #[test]
-fn hachi_batch_verify_rejects_invalid_log_k() {
+fn akita_batch_verify_rejects_invalid_log_k() {
     let setup = Scheme::setup_prover(16);
     let verifier_setup = Scheme::setup_verifier(&setup);
     let pcs = Scheme::default();
     let opening_point = vec![JoltFp128::from_u64(3), JoltFp128::from_u64(5)];
     let claim = JoltFp128::from_u64(7);
 
-    let packed_poly_proof = ArkBridge(dummy_hachi_proof());
-    let proof = HachiBatchedProof {
+    let packed_poly_proof = ArkBridge(dummy_akita_proof());
+    let proof = AkitaBatchedProof {
         packed_poly_proof,
         num_packed_polys: 1,
         log_k: (opening_point.len() + 1) as u32,
@@ -1804,7 +1804,7 @@ fn hachi_batch_verify_rejects_invalid_log_k() {
     let claims = vec![claim];
     let commitment_refs = vec![&commitment];
 
-    let mut verify_transcript = Blake2bTranscript::new(b"hachi_single_bad_log_k");
+    let mut verify_transcript = Blake2bTranscript::new(b"akita_single_bad_log_k");
     let result = pcs.batch_verify(
         &proof,
         &verifier_setup,

@@ -73,7 +73,7 @@ pub trait CommitmentScheme: Clone + Sync + Send + Default + 'static {
     type BatchedProof: Sync + Send + CanonicalSerialize + CanonicalDeserialize;
     /// Per-polynomial hint from individual `commit()` calls (e.g. Dory row commitments).
     type OpeningProofHint: Sync + Send + Clone + Debug + PartialEq;
-    /// Hint produced by `batch_commit()` for the entire batch (e.g. Hachi packed commitment witness).
+    /// Hint produced by `batch_commit()` for the entire batch (e.g. Akita packed commitment witness).
     type BatchOpeningHint: Sync + Send + Clone + Debug;
 
     fn setup_prover(max_num_vars: usize) -> Self::ProverSetup;
@@ -199,7 +199,7 @@ pub trait CommitmentScheme: Clone + Sync + Send + Default + 'static {
     /// Extract per-polynomial hints from a batch hint.
     /// For PCS where `BatchOpeningHint` contains per-polynomial data (e.g. Dory),
     /// returns a clone of the per-polynomial hints. For PCS where the batch hint
-    /// is a single aggregate (e.g. Hachi), returns an empty Vec.
+    /// is a single aggregate (e.g. Akita), returns an empty Vec.
     fn split_batch_hint(batch_hint: &Self::BatchOpeningHint) -> Vec<Self::OpeningProofHint>;
 
     fn protocol_name() -> &'static [u8];

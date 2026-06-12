@@ -72,7 +72,7 @@ pub enum CommittedPolynomial {
 /// Returns the list of committed polynomials for a given PCS.
 ///
 /// When `onehot_inc` is false (Dory), increments are committed as dense `RdInc` / `RamInc`.
-/// When `onehot_inc` is true (Hachi), increments are committed as:
+/// When `onehot_inc` is true (Akita), increments are committed as:
 /// - `RdIncRa(0..7)` + `RdIncMsb`
 /// - `RamIncRa(0..7)` + `RamIncMsb`
 pub fn all_committed_polynomials(

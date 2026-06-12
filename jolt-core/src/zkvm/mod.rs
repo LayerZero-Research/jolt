@@ -192,23 +192,23 @@ pub type RV64IMACVerifier<'a> =
     JoltVerifier<'a, Fr, Bn254Curve, DoryCommitmentScheme, Blake2bTranscript>;
 pub type RV64IMACProof = JoltProof<Fr, Bn254Curve, DoryCommitmentScheme, Blake2bTranscript>;
 
-pub type HachiPcs = crate::poly::commitment::hachi::JoltHachiCommitmentScheme<
-    { <crate::poly::commitment::hachi::Fp128OneHot32Config as akita_config::CommitmentConfig>::D },
-    crate::poly::commitment::hachi::Fp128OneHot32Config,
+pub type AkitaPcs = crate::poly::commitment::akita::JoltAkitaCommitmentScheme<
+    { <crate::poly::commitment::akita::Fp128OneHot32Config as akita_config::CommitmentConfig>::D },
+    crate::poly::commitment::akita::Fp128OneHot32Config,
 >;
 #[cfg(feature = "prover")]
-pub type RV64IMACHachiProver<'a> = JoltCpuProver<
+pub type RV64IMACAkitaProver<'a> = JoltCpuProver<
     'a,
     crate::field::fp128::JoltFp128,
     crate::curve::fp128_curve::Fp128Curve,
-    HachiPcs,
+    AkitaPcs,
     Blake2bTranscript,
 >;
-pub type RV64IMACHachiVerifier<'a> = JoltVerifier<
+pub type RV64IMACAkitaVerifier<'a> = JoltVerifier<
     'a,
     crate::field::fp128::JoltFp128,
     crate::curve::fp128_curve::Fp128Curve,
-    HachiPcs,
+    AkitaPcs,
     Blake2bTranscript,
 >;
 

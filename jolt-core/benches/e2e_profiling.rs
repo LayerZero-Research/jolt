@@ -3,7 +3,7 @@ use jolt_core::host;
 use jolt_core::zkvm::prover::JoltProverPreprocessing;
 use jolt_core::zkvm::verifier::{JoltSharedPreprocessing, JoltVerifierPreprocessing};
 use jolt_core::zkvm::{
-    HachiPcs, RV64IMACHachiProver, RV64IMACHachiVerifier, RV64IMACProver, RV64IMACVerifier,
+    AkitaPcs, RV64IMACAkitaProver, RV64IMACAkitaVerifier, RV64IMACProver, RV64IMACVerifier,
 };
 use std::fs;
 use std::io::Write;
@@ -13,7 +13,7 @@ use std::time::Instant;
 #[strum(serialize_all = "kebab-case")]
 pub enum PcsChoice {
     Dory,
-    Hachi,
+    Akita,
 }
 
 // Empirically measured cycles per operation for RV64IMAC
@@ -160,7 +160,7 @@ pub fn master_benchmark(
 
         let pcs_label = match pcs {
             PcsChoice::Dory => "dory",
-            PcsChoice::Hachi => "hachi",
+            PcsChoice::Akita => "akita",
         };
         tracing::info!("Running {bench_name} benchmark at scale 2^{bench_scale} with {pcs_label}");
 
@@ -174,8 +174,8 @@ pub fn master_benchmark(
                 bench_name,
                 bench_scale,
             ),
-            PcsChoice::Hachi => {
-                prove_example_with_trace_hachi(&guest_name, input, max_trace_length)
+            PcsChoice::Akita => {
+                prove_example_with_trace_akita(&guest_name, input, max_trace_length)
             }
         };
 
@@ -232,7 +232,7 @@ fn prove_example(
 ) -> Vec<(tracing::Span, Box<dyn FnOnce()>)> {
     match pcs {
         PcsChoice::Dory => prove_example_dory(example_name, serialized_input),
-        PcsChoice::Hachi => prove_example_hachi(example_name, serialized_input),
+        PcsChoice::Akita => prove_example_akita(example_name, serialized_input),
     }
 }
 
@@ -285,7 +285,7 @@ fn prove_example_dory(
     )]
 }
 
-fn prove_example_hachi(
+fn prove_example_akita(
     example_name: &str,
     serialized_input: Vec<u8>,
 ) -> Vec<(tracing::Span, Box<dyn FnOnce()>)> {
@@ -305,11 +305,11 @@ fn prove_example_hachi(
         )
         .unwrap();
         let preprocessing =
-            JoltProverPreprocessing::<_, _, HachiPcs>::new(shared_preprocessing.clone());
+            JoltProverPreprocessing::<_, _, AkitaPcs>::new(shared_preprocessing.clone());
 
         let elf_contents_opt = program.get_elf_contents();
         let elf_contents = elf_contents_opt.as_deref().expect("elf contents is None");
-        let prover = RV64IMACHachiProver::gen_from_elf(
+        let prover = RV64IMACAkitaProver::gen_from_elf(
             &preprocessing,
             elf_contents,
             &serialized_input,
@@ -324,7 +324,7 @@ fn prove_example_hachi(
 
         let verifier_preprocessing = JoltVerifierPreprocessing::from(&preprocessing);
         let verifier =
-            RV64IMACHachiVerifier::new(&verifier_preprocessing, jolt_proof, program_io, None, None)
+            RV64IMACAkitaVerifier::new(&verifier_preprocessing, jolt_proof, program_io, None, None)
                 .expect("Failed to create verifier");
         verifier.verify().unwrap();
     };
@@ -414,7 +414,7 @@ fn prove_example_with_trace_dory(
     )
 }
 
-fn prove_example_with_trace_hachi(
+fn prove_example_with_trace_akita(
     example_name: &str,
     serialized_input: Vec<u8>,
     max_trace_length: usize,
@@ -437,13 +437,13 @@ fn prove_example_with_trace_hachi(
     )
     .unwrap();
     let preprocessing =
-        JoltProverPreprocessing::<_, _, HachiPcs>::new(shared_preprocessing.clone());
+        JoltProverPreprocessing::<_, _, AkitaPcs>::new(shared_preprocessing.clone());
 
     let elf_contents_opt = program.get_elf_contents();
     let elf_contents = elf_contents_opt.as_deref().expect("elf contents is None");
 
     let span = tracing::info_span!("E2E").entered();
-    let prover = RV64IMACHachiProver::gen_from_elf(
+    let prover = RV64IMACAkitaProver::gen_from_elf(
         &preprocessing,
         elf_contents,
         &serialized_input,
@@ -461,7 +461,7 @@ fn prove_example_with_trace_hachi(
 
     let verifier_preprocessing = JoltVerifierPreprocessing::from(&preprocessing);
     let verifier =
-        RV64IMACHachiVerifier::new(&verifier_preprocessing, jolt_proof, program_io, None, None)
+        RV64IMACAkitaVerifier::new(&verifier_preprocessing, jolt_proof, program_io, None, None)
             .expect("Failed to create verifier");
     verifier.verify().unwrap();
 

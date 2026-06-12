@@ -255,7 +255,7 @@ impl PackedBitLayout {
     }
 
     #[inline]
-    pub(super) fn into_hachi_layout<Cfg: CommitmentConfig>(self, _log_basis: u32) -> LevelParams {
+    pub(super) fn into_akita_layout<Cfg: CommitmentConfig>(self, _log_basis: u32) -> LevelParams {
         let params = level0_level_params::<Cfg>(self.total_num_vars());
         let log_basis = params.log_basis;
         params

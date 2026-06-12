@@ -2,10 +2,12 @@ use crate::field::fp128::JoltFp128;
 use crate::transcripts::Transcript as JoltTranscript;
 use akita_field::FieldCore;
 use akita_field::Prime128OffsetA7F7;
-use akita_prover::AkitaProverSetup;
+use akita_prover::AkitaProverSetup as UpstreamAkitaProverSetup;
 use akita_serialization::{AkitaSerialize, Compress as AkitaCompress};
 use akita_transcript::Transcript as AkitaTranscript;
-use akita_types::{AkitaBatchedProof, AkitaVerifierSetup, RingCommitment};
+use akita_types::{
+    AkitaBatchedProof, AkitaVerifierSetup as UpstreamAkitaVerifierSetup, RingCommitment,
+};
 use ark_serialize::{
     CanonicalDeserialize, CanonicalSerialize, Compress, SerializationError, Valid, Validate,
 };
@@ -15,14 +17,14 @@ use std::sync::Arc;
 pub type Fp128 = Prime128OffsetA7F7;
 
 #[inline]
-pub fn jolt_to_hachi(f: &JoltFp128) -> Fp128 {
+pub fn jolt_to_akita(f: &JoltFp128) -> Fp128 {
     // SAFETY: JoltFp128 is repr(transparent) over Prime128OffsetA7F7.
     unsafe { std::mem::transmute_copy(f) }
 }
 
 #[inline]
 #[allow(dead_code)]
-pub fn hachi_to_jolt(f: &Fp128) -> JoltFp128 {
+pub fn akita_to_jolt(f: &Fp128) -> JoltFp128 {
     // SAFETY: JoltFp128 is repr(transparent) over Prime128OffsetA7F7.
     unsafe { std::mem::transmute_copy(f) }
 }
@@ -34,26 +36,24 @@ struct TranscriptSyncTarget<T: JoltTranscript> {
 unsafe impl<T: JoltTranscript> Send for TranscriptSyncTarget<T> {}
 unsafe impl<T: JoltTranscript> Sync for TranscriptSyncTarget<T> {}
 
-pub type HachiProof<F> = AkitaBatchedProof<F, F>;
-pub type HachiVerifierSetup<F> = AkitaVerifierSetup<F>;
-pub type HachiProverSetup<F, const D: usize> = AkitaProverSetup<F, D>;
+pub type AkitaProof<F> = AkitaBatchedProof<F, F>;
+pub type AkitaVerifierSetup<F> = UpstreamAkitaVerifierSetup<F>;
+pub type AkitaProverSetup<F, const D: usize> = UpstreamAkitaProverSetup<F, D>;
 
 /// Bridge adapter: wraps a Jolt transcript pointer and implements Akita's Transcript trait.
-/// The type name is legacy and will be mechanically renamed with the rest of
-/// the adapter.
 ///
 /// Uses a raw pointer internally because Akita's `Transcript` trait requires `'static`,
 /// but we need to borrow a Jolt transcript that has a limited lifetime. The adapter is
 /// always used in a strictly scoped manner within a single prove/verify call.
-pub struct JoltToHachiTranscript<T: JoltTranscript> {
+pub struct JoltToAkitaTranscript<T: JoltTranscript> {
     state: T,
     sync_target: Option<Arc<TranscriptSyncTarget<T>>>,
 }
 
-unsafe impl<T: JoltTranscript> Send for JoltToHachiTranscript<T> {}
-unsafe impl<T: JoltTranscript> Sync for JoltToHachiTranscript<T> {}
+unsafe impl<T: JoltTranscript> Send for JoltToAkitaTranscript<T> {}
+unsafe impl<T: JoltTranscript> Sync for JoltToAkitaTranscript<T> {}
 
-impl<T: JoltTranscript> JoltToHachiTranscript<T> {
+impl<T: JoltTranscript> JoltToAkitaTranscript<T> {
     pub fn new(transcript: &mut T) -> Self {
         Self {
             state: transcript.clone(),
@@ -69,11 +69,11 @@ impl<T: JoltTranscript> JoltToHachiTranscript<T> {
 
     #[inline]
     fn absorb_label(&mut self, label: &[u8]) {
-        self.inner().append_bytes(b"hachi_label", label);
+        self.inner().append_bytes(b"akita_label", label);
     }
 }
 
-impl<T: JoltTranscript> Clone for JoltToHachiTranscript<T> {
+impl<T: JoltTranscript> Clone for JoltToAkitaTranscript<T> {
     fn clone(&self) -> Self {
         Self {
             state: self.state.clone(),
@@ -82,7 +82,7 @@ impl<T: JoltTranscript> Clone for JoltToHachiTranscript<T> {
     }
 }
 
-impl<T: JoltTranscript> Drop for JoltToHachiTranscript<T> {
+impl<T: JoltTranscript> Drop for JoltToAkitaTranscript<T> {
     fn drop(&mut self) {
         if let Some(target) = &self.sync_target {
             if Arc::strong_count(target) == 1 {
@@ -98,9 +98,9 @@ impl<T: JoltTranscript> Drop for JoltToHachiTranscript<T> {
     }
 }
 
-impl<T: JoltTranscript> AkitaTranscript<Fp128> for JoltToHachiTranscript<T> {
+impl<T: JoltTranscript> AkitaTranscript<Fp128> for JoltToAkitaTranscript<T> {
     fn new(_domain_label: &[u8]) -> Self {
-        unimplemented!("use JoltToHachiTranscript::new(transcript) to wrap an existing transcript")
+        unimplemented!("use JoltToAkitaTranscript::new(transcript) to wrap an existing transcript")
     }
 
     fn bind_instance_bytes(&mut self, instance_bytes: &[u8]) {
@@ -130,7 +130,7 @@ impl<T: JoltTranscript> AkitaTranscript<Fp128> for JoltToHachiTranscript<T> {
     fn challenge_scalar(&mut self, _label: &[u8]) -> Fp128 {
         self.absorb_label(_label);
         let jolt_challenge: JoltFp128 = self.inner().challenge_scalar();
-        jolt_to_hachi(&jolt_challenge)
+        jolt_to_akita(&jolt_challenge)
     }
 
     fn challenge_bytes(&mut self, _label: &[u8], len: usize) -> Vec<u8> {
@@ -209,8 +209,8 @@ macro_rules! impl_ark_serialize_via_akita {
     };
 }
 
-impl_ark_serialize_via_akita!(HachiProof<F>);
-impl_ark_serialize_via_akita!(HachiVerifierSetup<F>);
+impl_ark_serialize_via_akita!(AkitaProof<F>);
+impl_ark_serialize_via_akita!(AkitaVerifierSetup<F>);
 
 impl<F: FieldCore + AkitaSerialize, const D: usize> CanonicalSerialize
     for ArkBridge<RingCommitment<F, D>>
@@ -231,7 +231,7 @@ impl<F: FieldCore + AkitaSerialize, const D: usize> CanonicalSerialize
 /// (its NTT cache is derived). Delegate serialization to the inner expanded
 /// setup so Jolt's `CommitmentScheme::ProverSetup` bound is still satisfied.
 impl<F: FieldCore + AkitaSerialize, const D: usize> CanonicalSerialize
-    for ArkBridge<HachiProverSetup<F, D>>
+    for ArkBridge<AkitaProverSetup<F, D>>
 {
     fn serialize_with_mode<W: Write>(
         &self,

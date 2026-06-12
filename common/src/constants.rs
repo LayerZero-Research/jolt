@@ -15,7 +15,7 @@ pub const ONEHOT_CHUNK_THRESHOLD_LOG_T: usize = 25;
 /// Akita-specific threshold for the one-hot chunking switch.
 /// Smaller Akita traces (`log_t < 21`) use `log_k_chunk = 4`; larger traces use
 /// `log_k_chunk = 8`.
-pub const HACHI_ONEHOT_CHUNK_THRESHOLD_LOG_T: usize = 21;
+pub const AKITA_ONEHOT_CHUNK_THRESHOLD_LOG_T: usize = 21;
 
 /// Threshold for trace length (log scale) at which we switch the number of
 /// instruction sumcheck phases from 16 to 8. Below this threshold, we use
