@@ -6,11 +6,16 @@ pub const REGISTER_COUNT: u8 = RISCV_REGISTER_COUNT + VIRTUAL_REGISTER_COUNT; //
 pub const BYTES_PER_INSTRUCTION: usize = 4;
 pub const ALIGNMENT_FACTOR_BYTECODE: usize = 2;
 
-/// Threshold for trace length (log scale) at which we switch between different
+/// Threshold for trace length (log scale) at which Dory switches between different
 /// one-hot chunking parameters. Below this threshold (i.e., for smaller traces),
-/// we use smaller chunk sizes for better performance (reduced commitment & PCS opening costs).
+/// we use smaller chunk sizes (log_k_chunk=4 vs 8) for better performance.
 /// This value was empirically determined.
 pub const ONEHOT_CHUNK_THRESHOLD_LOG_T: usize = 25;
+
+/// Akita-specific threshold for the one-hot chunking switch.
+/// Smaller Akita traces (`log_t < 21`) use `log_k_chunk = 4`; larger traces use
+/// `log_k_chunk = 8`.
+pub const AKITA_ONEHOT_CHUNK_THRESHOLD_LOG_T: usize = 21;
 
 /// Threshold for trace length (log scale) at which we switch the number of
 /// instruction sumcheck phases from 16 to 8. Below this threshold, we use

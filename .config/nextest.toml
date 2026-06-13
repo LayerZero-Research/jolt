@@ -12,5 +12,9 @@ filter = 'test(dory)'
 test-group = 'dory'
 
 [[profile.default.overrides]]
+filter = 'test(akita)'
+slow-timeout = { period = "120s", terminate-after = 100 }
+
+[[profile.default.overrides]]
 filter = 'package(jolt-verifier) and test(zk)'
 test-group = 'zk-core-fixtures'

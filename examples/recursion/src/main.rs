@@ -3,8 +3,8 @@ use ark_serialize::CanonicalSerialize;
 use clap::{Parser, Subcommand};
 use jolt_sdk::guest::program::Program;
 use jolt_sdk::{
-    JoltDevice, JoltProverPreprocessing, JoltSharedPreprocessing, JoltVerifierPreprocessing,
-    MemoryConfig, MemoryLayout, ProgramPreprocessing, RV64IMACProof, Serializable,
+    JoltDevice, JoltProverPreprocessing, JoltVerifierPreprocessing, MemoryConfig, RV64IMACProof,
+    Serializable,
 };
 use std::cmp::PartialEq;
 use std::path::{Path, PathBuf};
@@ -35,9 +35,6 @@ enum Commands {
         /// Working directory for output files
         #[arg(long, value_name = "DIRECTORY", default_value = "output")]
         workdir: PathBuf,
-        /// Use committed program mode for the inner guest proof
-        #[arg(long, value_name = "CHUNKS")]
-        committed_bytecode: Option<usize>,
     },
     /// Verify proofs and optionally embed them
     Verify {
@@ -278,33 +275,11 @@ fn check_data_integrity(all_groups_data: &[u8]) -> (u32, u32) {
 fn preprocess_guest_prover(
     guest_prog: &mut Program,
     max_trace_length: usize,
-    bytecode_chunk_count: Option<usize>,
 ) -> JoltProverPreprocessing<jolt_sdk::F, jolt_sdk::Curve, jolt_sdk::PCS> {
-    if let Some(chunk_count) = bytecode_chunk_count {
-        let (bytecode, memory_init, program_size, e_entry) = guest_prog.decode();
-        let mut memory_config = guest_prog.memory_config;
-        memory_config.program_size = Some(program_size);
-        let memory_layout = MemoryLayout::new(&memory_config);
-        let program = ProgramPreprocessing::preprocess(bytecode, memory_init, e_entry).unwrap();
-        let (shared, committed_program_prover_data, generators) =
-            JoltSharedPreprocessing::new_committed(
-                program,
-                memory_layout,
-                max_trace_length,
-                chunk_count,
-            );
-        JoltProverPreprocessing::new_committed(shared, committed_program_prover_data, generators)
-    } else {
-        jolt_sdk::guest::prover::preprocess(guest_prog, max_trace_length).unwrap()
-    }
+    jolt_sdk::guest::prover::preprocess(guest_prog, max_trace_length).unwrap()
 }
 
-fn collect_guest_proofs(
-    guest: GuestProgram,
-    target_dir: &str,
-    use_embed: bool,
-    bytecode_chunk_count: Option<usize>,
-) -> Vec<u8> {
+fn collect_guest_proofs(guest: GuestProgram, target_dir: &str, use_embed: bool) -> Vec<u8> {
     info!("Starting collect_guest_proofs for {}", guest.name());
     let max_trace_length = guest.get_max_trace_length(use_embed);
 
@@ -328,8 +303,7 @@ fn collect_guest_proofs(
     guest_prog.elf = program.elf;
 
     info!("Preprocessing guest prover...");
-    let guest_prover_preprocessing =
-        preprocess_guest_prover(&mut guest_prog, max_trace_length, bytecode_chunk_count);
+    let guest_prover_preprocessing = preprocess_guest_prover(&mut guest_prog, max_trace_length);
     info!("Preprocessing guest verifier...");
     let guest_verifier_preprocessing = JoltVerifierPreprocessing::from(&guest_prover_preprocessing);
 
@@ -484,13 +458,13 @@ fn load_proof_data(guest: GuestProgram, workdir: &Path) -> Vec<u8> {
     proof_data
 }
 
-fn generate_proofs(guest: GuestProgram, workdir: &Path, bytecode_chunk_count: Option<usize>) {
+fn generate_proofs(guest: GuestProgram, workdir: &Path) {
     info!("Generating proofs for {} guest program...", guest.name());
 
     let target_dir = "/tmp/jolt-guest-targets";
 
     // Collect guest proofs
-    let all_groups_data = collect_guest_proofs(guest, target_dir, false, bytecode_chunk_count);
+    let all_groups_data = collect_guest_proofs(guest, target_dir, false);
 
     // Save proof data
     save_proof_data(guest, &all_groups_data, workdir);
@@ -655,11 +629,7 @@ fn main() {
     let cli = Cli::parse();
 
     match &cli.command {
-        Some(Commands::Generate {
-            example,
-            workdir,
-            committed_bytecode,
-        }) => {
+        Some(Commands::Generate { example, workdir }) => {
             let guest = match GuestProgram::from_str(example) {
                 Some(guest) => guest,
                 None => {
@@ -667,7 +637,7 @@ fn main() {
                     return;
                 }
             };
-            generate_proofs(guest, workdir, *committed_bytecode);
+            generate_proofs(guest, workdir);
         }
         Some(Commands::Verify {
             example,
@@ -727,7 +697,6 @@ fn main() {
             info!("Examples:");
             info!("  cargo run --release -- generate --example fibonacci");
             info!("  cargo run --release -- generate --example fibonacci --workdir ./output");
-            info!("  cargo run --release -- generate --example fibonacci --committed-bytecode 16");
             info!("  cargo run --release -- verify --example fibonacci");
             info!("  cargo run --release -- verify --example fibonacci --workdir ./output --embed");
             info!("  cargo run --release -- trace --example fibonacci --embed");

@@ -78,9 +78,7 @@ impl MacroBuilder {
         let trace_to_file_fn = self.make_trace_to_file_func();
         let compile_fn = self.make_compile_func();
         let preprocess_shared_fn = self.make_preprocess_shared_func();
-        let preprocess_shared_committed_fn = self.make_preprocess_shared_committed_func();
         let preprocess_prover_fn = self.make_preprocess_prover_func();
-        let preprocess_committed_prover_fn = self.make_preprocess_committed_prover_func();
         let preprocess_verifier_fn = self.make_preprocess_verifier_func();
         let verifier_preprocess_from_prover_fn = self.make_preprocess_from_prover_func();
         let commit_trusted_advice_fn = self.make_commit_trusted_advice_func();
@@ -115,9 +113,7 @@ impl MacroBuilder {
             #trace_to_file_fn
             #compile_fn
             #preprocess_shared_fn
-            #preprocess_shared_committed_fn
             #preprocess_prover_fn
-            #preprocess_committed_prover_fn
             #preprocess_verifier_fn
             #verifier_preprocess_from_prover_fn
             #commit_trusted_advice_fn
@@ -559,74 +555,13 @@ impl MacroBuilder {
                 };
                 let memory_layout = MemoryLayout::new(&memory_config);
 
-                let program_data =
-                    jolt::ProgramPreprocessing::preprocess(bytecode, memory_init, e_entry)?;
-                Ok(JoltSharedPreprocessing::new(
-                    program_data,
+                JoltSharedPreprocessing::new(
+                    bytecode,
                     memory_layout,
+                    memory_init,
                     #max_trace_length,
-                ))
-            }
-        }
-    }
-
-    fn make_preprocess_shared_committed_func(&self) -> TokenStream2 {
-        let imports = self.make_imports();
-        let attributes = parse_attributes(&self.attr);
-        let max_input_size = proc_macro2::Literal::u64_unsuffixed(attributes.max_input_size);
-        let max_output_size = proc_macro2::Literal::u64_unsuffixed(attributes.max_output_size);
-        let max_untrusted_advice_size =
-            proc_macro2::Literal::u64_unsuffixed(attributes.max_untrusted_advice_size);
-        let max_trusted_advice_size =
-            proc_macro2::Literal::u64_unsuffixed(attributes.max_trusted_advice_size);
-        let stack_size = proc_macro2::Literal::u64_unsuffixed(attributes.stack_size);
-        let heap_size = proc_macro2::Literal::u64_unsuffixed(attributes.heap_size);
-        let max_trace_length = proc_macro2::Literal::u64_unsuffixed(attributes.max_trace_length);
-
-        let fn_name = self.get_func_name();
-        let preprocess_shared_committed_fn_name = Ident::new(
-            &format!("preprocess_shared_committed_{fn_name}"),
-            fn_name.span(),
-        );
-        quote! {
-            #[cfg(all(not(target_arch = "wasm32"), not(feature = "guest")))]
-            pub fn #preprocess_shared_committed_fn_name(
-                program: &mut dyn jolt::host::JoltProgramSource,
-                bytecode_chunk_count: usize,
-            ) -> Result<
-                (
-                    jolt::JoltSharedPreprocessing,
-                    jolt::CommittedProgramProverData<jolt::PCS>,
-                    <jolt::PCS as jolt::CommitmentScheme>::ProverSetup,
-                ),
-                jolt::PreprocessingError,
-            >
-            {
-                #imports
-
-                let (bytecode, memory_init, program_size, e_entry) = program.decode();
-                let memory_config = MemoryConfig {
-                    max_input_size: #max_input_size,
-                    max_output_size: #max_output_size,
-                    max_untrusted_advice_size: #max_untrusted_advice_size,
-                    max_trusted_advice_size: #max_trusted_advice_size,
-                    stack_size: #stack_size,
-                    heap_size: #heap_size,
-                    program_size: Some(program_size),
-                };
-                let memory_layout = MemoryLayout::new(&memory_config);
-
-                let program_data =
-                    jolt::ProgramPreprocessing::preprocess(bytecode, memory_init, e_entry)?;
-                let (shared_preprocessing, committed_program_prover_data, generators) =
-                    JoltSharedPreprocessing::new_committed(
-                        program_data,
-                        memory_layout,
-                        #max_trace_length,
-                        bytecode_chunk_count,
-                    );
-
-                Ok((shared_preprocessing, committed_program_prover_data, generators))
+                    e_entry,
+                )
             }
         }
     }
@@ -648,39 +583,6 @@ impl MacroBuilder {
                 let prover_preprocessing = JoltProverPreprocessing::new(shared_preprocessing);
 
                 prover_preprocessing
-            }
-        }
-    }
-
-    fn make_preprocess_committed_prover_func(&self) -> TokenStream2 {
-        let imports = self.make_imports();
-
-        let fn_name = self.get_func_name();
-        let preprocess_committed_fn_name =
-            Ident::new(&format!("preprocess_committed_{fn_name}"), fn_name.span());
-        let preprocess_shared_committed_fn_name = Ident::new(
-            &format!("preprocess_shared_committed_{fn_name}"),
-            fn_name.span(),
-        );
-        quote! {
-            #[cfg(all(not(target_arch = "wasm32"), not(feature = "guest")))]
-            pub fn #preprocess_committed_fn_name(
-                program: &mut jolt::host::Program,
-                bytecode_chunk_count: usize,
-            )
-                -> Result<
-                    jolt::JoltProverPreprocessing<jolt::F, jolt::Curve, jolt::PCS>,
-                    jolt::PreprocessingError,
-                >
-            {
-                #imports
-                let (shared_preprocessing, committed_program_prover_data, generators) =
-                    #preprocess_shared_committed_fn_name(program, bytecode_chunk_count)?;
-                Ok(JoltProverPreprocessing::new_committed(
-                    shared_preprocessing,
-                    committed_program_prover_data,
-                    generators,
-                ))
             }
         }
     }
@@ -800,7 +702,7 @@ impl MacroBuilder {
                 let _ctx = jolt::DoryGlobals::with_context(jolt::DoryContext::TrustedAdvice);
 
                 let poly = MultilinearPolynomial::<jolt::F>::from(trusted_advice_vec);
-                let (commitment, hint) = jolt::PCS::commit(&poly, &preprocessing.generators);
+                let (commitment, hint) = jolt::PCS::default().commit(&poly, &preprocessing.generators);
 
                 (Some(commitment), Some(hint))
             }

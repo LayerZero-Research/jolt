@@ -33,8 +33,6 @@
 //! This must match exactly how the Poseidon transcript hashes commitments.
 
 use crate::symbolic_traits::ast_commitment_scheme::AstCommitmentScheme;
-#[cfg(not(feature = "zk"))]
-use crate::symbolic_traits::ast_commitment_scheme::AstProof;
 use crate::symbolic_traits::ast_curve::AstCurve;
 use crate::symbolic_traits::opening_accumulator::AstOpeningAccumulator;
 use ark_ff::PrimeField;
@@ -400,13 +398,13 @@ pub fn symbolize_proof<OutputTranscript: Transcript>(
             stage6a_sumcheck_proof: stage6a_sumcheck,
             stage6b_sumcheck_proof: stage6b_sumcheck,
             stage7_sumcheck_proof: stage7_sumcheck,
-            joint_opening_proof: AstProof::default(),
+            joint_opening_proof: Default::default(),
             untrusted_advice_commitment,
             trace_length: real_proof.trace_length,
             ram_K: real_proof.ram_K,
             rw_config: real_proof.rw_config.clone(),
             one_hot_config: real_proof.one_hot_config.clone(),
-            dory_layout: real_proof.dory_layout,
+            pcs_config: Default::default(),
         };
 
         // Build the opening accumulator with the symbolic claims we created

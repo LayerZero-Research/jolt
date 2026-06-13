@@ -45,8 +45,9 @@
 
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use jolt_core::field::JoltField;
-use jolt_core::poly::commitment::commitment_scheme::CommitmentScheme;
+use jolt_core::poly::commitment::commitment_scheme::{CommitmentScheme, PolynomialBatchSource};
 use jolt_core::poly::multilinear_polynomial::MultilinearPolynomial;
+use jolt_core::poly::opening_proof::BatchPolynomialSource;
 use jolt_core::transcripts::Transcript;
 use jolt_core::utils::errors::ProofVerifyError;
 use std::borrow::Borrow;
@@ -61,8 +62,13 @@ use zklean_extractor::AstCommitment;
 ///
 /// This is used to instantiate `TranspilableVerifier<MleAst, AstCommitmentScheme, ...>`
 /// for symbolic execution that generates Gnark circuits.
-#[derive(Clone, Debug)]
-pub struct AstCommitmentScheme;
+#[derive(Clone, Debug, Default, CanonicalSerialize, CanonicalDeserialize)]
+pub struct AstConfig;
+
+#[derive(Clone, Debug, Default)]
+pub struct AstCommitmentScheme {
+    config: AstConfig,
+}
 
 /// Verifier setup - empty for symbolic execution
 #[derive(Clone, Debug, Default, CanonicalSerialize, CanonicalDeserialize)]
@@ -84,18 +90,32 @@ pub struct AstBatchedProof(pub Vec<MleAst>);
 #[derive(Clone, Debug, Default, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct AstOpeningHint;
 
+/// Batch opening hint - not used in verification
+#[derive(Clone, Debug, Default)]
+pub struct AstBatchOpeningHint;
+
 // =============================================================================
 // CommitmentScheme Implementation
 // =============================================================================
 
 impl CommitmentScheme for AstCommitmentScheme {
     type Field = MleAst;
+    type Config = AstConfig;
     type ProverSetup = AstProverSetup;
     type VerifierSetup = AstVerifierSetup;
     type Commitment = AstCommitment;
     type Proof = AstProof;
     type BatchedProof = AstBatchedProof;
     type OpeningProofHint = AstOpeningHint;
+    type BatchOpeningHint = AstBatchOpeningHint;
+
+    fn from_proof(_proof: &Self::BatchedProof) -> Self {
+        Self::default()
+    }
+
+    fn config(&self) -> &Self::Config {
+        &self.config
+    }
 
     fn setup_prover(_max_num_vars: usize) -> Self::ProverSetup {
         panic!("AstCommitmentScheme::setup_prover should never be called during verification")
@@ -106,19 +126,18 @@ impl CommitmentScheme for AstCommitmentScheme {
     }
 
     fn commit(
+        &self,
         _poly: &MultilinearPolynomial<Self::Field>,
         _setup: &Self::ProverSetup,
     ) -> (Self::Commitment, Self::OpeningProofHint) {
         panic!("AstCommitmentScheme::commit should never be called during verification")
     }
 
-    fn batch_commit<U>(
-        _polys: &[U],
+    fn batch_commit<S: PolynomialBatchSource<Self::Field>>(
+        &self,
+        _source: &S,
         _gens: &Self::ProverSetup,
-    ) -> Vec<(Self::Commitment, Self::OpeningProofHint)>
-    where
-        U: Borrow<MultilinearPolynomial<Self::Field>> + Sync,
-    {
+    ) -> (Vec<Self::Commitment>, Self::BatchOpeningHint) {
         panic!("AstCommitmentScheme::batch_commit should never be called during verification")
     }
 
@@ -132,16 +151,19 @@ impl CommitmentScheme for AstCommitmentScheme {
     }
 
     fn prove<ProofTranscript: Transcript>(
+        &self,
         _setup: &Self::ProverSetup,
         _poly: &MultilinearPolynomial<Self::Field>,
         _opening_point: &[<Self::Field as JoltField>::Challenge],
         _hint: Option<Self::OpeningProofHint>,
         _transcript: &mut ProofTranscript,
+        _commitment: &Self::Commitment,
     ) -> (Self::Proof, Option<Self::Field>) {
         panic!("AstCommitmentScheme::prove should never be called during verification")
     }
 
     fn verify<ProofTranscript: Transcript>(
+        &self,
         _proof: &Self::Proof,
         _setup: &Self::VerifierSetup,
         _transcript: &mut ProofTranscript,
@@ -152,6 +174,38 @@ impl CommitmentScheme for AstCommitmentScheme {
         // TODO: Implement for stage 8 PCS verification
         // This should generate symbolic constraints for the opening check
         todo!("AstCommitmentScheme::verify - implement for stage 8")
+    }
+
+    fn batch_prove<ProofTranscript: Transcript, S: BatchPolynomialSource<Self::Field>>(
+        &self,
+        _setup: &Self::ProverSetup,
+        _poly_source: &S,
+        _batch_hint: Self::BatchOpeningHint,
+        _individual_hints: Vec<Self::OpeningProofHint>,
+        _commitments: &[&Self::Commitment],
+        _opening_point: &[<Self::Field as JoltField>::Challenge],
+        _claims: &[Self::Field],
+        _coeffs: &[Self::Field],
+        _transcript: &mut ProofTranscript,
+    ) -> Self::BatchedProof {
+        panic!("AstCommitmentScheme::batch_prove should never be called during verification")
+    }
+
+    fn batch_verify<ProofTranscript: Transcript>(
+        &self,
+        _proof: &Self::BatchedProof,
+        _setup: &Self::VerifierSetup,
+        _transcript: &mut ProofTranscript,
+        _opening_point: &[<Self::Field as JoltField>::Challenge],
+        _commitments: &[&Self::Commitment],
+        _claims: &[Self::Field],
+        _coeffs: &[Self::Field],
+    ) -> Result<(), ProofVerifyError> {
+        todo!("AstCommitmentScheme::batch_verify - implement for stage 8")
+    }
+
+    fn split_batch_hint(_batch_hint: &Self::BatchOpeningHint) -> Vec<Self::OpeningProofHint> {
+        Vec::new()
     }
 
     fn protocol_name() -> &'static [u8] {

@@ -9,11 +9,12 @@
 //! (2) HyperKZG is specialized to use KZG as the univariate commitment scheme, so it includes several optimizations (both during the transformation of multilinear-to-univariate claims
 //! and within the KZG commitment scheme implementation itself).
 use super::{
-    commitment_scheme::CommitmentScheme,
+    commitment_scheme::{CommitmentScheme, PolynomialBatchSource},
     kzg::{KZGProverKey, KZGVerifierKey, UnivariateKZG},
 };
 use crate::field::JoltField;
 use crate::poly::multilinear_polynomial::{MultilinearPolynomial, PolynomialEvaluation};
+use crate::poly::opening_proof::BatchPolynomialSource;
 use crate::poly::rlc_polynomial::RLCPolynomial;
 use crate::zkvm::witness::CommittedPolynomial;
 use crate::{
@@ -31,7 +32,6 @@ use rayon::iter::{
     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator,
     IntoParallelRefMutIterator, ParallelIterator,
 };
-use std::borrow::Borrow;
 use std::{io::Cursor, marker::PhantomData, sync::Arc};
 
 pub struct HyperKZGSRS<P: Pairing>(Arc<SRS<P>>);
@@ -195,7 +195,8 @@ where
     let B = if has_one_hot {
         // Use RLCPolynomial::linear_combination for mixed dense + one-hot polynomials
         let dummy_poly_ids = vec![CommittedPolynomial::RdInc; f_arc.len()];
-        let rlc_result = RLCPolynomial::linear_combination(dummy_poly_ids, f_arc, &q_powers, None);
+        let rlc_result =
+            RLCPolynomial::linear_combination(dummy_poly_ids, f_arc, &q_powers, None, None);
         MultilinearPolynomial::RLC(rlc_result)
     } else {
         let poly_refs: Vec<&MultilinearPolynomial<P::ScalarField>> =
@@ -301,6 +302,14 @@ where
 #[derive(Clone)]
 pub struct HyperKZG<P: Pairing> {
     _phantom: PhantomData<P>,
+}
+
+impl<P: Pairing> Default for HyperKZG<P> {
+    fn default() -> Self {
+        Self {
+            _phantom: PhantomData,
+        }
+    }
 }
 
 impl<P: Pairing> HyperKZG<P>
@@ -449,6 +458,7 @@ where
     <P as Pairing>::ScalarField: JoltField,
 {
     type Field = P::ScalarField;
+    type Config = ();
     type ProverSetup = HyperKZGProverKey<P>;
     type VerifierSetup = HyperKZGVerifierKey<P>;
 
@@ -456,6 +466,7 @@ where
     type Proof = HyperKZGProof<P>;
     type BatchedProof = HyperKZGProof<P>;
     type OpeningProofHint = ();
+    type BatchOpeningHint = ();
 
     fn setup_prover(max_num_vars: usize) -> Self::ProverSetup {
         let mut rng = OsRng;
@@ -470,8 +481,17 @@ where
         }
     }
 
+    fn from_proof(_proof: &Self::BatchedProof) -> Self {
+        Self::default()
+    }
+
+    fn config(&self) -> &() {
+        &()
+    }
+
     #[tracing::instrument(skip_all, name = "HyperKZG::commit")]
     fn commit(
+        &self,
         poly: &MultilinearPolynomial<Self::Field>,
         setup: &Self::ProverSetup,
     ) -> (Self::Commitment, Self::OpeningProofHint) {
@@ -487,38 +507,30 @@ where
     }
 
     #[tracing::instrument(skip_all, name = "HyperKZG::batch_commit")]
-    fn batch_commit<U>(
-        polys: &[U],
+    fn batch_commit<S: PolynomialBatchSource<Self::Field>>(
+        &self,
+        source: &S,
         gens: &Self::ProverSetup,
-    ) -> Vec<(Self::Commitment, Self::OpeningProofHint)>
-    where
-        U: Borrow<MultilinearPolynomial<Self::Field>> + Sync,
-    {
-        UnivariateKZG::commit_batch(&gens.kzg_pk, polys)
+    ) -> (Vec<Self::Commitment>, Self::BatchOpeningHint) {
+        let polys: Vec<&MultilinearPolynomial<Self::Field>> = (0..source.num_polys())
+            .map(|i| source.get_poly(i).unwrap())
+            .collect();
+        let commitments = UnivariateKZG::commit_batch(&gens.kzg_pk, &polys[..])
             .unwrap()
             .into_par_iter()
-            .map(|c| (HyperKZGCommitment(c), ()))
-            .collect()
-    }
-
-    fn combine_commitments<C: Borrow<Self::Commitment>>(
-        commitments: &[C],
-        coeffs: &[Self::Field],
-    ) -> Self::Commitment {
-        let combined_commitment: P::G1 = commitments
-            .iter()
-            .zip(coeffs.iter())
-            .map(|(commitment, coeff)| commitment.borrow().0 * coeff)
-            .sum();
-        HyperKZGCommitment(combined_commitment.into_affine())
+            .map(|c| HyperKZGCommitment(c))
+            .collect();
+        (commitments, ())
     }
 
     fn prove<ProofTranscript: Transcript>(
+        &self,
         setup: &Self::ProverSetup,
         poly: &MultilinearPolynomial<Self::Field>,
-        opening_point: &[<Self::Field as JoltField>::Challenge], // point at which the polynomial is evaluated
+        opening_point: &[<Self::Field as JoltField>::Challenge],
         _hint: Option<Self::OpeningProofHint>,
         transcript: &mut ProofTranscript,
+        _commitment: &Self::Commitment,
     ) -> (Self::Proof, Option<Self::Field>) {
         let eval = poly.evaluate(opening_point);
         let proof = HyperKZG::<P>::open(setup, poly, opening_point, &eval, transcript).unwrap();
@@ -526,18 +538,87 @@ where
     }
 
     fn verify<ProofTranscript: Transcript>(
+        &self,
         proof: &Self::Proof,
         setup: &Self::VerifierSetup,
         transcript: &mut ProofTranscript,
-        opening_point: &[<Self::Field as JoltField>::Challenge], // point at which the polynomial is evaluated
-        opening: &Self::Field,                                   // evaluation \widetilde{Z}(r)
+        opening_point: &[<Self::Field as JoltField>::Challenge],
+        opening: &Self::Field,
         commitment: &Self::Commitment,
     ) -> Result<(), ProofVerifyError> {
         HyperKZG::<P>::verify(setup, commitment, opening_point, opening, proof, transcript)
     }
 
+    fn batch_prove<ProofTranscript: Transcript, S: BatchPolynomialSource<Self::Field>>(
+        &self,
+        setup: &Self::ProverSetup,
+        poly_source: &S,
+        _batch_hint: Self::BatchOpeningHint,
+        _individual_hints: Vec<Self::OpeningProofHint>,
+        commitments: &[&Self::Commitment],
+        opening_point: &[<Self::Field as JoltField>::Challenge],
+        _claims: &[Self::Field],
+        coeffs: &[Self::Field],
+        transcript: &mut ProofTranscript,
+    ) -> Self::BatchedProof {
+        let joint_poly = poly_source.build_joint_polynomial(coeffs);
+        let joint_commitment = Self::combine_commitments_internal(commitments, coeffs);
+        self.prove(
+            setup,
+            &joint_poly,
+            opening_point,
+            None,
+            transcript,
+            &joint_commitment,
+        )
+        .0
+    }
+
+    fn batch_verify<ProofTranscript: Transcript>(
+        &self,
+        proof: &Self::BatchedProof,
+        setup: &Self::VerifierSetup,
+        transcript: &mut ProofTranscript,
+        opening_point: &[<Self::Field as JoltField>::Challenge],
+        commitments: &[&Self::Commitment],
+        claims: &[Self::Field],
+        coeffs: &[Self::Field],
+    ) -> Result<(), ProofVerifyError> {
+        let joint_commitment = Self::combine_commitments_internal(commitments, coeffs);
+        let joint_claim: Self::Field = coeffs.iter().zip(claims).map(|(c, v)| *c * *v).sum();
+        HyperKZG::<P>::verify(
+            setup,
+            &joint_commitment,
+            opening_point,
+            &joint_claim,
+            proof,
+            transcript,
+        )
+    }
+
+    fn split_batch_hint(_batch_hint: &Self::BatchOpeningHint) -> Vec<Self::OpeningProofHint> {
+        vec![]
+    }
+
     fn protocol_name() -> &'static [u8] {
         b"hyperkzg"
+    }
+}
+
+impl<P: Pairing> HyperKZG<P>
+where
+    <P as Pairing>::ScalarField: JoltField,
+{
+    fn combine_commitments_internal(
+        commitments: &[&HyperKZGCommitment<P>],
+        coeffs: &[P::ScalarField],
+    ) -> HyperKZGCommitment<P> {
+        let combined: P::G1 = commitments
+            .iter()
+            .zip(coeffs.iter())
+            .map(|(commitment, coeff)| commitment.0 * coeff)
+            .sum();
+        HyperKZGCommitment(combined.into_affine())
     }
 }
 
@@ -547,10 +628,20 @@ where
 {
     type ChunkState = ();
 
-    fn process_chunk<T: SmallScalar>(_setup: &Self::ProverSetup, _chunk: &[T]) -> Self::ChunkState {
+    #[allow(non_snake_case)]
+    fn streaming_chunk_size(&self, _K: usize, _T: usize) -> Option<usize> {
+        None
+    }
+
+    fn process_chunk<T: SmallScalar>(
+        &self,
+        _setup: &Self::ProverSetup,
+        _chunk: &[T],
+    ) -> Self::ChunkState {
     }
 
     fn process_chunk_onehot(
+        &self,
         _setup: &Self::ProverSetup,
         _onehot_k: usize,
         _chunk: &[Option<usize>],
@@ -558,12 +649,15 @@ where
     }
 
     fn aggregate_chunks(
+        &self,
         _setup: &Self::ProverSetup,
         _onehot_k: Option<usize>,
         _tier1_commitments: &[Self::ChunkState],
     ) -> (Self::Commitment, Self::OpeningProofHint) {
         unimplemented!("HyperKZG does not support streaming commitment")
     }
+
+    fn streaming_batch_hint(_hints: Vec<Self::OpeningProofHint>) -> Self::BatchOpeningHint {}
 }
 
 #[cfg(test)]
@@ -578,114 +672,6 @@ mod tests {
     use rand_chacha::ChaCha20Rng;
     use rand_core::SeedableRng;
 
-    //#[test]
-    //fn test_hyperkzg_eval() {
-    //    // Test with poly(X1, X2) = 1 + X1 + X2 + X1*X2
-    //    let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(0);
-    //    let srs = HyperKZGSRS::setup(&mut rng, 3);
-    //    let (pk, vk): (HyperKZGProverKey<Bn254>, HyperKZGVerifierKey<Bn254>) = srs.trim(3);
-    //
-    //    // poly is in eval. representation; evaluated at [(0,0), (0,1), (1,0), (1,1)]
-    //    let poly =
-    //        MultilinearPolynomial::from(vec![Fr::from(1), Fr::from(2), Fr::from(2), Fr::from(4)]);
-    //
-    //    let C = HyperKZG::commit(&pk, &poly).unwrap();
-    //
-    //    let test_inner =
-    //        |point: Vec<MontU128Challenge<Fr>>, eval: Fr| -> Result<(), ProofVerifyError> {
-    //            let mut tr = Blake2bTranscript::new(b"TestEval");
-    //            let proof = HyperKZG::open(&pk, &poly, &point, &eval, &mut tr).unwrap();
-    //            let mut tr = Blake2bTranscript::new(b"TestEval");
-    //            HyperKZG::verify(&vk, &C, &point, &eval, &proof, &mut tr)
-    //        };
-    //
-    //    // Call the prover with a (point, eval) pair.
-    //    // The prover does not recompute so it may produce a proof, but it should not verify
-    //    let point = vec![Fr::from(0), Fr::from(0)];
-    //    let eval = Fr::from(1);
-    //    assert!(test_inner(point, eval).is_ok());
-    //
-    //    let point = vec![Fr::from(0), Fr::from(1)];
-    //    let eval = Fr::from(2);
-    //    assert!(test_inner(point, eval).is_ok());
-    //
-    //    let point = vec![Fr::from(1), Fr::from(1)];
-    //    let eval = Fr::from(4);
-    //    assert!(test_inner(point, eval).is_ok());
-    //
-    //    let point = vec![Fr::from(0), Fr::from(2)];
-    //    let eval = Fr::from(3);
-    //    assert!(test_inner(point, eval).is_ok());
-    //
-    //    let point = vec![Fr::from(2), Fr::from(2)];
-    //    let eval = Fr::from(9);
-    //    assert!(test_inner(point, eval).is_ok());
-    //
-    //    // Try a couple incorrect evaluations and expect failure
-    //    let point = vec![Fr::from(2), Fr::from(2)];
-    //    let eval = Fr::from(50);
-    //    assert!(test_inner(point, eval).is_err());
-    //
-    //    let point = vec![Fr::from(0), Fr::from(2)];
-    //    let eval = Fr::from(4);
-    //    assert!(test_inner(point, eval).is_err());
-    //}
-
-    // THIS test does not make sense for MontU128Challenge
-    //#[test]
-    //fn test_hyperkzg_small() {
-    //    let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(0);
-    //
-    //    // poly = [1, 2, 1, 4]
-    //    let poly =
-    //        MultilinearPolynomial::from(vec![Fr::from(1), Fr::from(2), Fr::from(1), Fr::from(4)]);
-    //
-    //    // point = [4,3]
-    //    let point = vec![Fr::from(4), Fr::from(3)];
-    //
-    //    // eval = 28
-    //    let eval = Fr::from(28);
-    //
-    //    let srs = HyperKZGSRS::setup(&mut rng, 3);
-    //    let (pk, vk): (HyperKZGProverKey<Bn254>, HyperKZGVerifierKey<Bn254>) = srs.trim(3);
-    //
-    //    // make a commitment
-    //    let C = HyperKZG::commit(&pk, &poly).unwrap();
-    //
-    //    // prove an evaluation
-    //    let mut tr = Blake2bTranscript::new(b"TestEval");
-    //    let proof = HyperKZG::open(&pk, &poly, &point, &eval, &mut tr).unwrap();
-    //    let post_c_p = tr.challenge_scalar::<Fr>();
-    //
-    //    // verify the evaluation
-    //    let mut verifier_transcript = Blake2bTranscript::new(b"TestEval");
-    //    assert!(
-    //        HyperKZG::verify(&vk, &C, &point, &eval, &proof, &mut verifier_transcript,).is_ok()
-    //    );
-    //    let post_c_v = verifier_transcript.challenge_scalar::<Fr>();
-    //
-    //    // check if the prover transcript and verifier transcript are kept in the same state
-    //    assert_eq!(post_c_p, post_c_v);
-    //
-    //    let mut proof_bytes = Vec::new();
-    //    proof.serialize_compressed(&mut proof_bytes).unwrap();
-    //    assert_eq!(proof_bytes.len(), 368);
-    //
-    //    // Change the proof and expect verification to fail
-    //    let mut bad_proof = proof.clone();
-    //    let v1 = bad_proof.v[1].clone();
-    //    bad_proof.v[0].clone_from(&v1);
-    //    let mut verifier_transcript2 = Blake2bTranscript::new(b"TestEval");
-    //    assert!(HyperKZG::verify(
-    //        &vk,
-    //        &C,
-    //        &point,
-    //        &eval,
-    //        &bad_proof,
-    //        &mut verifier_transcript2
-    //    )
-    //    .is_err());
-    //}
     #[test]
     fn test_hyperkzg_large() {
         // test the hyperkzg prover and verifier with random instances (derived from a seed)

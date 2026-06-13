@@ -14,7 +14,6 @@ use jolt_core::{
     host::Program,
     poly::commitment::dory::DoryCommitmentScheme,
     zkvm::{
-        program::ProgramPreprocessing,
         prover::JoltProverPreprocessing,
         verifier::{JoltSharedPreprocessing, JoltVerifierPreprocessing},
         Serializable,
@@ -51,12 +50,13 @@ fn preprocess_and_save(func_name: &str, attributes: &Attributes, is_std: bool) -
     };
     let memory_layout = MemoryLayout::new(&memory_config);
 
-    let preprocessed_program = ProgramPreprocessing::preprocess(bytecode, memory_init, e_entry)?;
     let shared = JoltSharedPreprocessing::new(
-        preprocessed_program,
+        bytecode,
         memory_layout,
+        memory_init,
         attributes.max_trace_length as usize,
-    );
+        e_entry,
+    )?;
 
     let prover_preprocessing =
         JoltProverPreprocessing::<Fr, Bn254Curve, DoryCommitmentScheme>::new(shared);

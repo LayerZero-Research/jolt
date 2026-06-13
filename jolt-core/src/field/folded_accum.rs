@@ -308,3 +308,5 @@ impl Folded256ProductAccum {
         Self(fold_mul_4x4(a, b))
     }
 }
+
+impl_folded_core_traits!(Folded128ProductAccum, 4, 5);

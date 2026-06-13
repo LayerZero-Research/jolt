@@ -4,8 +4,7 @@
 //! verifier challenges.
 
 use arbitrary::{Arbitrary, Unstructured};
-use ark_bn254::Fr as ArkFr;
-use jolt_field::Fr as JFr;
+use jolt_field::{CanonicalBytes, Fr as JFr};
 use spongefish::instantiations::{Blake2b512, Keccak};
 
 use jolt_transcript::{prover_transcript, verifier_transcript, BytesMsg, PoseidonSponge};
@@ -75,12 +74,17 @@ where
     for op in &input.ops {
         match op {
             Op::PublicBytes(b) => prover.public_message(&BytesMsg(b.clone())),
-            Op::PublicScalar(f) => prover.public_message(&ArkFr::from(*f)),
+            // Scalars are absorbed as their canonical little-endian bytes rather than via
+            // spongefish's `Encoding for ark_ff::Fp`: spongefish pins arkworks ^0.6 while Jolt
+            // runs the 0.5 `dev/twist-shout` fork, so the two `Fp` types are distinct and the
+            // blanket impl does not apply to Jolt's `Fr`. Byte framing also matches how
+            // `jolt-transcript` feeds field elements to the sponge in production.
+            Op::PublicScalar(f) => prover.public_message(&BytesMsg(f.to_bytes_le_vec())),
             Op::ProverBytes(b) => prover.prover_message(&BytesMsg(b.clone())),
-            Op::ProverScalar(f) => prover.prover_message(&ArkFr::from(*f)),
+            Op::ProverScalar(f) => prover.prover_message(&BytesMsg(f.to_bytes_le_vec())),
             Op::Challenge => {
-                let c: ArkFr = prover.verifier_message();
-                prover_challenges.push(JFr::from(c));
+                let bytes: [u8; 32] = prover.verifier_message();
+                prover_challenges.push(JFr::from_le_bytes_mod_order(&bytes));
             }
         }
     }
@@ -92,7 +96,7 @@ where
     for (op_idx, op) in input.ops.iter().enumerate() {
         match op {
             Op::PublicBytes(b) => verifier.public_message(&BytesMsg(b.clone())),
-            Op::PublicScalar(f) => verifier.public_message(&ArkFr::from(*f)),
+            Op::PublicScalar(f) => verifier.public_message(&BytesMsg(f.to_bytes_le_vec())),
             Op::ProverBytes(expected) => {
                 let got: BytesMsg = verifier
                     .prover_message()
@@ -102,16 +106,16 @@ where
                 }
             }
             Op::ProverScalar(expected) => {
-                let got: ArkFr = verifier
+                let got: BytesMsg = verifier
                     .prover_message()
                     .map_err(|e| violation("prover_message<Fr>", op_idx, e))?;
-                if JFr::from(got) != *expected {
+                if JFr::from_le_bytes_mod_order(got.as_slice()) != *expected {
                     return Err(mismatch("ProverScalar round-trip", op_idx));
                 }
             }
             Op::Challenge => {
-                let verifier_c: ArkFr = verifier.verifier_message();
-                if JFr::from(verifier_c) != prover_challenges[challenge_idx] {
+                let bytes: [u8; 32] = verifier.verifier_message();
+                if JFr::from_le_bytes_mod_order(&bytes) != prover_challenges[challenge_idx] {
                     return Err(mismatch("Challenge", op_idx));
                 }
                 challenge_idx += 1;

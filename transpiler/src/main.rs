@@ -218,20 +218,13 @@ fn main() {
     // claim-reduction sumcheck, so PENDING_INITIAL_RAM only needs input words.
     {
         use jolt_core::zkvm::ram::{set_pending_initial_ram, PendingInitialRamValues};
-        let bytecode_words: Vec<MleAst> = if real_preprocessing.shared.program.is_full() {
-            real_preprocessing
-                .shared
-                .program
-                .as_full()
-                .unwrap()
-                .ram
-                .bytecode_words
-                .iter()
-                .map(|&w| MleAst::from_u64(w))
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let bytecode_words: Vec<MleAst> = real_preprocessing
+            .shared
+            .ram
+            .bytecode_words
+            .iter()
+            .map(|&w| MleAst::from_u64(w))
+            .collect();
         set_pending_initial_ram(PendingInitialRamValues {
             bytecode_words,
             input_words: eval_input_words,
@@ -246,76 +239,11 @@ fn main() {
     // AstCommitmentScheme satisfies the CommitmentScheme trait but performs no cryptographic
     // operations. PCS verification is skipped in stages 1-7.
     //
-    // For Full mode: ProgramPreprocessing::Full is PCS-independent, just wrap it.
-    // For Committed mode: symbolize the trusted bytecode/program commitments so the
-    // transpiled circuit can include them as witness inputs.
+    // `JoltSharedPreprocessing` holds only PCS-independent bytecode/RAM preprocessing (Akita
+    // runs Full mode only and commits the program inside the proof), so the symbolic shared
+    // preprocessing is just a clone of the real one.
     println!("\n=== Converting Preprocessing ===");
-    let symbolic_shared = {
-        use jolt_core::zkvm::bytecode::TrustedBytecodeCommitments;
-        use jolt_core::zkvm::program::{
-            CommittedProgramPreprocessing, ProgramPreprocessing, TrustedProgramCommitments,
-        };
-
-        let symbolic_program: ProgramPreprocessing<AstCommitmentScheme> = match &real_preprocessing
-            .shared
-            .program
-        {
-            ProgramPreprocessing::Full(full) => {
-                println!("  Mode: Full");
-                ProgramPreprocessing::Full(full.clone())
-            }
-            ProgramPreprocessing::Committed(committed) => {
-                println!("  Mode: Committed (symbolizing trusted commitments)");
-                let bytecode_commitments = TrustedBytecodeCommitments {
-                    commitments: committed
-                        .bytecode_commitments
-                        .commitments
-                        .iter()
-                        .enumerate()
-                        .map(|(i, c)| {
-                            let chunks =
-                                var_alloc.alloc_commitment(c, &format!("trusted_bytecode_{i}"));
-                            AstCommitment::new(chunks)
-                        })
-                        .collect(),
-                    num_columns: committed.bytecode_commitments.num_columns,
-                    log_k_chunk: committed.bytecode_commitments.log_k_chunk,
-                    bytecode_chunk_count: committed.bytecode_commitments.bytecode_chunk_count,
-                    bytecode_len: committed.bytecode_commitments.bytecode_len,
-                    bytecode_T: committed.bytecode_commitments.bytecode_T,
-                };
-                let program_commitments = TrustedProgramCommitments {
-                    program_image_commitment: {
-                        let chunks = var_alloc.alloc_commitment(
-                            &committed.program_commitments.program_image_commitment,
-                            "trusted_program_image",
-                        );
-                        AstCommitment::new(chunks)
-                    },
-                    program_image_num_columns: committed
-                        .program_commitments
-                        .program_image_num_columns,
-                    program_image_num_words: committed.program_commitments.program_image_num_words,
-                };
-                ProgramPreprocessing::Committed(CommittedProgramPreprocessing {
-                    meta: committed.meta.clone(),
-                    bytecode_commitments,
-                    program_commitments,
-                })
-            }
-        };
-
-        // Construct directly — don't use new_committed() because it calls
-        // PCS::setup_prover + program.commit, which panics for AstCommitmentScheme.
-        // The symbolic program already has the commitments symbolized above.
-        jolt_core::zkvm::verifier::JoltSharedPreprocessing::<AstCommitmentScheme> {
-            program_meta: symbolic_program.meta(),
-            program: symbolic_program,
-            memory_layout: real_preprocessing.shared.memory_layout.clone(),
-            max_padded_trace_length: real_preprocessing.shared.max_padded_trace_length,
-            bytecode_chunk_count: real_preprocessing.shared.bytecode_chunk_count,
-        }
-    };
+    let symbolic_shared = real_preprocessing.shared.clone();
     let symbolic_preprocessing: JoltVerifierPreprocessing<MleAst, AstCurve, AstCommitmentScheme> =
         JoltVerifierPreprocessing::new(
             symbolic_shared,

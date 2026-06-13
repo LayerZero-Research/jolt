@@ -20,7 +20,7 @@ pub use jolt_core::guest;
 pub use jolt_core::poly::commitment::dory::DoryCommitmentScheme as PCS;
 pub use jolt_core::zkvm::{
     bytecode::PreprocessingError,
-    program::{CommittedProgramProverData, ProgramPreprocessing},
+    program::ProgramPreprocessing,
     proof_serialization::JoltProof,
     verifier::JoltSharedPreprocessing,
     verifier::JoltVerifierPreprocessing,

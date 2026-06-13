@@ -185,13 +185,13 @@ impl<F: JoltField> ReadWriteMatrixCycleMajor<F, RegistersCycleMajorEntry<F, Look
     /// for the registers read/write checking sumcheck.
     #[tracing::instrument(skip_all, name = "ReadWriteMatrixCycleMajor::new")]
     pub fn new(trace: &[Cycle], gamma: F) -> Self {
-        // ---- Pass 1: per-cycle entry counts (parallel) ----
+        // Pass 1: compute per-cycle entry counts in parallel.
         let counts: Vec<u8> = trace
             .par_iter()
             .map(|cycle| Self::entry_count_for_cycle(cycle))
             .collect();
 
-        // ---- Prefix sum: counts -> offsets (sequential, linear) ----
+        // Prefix-sum counts into row offsets (sequential linear pass).
         let mut offsets: Vec<usize> = Vec::with_capacity(counts.len() + 1);
         offsets.push(0);
         let mut total: usize = 0;
@@ -201,7 +201,7 @@ impl<F: JoltField> ReadWriteMatrixCycleMajor<F, RegistersCycleMajorEntry<F, Look
         }
         let total_entries = total;
 
-        // ---- Allocate entries and set_len unsafely; we'll fill everything in pass 2 ----
+        // Allocate output and set_len once; pass 2 writes every slot exactly once.
         let mut entries: Vec<RegistersCycleMajorEntry<F, LookupTableIndex>> =
             Vec::with_capacity(total_entries);
         unsafe {
@@ -209,7 +209,7 @@ impl<F: JoltField> ReadWriteMatrixCycleMajor<F, RegistersCycleMajorEntry<F, Look
         }
         let entries_ptr = entries.as_mut_ptr() as usize;
 
-        // ---- Pass 2: fill entries in parallel, disjoint slices per row ----
+        // Pass 2: fill entries in parallel with disjoint per-cycle slices.
         let gamma_squared = gamma.square();
         trace.par_iter().enumerate().for_each(|(j, cycle)| {
             let count = counts[j] as usize;
@@ -355,6 +355,11 @@ impl<F: JoltField, C: OneHotCoeff<F>> CycleMajorMatrixEntry<F> for RegistersCycl
         ra_lookup_table: Option<&OneHotCoeffLookupTable<F>>,
         wa_lookup_table: Option<&OneHotCoeffLookupTable<F>>,
     ) -> [F::UnreducedProduct; 2] {
+        // Compute the field-level sum ra*val + wa*(val+inc) with full modular
+        // reduction, then widen to UnreducedProduct. Summing two UnreducedProduct
+        // values directly can overflow for 128-bit fields (the carry out of the
+        // top limb is lost in Add<UnreducedFp128<4>>).
+        let one = F::one();
         match (even, odd) {
             (Some(even), Some(odd)) => {
                 debug_assert!(even.row().is_even());
@@ -365,35 +370,31 @@ impl<F: JoltField, C: OneHotCoeff<F>> CycleMajorMatrixEntry<F> for RegistersCycl
                 let wa_evals =
                     OneHotCoeff::evals(Some(&even.wa_coeff), Some(&odd.wa_coeff), wa_lookup_table);
                 let val_evals = [even.val_coeff, odd.val_coeff - even.val_coeff];
-                [
-                    ra_evals[0].mul_to_product(val_evals[0])
-                        + wa_evals[0].mul_to_product(val_evals[0] + inc_evals[0]),
-                    ra_evals[1].mul_to_product(val_evals[1])
-                        + wa_evals[1].mul_to_product(val_evals[1] + inc_evals[1]),
-                ]
+                let eval_0 =
+                    ra_evals[0] * val_evals[0] + wa_evals[0] * (val_evals[0] + inc_evals[0]);
+                let eval_1 =
+                    ra_evals[1] * val_evals[1] + wa_evals[1] * (val_evals[1] + inc_evals[1]);
+                [one.mul_to_product(eval_0), one.mul_to_product(eval_1)]
             }
             (Some(even), None) => {
                 let odd_val_coeff = F::from_u64(even.next_val);
                 let ra_evals = OneHotCoeff::evals(Some(&even.ra_coeff), None, ra_lookup_table);
                 let wa_evals = OneHotCoeff::evals(Some(&even.wa_coeff), None, wa_lookup_table);
                 let val_evals = [even.val_coeff, odd_val_coeff - even.val_coeff];
-                [
-                    ra_evals[0].mul_to_product(val_evals[0])
-                        + wa_evals[0].mul_to_product(val_evals[0] + inc_evals[0]),
-                    ra_evals[1].mul_to_product(val_evals[1])
-                        + wa_evals[1].mul_to_product(val_evals[1] + inc_evals[1]),
-                ]
+                let eval_0 =
+                    ra_evals[0] * val_evals[0] + wa_evals[0] * (val_evals[0] + inc_evals[0]);
+                let eval_1 =
+                    ra_evals[1] * val_evals[1] + wa_evals[1] * (val_evals[1] + inc_evals[1]);
+                [one.mul_to_product(eval_0), one.mul_to_product(eval_1)]
             }
             (None, Some(odd)) => {
                 let even_val_coeff = F::from_u64(odd.prev_val);
                 let ra_evals = OneHotCoeff::evals(None, Some(&odd.ra_coeff), ra_lookup_table);
                 let wa_evals = OneHotCoeff::evals(None, Some(&odd.wa_coeff), wa_lookup_table);
                 let val_evals = [even_val_coeff, odd.val_coeff - even_val_coeff];
-                [
-                    F::UnreducedProduct::zero(),
-                    ra_evals[1].mul_to_product(val_evals[1])
-                        + wa_evals[1].mul_to_product(val_evals[1] + inc_evals[1]),
-                ]
+                let eval_1 =
+                    ra_evals[1] * val_evals[1] + wa_evals[1] * (val_evals[1] + inc_evals[1]);
+                [F::UnreducedProduct::zero(), one.mul_to_product(eval_1)]
             }
             (None, None) => panic!("Both entries are None"),
         }

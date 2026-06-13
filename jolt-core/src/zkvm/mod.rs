@@ -1,6 +1,6 @@
 use std::fs::File;
 
-use crate::zkvm::config::{OneHotConfig, OneHotParams, ProgramMode, ReadWriteConfig};
+use crate::zkvm::config::{OneHotParams, ProgramMode};
 use crate::zkvm::witness::CommittedPolynomial;
 use crate::{
     curve::Bn254Curve,
@@ -11,34 +11,11 @@ use crate::{
         OpeningAccumulator, OpeningId, OpeningPoint, ProverOpeningAccumulator, SumcheckId,
         BIG_ENDIAN,
     },
+    transcripts::Blake2bTranscript,
     transcripts::Transcript,
     utils::errors::ProofVerifyError,
     zkvm::claim_reductions::AdviceKind,
 };
-
-// Compile-time error if multiple transcript features are enabled
-// When none of the transcript features are enabled, Jolt defaults to `Blake2bTranscript`
-#[cfg(any(
-    all(feature = "transcript-poseidon", feature = "transcript-keccak"),
-    all(feature = "transcript-poseidon", feature = "transcript-blake2b"),
-    all(feature = "transcript-keccak", feature = "transcript-blake2b"),
-    all(
-        feature = "transcript-poseidon",
-        feature = "transcript-keccak",
-        feature = "transcript-blake2b"
-    )
-))]
-compile_error!("Cannot enable multiple transcript features simultaneously. Please choose exactly one of: 'transcript-poseidon', 'transcript-keccak', or 'transcript-blake2b'.");
-
-#[cfg(any(
-    feature = "transcript-blake2b",
-    not(any(feature = "transcript-poseidon", feature = "transcript-keccak"))
-))]
-use crate::transcripts::Blake2bTranscript;
-#[cfg(feature = "transcript-keccak")]
-use crate::transcripts::KeccakTranscript;
-#[cfg(feature = "transcript-poseidon")]
-use crate::transcripts::PoseidonTranscript;
 use ark_bn254::Fr;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use eyre::Result;
@@ -310,19 +287,13 @@ where
 }
 
 /// Absorb public instance data into the transcript for Fiat-Shamir.
-#[allow(clippy::too_many_arguments)]
 pub fn fiat_shamir_preamble(
     program_io: &JoltDevice,
     ram_K: usize,
     trace_length: usize,
     entry_address: u64,
-    rw_config: &ReadWriteConfig,
-    one_hot_config: &OneHotConfig,
-    dory_layout: DoryLayout,
-    preprocessing_digest: &[u8; 32],
     transcript: &mut impl Transcript,
 ) {
-    transcript.append_bytes(b"preprocessing_digest", preprocessing_digest);
     transcript.append_u64(b"max_input_size", program_io.memory_layout.max_input_size);
     transcript.append_u64(b"max_output_size", program_io.memory_layout.max_output_size);
     transcript.append_u64(b"heap_size", program_io.memory_layout.heap_size);
@@ -332,80 +303,34 @@ pub fn fiat_shamir_preamble(
     transcript.append_u64(b"ram_K", ram_K as u64);
     transcript.append_u64(b"trace_length", trace_length as u64);
     transcript.append_u64(b"entry_address", entry_address);
-    transcript.append_u64(
-        b"ram_rw_phase1_num_rounds",
-        rw_config.ram_rw_phase1_num_rounds as u64,
-    );
-    transcript.append_u64(
-        b"ram_rw_phase2_num_rounds",
-        rw_config.ram_rw_phase2_num_rounds as u64,
-    );
-    transcript.append_u64(
-        b"registers_rw_phase1_num_rounds",
-        rw_config.registers_rw_phase1_num_rounds as u64,
-    );
-    transcript.append_u64(
-        b"registers_rw_phase2_num_rounds",
-        rw_config.registers_rw_phase2_num_rounds as u64,
-    );
-    transcript.append_u64(b"log_k_chunk", one_hot_config.log_k_chunk as u64);
-    transcript.append_u64(
-        b"lookups_ra_virtual_log_k_chunk",
-        one_hot_config.lookups_ra_virtual_log_k_chunk as u64,
-    );
-    transcript.append_u64(b"dory_layout", dory_layout as u64);
 }
 
-#[cfg(all(feature = "prover", feature = "transcript-poseidon"))]
-pub type RV64IMACProver<'a> =
-    JoltCpuProver<'a, Fr, Bn254Curve, DoryCommitmentScheme, PoseidonTranscript>;
-#[cfg(feature = "transcript-poseidon")]
-pub type RV64IMACVerifier<'a> =
-    JoltVerifier<'a, Fr, Bn254Curve, DoryCommitmentScheme, PoseidonTranscript>;
-#[cfg(feature = "transcript-poseidon")]
-pub type RV64IMACProof = JoltProof<Fr, Bn254Curve, DoryCommitmentScheme, PoseidonTranscript>;
-
-#[cfg(all(feature = "prover", feature = "transcript-keccak"))]
-pub type RV64IMACProver<'a> =
-    JoltCpuProver<'a, Fr, Bn254Curve, DoryCommitmentScheme, KeccakTranscript>;
-#[cfg(feature = "transcript-keccak")]
-pub type RV64IMACVerifier<'a> =
-    JoltVerifier<'a, Fr, Bn254Curve, DoryCommitmentScheme, KeccakTranscript>;
-#[cfg(feature = "transcript-keccak")]
-pub type RV64IMACProof = JoltProof<Fr, Bn254Curve, DoryCommitmentScheme, KeccakTranscript>;
-
-#[cfg(all(
-    feature = "prover",
-    not(any(
-        feature = "transcript-poseidon",
-        feature = "transcript-keccak",
-        feature = "transcript-blake2b"
-    ))
-))]
+#[cfg(feature = "prover")]
 pub type RV64IMACProver<'a> =
     JoltCpuProver<'a, Fr, Bn254Curve, DoryCommitmentScheme, Blake2bTranscript>;
-#[cfg(not(any(
-    feature = "transcript-poseidon",
-    feature = "transcript-keccak",
-    feature = "transcript-blake2b"
-)))]
 pub type RV64IMACVerifier<'a> =
     JoltVerifier<'a, Fr, Bn254Curve, DoryCommitmentScheme, Blake2bTranscript>;
-#[cfg(not(any(
-    feature = "transcript-poseidon",
-    feature = "transcript-keccak",
-    feature = "transcript-blake2b"
-)))]
 pub type RV64IMACProof = JoltProof<Fr, Bn254Curve, DoryCommitmentScheme, Blake2bTranscript>;
 
-#[cfg(all(feature = "prover", feature = "transcript-blake2b"))]
-pub type RV64IMACProver<'a> =
-    JoltCpuProver<'a, Fr, Bn254Curve, DoryCommitmentScheme, Blake2bTranscript>;
-#[cfg(feature = "transcript-blake2b")]
-pub type RV64IMACVerifier<'a> =
-    JoltVerifier<'a, Fr, Bn254Curve, DoryCommitmentScheme, Blake2bTranscript>;
-#[cfg(feature = "transcript-blake2b")]
-pub type RV64IMACProof = JoltProof<Fr, Bn254Curve, DoryCommitmentScheme, Blake2bTranscript>;
+pub type AkitaPcs = crate::poly::commitment::akita::JoltAkitaCommitmentScheme<
+    { <crate::poly::commitment::akita::Fp128OneHot32Config as akita_config::CommitmentConfig>::D },
+    crate::poly::commitment::akita::Fp128OneHot32Config,
+>;
+#[cfg(feature = "prover")]
+pub type RV64IMACAkitaProver<'a> = JoltCpuProver<
+    'a,
+    crate::field::fp128::JoltFp128,
+    crate::curve::fp128_curve::Fp128Curve,
+    AkitaPcs,
+    Blake2bTranscript,
+>;
+pub type RV64IMACAkitaVerifier<'a> = JoltVerifier<
+    'a,
+    crate::field::fp128::JoltFp128,
+    crate::curve::fp128_curve::Fp128Curve,
+    AkitaPcs,
+    Blake2bTranscript,
+>;
 
 pub trait Serializable: CanonicalSerialize + CanonicalDeserialize + Sized {
     /// Gets the byte size of the serialized data

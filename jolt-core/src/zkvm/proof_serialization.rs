@@ -1,5 +1,6 @@
 #[cfg(not(feature = "zk"))]
 use std::collections::BTreeMap;
+use std::fs::File;
 use std::io::{Read, Write};
 
 use ark_serialize::{
@@ -53,7 +54,7 @@ pub struct JoltProof<
     pub stage7_sumcheck_proof: SumcheckInstanceProof<F, C, FS>,
     #[cfg(feature = "zk")]
     pub blindfold_proof: BlindFoldProof<F, C>,
-    pub joint_opening_proof: PCS::Proof,
+    pub joint_opening_proof: PCS::BatchedProof,
     pub untrusted_advice_commitment: Option<PCS::Commitment>,
     #[cfg(not(feature = "zk"))]
     pub opening_claims: Claims<F>,
@@ -61,7 +62,7 @@ pub struct JoltProof<
     pub ram_K: usize,
     pub rw_config: ReadWriteConfig,
     pub one_hot_config: OneHotConfig,
-    pub dory_layout: DoryLayout,
+    pub pcs_config: PCS::Config,
 }
 
 impl<F: JoltField, C: JoltCurve<F = F>, PCS: CommitmentScheme<Field = F>, FS: Transcript>
@@ -300,11 +301,21 @@ impl CanonicalSerialize for CommittedPolynomial {
             }
             Self::TrustedAdvice => 5u8.serialize_with_mode(writer, compress),
             Self::UntrustedAdvice => 6u8.serialize_with_mode(writer, compress),
-            Self::BytecodeChunk(i) => {
+            Self::RdIncRa(i) => {
                 7u8.serialize_with_mode(&mut writer, compress)?;
                 (u8::try_from(*i).unwrap()).serialize_with_mode(writer, compress)
             }
-            Self::ProgramImageInit => 8u8.serialize_with_mode(writer, compress),
+            Self::RdIncMsb => 8u8.serialize_with_mode(writer, compress),
+            Self::RamIncRa(i) => {
+                9u8.serialize_with_mode(&mut writer, compress)?;
+                (u8::try_from(*i).unwrap()).serialize_with_mode(writer, compress)
+            }
+            Self::RamIncMsb => 10u8.serialize_with_mode(writer, compress),
+            Self::BytecodeChunk(i) => {
+                11u8.serialize_with_mode(&mut writer, compress)?;
+                (u8::try_from(*i).unwrap()).serialize_with_mode(writer, compress)
+            }
+            Self::ProgramImageInit => 12u8.serialize_with_mode(writer, compress),
         }
     }
 
@@ -314,10 +325,14 @@ impl CanonicalSerialize for CommittedPolynomial {
             | Self::RamInc
             | Self::TrustedAdvice
             | Self::UntrustedAdvice
+            | Self::RdIncMsb
+            | Self::RamIncMsb
             | Self::ProgramImageInit => 1,
             Self::InstructionRa(_)
             | Self::BytecodeRa(_)
             | Self::RamRa(_)
+            | Self::RdIncRa(_)
+            | Self::RamIncRa(_)
             | Self::BytecodeChunk(_) => 2,
         }
     }
@@ -355,9 +370,19 @@ impl CanonicalDeserialize for CommittedPolynomial {
                 6 => Self::UntrustedAdvice,
                 7 => {
                     let i = u8::deserialize_with_mode(reader, compress, validate)?;
+                    Self::RdIncRa(i as usize)
+                }
+                8 => Self::RdIncMsb,
+                9 => {
+                    let i = u8::deserialize_with_mode(reader, compress, validate)?;
+                    Self::RamIncRa(i as usize)
+                }
+                10 => Self::RamIncMsb,
+                11 => {
+                    let i = u8::deserialize_with_mode(reader, compress, validate)?;
                     Self::BytecodeChunk(i as usize)
                 }
-                8 => Self::ProgramImageInit,
+                12 => Self::ProgramImageInit,
                 _ => return Err(SerializationError::InvalidData),
             },
         )
@@ -573,7 +598,6 @@ pub fn serialize_and_print_size(
     file_name: &str,
     item: &impl CanonicalSerialize,
 ) -> Result<(), SerializationError> {
-    use std::fs::File;
     let mut file = File::create(file_name)?;
     item.serialize_compressed(&mut file)?;
     let file_size_bytes = file.metadata()?.len();

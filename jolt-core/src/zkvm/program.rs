@@ -8,13 +8,8 @@ use ark_serialize::{
 };
 
 use crate::poly::commitment::commitment_scheme::CommitmentScheme;
-use crate::poly::commitment::dory::{DoryContext, DoryGlobals};
-use crate::poly::multilinear_polynomial::MultilinearPolynomial;
 use crate::utils::errors::ProofVerifyError;
-use crate::utils::math::Math;
-use crate::zkvm::bytecode::{
-    BytecodePreprocessing, PreprocessingError, TrustedBytecodeCommitments, TrustedBytecodeHints,
-};
+use crate::zkvm::bytecode::{BytecodePreprocessing, PreprocessingError, TrustedBytecodeCommitments};
 use crate::zkvm::ram::RAMPreprocessing;
 use common::jolt_device::MemoryLayout;
 use jolt_riscv::{JoltInstructionRow, RV64IMAC_JOLT};
@@ -97,13 +92,6 @@ pub struct CommittedProgramPreprocessing<PCS: CommitmentScheme> {
     pub meta: ProgramMetadata,
     pub bytecode_commitments: TrustedBytecodeCommitments<PCS>,
     pub program_commitments: TrustedProgramCommitments<PCS>,
-}
-
-#[derive(Debug, Clone, CanonicalSerialize, CanonicalDeserialize)]
-pub struct CommittedProgramProverData<PCS: CommitmentScheme> {
-    pub full: FullProgramPreprocessing,
-    pub bytecode_hints: TrustedBytecodeHints<PCS>,
-    pub program_hints: TrustedProgramHints<PCS>,
 }
 
 #[derive(Debug, Clone)]
@@ -225,40 +213,6 @@ impl<PCS: CommitmentScheme> ProgramPreprocessing<PCS> {
         )?))
     }
 
-    pub fn commit(
-        self,
-        memory_layout: &MemoryLayout,
-        generators: &PCS::ProverSetup,
-        bytecode_chunk_count: usize,
-        max_log_k_chunk: usize,
-    ) -> (Self, CommittedProgramProverData<PCS>) {
-        let Self::Full(full) = self else {
-            panic!("cannot commit already-committed program preprocessing");
-        };
-        let meta = full.meta();
-        let (bytecode_commitments, bytecode_hints) = TrustedBytecodeCommitments::derive(
-            &full.bytecode,
-            generators,
-            max_log_k_chunk,
-            bytecode_chunk_count,
-        );
-        let (program_commitments, program_hints) =
-            TrustedProgramCommitments::derive(&full, memory_layout, generators);
-
-        (
-            Self::Committed(CommittedProgramPreprocessing {
-                meta,
-                bytecode_commitments,
-                program_commitments,
-            }),
-            CommittedProgramProverData {
-                full,
-                bytecode_hints,
-                program_hints,
-            },
-        )
-    }
-
     pub fn as_full(&self) -> Result<&FullProgramPreprocessing, ProofVerifyError> {
         match self {
             Self::Full(full) => Ok(full),
@@ -377,59 +331,4 @@ pub struct TrustedProgramCommitments<PCS: CommitmentScheme> {
     pub program_image_commitment: PCS::Commitment,
     pub program_image_num_columns: usize,
     pub program_image_num_words: usize,
-}
-
-#[derive(Clone, Debug, CanonicalSerialize, CanonicalDeserialize)]
-pub struct TrustedProgramHints<PCS: CommitmentScheme> {
-    pub program_image_hint: PCS::OpeningProofHint,
-}
-
-impl<PCS: CommitmentScheme> TrustedProgramCommitments<PCS> {
-    #[tracing::instrument(skip_all, name = "TrustedProgramCommitments::derive")]
-    pub fn derive(
-        program: &FullProgramPreprocessing,
-        memory_layout: &MemoryLayout,
-        generators: &PCS::ProverSetup,
-    ) -> (Self, TrustedProgramHints<PCS>) {
-        let program_image_num_words = program.committed_program_image_num_words(memory_layout);
-        let (program_image_sigma, _) =
-            crate::poly::commitment::dory::DoryGlobals::balanced_sigma_nu(
-                program_image_num_words.log_2(),
-            );
-        let program_image_num_columns = 1usize << program_image_sigma;
-        let program_image_poly = MultilinearPolynomial::from(build_program_image_words_padded(
-            program,
-            program_image_num_words,
-        ));
-        let _program_image_guard = DoryGlobals::initialize_context(
-            1,
-            program_image_num_words,
-            DoryContext::UntrustedAdvice,
-            None,
-        );
-        let (program_image_commitment, program_image_hint) = {
-            let _ctx = DoryGlobals::with_context(DoryContext::UntrustedAdvice);
-            PCS::commit(&program_image_poly, generators)
-        };
-
-        (
-            Self {
-                program_image_commitment,
-                program_image_num_columns,
-                program_image_num_words,
-            },
-            TrustedProgramHints { program_image_hint },
-        )
-    }
-}
-
-pub(crate) fn build_program_image_words_padded(
-    program: &FullProgramPreprocessing,
-    padded_len: usize,
-) -> Vec<u64> {
-    debug_assert!(padded_len.is_power_of_two());
-    debug_assert!(padded_len >= program.ram.bytecode_words.len().max(1));
-    let mut coeffs = vec![0u64; padded_len];
-    coeffs[..program.ram.bytecode_words.len()].copy_from_slice(&program.ram.bytecode_words);
-    coeffs
 }

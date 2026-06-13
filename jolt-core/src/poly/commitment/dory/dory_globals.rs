@@ -1,5 +1,6 @@
 //! Global state management for Dory parameters
 
+use crate::poly::matrix_layout::MatrixLayout;
 use crate::utils::math::Math;
 use allocative::Allocative;
 use dory::backends::arkworks::{init_cache, ArkG1, ArkG2};
@@ -317,15 +318,6 @@ impl DoryGlobals {
     }
 
     #[inline]
-    pub(crate) fn main_t() -> usize {
-        *GLOBAL_T
-            .read()
-            .unwrap()
-            .as_ref()
-            .expect("main t not initialized")
-    }
-
-    #[inline]
     pub(crate) fn configured_main_num_columns() -> usize {
         *NUM_COLUMNS
             .read()
@@ -393,6 +385,32 @@ impl DoryGlobals {
             "Invalid DoryGlobals: num_rows*num_cols must be divisible by T"
         );
         (num_rows * num_cols) / t
+    }
+
+    /// For `AddressMajor`, each Dory matrix row corresponds to this many cycles.
+    ///
+    /// Equivalent to `T / num_rows` and to `num_cols / K`.
+    pub fn address_major_cycles_per_row() -> usize {
+        let (num_rows, num_cols) = Self::matrix_shape();
+        let k = Self::k_from_matrix_shape();
+        debug_assert!(k > 0);
+        debug_assert_eq!(num_cols % k, 0, "Expected num_cols to be divisible by K");
+        debug_assert_eq!(
+            Self::get_T() % num_rows,
+            0,
+            "Expected T to be divisible by num_rows"
+        );
+        num_cols / k
+    }
+
+    pub fn matrix_layout() -> MatrixLayout {
+        let (num_rows, num_columns) = Self::matrix_shape();
+        MatrixLayout {
+            num_columns,
+            num_rows,
+            T: Self::get_T(),
+            cycle_major: Self::get_layout() == DoryLayout::CycleMajor,
+        }
     }
 
     fn set_max_num_rows_for_context(max_num_rows: usize, context: DoryContext) {
