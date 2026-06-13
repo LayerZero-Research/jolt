@@ -1,4 +1,5 @@
-use crate::emulator::cpu::{Cpu, Xlen};
+use crate::emulator::cpu::Cpu;
+pub use jolt_riscv::NormalizedOperands;
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt::Debug;
 
@@ -16,14 +17,6 @@ pub mod format_s;
 pub mod format_u;
 pub mod format_virtual_right_shift_i;
 pub mod format_virtual_right_shift_r;
-
-#[derive(Default, Debug, Clone, Copy, PartialEq)]
-pub struct NormalizedOperands {
-    pub rs1: Option<u8>,
-    pub rs2: Option<u8>,
-    pub rd: Option<u8>,
-    pub imm: i128,
-}
 
 pub trait InstructionFormat:
     Default + Debug + From<NormalizedOperands> + Into<NormalizedOperands>
@@ -65,16 +58,9 @@ pub fn normalize_register_value(cpu: &Cpu, reg: usize) -> u64 {
         }
         _ => cpu.x[reg],
     };
-    let xlen = cpu.xlen;
-    match xlen {
-        Xlen::Bit32 => value as u32 as u64,
-        Xlen::Bit64 => value as u64,
-    }
+    value as u64
 }
 
-pub fn normalize_imm(imm: u64, xlen: &Xlen) -> i64 {
-    match xlen {
-        Xlen::Bit32 => imm as i32 as i64,
-        Xlen::Bit64 => imm as i64,
-    }
+pub fn normalize_imm(imm: u64) -> i64 {
+    imm as i64
 }

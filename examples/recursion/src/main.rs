@@ -1,7 +1,11 @@
 use ark_serialize::CanonicalDeserialize;
 use ark_serialize::CanonicalSerialize;
 use clap::{Parser, Subcommand};
-use jolt_sdk::{JoltDevice, MemoryConfig, RV64IMACProof, Serializable};
+use jolt_sdk::guest::program::Program;
+use jolt_sdk::{
+    JoltDevice, JoltProverPreprocessing, JoltVerifierPreprocessing, MemoryConfig, RV64IMACProof,
+    Serializable,
+};
 use std::cmp::PartialEq;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -268,6 +272,13 @@ fn check_data_integrity(all_groups_data: &[u8]) -> (u32, u32) {
     (n, remaining_data.len() as u32)
 }
 
+fn preprocess_guest_prover(
+    guest_prog: &mut Program,
+    max_trace_length: usize,
+) -> JoltProverPreprocessing<jolt_sdk::F, jolt_sdk::Curve, jolt_sdk::PCS> {
+    jolt_sdk::guest::prover::preprocess(guest_prog, max_trace_length).unwrap()
+}
+
 fn collect_guest_proofs(guest: GuestProgram, target_dir: &str, use_embed: bool) -> Vec<u8> {
     info!("Starting collect_guest_proofs for {}", guest.name());
     let max_trace_length = guest.get_max_trace_length(use_embed);
@@ -292,11 +303,9 @@ fn collect_guest_proofs(guest: GuestProgram, target_dir: &str, use_embed: bool) 
     guest_prog.elf = program.elf;
 
     info!("Preprocessing guest prover...");
-    let guest_prover_preprocessing =
-        jolt_sdk::guest::prover::preprocess(&guest_prog, max_trace_length).unwrap();
+    let guest_prover_preprocessing = preprocess_guest_prover(&mut guest_prog, max_trace_length);
     info!("Preprocessing guest verifier...");
-    let guest_verifier_preprocessing =
-        jolt_sdk::JoltVerifierPreprocessing::from(&guest_prover_preprocessing);
+    let guest_verifier_preprocessing = JoltVerifierPreprocessing::from(&guest_prover_preprocessing);
 
     let inputs = guest.inputs();
     info!("Got inputs: {inputs:?}");

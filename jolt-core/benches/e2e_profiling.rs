@@ -352,7 +352,7 @@ fn prove_example_with_trace_dory(
     );
 
     let shared_preprocessing = JoltSharedPreprocessing::new(
-        bytecode.clone(),
+        bytecode,
         program_io.memory_layout.clone(),
         init_memory_state,
         trace.len().next_power_of_two(),

@@ -131,6 +131,7 @@ impl VirtualRegisterAllocator {
 
     /// Allocate virtual register that can be used in the inline sequence of
     /// an instruction. Skips reserved registers (32-39) and uses registers 40-47.
+    #[cfg(test)]
     pub(crate) fn allocate(&self) -> VirtualRegisterGuard {
         for (i, allocated) in self
             .allocated
@@ -224,6 +225,17 @@ impl Default for VirtualRegisterAllocator {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Returns whether `csr_addr` maps to a CSR that Jolt models in its proof
+/// system. Used by `Instruction::decode` to reject unsupported CSR
+/// instructions before they reach the tracer's inline-sequence path, which
+/// would otherwise panic on unsupported CSRs.
+pub fn is_supported_csr(csr_addr: u16) -> bool {
+    matches!(
+        csr_addr,
+        CSR_MSTATUS | CSR_MTVEC | CSR_MSCRATCH | CSR_MEPC | CSR_MCAUSE | CSR_MTVAL
+    )
 }
 
 pub struct VirtualRegisterGuard {

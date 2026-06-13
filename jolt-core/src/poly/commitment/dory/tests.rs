@@ -8,6 +8,7 @@ mod tests {
     use crate::poly::dense_mlpoly::DensePolynomial;
     use crate::poly::multilinear_polynomial::{MultilinearPolynomial, PolynomialEvaluation};
     use crate::transcripts::{Blake2bTranscript, Transcript};
+    use crate::utils::math::Math;
     use ark_ff::biginteger::S128;
     use ark_std::rand::{thread_rng, Rng};
     use ark_std::{UniformRand, Zero};
@@ -75,6 +76,26 @@ mod tests {
         let verifier_setup = DoryCommitmentScheme::setup_verifier(&prover_setup);
 
         (prover_setup, verifier_setup)
+    }
+
+    #[cfg(feature = "zk")]
+    #[test]
+    #[serial]
+    fn test_dory_commitment_is_blinded_in_zk() {
+        let num_vars = 10;
+        let (prover_setup, _) = setup_dory_for_test(num_vars);
+
+        let mut rng = thread_rng();
+        let coeffs: Vec<Fr> = (0..(1 << num_vars)).map(|_| Fr::rand(&mut rng)).collect();
+        let poly = MultilinearPolynomial::LargeScalars(DensePolynomial::new(coeffs));
+
+        let (commitment_a, _) = DoryCommitmentScheme::default().commit(&poly, &prover_setup);
+        let (commitment_b, _) = DoryCommitmentScheme::default().commit(&poly, &prover_setup);
+
+        assert_ne!(
+            commitment_a, commitment_b,
+            "ZK Dory commitments should use fresh blinding"
+        );
     }
 
     #[test]
@@ -649,6 +670,9 @@ mod tests {
         let (direct_commitment, direct_hint) =
             DoryCommitmentScheme::default().commit(&combined_poly, &prover_setup);
 
+        // In transparent mode the RLC commitment is deterministic. In ZK mode, direct_commitment
+        // has a fresh Dory blind, so equality with the homomorphic RLC is not expected.
+        #[cfg(not(feature = "zk"))]
         assert_eq!(
             combined_commitment, direct_commitment,
             "Homomorphically combined commitment should match direct commitment to RLC"
@@ -805,10 +829,15 @@ mod tests {
         let (commitment_addr_major, _) =
             DoryCommitmentScheme::default().commit(&poly2, &prover_setup);
 
+        #[cfg(not(feature = "zk"))]
         assert_eq!(
             commitment_cycle_major, commitment_addr_major,
             "Dense polynomials should produce the same commitment with any layout"
         );
+        #[cfg(feature = "zk")]
+        {
+            let _ = (commitment_cycle_major, commitment_addr_major);
+        }
         DoryGlobals::set_layout(DoryLayout::CycleMajor);
     }
 
@@ -875,9 +904,18 @@ mod tests {
         let num_vars = one_hot_poly.get_num_vars();
         let poly = MultilinearPolynomial::OneHot(one_hot_poly);
 
-        let opening_point: Vec<<Fr as JoltField>::Challenge> = (0..num_vars)
+        // AddressMajor Dory opening points are consumed as [cycle vars || address vars],
+        // while OneHotPolynomial::evaluate expects [address vars || cycle vars].
+        let log_t = T.log_2();
+        let log_k = num_vars - log_t;
+        let r_cycle: Vec<<Fr as JoltField>::Challenge> = (0..log_t)
             .map(|_| <Fr as JoltField>::Challenge::random(&mut rng))
             .collect();
+        let r_address: Vec<<Fr as JoltField>::Challenge> = (0..log_k)
+            .map(|_| <Fr as JoltField>::Challenge::random(&mut rng))
+            .collect();
+        let opening_point = [r_cycle.clone(), r_address.clone()].concat();
+        let eval_point = [r_address, r_cycle].concat();
 
         let pcs = DoryCommitmentScheme {
             layout: DoryLayout::AddressMajor,
@@ -888,10 +926,8 @@ mod tests {
 
         let (commitment, row_commitments) = pcs.commit(&poly, &prover_setup);
 
-        let evaluation = <MultilinearPolynomial<Fr> as PolynomialEvaluation<Fr>>::evaluate(
-            &poly,
-            &opening_point,
-        );
+        let evaluation =
+            <MultilinearPolynomial<Fr> as PolynomialEvaluation<Fr>>::evaluate(&poly, &eval_point);
 
         let mut prove_transcript = Blake2bTranscript::new(b"dory_test");
         bind_opening_inputs::<Fr, _>(&mut prove_transcript, &opening_point, &evaluation);
@@ -977,16 +1013,25 @@ mod tests {
         let vmp_result = rlc_poly.vector_matrix_product(&left_vec);
 
         let mut expected = vec![Fr::zero(); num_columns];
-        let cycles_per_row = DoryGlobals::address_major_cycles_per_row();
+        let dense_stride = DoryGlobals::dense_stride();
+        let cycles_per_row = num_columns / dense_stride;
 
         // Dense contribution for AddressMajor layout:
         // Dense coefficients occupy evenly-spaced columns (every K-th column).
         // Coefficient i maps to: row = i / cycles_per_row, col = (i % cycles_per_row) * K
         for (i, &coeff) in rlc_dense.iter().enumerate() {
-            let row = i / cycles_per_row;
-            let col = (i % cycles_per_row) * K;
-            if row < num_rows && col < num_columns {
-                expected[col] += left_vec[row] * coeff;
+            if let Some(row) = i.checked_div(cycles_per_row) {
+                let col = (i % cycles_per_row) * K;
+                if row < num_rows && col < num_columns {
+                    expected[col] += left_vec[row] * coeff;
+                }
+            } else {
+                let scaled_index = i * dense_stride;
+                let row = scaled_index / num_columns;
+                let col = scaled_index % num_columns;
+                if row < num_rows && col < num_columns {
+                    expected[col] += left_vec[row] * coeff;
+                }
             }
         }
 

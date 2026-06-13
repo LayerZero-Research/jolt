@@ -51,16 +51,56 @@ pub fn balanced_sigma_nu(total_vars: usize) -> (usize, usize) {
     (sigma, nu)
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct DoryOpeningProofHint(Vec<ArkG1>);
+#[derive(Clone, Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
+pub struct DoryOpeningProofHint {
+    row_commitments: Vec<ArkG1>,
+    commit_blind: ArkFr,
+}
 
 impl DoryOpeningProofHint {
-    fn new(row_commitments: Vec<ArkG1>) -> Self {
-        Self(row_commitments)
+    pub fn new(row_commitments: Vec<ArkG1>, commit_blind: ArkFr) -> Self {
+        Self {
+            row_commitments,
+            commit_blind,
+        }
     }
 
-    fn into_rows(self) -> Vec<ArkG1> {
-        self.0
+    pub fn row_commitments(&self) -> &[ArkG1] {
+        &self.row_commitments
+    }
+
+    pub fn commit_blind(&self) -> &ArkFr {
+        &self.commit_blind
+    }
+
+    fn into_parts(self) -> (Vec<ArkG1>, ArkFr) {
+        (self.row_commitments, self.commit_blind)
+    }
+}
+
+fn maybe_blind_commitment(setup: &ArkworksProverSetup, commitment: ArkGT) -> (ArkGT, ArkFr) {
+    #[cfg(feature = "zk")]
+    {
+        let commit_blind = <dory::ZK as dory::Mode>::sample::<ArkFr>();
+        let commitment = <dory::ZK as dory::Mode>::mask(commitment, &setup.ht, &commit_blind);
+        (commitment, commit_blind)
+    }
+    #[cfg(not(feature = "zk"))]
+    {
+        let _ = setup;
+        (commitment, <ArkFr as DoryField>::zero())
+    }
+}
+
+#[inline]
+fn canonical_setup_log_n(max_num_vars: usize) -> usize {
+    // Dory's generator count depends on ceil(max_log_n / 2), so odd/even pairs like
+    // 23 and 24 share the same generator bucket. Canonicalizing to the even bucket
+    // representative keeps those runs on a single URS file.
+    if max_num_vars.is_multiple_of(2) {
+        max_num_vars
+    } else {
+        max_num_vars + 1
     }
 }
 
@@ -108,13 +148,13 @@ impl CommitmentScheme for DoryCommitmentScheme {
 
     fn setup_prover(max_num_vars: usize) -> Self::ProverSetup {
         let _span = trace_span!("DoryCommitmentScheme::setup_prover").entered();
+        let canonical_max_num_vars = canonical_setup_log_n(max_num_vars);
         #[cfg(test)]
         DoryGlobals::configure_test_cache_root();
-
         #[cfg(not(target_arch = "wasm32"))]
-        let setup = ArkworksProverSetup::new_from_urs(max_num_vars);
+        let setup = ArkworksProverSetup::new_from_urs(canonical_max_num_vars);
         #[cfg(target_arch = "wasm32")]
-        let setup = ArkworksProverSetup::new(max_num_vars);
+        let setup = ArkworksProverSetup::new(canonical_max_num_vars);
 
         // The prepared-point cache in dory-pcs is global and can only be initialized once.
         // In unit tests, multiple setups with different sizes are created, so initializing the
@@ -155,15 +195,23 @@ impl CommitmentScheme for DoryCommitmentScheme {
         let total_vars = poly.len().log_2();
         let (sigma, nu) = balanced_sigma_nu(total_vars);
 
-        let (tier_2, row_commitments, _commit_blind) =
+        #[cfg(feature = "zk")]
+        type DoryMode = dory::ZK;
+        #[cfg(not(feature = "zk"))]
+        type DoryMode = dory::Transparent;
+
+        let (tier_2, row_commitments, commit_blind) =
             <MultilinearPolynomial<ark_bn254::Fr> as Polynomial<ArkFr>>::commit::<
                 BN254,
-                dory::Transparent,
+                DoryMode,
                 JoltG1Routines,
             >(poly, nu, sigma, setup)
             .expect("commitment should succeed");
 
-        (tier_2, DoryOpeningProofHint::new(row_commitments))
+        (
+            tier_2,
+            DoryOpeningProofHint::new(row_commitments, commit_blind),
+        )
     }
 
     fn batch_commit<S: PolynomialBatchSource<ark_bn254::Fr>>(
@@ -193,18 +241,16 @@ impl CommitmentScheme for DoryCommitmentScheme {
         let _span = trace_span!("DoryCommitmentScheme::prove").entered();
 
         let (row_commitments, commit_blind) = hint
-            .map(|h| (h.into_rows(), DoryField::zero()))
+            .map(DoryOpeningProofHint::into_parts)
             .unwrap_or_else(|| {
                 let (_commitment, hint) = self.commit(poly, setup);
-                (hint.into_rows(), DoryField::zero())
+                hint.into_parts()
             });
 
         let total_vars = poly.len().log_2();
         let (sigma, nu) = balanced_sigma_nu(total_vars);
 
-        let reordered_point =
-            reorder_opening_point_for_layout::<ark_bn254::Fr>(self.layout, opening_point);
-        let ark_point: Vec<ArkFr> = reordered_point
+        let ark_point: Vec<ArkFr> = opening_point
             .iter()
             .rev()
             .map(|p| {
@@ -247,11 +293,8 @@ impl CommitmentScheme for DoryCommitmentScheme {
     ) -> Result<(), ProofVerifyError> {
         let _span = trace_span!("DoryCommitmentScheme::verify").entered();
 
-        let reordered_point =
-            reorder_opening_point_for_layout::<ark_bn254::Fr>(self.layout, opening_point);
-
         // Dory uses the opposite endian-ness as Jolt
-        let ark_point: Vec<ArkFr> = reordered_point
+        let ark_point: Vec<ArkFr> = opening_point
             .iter()
             .rev()
             .map(|p| {
@@ -263,6 +306,16 @@ impl CommitmentScheme for DoryCommitmentScheme {
 
         let mut dory_transcript = JoltToDoryTranscript::<ProofTranscript>::new(transcript);
 
+        #[cfg(not(feature = "zk"))]
+        if proof.e2.is_some()
+            || proof.y_com.is_some()
+            || proof.sigma1_proof.is_some()
+            || proof.sigma2_proof.is_some()
+            || proof.scalar_product_proof.is_some()
+        {
+            return Err(ProofVerifyError::InvalidOpeningProof);
+        }
+
         dory::verify::<ArkFr, BN254, JoltG1Routines, JoltG2Routines, _>(
             *commitment,
             ark_eval,
@@ -271,7 +324,7 @@ impl CommitmentScheme for DoryCommitmentScheme {
             setup.clone().into_inner(),
             &mut dory_transcript,
         )
-        .map_err(|_| ProofVerifyError::InternalError)?;
+        .map_err(|err| ProofVerifyError::DoryError(format!("dory::verify failed: {err:?}")))?;
 
         Ok(())
     }
@@ -342,14 +395,21 @@ impl CommitmentScheme for DoryCommitmentScheme {
         let num_rows = DoryGlobals::get_max_num_rows();
 
         let mut rlc_hint = vec![ArkG1(G1Projective::zero()); num_rows];
-        for (coeff, mut hint) in coeffs.iter().zip(hints.into_iter()) {
-            hint.0.resize(num_rows, ArkG1(G1Projective::zero()));
+        let mut rlc_commit_blind = <ArkFr as DoryField>::zero();
+        for (coeff, hint) in coeffs.iter().zip(hints.into_iter()) {
+            let DoryOpeningProofHint {
+                mut row_commitments,
+                commit_blind,
+            } = hint;
+            row_commitments.resize(num_rows, ArkG1(G1Projective::zero()));
+            let ark_coeff = jolt_to_ark(coeff);
+            rlc_commit_blind = rlc_commit_blind + ark_coeff * commit_blind;
 
             // SAFETY: ArkG1 is repr(transparent) over G1Projective
-            let row_commitments: &mut [G1Projective] = unsafe {
+            let row_commitment_projects: &mut [G1Projective] = unsafe {
                 std::slice::from_raw_parts_mut(
-                    hint.0.as_mut_ptr() as *mut G1Projective,
-                    hint.0.len(),
+                    row_commitments.as_mut_ptr() as *mut G1Projective,
+                    row_commitments.len(),
                 )
             };
 
@@ -361,15 +421,15 @@ impl CommitmentScheme for DoryCommitmentScheme {
             let _enter = _span.enter();
 
             jolt_optimizations::vector_scalar_mul_add_gamma_g1_online(
-                row_commitments,
+                row_commitment_projects,
                 *coeff,
                 rlc_row_commitments,
             );
 
-            let _ = std::mem::replace(&mut rlc_hint, hint.0);
+            let _ = std::mem::replace(&mut rlc_hint, row_commitments);
         }
 
-        DoryOpeningProofHint::new(rlc_hint)
+        DoryOpeningProofHint::new(rlc_hint, rlc_commit_blind)
     }
 
     fn protocol_name() -> &'static [u8] {
@@ -488,16 +548,24 @@ impl StreamingCommitmentScheme for DoryCommitmentScheme {
 
             let g2_bases = &setup.g2_vec[..num_rows];
             let tier_2 = <BN254 as PairingCurve>::multi_pair_g2_setup(&row_commitments, g2_bases);
+            let (tier_2, commit_blind) = maybe_blind_commitment(setup, tier_2);
 
-            (tier_2, DoryOpeningProofHint::new(row_commitments))
+            (
+                tier_2,
+                DoryOpeningProofHint::new(row_commitments, commit_blind),
+            )
         } else {
             let row_commitments: Vec<ArkG1> =
                 chunks.iter().flat_map(|chunk| chunk.clone()).collect();
 
             let g2_bases = &setup.g2_vec[..row_commitments.len()];
             let tier_2 = <BN254 as PairingCurve>::multi_pair_g2_setup(&row_commitments, g2_bases);
+            let (tier_2, commit_blind) = maybe_blind_commitment(setup, tier_2);
 
-            (tier_2, DoryOpeningProofHint::new(row_commitments))
+            (
+                tier_2,
+                DoryOpeningProofHint::new(row_commitments, commit_blind),
+            )
         }
     }
 
@@ -548,29 +616,5 @@ where
             .collect();
         let h1 = C::G1::from(setup.0.h1);
         Some((g1s, h1))
-    }
-}
-
-/// Reorders opening_point for AddressMajor layout.
-///
-/// For AddressMajor layout, reorders opening_point from [r_address, r_cycle] to [r_cycle, r_address].
-/// This ensures that after Dory's reversal and splitting:
-/// - Column (right) vector gets address variables (matching AddressMajor column indexing)
-/// - Row (left) vector gets cycle variables (matching AddressMajor row indexing)
-///
-/// For CycleMajor layout, returns the point unchanged.
-fn reorder_opening_point_for_layout<F: JoltField>(
-    layout: DoryLayout,
-    opening_point: &[F::Challenge],
-) -> Vec<F::Challenge> {
-    if layout == DoryLayout::AddressMajor {
-        // For AddressMajor, T is needed to split the point.
-        // Fall back to DoryGlobals for now; will be eliminated in Phase 2d.
-        let log_T = DoryGlobals::get_T().log_2();
-        let log_K = opening_point.len().saturating_sub(log_T);
-        let (r_address, r_cycle) = opening_point.split_at(log_K);
-        [r_cycle, r_address].concat()
-    } else {
-        opening_point.to_vec()
     }
 }

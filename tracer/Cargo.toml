@@ -32,9 +32,11 @@ std = [
   "postcard/use-std",
   "serde_json/std",
 ]
-test-utils = ["dep:rand"]
+test-utils = ["dep:rand", "jolt-riscv/test-utils"]
 
 [dependencies]
+jolt-program = { workspace = true, features = ["image", "serialization"] }
+jolt-riscv = { workspace = true, features = ["serialization"] }
 jolt-platform.workspace = true
 fnv.workspace = true
 object.workspace = true
@@ -47,6 +49,7 @@ serde.workspace = true
 serde_json.workspace = true
 strum_macros.workspace = true
 strum.workspace = true
+thiserror.workspace = true
 rand = { workspace = true, optional = true }
 inventory.workspace = true
 paste.workspace = true

@@ -71,6 +71,10 @@ pub trait CommitmentScheme: Clone + Sync + Send + Default + 'static {
         + Clone;
     type Proof: Sync + Send + CanonicalSerialize + CanonicalDeserialize + Clone + Debug;
     type BatchedProof: Sync + Send + CanonicalSerialize + CanonicalDeserialize;
+    // NOTE: main added `CanonicalSerialize + CanonicalDeserialize` here for Dory's
+    // disk-persistence, but no PCS-generic code serializes this hint — Dory derives those
+    // traits on its own concrete hint type. We keep the lighter bound so Akita's
+    // `JoltAkitaOpeningHint` (holding non-ark `CyclotomicRing`) need not be ark-serializable.
     /// Per-polynomial hint from individual `commit()` calls (e.g. Dory row commitments).
     type OpeningProofHint: Sync + Send + Clone + Debug + PartialEq;
     /// Hint produced by `batch_commit()` for the entire batch (e.g. Akita packed commitment witness).

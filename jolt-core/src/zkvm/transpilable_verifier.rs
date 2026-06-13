@@ -25,8 +25,10 @@
 //! ## Stages Implemented
 //!
 //! This verifier implements stages 1-7 (all sumcheck stages):
-//! - Stages 1-6: Standard sumcheck verifications
-//! - Stage 7: HammingWeight claim reduction sumcheck
+//! - Stages 1-5: Standard sumcheck verifications
+//! - Stage 6a: Address-phase bytecode read-RAF and booleanity sumchecks
+//! - Stage 6b: Cycle-phase sumchecks and precommitted claim reductions
+//! - Stage 7: HammingWeight claim reduction and address-phase advice reductions
 //!
 //! Stage 8 (PCS verification) is NOT transpiled by this module. It requires
 //! native elliptic curve operations that are handled separately by the target
@@ -35,22 +37,27 @@
 //! ## Advice Verifiers
 //!
 //! `AdviceClaimReduction` verifiers are included when advice commitments are present.
-//! They span stages 6 and 7 with a phase transition between them:
-//! - Stage 6: CycleVariables phase (bind cycle-derived coordinates)
+//! They span stages 6b and 7 with a phase transition between them:
+//! - Stage 6b: CycleVariables phase (bind cycle-derived coordinates)
 //! - Stage 7: AddressVariables phase (bind address-derived coordinates)
 
 use crate::curve::JoltCurve;
 use crate::poly::commitment::commitment_scheme::CommitmentScheme;
+use crate::poly::commitment::dory::DoryGlobals;
 #[cfg(not(feature = "zk"))]
 use crate::poly::opening_proof::{OpeningPoint, BIG_ENDIAN};
 use crate::subprotocols::sumcheck::{BatchedSumcheck, ClearSumcheckProof, SumcheckInstanceProof};
+use crate::zkvm::claim_reductions::advice::ReductionPhase;
 use crate::zkvm::claim_reductions::{
-    AdviceClaimReductionVerifier, AdviceKind, HammingWeightClaimReductionVerifier, ReductionPhase,
+    AdviceClaimReductionVerifier, AdviceKind, HammingWeightClaimReductionVerifier,
     RegistersClaimReductionSumcheckVerifier,
 };
 use crate::zkvm::config::OneHotParams;
 use crate::zkvm::{
-    bytecode::read_raf_checking::BytecodeReadRafSumcheckVerifier,
+    bytecode::read_raf_checking::{
+        BytecodeReadRafAddressSumcheckVerifier, BytecodeReadRafCycleSumcheckVerifier,
+        BytecodeReadRafSumcheckParams,
+    },
     claim_reductions::{
         IncClaimReductionSumcheckVerifier, InstructionLookupsClaimReductionSumcheckVerifier,
         RamRaClaimReductionSumcheckVerifier,
@@ -63,7 +70,8 @@ use crate::zkvm::{
     proof_serialization::JoltProof,
     r1cs::key::UniformSpartanKey,
     ram::{
-        compute_min_ram_K, hamming_booleanity::HammingBooleanitySumcheckVerifier,
+        compute_max_ram_K, compute_min_ram_K,
+        hamming_booleanity::HammingBooleanitySumcheckVerifier,
         output_check::OutputSumcheckVerifier, ra_virtual::RamRaVirtualSumcheckVerifier,
         raf_evaluation::RafEvaluationSumcheckVerifier as RamRafEvaluationSumcheckVerifier,
         read_write_checking::RamReadWriteCheckingVerifier, val_check::RamValCheckSumcheckVerifier,
@@ -78,7 +86,7 @@ use crate::zkvm::{
         product::ProductVirtualRemainderVerifier, shift::ShiftSumcheckVerifier,
         verify_stage1_uni_skip, verify_stage2_uni_skip,
     },
-    verifier::JoltVerifierPreprocessing,
+    verifier::{JoltSharedPreprocessing, JoltVerifierPreprocessing},
     ProverDebugInfo,
 };
 use crate::{
@@ -86,7 +94,10 @@ use crate::{
     poly::opening_proof::{AbstractVerifierOpeningAccumulator, VerifierOpeningAccumulator},
     pprof_scope,
     subprotocols::{
-        booleanity::{BooleanitySumcheckParams, BooleanitySumcheckVerifier},
+        booleanity::{
+            BooleanityAddressSumcheckVerifier, BooleanityCycleSumcheckVerifier,
+            BooleanitySumcheckParams,
+        },
         sumcheck_verifier::SumcheckInstanceVerifier,
     },
     transcripts::Transcript,
@@ -128,11 +139,7 @@ pub struct TranspilableVerifier<
     pub opening_accumulator: A,
     pub spartan_key: UniformSpartanKey<F>,
     pub one_hot_params: OneHotParams,
-    /// The advice claim reduction sumcheck effectively spans two stages (6 and 7).
-    /// Cache the verifier state here between stages.
     advice_reduction_verifier_trusted: Option<AdviceClaimReductionVerifier<F>>,
-    /// The advice claim reduction sumcheck effectively spans two stages (6 and 7).
-    /// Cache the verifier state here between stages.
     advice_reduction_verifier_untrusted: Option<AdviceClaimReductionVerifier<F>>,
 }
 
@@ -226,12 +233,15 @@ impl<
             .validate()
             .map_err(ProofVerifyError::InvalidOneHotConfig)?;
 
-        let min_ram_K = compute_min_ram_K(
-            &preprocessing.shared.ram,
-            &preprocessing.shared.memory_layout,
-        );
-        if !proof.ram_K.is_power_of_two() || proof.ram_K < min_ram_K {
-            return Err(ProofVerifyError::InvalidRamK(proof.ram_K, min_ram_K));
+        let min_ram_K =
+            compute_min_ram_K(&preprocessing.shared.ram, &preprocessing.shared.memory_layout);
+        let max_ram_K = compute_max_ram_K(&preprocessing.shared.memory_layout);
+        if !proof.ram_K.is_power_of_two() || proof.ram_K < min_ram_K || proof.ram_K > max_ram_K {
+            return Err(ProofVerifyError::InvalidRamK {
+                got: proof.ram_K,
+                min: min_ram_K,
+                max: max_ram_K,
+            });
         }
 
         proof
@@ -240,7 +250,7 @@ impl<
             .map_err(ProofVerifyError::InvalidReadWriteConfig)?;
 
         // Construct full params from the validated config
-        let bytecode_K = preprocessing.shared.bytecode.code_size;
+        let bytecode_K = preprocessing.shared.bytecode_size();
         let one_hot_params =
             OneHotParams::from_config(&proof.one_hot_config, bytecode_K, proof.ram_K);
 
@@ -271,7 +281,7 @@ impl<
         opening_accumulator: A,
     ) -> Self {
         let spartan_key = UniformSpartanKey::new(proof.trace_length.next_power_of_two());
-        let bytecode_K = preprocessing.shared.bytecode.code_size;
+        let bytecode_K = preprocessing.shared.bytecode_size();
         let one_hot_params =
             OneHotParams::from_config(&proof.one_hot_config, bytecode_K, proof.ram_K);
 
@@ -287,6 +297,19 @@ impl<
             advice_reduction_verifier_trusted: None,
             advice_reduction_verifier_untrusted: None,
         }
+    }
+
+    #[inline]
+    fn main_total_vars(&self) -> usize {
+        let trace_log_t = self.proof.trace_length.log_2();
+        let log_k_chunk = self.one_hot_params.log_k_chunk;
+        JoltSharedPreprocessing::max_total_vars_from_candidates(
+            trace_log_t + log_k_chunk,
+            self.preprocessing.shared.precommitted_candidate_total_vars(
+                self.trusted_advice_commitment.is_some(),
+                self.proof.untrusted_advice_commitment.is_some(),
+            ),
+        )
     }
 
     /// Verify the Jolt proof (stages 1-7).
@@ -321,7 +344,6 @@ impl<
             self.transcript
                 .append_serializable(b"trusted_advice", trusted_advice_commitment);
         }
-
         self.verify_stage1()
             .inspect_err(|e| tracing::error!("Stage 1: {e}"))?;
         self.verify_stage2()
@@ -484,15 +506,17 @@ impl<
             &self.preprocessing.shared.ram,
             &self.program_io,
         );
+        let ram_preprocessing = self.preprocessing.shared.ram.clone();
         let ram_val_check = RamValCheckSumcheckVerifier::new(
             &initial_ram_state,
             &self.program_io,
-            &self.preprocessing.shared.ram,
+            &ram_preprocessing,
             self.proof.trace_length,
             self.proof.ram_K,
             &self.proof.rw_config,
             ram_val_check_gamma,
             &self.opening_accumulator,
+            false,
         );
 
         let instances: Vec<&dyn SumcheckInstanceVerifier<F, ProofTranscript, A>> =
@@ -543,17 +567,35 @@ impl<
     }
 
     fn verify_stage6(&mut self) -> Result<(), ProofVerifyError> {
+        let _ = DoryGlobals::initialize_main_with_log_embedding(
+            self.one_hot_params.k_chunk,
+            self.proof.trace_length,
+            self.main_total_vars(),
+            PCS::dory_layout(&self.proof.pcs_config),
+        );
+        let (bytecode_read_raf_params, booleanity_params) = self.verify_stage6a()?;
+        self.verify_stage6b(bytecode_read_raf_params, booleanity_params)?;
+        Ok(())
+    }
+
+    fn verify_stage6a(
+        &mut self,
+    ) -> Result<
+        (
+            BytecodeReadRafSumcheckParams<F>,
+            BooleanitySumcheckParams<F>,
+        ),
+        ProofVerifyError,
+    > {
         let n_cycle_vars = self.proof.trace_length.log_2();
-        let bytecode_read_raf = BytecodeReadRafSumcheckVerifier::gen(
-            &self.preprocessing.shared.bytecode,
+        let program = self.preprocessing.shared.program::<PCS>();
+        let bytecode_read_raf = BytecodeReadRafAddressSumcheckVerifier::new::<PCS>(
+            &program,
             n_cycle_vars,
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
         );
-
-        let ram_hamming_booleanity =
-            HammingBooleanitySumcheckVerifier::new(&self.opening_accumulator);
         let booleanity_params = BooleanitySumcheckParams::new(
             n_cycle_vars,
             &self.one_hot_params,
@@ -561,8 +603,30 @@ impl<
             &mut self.transcript,
             PCS::uses_onehot_inc(),
         );
+        let booleanity = BooleanityAddressSumcheckVerifier::new(booleanity_params.clone());
 
-        let booleanity = BooleanitySumcheckVerifier::new(booleanity_params);
+        let instances: Vec<&dyn SumcheckInstanceVerifier<F, ProofTranscript, A>> =
+            vec![&bytecode_read_raf, &booleanity];
+
+        let _r_stage6a = BatchedSumcheck::verify_standard::<F, ProofTranscript, A>(
+            extract_clear_proof(&self.proof.stage6a_sumcheck_proof),
+            instances,
+            &mut self.opening_accumulator,
+            &mut self.transcript,
+        )?;
+
+        Ok((bytecode_read_raf.into_params(), booleanity_params))
+    }
+
+    fn verify_stage6b(
+        &mut self,
+        bytecode_read_raf_params: BytecodeReadRafSumcheckParams<F>,
+        booleanity_params: BooleanitySumcheckParams<F>,
+    ) -> Result<(), ProofVerifyError> {
+        let ram_hamming_booleanity =
+            HammingBooleanitySumcheckVerifier::new(&self.opening_accumulator);
+        let booleanity =
+            BooleanityCycleSumcheckVerifier::new(booleanity_params, &self.opening_accumulator);
         let ram_ra_virtual = RamRaVirtualSumcheckVerifier::new(
             self.proof.trace_length,
             &self.one_hot_params,
@@ -581,7 +645,6 @@ impl<
             PCS::uses_onehot_inc(),
         );
 
-        // Advice claim reduction (Phase 1 in Stage 6): trusted and untrusted are separate instances.
         if self.trusted_advice_commitment.is_some() {
             self.advice_reduction_verifier_trusted = Some(AdviceClaimReductionVerifier::new(
                 AdviceKind::Trusted,
@@ -601,6 +664,11 @@ impl<
             ));
         }
 
+        let bytecode_read_raf = BytecodeReadRafCycleSumcheckVerifier::new(
+            bytecode_read_raf_params,
+            &self.opening_accumulator,
+        );
+
         let mut instances: Vec<&dyn SumcheckInstanceVerifier<F, ProofTranscript, A>> = vec![
             &bytecode_read_raf,
             &booleanity,
@@ -616,8 +684,8 @@ impl<
             instances.push(advice);
         }
 
-        let _r_stage6 = BatchedSumcheck::verify_standard::<F, ProofTranscript, A>(
-            extract_clear_proof(&self.proof.stage6_sumcheck_proof),
+        let _r_stage6b = BatchedSumcheck::verify_standard::<F, ProofTranscript, A>(
+            extract_clear_proof(&self.proof.stage6b_sumcheck_proof),
             instances,
             &mut self.opening_accumulator,
             &mut self.transcript,
@@ -649,6 +717,7 @@ impl<
             let mut params = advice_reduction_verifier_trusted.params.borrow_mut();
             if params.num_address_phase_rounds() > 0 {
                 params.phase = ReductionPhase::AddressVariables;
+                drop(params);
                 instances.push(advice_reduction_verifier_trusted);
             }
         }
@@ -658,6 +727,7 @@ impl<
             let mut params = advice_reduction_verifier_untrusted.params.borrow_mut();
             if params.num_address_phase_rounds() > 0 {
                 params.phase = ReductionPhase::AddressVariables;
+                drop(params);
                 instances.push(advice_reduction_verifier_untrusted);
             }
         }

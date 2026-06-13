@@ -15,6 +15,10 @@ use strum::EnumCount;
 ///
 /// Note: the flags below deviate somewhat from those described in Appendix A.1
 /// of the Jolt paper.
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, EnumCount)]
 #[repr(u8)]
 pub enum CircuitFlags {
@@ -51,9 +55,30 @@ pub enum CircuitFlags {
 /// Number of circuit flags.
 pub const NUM_CIRCUIT_FLAGS: usize = CircuitFlags::COUNT;
 
+pub const CIRCUIT_FLAGS: [CircuitFlags; NUM_CIRCUIT_FLAGS] = [
+    CircuitFlags::AddOperands,
+    CircuitFlags::SubtractOperands,
+    CircuitFlags::MultiplyOperands,
+    CircuitFlags::Load,
+    CircuitFlags::Store,
+    CircuitFlags::Jump,
+    CircuitFlags::WriteLookupOutputToRD,
+    CircuitFlags::VirtualInstruction,
+    CircuitFlags::Assert,
+    CircuitFlags::DoNotUpdateUnexpandedPC,
+    CircuitFlags::Advice,
+    CircuitFlags::IsCompressed,
+    CircuitFlags::IsFirstInSequence,
+    CircuitFlags::IsLastInSequence,
+];
+
 /// Boolean flags that are NOT part of Jolt's R1CS constraints.
 ///
 /// These control witness generation, operand routing, and auxiliary prover logic.
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, EnumCount)]
 #[repr(u8)]
 pub enum InstructionFlags {
@@ -69,8 +94,6 @@ pub enum InstructionFlags {
     Branch,
     /// No-op instruction.
     IsNoop,
-    /// Destination register index is nonzero.
-    IsRdNotZero,
 }
 
 /// Number of instruction flags.
@@ -94,6 +117,11 @@ impl CircuitFlagSet {
     #[inline]
     pub fn bits(self) -> u16 {
         self.0
+    }
+
+    #[inline]
+    pub const fn from_bits(bits: u16) -> Self {
+        Self(bits)
     }
 }
 
@@ -127,6 +155,11 @@ impl InstructionFlagSet {
     #[inline]
     pub fn bits(self) -> u8 {
         self.0
+    }
+
+    #[inline]
+    pub const fn from_bits(bits: u8) -> Self {
+        Self(bits)
     }
 }
 
@@ -175,22 +208,6 @@ impl InterleavedBitsMarker for CircuitFlagSet {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn circuit_flags_count_matches_enum() {
-        assert_eq!(
-            CircuitFlags::IsLastInSequence as usize + 1,
-            NUM_CIRCUIT_FLAGS
-        );
-    }
-
-    #[test]
-    fn instruction_flags_count_matches_enum() {
-        assert_eq!(
-            InstructionFlags::IsRdNotZero as usize + 1,
-            NUM_INSTRUCTION_FLAGS
-        );
-    }
 
     #[test]
     fn set_and_get() {

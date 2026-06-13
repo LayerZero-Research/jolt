@@ -53,6 +53,13 @@ jobs:
         run: cargo clippy --all --all-targets --features allocative,host,zk
       - name: cargo clippy --no-default-features
         run: cargo clippy --all --all-targets --no-default-features
+      # jolt-verifier's core-fixtures feature gates the jolt-core compat layer
+      # (exhaustive enum mappings); it is not enabled by the workspace-wide
+      # invocations above, so build it explicitly in both modes.
+      - name: cargo clippy -p jolt-verifier --features core-fixtures
+        run: cargo clippy -p jolt-verifier --all-targets --features core-fixtures
+      - name: cargo clippy -p jolt-verifier --features core-fixtures,zk
+        run: cargo clippy -p jolt-verifier --all-targets --features core-fixtures,zk
 
   machete:
     runs-on: ubuntu-latest
@@ -83,6 +90,18 @@ jobs:
         with:
           components: rust-src
           cache-directories: ~/.cache/dory
+      - name: Cache ZeroOS musl toolchain
+        id: cache-zeroos-musl
+        uses: actions/cache@v5
+        with:
+          path: ~/.zeroos/musl
+          key: zeroos-musl-toolchain-musl-1.2.3-gcc-9.4.0-Linux-x86_64
+      - name: Install ZeroOS musl toolchain
+        if: steps.cache-zeroos-musl.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL https://github.com/LayerZero-Labs/ZeroOS/releases/download/musl-toolchain-musl-1.2.3-gcc-9.4.0/zeroos-musl-toolchain-musl-1.2.3-gcc-9.4.0-Linux-x86_64.tar.gz -o /tmp/zeroos-musl.tar.gz
+          mkdir -p ~/.zeroos
+          tar -xzf /tmp/zeroos-musl.tar.gz -C ~/.zeroos
       - name: Build and install jolt CLI
         run: cargo install --path . --locked --force
       - name: Install nextest
@@ -99,6 +118,18 @@ jobs:
         with:
           components: rust-src
           cache-directories: ~/.cache/dory
+      - name: Cache ZeroOS musl toolchain
+        id: cache-zeroos-musl
+        uses: actions/cache@v5
+        with:
+          path: ~/.zeroos/musl
+          key: zeroos-musl-toolchain-musl-1.2.3-gcc-9.4.0-Linux-x86_64
+      - name: Install ZeroOS musl toolchain
+        if: steps.cache-zeroos-musl.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL https://github.com/LayerZero-Labs/ZeroOS/releases/download/musl-toolchain-musl-1.2.3-gcc-9.4.0/zeroos-musl-toolchain-musl-1.2.3-gcc-9.4.0-Linux-x86_64.tar.gz -o /tmp/zeroos-musl.tar.gz
+          mkdir -p ~/.zeroos
+          tar -xzf /tmp/zeroos-musl.tar.gz -C ~/.zeroos
       - name: Build and install jolt CLI
         run: cargo install --path . --locked --force
       - name: Install nextest
@@ -110,7 +141,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: crate-ci/typos@v1.45.1
+      - uses: crate-ci/typos@v1.47.2
         with:
           files: .
 
@@ -215,7 +246,12 @@ jobs:
         run: |
           set -euo pipefail
           for pkg in ${{ steps.discover.outputs.pkgs }}; do
-            cargo nextest run -p "$pkg" --no-tests=pass
+            features=()
+            if cargo metadata --format-version=1 --no-deps \
+                 | jq -e --arg pkg "$pkg" '.packages[] | select(.name == $pkg) | .features | has("test-utils")' >/dev/null; then
+              features=(--features test-utils)
+            fi
+            cargo nextest run -p "$pkg" "${features[@]}" --no-tests=pass
           done
 
   test-inlines:
@@ -273,7 +309,7 @@ jobs:
       - name: Install nextest
         uses: taiki-e/install-action@nextest
       - name: Run tracer tests
-        run: cargo nextest run --release -p tracer
+        run: cargo nextest run --release -p tracer --features test-utils
 
   zklean-extractor-tests:
     name: ZkLean extractor tests

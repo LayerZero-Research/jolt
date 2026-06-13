@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 use super::{format::format_s::FormatS, RISCVInstruction, RISCVTrace};
-use crate::emulator::cpu::Xlen;
 use crate::{declare_riscv_instr, emulator::cpu::Cpu};
 
 declare_riscv_instr!(
@@ -9,14 +8,11 @@ declare_riscv_instr!(
     mask = 0,
     match = 0,
     format = FormatS,
-    ram    = super::RAMWrite,
-    side_effects = true
+    ram    = super::RAMWrite
 );
 
 impl VirtualSW {
     fn exec(&self, cpu: &mut Cpu, ram_access: &mut <VirtualSW as RISCVInstruction>::RAMAccess) {
-        // virtual lw is only supported on bit32. On bit64 LW doesn't use this instruction
-        assert_eq!(cpu.xlen, Xlen::Bit32);
         *ram_access = cpu
             .mmu
             .store_word(

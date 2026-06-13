@@ -12,22 +12,39 @@ use super::{
     Cycle, Instruction, RISCVInstruction, RISCVTrace,
 };
 use crate::{
-    emulator::cpu::{Cpu, Xlen},
-    instruction::NormalizedInstruction,
-    utils::{inline_helpers::InstrAssembler, virtual_registers::VirtualRegisterAllocator},
+    emulator::cpu::Cpu, instruction::SourceInstruction,
+    utils::virtual_registers::VirtualRegisterAllocator,
+};
+use jolt_program::expand::{
+    ExpandedInstructionSequence, ExpansionError, InlineExpansionBuilder, InlineExpansionProvider,
+    InlineOperands,
+};
+use jolt_riscv::{
+    InlineExtension, JoltInstructionProfile, JoltInstructionRow, SourceInlineKey,
+    SourceInstructionKind, RV64IMAC_JOLT_ALL_INLINES,
 };
 use serde::{Deserialize, Serialize};
+
 use std::collections::VecDeque;
 
-pub type InlineSequenceFn = fn(InstrAssembler, FormatInline) -> Vec<Instruction>;
+pub type InlineSequenceFn = fn(
+    InlineExpansionBuilder,
+    InlineOperands,
+) -> Result<ExpandedInstructionSequence, ExpansionError>;
 
-pub type AdviceFn = fn(InstrAssembler, FormatInline, &mut Cpu) -> Option<VecDeque<u64>>;
+pub type AdviceFn = fn(FormatInline, &mut Cpu) -> Option<VecDeque<u64>>;
 
-/// A registered inline implementation, discovered at link time via `inventory`.
+/// Runtime registration for one inline opcode.
+///
+/// `build_sequence` is the static recipe path consumed by `jolt-program`; it
+/// must not construct tracer instructions. `build_advice` is the runtime-only
+/// path that may inspect `Cpu` and produces values for `VirtualAdvice` rows in
+/// the same order as the recipe emitted them.
 pub struct InlineRegistration {
     pub opcode: u32,
     pub funct3: u32,
     pub funct7: u32,
+    pub extension: InlineExtension,
     pub name: &'static str,
     pub build_sequence: InlineSequenceFn,
     pub build_advice: AdviceFn,
@@ -46,6 +63,30 @@ fn find_inline(opcode: u32, funct3: u32, funct7: u32) -> &'static InlineRegistra
         })
 }
 
+fn lookup_inline(inline: SourceInlineKey) -> Result<&'static InlineRegistration, ExpansionError> {
+    inventory::iter::<InlineRegistration>
+        .into_iter()
+        .find(|r| {
+            r.opcode == inline.opcode as u32
+                && r.funct3 == inline.funct3 as u32
+                && r.funct7 == inline.funct7 as u32
+        })
+        .ok_or(ExpansionError::UnsupportedInstruction)
+}
+
+fn build_registered_sequence(
+    registration: &InlineRegistration,
+    instruction: &SourceInstruction,
+) -> Result<ExpandedInstructionSequence, ExpansionError> {
+    let source = *instruction.row();
+    let operands = InlineOperands::from_source_row(source)?;
+    (registration.build_sequence)(InlineExpansionBuilder::new(source), operands)
+}
+
+/// Return all linked inline registration keys and names.
+///
+/// This is intended for diagnostics and tests; expansion itself uses exact
+/// opcode/funct3/funct7 lookup through the provider.
 pub fn list_registered_inlines() -> Vec<((u32, u32, u32), String)> {
     inventory::iter::<InlineRegistration>
         .into_iter()
@@ -53,17 +94,66 @@ pub fn list_registered_inlines() -> Vec<((u32, u32, u32), String)> {
         .collect()
 }
 
+/// Check whether a linked inline registration exists for the encoded key.
 pub fn is_inline_registered(opcode: u32, funct3: u32, funct7: u32) -> bool {
     inventory::iter::<InlineRegistration>
         .into_iter()
         .any(|r| r.opcode == opcode && r.funct3 == funct3 && r.funct7 == funct7)
 }
 
-/// RISC-V inline instruction.
-/// # Note
+/// Inline provider backed by tracer-owned `inventory` registrations.
 ///
-/// This struct is manually implemented instead of using the `declare_riscv_instr!` macro because we need to:
-/// Store opcode, funct3 and funct7 fields for dispatch
+/// This type is the bridge from `jolt-program` static bytecode expansion to the
+/// inline crates linked into the tracer binary. It performs registration lookup
+/// and profile gating, then delegates recipe construction to the registered
+/// inline builder.
+#[derive(Debug, Clone, Default)]
+pub struct TracerInlineExpansionProvider;
+
+impl TracerInlineExpansionProvider {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl InlineExpansionProvider for TracerInlineExpansionProvider {
+    fn expand_inline(
+        &mut self,
+        instruction: &SourceInstruction,
+        profile: JoltInstructionProfile,
+    ) -> Result<ExpandedInstructionSequence, ExpansionError> {
+        if !profile.supports_source(SourceInstructionKind::Inline)
+            || instruction.kind() != SourceInstructionKind::Inline
+        {
+            return Err(ExpansionError::UnsupportedInstruction);
+        }
+
+        let inline = instruction
+            .row()
+            .inline
+            .ok_or(ExpansionError::MalformedInstruction(
+                "missing inline source metadata",
+            ))?;
+
+        let registration = lookup_inline(inline)?;
+        if !profile.supports_inline(registration.extension) {
+            return Err(ExpansionError::UnsupportedInstruction);
+        }
+
+        build_registered_sequence(registration, instruction)
+    }
+}
+
+/// RISC-V custom instruction that dispatches to a registered inline.
+///
+/// This is source-only: it never appears in final proving bytecode. Static
+/// expansion lowers it through `TracerInlineExpansionProvider`; runtime tracing
+/// executes the same materialized final-row sequence and patches advice values
+/// into `VirtualAdvice` rows when the registration supplies runtime advice.
+///
+/// The struct is implemented manually instead of through
+/// `declare_riscv_instr!` because dispatch needs the raw opcode, funct3, and
+/// funct7 fields.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
 pub struct INLINE {
     /// 7-bit opcode (bits 6:0 of instruction)
@@ -91,6 +181,10 @@ impl RISCVInstruction for INLINE {
 
     fn operands(&self) -> &Self::Format {
         &self.operands
+    }
+
+    fn source_kind(&self) -> jolt_riscv::SourceInstructionKind {
+        jolt_riscv::SourceInstructionKind::Inline
     }
 
     fn new(word: u32, address: u64, _validate: bool, is_compressed: bool) -> Self {
@@ -125,41 +219,54 @@ impl RISCVInstruction for INLINE {
     fn execute(&self, cpu: &mut Cpu, ram: &mut Self::RAMAccess) {
         self.exec(cpu, ram)
     }
-
-    fn has_side_effects(&self) -> bool {
-        true
-    }
 }
 
 impl INLINE {
+    /// Inline source instructions cannot execute as one machine step.
+    ///
+    /// Callers must use `trace`, which expands the source row into ordinary
+    /// final instructions and executes those rows instead.
     pub fn exec(&self, _cpu: &mut Cpu, _: &mut <INLINE as RISCVInstruction>::RAMAccess) {
         panic!("Inline instructions must use trace(), not exec()");
     }
-}
 
-impl RISCVTrace for INLINE {
-    fn trace(&self, cpu: &mut Cpu, trace: Option<&mut Vec<Cycle>>) {
-        // If rd (rs3 in FormatInline) is x0, remap to a virtual register so the
-        // constraint system never sees rd=x0.
-        if self.operands.rs3 == 0 {
-            let vr = cpu.vr_allocator.allocate();
-            let mut remapped = *self;
-            remapped.operands.rs3 = *vr;
-            remapped.trace(cpu, trace);
-            return;
-        }
+    /// Materialize this inline into tracer instructions for runtime execution.
+    ///
+    /// The returned instructions are produced by the same `jolt-program`
+    /// recipe/materializer path used for static bytecode. Keeping runtime trace
+    /// generation on that path prevents register-allocation or metadata-stamp
+    /// drift between the preprocessed bytecode and executed rows.
+    pub fn inline_sequence(&self, allocator: &VirtualRegisterAllocator) -> Vec<Instruction> {
+        let _ = allocator;
+        let source = Instruction::from(*self).source_instruction();
+        let mut expansion_allocator = jolt_program::expand::ExpansionAllocator::new();
+        let mut provider = TracerInlineExpansionProvider::new();
+        jolt_program::expand::expand_instruction_with_provider(
+            &source,
+            &mut expansion_allocator,
+            &mut provider,
+            RV64IMAC_JOLT_ALL_INLINES,
+        )
+        .expect("jolt-program inline expansion failed")
+        .into_iter()
+        .map(JoltInstructionRow::from)
+        .map(|instruction| {
+            Instruction::try_from_jolt_instruction_row(instruction)
+                .expect("jolt-program inline expansion produced an instruction unknown to tracer")
+        })
+        .collect()
+    }
 
+    fn trace_sequence(
+        &self,
+        cpu: &mut Cpu,
+        trace: Option<&mut Vec<Cycle>>,
+        mut sequence: Vec<Instruction>,
+    ) {
         let reg = find_inline(self.opcode, self.funct3, self.funct7);
-        let asm = InstrAssembler::new_inline(
-            self.address,
-            self.is_compressed,
-            cpu.xlen,
-            &cpu.vr_allocator,
-        );
-        if let Some(mut advice) = (reg.build_advice)(asm, self.operands, cpu) {
-            let mut inline_sequence = self.inline_sequence(&cpu.vr_allocator, cpu.xlen);
+        if let Some(mut advice) = (reg.build_advice)(self.operands, cpu) {
             let mut trace = trace;
-            for instr in inline_sequence.iter_mut() {
+            for instr in sequence.iter_mut() {
                 if let Instruction::VirtualAdvice(va) = instr {
                     va.advice = match advice.pop_front() {
                         Some(val) => val,
@@ -170,7 +277,7 @@ impl RISCVTrace for INLINE {
                         ),
                     };
                 }
-                instr.trace(cpu, trace.as_deref_mut());
+                instr.trace_raw(cpu, trace.as_deref_mut());
             }
             assert!(
                 advice.is_empty(),
@@ -181,46 +288,59 @@ impl RISCVTrace for INLINE {
                 self.funct7
             );
         } else {
-            let inline_sequence = self.inline_sequence(&cpu.vr_allocator, cpu.xlen);
             let mut trace = trace;
-            for instr in inline_sequence {
-                instr.trace(cpu, trace.as_deref_mut());
+            for instr in sequence {
+                instr.trace_raw(cpu, trace.as_deref_mut());
             }
         }
     }
-
-    fn inline_sequence(
-        &self,
-        allocator: &VirtualRegisterAllocator,
-        xlen: Xlen,
-    ) -> Vec<Instruction> {
-        let reg = find_inline(self.opcode, self.funct3, self.funct7);
-        let asm = InstrAssembler::new_inline(self.address, self.is_compressed, xlen, allocator);
-        (reg.build_sequence)(asm, self.operands)
-    }
 }
 
-impl From<NormalizedInstruction> for INLINE {
-    fn from(_: NormalizedInstruction) -> Self {
-        unimplemented!("Inline::from(NormalizedInstruction) should not be called");
-    }
-}
-
-impl From<INLINE> for NormalizedInstruction {
-    fn from(instr: INLINE) -> Self {
-        NormalizedInstruction {
-            address: instr.address as usize,
-            operands: instr.operands.into(),
-            virtual_sequence_remaining: instr.virtual_sequence_remaining,
-            is_first_in_sequence: instr.is_first_in_sequence,
-            is_compressed: instr.is_compressed,
-        }
+impl RISCVTrace for INLINE {
+    /// Trace the materialized inline sequence and populate runtime advice.
+    ///
+    /// Advice generation remains tracer-owned because it can inspect `Cpu`.
+    /// Static recipe construction only determines where `VirtualAdvice` rows
+    /// occur; this method writes the concrete advice values into those rows
+    /// immediately before executing them.
+    fn trace(&self, cpu: &mut Cpu, trace: Option<&mut Vec<Cycle>>) {
+        let sequence = self.inline_sequence(&cpu.vr_allocator);
+        self.trace_sequence(cpu, trace, sequence);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TEST_INLINE_WORD: u32 = 0xfc00_602b;
+    fn test_sequence(
+        mut asm: InlineExpansionBuilder,
+        operands: InlineOperands,
+    ) -> Result<ExpandedInstructionSequence, ExpansionError> {
+        asm.emit_vshift_i::<jolt_riscv::instructions::VirtualRotriw>(
+            5,
+            operands.rs1,
+            0xffff_ffff_0000_0000,
+        );
+        asm.finalize()
+    }
+
+    fn test_advice(_operands: FormatInline, _cpu: &mut Cpu) -> Option<VecDeque<u64>> {
+        None
+    }
+
+    inventory::submit! {
+        InlineRegistration {
+            opcode: 0x2b,
+            funct3: 0x6,
+            funct7: 0x7e,
+            extension: InlineExtension::Sha2,
+            name: "TEST_INLINE_PROFILE",
+            build_sequence: test_sequence,
+            build_advice: test_advice,
+        }
+    }
 
     #[test]
     fn test_inline_parsing() {
@@ -250,5 +370,90 @@ mod tests {
         for ((opcode, funct3, funct7), _name) in &inlines {
             assert!(is_inline_registered(*opcode, *funct3, *funct7));
         }
+    }
+
+    #[test]
+    fn provider_rejects_unregistered_inline() {
+        let mut provider = TracerInlineExpansionProvider::new();
+        let instruction = Instruction::from(INLINE::new(0xfe00_7fab, 0x8000_0000, false, false))
+            .source_instruction();
+
+        assert!(matches!(
+            provider.expand_inline(&instruction, jolt_riscv::RV64IMAC_JOLT_ALL_INLINES,),
+            Err(ExpansionError::UnsupportedInstruction)
+        ));
+    }
+
+    #[test]
+    fn provider_rejects_registered_inline_disabled_by_profile() {
+        let mut provider = TracerInlineExpansionProvider::new();
+        let instruction =
+            Instruction::from(INLINE::new(TEST_INLINE_WORD, 0x8000_0000, false, false))
+                .source_instruction();
+
+        assert!(matches!(
+            provider.expand_inline(&instruction, jolt_riscv::RV64IMAC_JOLT,),
+            Err(ExpansionError::UnsupportedInstruction)
+        ));
+    }
+
+    #[test]
+    fn provider_rejects_registered_inline_disabled_by_source_profile() {
+        let mut provider = TracerInlineExpansionProvider::new();
+        let instruction =
+            Instruction::from(INLINE::new(TEST_INLINE_WORD, 0x8000_0000, false, false))
+                .source_instruction();
+        let profile = JoltInstructionProfile {
+            source_extensions: &[],
+            inline_extensions: &[InlineExtension::Sha2],
+        };
+
+        assert!(matches!(
+            provider.expand_inline(&instruction, profile),
+            Err(ExpansionError::UnsupportedInstruction)
+        ));
+    }
+
+    #[test]
+    fn provider_accepts_registered_inline_enabled_by_profile() {
+        let mut provider = TracerInlineExpansionProvider::new();
+        let instruction =
+            Instruction::from(INLINE::new(TEST_INLINE_WORD, 0x8000_0000, false, false))
+                .source_instruction();
+
+        assert!(provider
+            .expand_inline(&instruction, jolt_riscv::RV64IMAC_JOLT_ALL_INLINES,)
+            .is_ok());
+    }
+
+    #[test]
+    fn trace_uses_program_allocator_for_rd_zero_inline() {
+        let inline = INLINE::new(TEST_INLINE_WORD, 0x8000_0000, false, false);
+        assert_eq!(inline.operands.rs3, 0);
+
+        let mut cpu = Cpu::new(Box::new(crate::emulator::terminal::DummyTerminal {}));
+        let expected_rows: Vec<JoltInstructionRow> = inline
+            .inline_sequence(&cpu.vr_allocator)
+            .into_iter()
+            .map(|instruction| {
+                instruction
+                    .try_jolt_instruction_row()
+                    .expect("test inline must expand to final Jolt rows")
+            })
+            .collect();
+
+        let mut trace = Vec::new();
+        inline.trace(&mut cpu, Some(&mut trace));
+        let actual_rows: Vec<JoltInstructionRow> = trace
+            .iter()
+            .map(|cycle| {
+                cycle
+                    .instruction()
+                    .try_jolt_instruction_row()
+                    .expect("test inline trace must contain final Jolt rows")
+            })
+            .collect();
+
+        assert_eq!(actual_rows, expected_rows);
     }
 }

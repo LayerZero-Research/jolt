@@ -98,6 +98,10 @@ struct Args {
     /// Output directory (defaults to target-specific directory, e.g., "go" for gnark)
     #[arg(long, short = 'o')]
     output_dir: Option<PathBuf>,
+
+    /// Also generate cross-validation circuit with api.Println hooks (crossval/circuit.go)
+    #[arg(long)]
+    crossval: bool,
 }
 
 fn main() {
@@ -155,17 +159,6 @@ fn main() {
         real_preprocessing.shared.memory_layout
     );
 
-    // Convert to symbolic preprocessing: replace Dory generators with AstVerifierSetup stub.
-    // The `shared` field (memory layout, bytecode info) is reused as-is.
-    // AstCommitmentScheme satisfies the CommitmentScheme trait but performs no cryptographic
-    // operations. PCS verification is skipped in stages 1-6.
-    let symbolic_preprocessing: JoltVerifierPreprocessing<MleAst, AstCurve, AstCommitmentScheme> =
-        JoltVerifierPreprocessing {
-            generators: transpiler::symbolic_traits::ast_commitment_scheme::AstVerifierSetup,
-            shared: real_preprocessing.shared.clone(),
-            blindfold_setup: None,
-        };
-
     // =========================================================================
     // Step 2: Convert proof to symbolic representation
     // =========================================================================
@@ -208,7 +201,7 @@ fn main() {
     let transcript: SelectedAstTranscript = Transcript::new(b"Jolt");
 
     // =========================================================================
-    // Step 2b: Symbolize IO device
+    // Step 2b: Symbolize IO device and preprocessing
     // =========================================================================
     // Make inputs/outputs/panic into witness variables instead of constants.
     // This sets up two override mechanisms:
@@ -220,7 +213,9 @@ fn main() {
         transpiler::symbolize::symbolize_io_device(&io_device, &mut var_alloc);
     println!("  IO input words: {}", eval_input_words.len());
 
-    // Set PENDING_INITIAL_RAM: bytecode as constants, inputs as symbolic
+    // Set PENDING_INITIAL_RAM: bytecode as constants, inputs as symbolic.
+    // In committed mode the verifier gets the bytecode contribution from a
+    // claim-reduction sumcheck, so PENDING_INITIAL_RAM only needs input words.
     {
         use jolt_core::zkvm::ram::{set_pending_initial_ram, PendingInitialRamValues};
         let bytecode_words: Vec<MleAst> = real_preprocessing
@@ -239,6 +234,22 @@ fn main() {
         "  Total symbolic variables after IO: {}",
         var_alloc.next_idx()
     );
+
+    // Convert to symbolic preprocessing: replace Dory generators with AstVerifierSetup stub.
+    // AstCommitmentScheme satisfies the CommitmentScheme trait but performs no cryptographic
+    // operations. PCS verification is skipped in stages 1-7.
+    //
+    // `JoltSharedPreprocessing` holds only PCS-independent bytecode/RAM preprocessing (Akita
+    // runs Full mode only and commits the program inside the proof), so the symbolic shared
+    // preprocessing is just a clone of the real one.
+    println!("\n=== Converting Preprocessing ===");
+    let symbolic_shared = real_preprocessing.shared.clone();
+    let symbolic_preprocessing: JoltVerifierPreprocessing<MleAst, AstCurve, AstCommitmentScheme> =
+        JoltVerifierPreprocessing::new(
+            symbolic_shared,
+            transpiler::symbolic_traits::ast_commitment_scheme::AstVerifierSetup,
+            None,
+        );
 
     // =========================================================================
     // Step 3: Set up symbolic verifier
@@ -331,12 +342,21 @@ fn main() {
     }
     println!("  Constraints: {}", bundle.constraints.len());
 
-    // Run CSE (Common Subexpression Elimination) at the AST level.
+    // Run global CSE: identify nodes shared across multiple constraints
+    // (primarily TranscriptHash chains) and hoist them to a single computation block.
+    bundle.run_global_cse();
+    println!(
+        "  Global CSE: {} nodes hoisted across constraints",
+        bundle.global_cse.bindings.len()
+    );
+
+    // Run per-constraint CSE (Common Subexpression Elimination) at the AST level.
     // This pre-computes which nodes should be hoisted to named variables,
     // making codegen simpler (just reads pre-computed decisions).
+    // Nodes already in global CSE are excluded.
     bundle.run_cse();
     println!(
-        "  CSE bindings: {} total across {} constraints",
+        "  Per-constraint CSE bindings: {} total across {} constraints",
         bundle
             .constraint_cse
             .iter()
@@ -381,6 +401,24 @@ fn main() {
                 .unwrap_or_else(|e| panic!("Failed to write circuit file {circuit_path:?}: {e}"));
             println!("  Circuit written to: {circuit_path:?}");
             println!("  Circuit size: {} bytes", circuit_code.len());
+
+            if args.crossval {
+                println!("\n=== Generating Crossval Circuit ===");
+                let (crossval_code, _) = gnark_codegen::generate_circuit_from_bundle_with_stats(
+                    &bundle,
+                    "JoltStagesCircuit",
+                    true,
+                );
+                let crossval_dir = output_dir.join("crossval");
+                std::fs::create_dir_all(&crossval_dir).unwrap_or_else(|e| {
+                    panic!("Failed to create crossval dir {crossval_dir:?}: {e}")
+                });
+                let crossval_path = crossval_dir.join("circuit.go");
+                std::fs::write(&crossval_path, &crossval_code).unwrap_or_else(|e| {
+                    panic!("Failed to write crossval circuit {crossval_path:?}: {e}")
+                });
+                println!("  Crossval circuit written to: {crossval_path:?}");
+            }
 
             // Get witness values captured during symbolization.
             // VarAllocator records both symbolic variables AND concrete values in a single pass,
