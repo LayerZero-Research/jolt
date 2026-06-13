@@ -12,6 +12,13 @@ Operational policy + conflict ledger for merging `origin/main` into the Akita br
 Merge tooling: `rerere.enabled=true`, `merge.conflictStyle=zdiff3`. Resolve on the
 throwaway branch `merge/main-sync-scratch` first, then replay onto `lz/integrate-akita`.
 
+> **Status: COMPLETE.** The sync is resolved, validated, and landed on
+> `lz/integrate-akita` as merge commit `f33be63b` (parents: Akita tip `75db40e0` +
+> `origin/main` `ef10191d`). Its tree is bit-identical to the validated scratch commit
+> `e72e5c5e`. All gates pass in both modes (see "Post-sweep validation" below). Remaining:
+> `git push` to the remote. The conflict ledger and resolution rules below are retained as a
+> record of how the merge was done (and as a template for the next sync).
+
 ### Decision (locked): Akita runs `ProgramMode::Full` only — committed subsystem **excised**
 
 The committed-bytecode / program-image path that `main` introduced is **Dory-only** and
@@ -105,9 +112,12 @@ the workspace must collapse to one version.
 and `sha3 = "=0.11.0"`. Implemented in root `Cargo.toml`. Result: every `spongefish`
 consumer agrees on one `sha3`; `jolt-core` resolves and builds.
 
-**Deferred cost:** `crates/jolt-transcript` and `jolt-eval` were written for the
-`spongefish 0.6.1` API and may need small `0.6.1 → 0.7.0` fixups. Neither is a `jolt-core`
-dependency, so this does not block the `muldiv` gate — fix as a follow-up.
+**Downstream cost (resolved):** the unification was predicted to need `0.6.1 → 0.7.0`
+fixups in `crates/jolt-transcript` and `jolt-eval`. In the end only `jolt-eval` broke —
+`crates/jolt-transcript` compiled clean. The `jolt-eval` break was an arkworks version skew
+(spongefish 0.7.0 pins arkworks `^0.6`, Jolt runs the 0.5 fork), fixed in the workspace sweep
+(item 2 below). Neither crate is a `jolt-core` dependency, so this never blocked the `muldiv`
+gate.
 
 ### Resolution rule
 
@@ -197,7 +207,7 @@ protocol structure with Akita's reverted helpers; neither is caught by `clippy`.
 `jolt-core` compiled and passed first, but `cargo clippy --all` surfaced breakage in other
 workspace members that the committed-program excision and spongefish re-pin hadn't reached:
 
-3. **Committed-program excision into the SDK / examples / tooling.** `JoltSharedPreprocessing`
+1. **Committed-program excision into the SDK / examples / tooling.** `JoltSharedPreprocessing`
    was reverted to Akita's non-generic, Full-only struct (`bytecode, ram, memory_layout,
    max_padded_trace_length`) and `CommittedProgramProverData` / `new_committed` were removed,
    but several crates still referenced them:
@@ -213,7 +223,7 @@ workspace members that the committed-program excision and spongefish re-pin hadn
      non-generic and PCS-independent, the transpiler's symbolic preprocessing is now a clone
      of the real `.shared` and bytecode words read from `.shared.ram.bytecode_words`.
 
-4. **`jolt-eval` spongefish/arkworks version skew** (`invariant/transcript_symmetry.rs`). The
+2. **`jolt-eval` spongefish/arkworks version skew** (`invariant/transcript_symmetry.rs`). The
    merge re-pinned `spongefish` to akita-transcript's rev (0.7.0), whose workspace pins
    arkworks `^0.6`, while Jolt runs the 0.5 `dev/twist-shout` fork via `[replace]`. spongefish's
    blanket `impl Encoding/Decoding for ark_ff::Fp` is therefore over a *different* `Fp` than
