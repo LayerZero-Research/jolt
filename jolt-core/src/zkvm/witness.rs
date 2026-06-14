@@ -52,6 +52,8 @@ pub enum CommittedPolynomial {
     /// One-hot ra polynomial for bytecode (Shout).
     BytecodeRa(usize),
     /// Dense committed bytecode chunk polynomial for committed program mode.
+    /// Required for Dory today and Akita PCS Committed mode eventually; see
+    /// `specs/akita/committed-bytecode-policy.md`.
     BytecodeChunk(usize),
     /// One-hot ra/wa polynomial for the RAM instance of Twist
     /// Note that for RAM, ra and wa are the same polynomial because
@@ -76,6 +78,8 @@ pub enum CommittedPolynomial {
     /// Untrusted advice polynomial.
     UntrustedAdvice,
     /// Program image (initial RAM image) polynomial for committed program mode.
+    /// Required for Dory today and Akita PCS Committed mode eventually; see
+    /// `specs/akita/committed-bytecode-policy.md`.
     ProgramImageInit,
 }
 

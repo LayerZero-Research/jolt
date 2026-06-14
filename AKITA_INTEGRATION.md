@@ -6,6 +6,20 @@ Branch: `lz/integrate-akita`
 
 ---
 
+## Product requirements
+
+**Committed bytecode is in scope for Akita, not a permanent non-goal.**
+
+We will eventually support `ProgramMode::Committed` with Akita PCS (verifier holds bytecode/program-image commitments; prover proves openings via the same claim-reduction pipeline as spec 1344, with Akita mega-polynomial batch opening instead of homomorphic Dory RLC).
+
+The **first milestone** is Akita + `ProgramMode::Full` only.
+That does **not** license deleting committed-mode protocol surface from the tree.
+Prefer preserving or feature-gating Dory committed paths and porting layout-sensitive code to `MatrixLayout` over excising modules to simplify a merge.
+
+Authoritative policy: **`specs/akita/committed-bytecode-policy.md`**.
+
+---
+
 ## Syncing with upstream `main`
 
 Operational policy + conflict ledger for merging `origin/main` into the Akita branch.
@@ -19,29 +33,21 @@ throwaway branch `merge/main-sync-scratch` first, then replay onto `lz/integrate
 > `git push` to the remote. The conflict ledger and resolution rules below are retained as a
 > record of how the merge was done (and as a template for the next sync).
 
-### Decision (locked): Akita runs `ProgramMode::Full` only — committed subsystem **excised**
+### Historical merge decision (superseded): committed subsystem excised for first sync
 
-The committed-bytecode / program-image path that `main` introduced is **Dory-only** and
-is **excised** from this merge (not carried compile-only).
+> **Policy update (2026-06-15):** See `specs/akita/committed-bytecode-policy.md`.
+> Excision below was a **one-time merge tactic** for the first `origin/main` sync.
+> It is **not** the long-term architecture.
+> Follow-up work must **restore or feature-gate** precommitted / committed-program code on `MatrixLayout`, not re-excise on every sync.
 
-- **Why excised, not compile-only:** main generalized advice into a `precommitted`
-  polynomial subsystem (`PrecommittedPolynomial`, `claim_reductions/{precommitted,program_image}.rs`)
-  that threads `precommitted_polys` through `rlc::new_streaming` / `build_streaming_rlc`.
-  That path calls `OneHotPolynomial` **without** a layout parameter, whereas Akita's
-  layout abstraction (chosen below) requires one. The two are mutually exclusive in the
-  same `rlc`, so keeping the committed path compiling would force a full union of two
-  ~1000-line `rlc` versions with no test baseline. Since Akita can't use committed
-  bytecode anyway (Ajtai commitments are non-homomorphic), we drop it.
-- **What is removed:** the two new files `claim_reductions/precommitted.rs` and
-  `claim_reductions/program_image.rs`, their `mod.rs` wiring, and all `precommitted_polys`
-  threading in `opening_proof.rs` / `rlc_polynomial.rs` / `prover.rs` / `witness.rs`.
-  Akita keeps its pre-main `advice_polys` (raw `MultilinearPolynomial`) path, which carries
-  the same advice data minus main's commitment-reuse wrapper (an optimization, not a
-  correctness requirement).
-- **Re-introduce later:** when Akita supports committed bytecode, re-sync this subsystem
-  on top of the layout abstraction as a dedicated workstream.
+The first main-sync merge **temporarily removed** the committed-bytecode / program-image path that `main` introduced.
 
-### Decision (locked): `JoltSharedPreprocessing` — keep Akita's non-generic struct, excise main's committed-program preprocessing
+- **Why it was excised then (not why it stays gone):** merge conflict pressure in `rlc_polynomial.rs` and advice scheduling; Akita Full milestone did not need Committed mode runtime yet.
+  The stated OneHot/layout incompatibility was overstated: precommitted VMV uses inline indexing portable to `MatrixLayout`, not a second `OneHotPolynomial` API.
+- **What was removed (branch debt):** `claim_reductions/{precommitted,program_image,bytecode}.rs`, `precommitted_polys` threading, and main's advice `PrecommittedClaimReduction` integration.
+- **Target state:** restore on `MatrixLayout` (Dory Committed compile-gated or default-on); converge advice with main/modular verifier (#1610); Akita Committed in a later phase per policy spec.
+
+### Historical merge decision (under review): `JoltSharedPreprocessing` shape
 
 `main` deeply refactored preprocessing around a committed-program subsystem:
 `JoltSharedPreprocessing<PCS>` with `program: ProgramPreprocessing<PCS>` (a `Full`/`Committed`
@@ -49,7 +55,8 @@ enum that absorbs `ram: RAMPreprocessing` inside `FullProgramPreprocessing`),
 `program_meta: ProgramMetadata`, and `bytecode_chunk_count`. It also binds a
 `preprocessing_digest` into Fiat-Shamir.
 
-We **keep Akita's** non-generic struct and **excise** main's committed-program preprocessing:
+The first sync **kept Akita's** non-generic struct and dropped main's committed-program preprocessing.
+Policy prefers **re-aligning with main's** `JoltSharedPreprocessing<PCS>` (always `ProgramPreprocessing::Full` for Akita Full milestone) over permanent excision:
 
 ```
 pub struct JoltSharedPreprocessing {
@@ -119,19 +126,21 @@ fixups in `crates/jolt-transcript` and `jolt-eval`. In the end only `jolt-eval` 
 (item 2 below). Neither crate is a `jolt-core` dependency, so this never blocked the `muldiv`
 gate.
 
-### Resolution rule
+### Resolution rule (updated)
 
-- Any conflict hunk that is purely committed-bytecode / program-image / `precommitted`
-  machinery → **excise** (drop main's addition; take Akita's pre-main shape). Do not
-  carry `PrecommittedPolynomial` / `precommitted_polys` into the Akita tree.
-- `ProgramMode` itself stays (Full is upstream default); only the `Committed` wiring and
-  the precommitted subsystem are removed.
+- Any conflict hunk for committed-bytecode / program-image / `precommitted` machinery →
+  **preserve main's addition**, port to `MatrixLayout`, gate with `dory-committed` if needed.
+  Do **not** excise by default (supersedes the first-sync excision playbook below).
+- `ProgramMode::Committed` stays; wiring must compile for Dory or be explicitly gated, not deleted piecemeal.
 - Akita-specific logic lives in the `else { /* Full */ }` branch, the streaming /
   mega-commitment path, the one-hot inc path, and the `MatrixLayout` threading — that is
   where real reconciliation happens.
 - Where the layout convention conflicts, keep Akita's `MatrixLayout` API (Option A).
 
-### Conflict ledger (scratch branch, 23 files)
+### Conflict ledger (first main-sync scratch branch, 23 files — historical)
+
+> Superseded for **future** merges by the updated resolution rule above.
+> Retained as a record of how the 2026-06 first sync was resolved.
 
 Resolve bottom-up; `prover.rs` / `verifier.rs` last. Classes: **MECH** mechanical ·
 **LEAF** take-incoming · **PCS** PCS/trait reconcile · **WIT** witness/claim-layout
@@ -350,6 +359,14 @@ Advice polynomials (TrustedAdvice, UntrustedAdvice) remain on separate Dory comm
 - [ ] Advice → one-hot conversion (deferred from Phase 3)
 - [ ] Full DoryGlobals removal (~79 remaining call sites across 8 files)
 
+### Phase 6 — Committed bytecode (required future; see policy spec)
+
+- [ ] Restore precommitted / committed-program modules on `MatrixLayout` (Dory path; feature-gated ok)
+- [ ] Reconcile advice with `PrecommittedClaimReduction` / modular verifier schedule (#1610)
+- [ ] Dory `ProgramMode::Committed` e2e green on integration branch
+- [ ] Akita mega-polynomial Stage 8 for committed chunk + program-image openings (Fp128)
+- [ ] `advice_e2e_akita` + committed-mode formula tests in `jolt-claims`
+
 ---
 
 ## Key design parameters
@@ -388,3 +405,6 @@ Advice polynomials (TrustedAdvice, UntrustedAdvice) remain on separate Dory comm
 - Akita recursion: out of scope for initial integration
 - DA layer / Data Proof migration: separate workstream (see `../akita/docs/DATA_PROOF_AKITA_MIGRATION.md`)
 - Backward compatibility shims: full cutover, no dual-PCS runtime
+- **Akita Committed mode in the first integration PR** (Phase 6 is later; see `specs/akita/committed-bytecode-policy.md`)
+
+**Not a non-goal:** committed bytecode / program-image support on Akita PCS eventually.

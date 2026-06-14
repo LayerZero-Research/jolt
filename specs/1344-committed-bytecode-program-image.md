@@ -16,6 +16,11 @@ In committed mode, prover and verifier preprocessing instead agree on Dory commi
 The motivation is recursive and verifier-side efficiency.
 Bytecode and program-image data are program constants, so a verifier should not have to repeatedly materialize and directly evaluate those tables when a preprocessing commitment and a succinct opening proof can bind the same data.
 
+**Akita PCS:** This protocol applies to Dory today and to Akita PCS in a later phase.
+Akita Full mode lands first; Akita Committed mode reuses the same claim reductions and Stage 8 opening order with mega-polynomial batch opening instead of homomorphic Dory RLC.
+See `specs/akita/committed-bytecode-policy.md`.
+On branch `lz/integrate-akita`, some committed-mode implementation files were temporarily removed during main sync; that is tracked as restoration debt, not a spec change.
+
 ## Intent
 
 ### Goal
@@ -61,6 +66,19 @@ New `jolt-eval` invariants for committed-program equivalence and Stage 8 opening
 - Do not introduce compatibility shims for the old single-stage-6 proof serialization format.
 - Do not make committed bytecode the default SDK path in this PR.
 - Do not require external consumers to adopt a stable public committed-program API beyond the SDK helpers added for this branch.
+- Do not drop committed-mode types or tests from the tree to simplify an unrelated PCS integration merge.
+  Temporary removal on a feature branch must be restored or feature-gated per `specs/akita/committed-bytecode-policy.md`.
+
+### Future: Akita PCS (`ProgramMode::Committed`)
+
+When Jolt uses Akita instead of Dory:
+
+- Claim reductions (bytecode, program image, advice precommitted schedule) stay **protocol-identical** to this spec.
+- Stage 8 replaces Dory homomorphic RLC + `PrecommittedPolynomial` batching with Akita mega-polynomial selector opening (see `AKITA_INTEGRATION.md` Architecture).
+- Verifier preprocessing still holds commitments to bytecode chunks and program image, not full coefficients.
+- Full and Committed modes must remain execution-equivalent under the same invariants above.
+
+Implementation order: Dory Committed stable on shared trunk → Akita Full → Akita Committed.
 
 ## Evaluation
 

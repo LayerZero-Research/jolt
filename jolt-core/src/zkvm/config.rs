@@ -31,9 +31,12 @@ pub fn get_instruction_sumcheck_phases(log_t: usize) -> usize {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Allocative, Default)]
 pub enum ProgramMode {
     /// Verifier has full bytecode and program image available.
+    /// First milestone for Akita PCS integration.
     #[default]
     Full = 0,
     /// Verifier uses commitments for bytecode/program-image openings in Stage 8.
+    /// Required on Dory today; required on Akita PCS in a later phase.
+    /// See `specs/akita/committed-bytecode-policy.md`.
     Committed = 1,
 }
 
