@@ -84,7 +84,6 @@ derive_more.workspace = true
 dory.workspace = true
 akita-pcs.workspace = true
 akita-prover.workspace = true
-akita-verifier.workspace = true
 akita-algebra.workspace = true
 akita-challenges.workspace = true
 akita-config.workspace = true

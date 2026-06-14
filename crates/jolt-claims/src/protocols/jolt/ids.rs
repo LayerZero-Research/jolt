@@ -238,10 +238,14 @@ pub enum JoltCommittedPolynomial {
     RamInc,
     InstructionRa(usize),
     BytecodeRa(usize),
-    BytecodeChunk(usize),
     RamRa(usize),
     TrustedAdvice,
     UntrustedAdvice,
+    RdIncRa(usize),
+    RdIncMsb,
+    RamIncRa(usize),
+    RamIncMsb,
+    BytecodeChunk(usize),
     ProgramImageInit,
 }
 

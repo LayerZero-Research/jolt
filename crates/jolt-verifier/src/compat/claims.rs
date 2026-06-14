@@ -1714,6 +1714,14 @@ fn committed_polynomial(
             native::JoltCommittedPolynomial::BytecodeChunk(index)
         }
         legacy::CommittedPolynomial::RamRa(index) => native::JoltCommittedPolynomial::RamRa(index),
+        legacy::CommittedPolynomial::RdIncRa(index) => {
+            native::JoltCommittedPolynomial::RdIncRa(index)
+        }
+        legacy::CommittedPolynomial::RdIncMsb => native::JoltCommittedPolynomial::RdIncMsb,
+        legacy::CommittedPolynomial::RamIncRa(index) => {
+            native::JoltCommittedPolynomial::RamIncRa(index)
+        }
+        legacy::CommittedPolynomial::RamIncMsb => native::JoltCommittedPolynomial::RamIncMsb,
         legacy::CommittedPolynomial::TrustedAdvice => {
             native::JoltCommittedPolynomial::TrustedAdvice
         }

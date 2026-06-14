@@ -93,6 +93,12 @@ where
     fn proof_into_verifier(
         proof: Self::Proof,
     ) -> <Self::VerifierPcs as ModularCommitmentScheme>::Proof;
+
+    fn batched_proof_into_verifier(
+        proof: Self::BatchedProof,
+    ) -> <Self::VerifierPcs as ModularCommitmentScheme>::Proof;
+
+    fn config_into_trace_polynomial_order(config: Self::Config) -> TracePolynomialOrder;
 }
 
 impl CorePcsBridge<ark_bn254::Fr> for CoreDoryCommitmentScheme {
@@ -104,6 +110,14 @@ impl CorePcsBridge<ark_bn254::Fr> for CoreDoryCommitmentScheme {
 
     fn proof_into_verifier(proof: Self::Proof) -> DoryProof {
         DoryProof(proof)
+    }
+
+    fn batched_proof_into_verifier(proof: Self::BatchedProof) -> DoryProof {
+        DoryProof(proof.proof)
+    }
+
+    fn config_into_trace_polynomial_order(config: Self::Config) -> TracePolynomialOrder {
+        convert_trace_polynomial_order(config)
     }
 }
 
@@ -277,7 +291,7 @@ where
             protocol: JoltProtocolConfig::for_zk(false),
             commitments,
             stages,
-            joint_opening_proof: PCS::proof_into_verifier(proof.joint_opening_proof),
+            joint_opening_proof: PCS::batched_proof_into_verifier(proof.joint_opening_proof),
             untrusted_advice_commitment: proof
                 .untrusted_advice_commitment
                 .map(PCS::commitment_into_verifier),
@@ -289,7 +303,7 @@ where
             ram_K: proof.ram_K,
             rw_config: convert_read_write_config(proof.rw_config),
             one_hot_config,
-            trace_polynomial_order: convert_trace_polynomial_order(proof.dory_layout),
+            trace_polynomial_order: PCS::config_into_trace_polynomial_order(proof.pcs_config),
         })
     }
 }
@@ -329,7 +343,7 @@ where
             protocol: JoltProtocolConfig::for_zk(true),
             commitments,
             stages,
-            joint_opening_proof: PCS::proof_into_verifier(proof.joint_opening_proof),
+            joint_opening_proof: PCS::batched_proof_into_verifier(proof.joint_opening_proof),
             untrusted_advice_commitment: proof
                 .untrusted_advice_commitment
                 .map(PCS::commitment_into_verifier),
@@ -342,7 +356,7 @@ where
             ram_K: proof.ram_K,
             rw_config: convert_read_write_config(proof.rw_config),
             one_hot_config,
-            trace_polynomial_order: convert_trace_polynomial_order(proof.dory_layout),
+            trace_polynomial_order: PCS::config_into_trace_polynomial_order(proof.pcs_config),
         })
     }
 }
@@ -722,6 +736,16 @@ fn convert_committed_polynomial(
         }
         core_witness::CommittedPolynomial::RamRa(index) => {
             verifier_ids::CommittedPolynomial::RamRa(index)
+        }
+        core_witness::CommittedPolynomial::RdIncRa(index) => {
+            verifier_ids::CommittedPolynomial::RdIncRa(index)
+        }
+        core_witness::CommittedPolynomial::RdIncMsb => verifier_ids::CommittedPolynomial::RdIncMsb,
+        core_witness::CommittedPolynomial::RamIncRa(index) => {
+            verifier_ids::CommittedPolynomial::RamIncRa(index)
+        }
+        core_witness::CommittedPolynomial::RamIncMsb => {
+            verifier_ids::CommittedPolynomial::RamIncMsb
         }
         core_witness::CommittedPolynomial::TrustedAdvice => {
             verifier_ids::CommittedPolynomial::TrustedAdvice

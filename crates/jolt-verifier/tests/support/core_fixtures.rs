@@ -64,7 +64,6 @@ use jolt_core::{
     transcripts::Transcript as CoreTranscript,
     zkvm::{
         instruction::{CircuitFlags as CoreCircuitFlags, InstructionFlags as CoreInstructionFlags},
-        program::ProgramPreprocessing,
         prover::JoltProverPreprocessing,
         verifier::{
             JoltSharedPreprocessing, JoltVerifierPreprocessing as CoreVerifierPreprocessing,
@@ -1009,6 +1008,10 @@ fn core_committed_polynomial(id: JoltCommittedPolynomial) -> CoreCommittedPolyno
             CoreCommittedPolynomial::BytecodeChunk(index)
         }
         JoltCommittedPolynomial::RamRa(index) => CoreCommittedPolynomial::RamRa(index),
+        JoltCommittedPolynomial::RdIncRa(index) => CoreCommittedPolynomial::RdIncRa(index),
+        JoltCommittedPolynomial::RdIncMsb => CoreCommittedPolynomial::RdIncMsb,
+        JoltCommittedPolynomial::RamIncRa(index) => CoreCommittedPolynomial::RamIncRa(index),
+        JoltCommittedPolynomial::RamIncMsb => CoreCommittedPolynomial::RamIncMsb,
         JoltCommittedPolynomial::TrustedAdvice => CoreCommittedPolynomial::TrustedAdvice,
         JoltCommittedPolynomial::UntrustedAdvice => CoreCommittedPolynomial::UntrustedAdvice,
         JoltCommittedPolynomial::ProgramImageInit => CoreCommittedPolynomial::ProgramImageInit,
@@ -1268,14 +1271,14 @@ fn generate_core_fixture(
     let (bytecode, init_memory_state, _, entry_address) = program.decode();
     let (_, _, _, public_io) = program.trace(&inputs, &untrusted_advice, &trusted_advice);
 
-    let program_preprocessing =
-        ProgramPreprocessing::preprocess(bytecode, init_memory_state, entry_address)
-            .expect("preprocess core fixture");
     let shared_preprocessing = JoltSharedPreprocessing::new(
-        program_preprocessing,
+        bytecode,
         public_io.memory_layout.clone(),
+        init_memory_state,
         1 << 16,
-    );
+        entry_address,
+    )
+    .expect("preprocess core fixture");
     let prover_preprocessing = JoltProverPreprocessing::new(shared_preprocessing);
     let elf_contents = program
         .get_elf_contents()
@@ -1328,26 +1331,20 @@ fn commit_trusted_advice_preprocessing_only(
 
     let _guard = DoryGlobals::initialize_context(1, advice_len, DoryContext::TrustedAdvice, None);
     let _ctx = DoryGlobals::with_context(DoryContext::TrustedAdvice);
-    DoryCommitmentScheme::commit(&poly, &preprocessing.generators)
+    DoryCommitmentScheme::default().commit(&poly, &preprocessing.generators)
 }
 
 fn convert_preprocessing(
     preprocessing: &CoreVerifierPreprocessing<CoreField, Bn254Curve, DoryCommitmentScheme>,
 ) -> ConvertedPreprocessing {
-    let program = match &preprocessing.shared.program {
-        ProgramPreprocessing::Full(full) => full,
-        ProgramPreprocessing::Committed(_) => {
-            panic!("core fixtures are generated with full program preprocessing")
-        }
-    };
     JoltVerifierPreprocessing::new(
         JoltProgramPreprocessing {
-            bytecode: program.bytecode.as_ref().clone(),
-            ram: program.ram.clone(),
+            bytecode: preprocessing.shared.bytecode.as_ref().clone(),
+            ram: preprocessing.shared.ram.clone(),
             memory_layout: preprocessing.shared.memory_layout.clone(),
             max_padded_trace_length: preprocessing.shared.max_padded_trace_length,
         },
-        preprocessing.shared.digest(),
+        [0u8; 32],
         DoryVerifierSetup(preprocessing.generators.clone()),
         convert_vc_setup(preprocessing),
     )

@@ -6,11 +6,11 @@ use std::sync::Arc;
 
 use crate::curve::JoltCurve;
 use crate::poly::commitment::commitment_scheme::{CommitmentScheme, ZkEvalCommitment};
-use crate::poly::commitment::dory::{DoryContext, DoryGlobals};
 #[cfg(not(feature = "zk"))]
 use crate::poly::commitment::dory::bind_opening_inputs;
 #[cfg(feature = "zk")]
 use crate::poly::commitment::dory::bind_opening_inputs_zk;
+use crate::poly::commitment::dory::{DoryContext, DoryGlobals};
 use crate::poly::commitment::pedersen::PedersenGenerators;
 #[cfg(feature = "zk")]
 use crate::poly::lagrange_poly::LagrangeHelper;
@@ -31,7 +31,6 @@ use crate::zkvm::bytecode::{BytecodePreprocessing, PreprocessingError};
 use crate::zkvm::claim_reductions::advice::ReductionPhase;
 use crate::zkvm::claim_reductions::RegistersClaimReductionSumcheckVerifier;
 use crate::zkvm::config::{OneHotParams, ProgramMode};
-use crate::zkvm::ram::RAMPreprocessing;
 #[cfg(feature = "prover")]
 use crate::zkvm::prover::JoltProverPreprocessing;
 #[cfg(feature = "zk")]
@@ -39,6 +38,7 @@ use crate::zkvm::r1cs::constraints::{
     OUTER_FIRST_ROUND_POLY_NUM_COEFFS, OUTER_UNIVARIATE_SKIP_DOMAIN_SIZE,
     PRODUCT_VIRTUAL_FIRST_ROUND_POLY_NUM_COEFFS, PRODUCT_VIRTUAL_UNIVARIATE_SKIP_DOMAIN_SIZE,
 };
+use crate::zkvm::ram::RAMPreprocessing;
 use crate::zkvm::witness::all_committed_polynomials;
 use crate::zkvm::Serializable;
 use crate::zkvm::{
@@ -336,8 +336,10 @@ impl<
             .validate()
             .map_err(ProofVerifyError::InvalidOneHotConfig)?;
 
-        let min_ram_K =
-            compute_min_ram_K(&preprocessing.shared.ram, &preprocessing.shared.memory_layout);
+        let min_ram_K = compute_min_ram_K(
+            &preprocessing.shared.ram,
+            &preprocessing.shared.memory_layout,
+        );
         let max_ram_K = compute_max_ram_K(&preprocessing.shared.memory_layout);
         if !proof.ram_K.is_power_of_two() || proof.ram_K < min_ram_K || proof.ram_K > max_ram_K {
             return Err(ProofVerifyError::InvalidRamK {
@@ -1616,7 +1618,10 @@ impl<
                 );
             let ram_inc_lagrange = compute_lagrange_factor::<F>(&opening_point.r, &ram_inc_point.r);
             let rd_inc_lagrange = compute_lagrange_factor::<F>(&opening_point.r, &rd_inc_point.r);
-            polynomial_claims.push((CommittedPolynomial::RamInc, ram_inc_claim * ram_inc_lagrange));
+            polynomial_claims.push((
+                CommittedPolynomial::RamInc,
+                ram_inc_claim * ram_inc_lagrange,
+            ));
             scaling_factors.push(ram_inc_lagrange);
             polynomial_claims.push((CommittedPolynomial::RdInc, rd_inc_claim * rd_inc_lagrange));
             scaling_factors.push(rd_inc_lagrange);
@@ -2022,7 +2027,6 @@ impl JoltSharedPreprocessing {
         }
         max_total_vars
     }
-
 }
 
 /// Serializable wrapper around [`PedersenGenerators`] for ZK setup transfer.

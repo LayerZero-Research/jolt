@@ -214,7 +214,8 @@ impl<F: JoltField> PolynomialBatchSource<F> for LazyOneHotSource<'_> {
                     }
                 }
                 CommittedPolynomial::BytecodeRa(chunk_idx) => {
-                    let pc = crate::zkvm::bytecode::get_pc_for_cycle(&preprocessing.bytecode, cycle);
+                    let pc =
+                        crate::zkvm::bytecode::get_pc_for_cycle(&preprocessing.bytecode, cycle);
                     buf[i] = Some(params.bytecode_pc_chunk(pc, chunk_idx));
                     i += 1;
                     while i < buf.len() {
@@ -594,9 +595,13 @@ impl<
         );
 
         tracing::info!("witness gen + commit");
+        #[cfg(not(target_arch = "wasm32"))]
         let t0 = Instant::now();
         let (commitments, batch_hint) = self.generate_and_commit_witness_polynomials();
+        #[cfg(not(target_arch = "wasm32"))]
         tracing::info!("commit done ({:.1}s)", t0.elapsed().as_secs_f64());
+        #[cfg(target_arch = "wasm32")]
+        tracing::info!("commit done");
         let untrusted_advice_commitment = self.generate_and_commit_untrusted_advice();
         self.generate_and_commit_trusted_advice();
 
@@ -643,6 +648,7 @@ impl<
             advice_hints.insert(CommittedPolynomial::UntrustedAdvice, hint);
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
         macro_rules! timed_stage {
             ($name:expr, $body:expr) => {{
                 tracing::info!("{}...", $name);
@@ -653,6 +659,16 @@ impl<
                     $name,
                     stage_start.elapsed().as_secs_f64()
                 );
+                r
+            }};
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        macro_rules! timed_stage {
+            ($name:expr, $body:expr) => {{
+                tracing::info!("{}...", $name);
+                let r = $body;
+                tracing::info!("{} done", $name);
                 r
             }};
         }
@@ -2209,7 +2225,10 @@ impl<
 
             let ram_inc_lagrange = compute_lagrange_factor::<F>(&opening_point.r, &ram_inc_point.r);
             let rd_inc_lagrange = compute_lagrange_factor::<F>(&opening_point.r, &rd_inc_point.r);
-            polynomial_claims.push((CommittedPolynomial::RamInc, ram_inc_claim * ram_inc_lagrange));
+            polynomial_claims.push((
+                CommittedPolynomial::RamInc,
+                ram_inc_claim * ram_inc_lagrange,
+            ));
             scaling_factors.push(ram_inc_lagrange);
             polynomial_claims.push((CommittedPolynomial::RdInc, rd_inc_claim * rd_inc_lagrange));
             scaling_factors.push(rd_inc_lagrange);
@@ -2717,7 +2736,6 @@ mod tests {
     #[cfg(not(feature = "zk"))]
     use crate::zkvm::prover::JoltCpuProver;
     use crate::zkvm::verifier::JoltSharedPreprocessing;
-    use jolt_riscv::JoltInstructionRow;
     use crate::zkvm::witness::CommittedPolynomial;
     use crate::zkvm::{
         prover::JoltProverPreprocessing,
@@ -2731,6 +2749,7 @@ mod tests {
     use jolt_inlines_keccak256 as _;
     #[cfg(feature = "host")]
     use jolt_inlines_sha2 as _;
+    use jolt_riscv::JoltInstructionRow;
 
     #[cfg(not(feature = "zk"))]
     type AkitaPcs = JoltAkitaCommitmentScheme<{ Fp128OneHot32Config::D }, Fp128OneHot32Config>;

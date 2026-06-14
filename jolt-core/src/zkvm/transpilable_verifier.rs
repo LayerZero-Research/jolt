@@ -233,8 +233,10 @@ impl<
             .validate()
             .map_err(ProofVerifyError::InvalidOneHotConfig)?;
 
-        let min_ram_K =
-            compute_min_ram_K(&preprocessing.shared.ram, &preprocessing.shared.memory_layout);
+        let min_ram_K = compute_min_ram_K(
+            &preprocessing.shared.ram,
+            &preprocessing.shared.memory_layout,
+        );
         let max_ram_K = compute_max_ram_K(&preprocessing.shared.memory_layout);
         if !proof.ram_K.is_power_of_two() || proof.ram_K < min_ram_K || proof.ram_K > max_ram_K {
             return Err(ProofVerifyError::InvalidRamK {

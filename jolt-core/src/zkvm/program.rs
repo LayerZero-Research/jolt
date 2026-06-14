@@ -9,7 +9,9 @@ use ark_serialize::{
 
 use crate::poly::commitment::commitment_scheme::CommitmentScheme;
 use crate::utils::errors::ProofVerifyError;
-use crate::zkvm::bytecode::{BytecodePreprocessing, PreprocessingError, TrustedBytecodeCommitments};
+use crate::zkvm::bytecode::{
+    BytecodePreprocessing, PreprocessingError, TrustedBytecodeCommitments,
+};
 use crate::zkvm::ram::RAMPreprocessing;
 use common::jolt_device::MemoryLayout;
 use jolt_riscv::{JoltInstructionRow, RV64IMAC_JOLT};
