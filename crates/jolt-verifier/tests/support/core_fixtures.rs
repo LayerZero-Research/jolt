@@ -1344,7 +1344,7 @@ fn convert_preprocessing(
             memory_layout: preprocessing.shared.memory_layout.clone(),
             max_padded_trace_length: preprocessing.shared.max_padded_trace_length,
         },
-        [0u8; 32],
+        preprocessing.shared.digest(),
         DoryVerifierSetup(preprocessing.generators.clone()),
         convert_vc_setup(preprocessing),
     )

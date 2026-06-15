@@ -292,8 +292,10 @@ pub fn fiat_shamir_preamble(
     ram_K: usize,
     trace_length: usize,
     entry_address: u64,
+    preprocessing_digest: &[u8; 32],
     transcript: &mut impl Transcript,
 ) {
+    transcript.append_bytes(b"preprocessing_digest", preprocessing_digest);
     transcript.append_u64(b"max_input_size", program_io.memory_layout.max_input_size);
     transcript.append_u64(b"max_output_size", program_io.memory_layout.max_output_size);
     transcript.append_u64(b"heap_size", program_io.memory_layout.heap_size);

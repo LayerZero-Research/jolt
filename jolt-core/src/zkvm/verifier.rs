@@ -380,11 +380,13 @@ impl<
         tracing::info!("starting verify");
         let zk_mode = self.opening_accumulator.zk_mode;
 
+        let preprocessing_digest = self.preprocessing.shared.digest();
         fiat_shamir_preamble(
             &self.program_io,
             self.proof.ram_K,
             self.proof.trace_length,
             self.preprocessing.shared.bytecode.entry_address,
+            &preprocessing_digest,
             &mut self.transcript,
         );
 
@@ -1972,6 +1974,20 @@ impl JoltSharedPreprocessing {
 
     pub fn bytecode_size(&self) -> usize {
         self.bytecode.code_size
+    }
+
+    /// Blake2b-256 digest over the canonical serialization of the verifier-relevant
+    /// preprocessing (bytecode, RAM init, memory layout, max padded trace length).
+    /// Bound into Fiat-Shamir so the challenge stream commits to the exact preprocessed
+    /// statement. Computed from the live preprocessing rather than a stored field so it
+    /// cannot disagree with the data used in the verification stages.
+    pub fn digest(&self) -> [u8; 32] {
+        use ark_serialize::CanonicalSerialize;
+        use blake2::{digest::consts::U32, Blake2b, Digest};
+        let mut buf = Vec::new();
+        self.serialize_compressed(&mut buf)
+            .expect("serialization cannot fail for in-memory buffer");
+        Blake2b::<U32>::digest(&buf).into()
     }
 
     /// Synthesize a `Full` [`ProgramPreprocessing`] view for the shared sumcheck

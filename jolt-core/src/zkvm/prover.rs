@@ -581,11 +581,13 @@ impl<
 
         #[cfg(not(target_arch = "wasm32"))]
         let start = Instant::now();
+        let preprocessing_digest = self.preprocessing.shared.digest();
         fiat_shamir_preamble(
             &self.program_io,
             self.one_hot_params.ram_k,
             self.trace.len(),
             self.preprocessing.shared.bytecode.entry_address,
+            &preprocessing_digest,
             &mut self.transcript,
         );
 

@@ -293,6 +293,11 @@ pub(crate) fn absorb_preamble<PCS, VC, ZkProof, T>(
     T: Transcript<Challenge = PCS::Field>,
 {
     let public_io = &checked.public_io;
+    absorb_labeled_bytes(
+        transcript,
+        b"preprocessing_digest",
+        &checked.preprocessing_digest,
+    );
     absorb_labeled_u64(
         transcript,
         b"max_input_size",

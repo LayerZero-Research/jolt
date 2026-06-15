@@ -323,11 +323,13 @@ impl<
     pub fn verify(mut self) -> Result<(), ProofVerifyError> {
         let _pprof_verify = pprof_scope!("verify");
 
+        let preprocessing_digest = self.preprocessing.shared.digest();
         fiat_shamir_preamble(
             &self.program_io,
             self.proof.ram_K,
             self.proof.trace_length,
             self.preprocessing.shared.bytecode.entry_address,
+            &preprocessing_digest,
             &mut self.transcript,
         );
 
