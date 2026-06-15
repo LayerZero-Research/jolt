@@ -181,6 +181,10 @@ impl CommitmentScheme for DoryCommitmentScheme {
         &self.layout
     }
 
+    fn append_pcs_config_to_transcript<T: Transcript>(config: &Self::Config, transcript: &mut T) {
+        transcript.append_u64(b"dory_layout", *config as u64);
+    }
+
     fn dory_layout(config: &Self::Config) -> Option<DoryLayout> {
         Some(*config)
     }

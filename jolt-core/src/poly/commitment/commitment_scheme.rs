@@ -104,6 +104,9 @@ pub trait CommitmentScheme: Clone + Sync + Send + Default + 'static {
 
     fn config(&self) -> &Self::Config;
 
+    /// Absorb the public PCS layout/configuration identity into the Fiat-Shamir transcript.
+    fn append_pcs_config_to_transcript<T: Transcript>(config: &Self::Config, transcript: &mut T);
+
     /// Exposes Dory matrix layout when this PCS uses Dory contexts.
     /// Non-Dory schemes return `None`.
     fn dory_layout(_config: &Self::Config) -> Option<DoryLayout> {

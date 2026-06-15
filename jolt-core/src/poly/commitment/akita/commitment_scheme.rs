@@ -517,6 +517,10 @@ where
         &()
     }
 
+    fn append_pcs_config_to_transcript<T: Transcript>(_: &Self::Config, transcript: &mut T) {
+        transcript.append_u64(b"akita_layout", 0);
+    }
+
     fn commit(
         &self,
         poly: &MultilinearPolynomial<JoltFp128>,

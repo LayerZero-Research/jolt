@@ -489,6 +489,10 @@ where
         &()
     }
 
+    fn append_pcs_config_to_transcript<T: Transcript>(_: &Self::Config, transcript: &mut T) {
+        transcript.append_u64(b"hyperkzg_layout", 0);
+    }
+
     #[tracing::instrument(skip_all, name = "HyperKZG::commit")]
     fn commit(
         &self,

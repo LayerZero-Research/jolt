@@ -117,6 +117,10 @@ impl CommitmentScheme for AstCommitmentScheme {
         &self.config
     }
 
+    fn append_pcs_config_to_transcript<T: Transcript>(_: &Self::Config, transcript: &mut T) {
+        transcript.append_u64(b"ast_layout", 0);
+    }
+
     fn setup_prover(_max_num_vars: usize) -> Self::ProverSetup {
         panic!("AstCommitmentScheme::setup_prover should never be called during verification")
     }

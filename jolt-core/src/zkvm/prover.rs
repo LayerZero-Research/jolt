@@ -131,7 +131,7 @@ use crate::{
             shift::ShiftSumcheckProver,
         },
         witness::{ram_unsigned_inc, rd_unsigned_inc, CommittedPolynomial},
-        ProverDebugInfo,
+        FiatShamirPreamble, ProverDebugInfo,
     },
 };
 
@@ -582,12 +582,19 @@ impl<
         #[cfg(not(target_arch = "wasm32"))]
         let start = Instant::now();
         let preprocessing_digest = self.preprocessing.shared.digest();
-        fiat_shamir_preamble(
-            &self.program_io,
-            self.one_hot_params.ram_k,
-            self.trace.len(),
-            self.preprocessing.shared.bytecode.entry_address,
-            &preprocessing_digest,
+        let one_hot_config = self.one_hot_params.to_config();
+        let pcs = PCS::default();
+        fiat_shamir_preamble::<PCS>(
+            FiatShamirPreamble {
+                program_io: &self.program_io,
+                ram_K: self.one_hot_params.ram_k,
+                trace_length: self.trace.len(),
+                entry_address: self.preprocessing.shared.bytecode.entry_address,
+                rw_config: &self.rw_config,
+                one_hot_config: &one_hot_config,
+                pcs_config: pcs.config(),
+                preprocessing_digest: &preprocessing_digest,
+            },
             &mut self.transcript,
         );
 

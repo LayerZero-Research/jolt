@@ -1,6 +1,6 @@
 use std::fs::File;
 
-use crate::zkvm::config::{OneHotParams, ProgramMode};
+use crate::zkvm::config::{OneHotConfig, OneHotParams, ProgramMode, ReadWriteConfig};
 use crate::zkvm::witness::CommittedPolynomial;
 use crate::{
     curve::Bn254Curve,
@@ -286,15 +286,33 @@ where
     pub(crate) prover_setup: PCS::ProverSetup,
 }
 
+pub struct FiatShamirPreamble<'a, PCS: CommitmentScheme> {
+    pub program_io: &'a JoltDevice,
+    pub ram_K: usize,
+    pub trace_length: usize,
+    pub entry_address: u64,
+    pub rw_config: &'a ReadWriteConfig,
+    pub one_hot_config: &'a OneHotConfig,
+    pub pcs_config: &'a PCS::Config,
+    pub preprocessing_digest: &'a [u8; 32],
+}
+
 /// Absorb public instance data into the transcript for Fiat-Shamir.
-pub fn fiat_shamir_preamble(
-    program_io: &JoltDevice,
-    ram_K: usize,
-    trace_length: usize,
-    entry_address: u64,
-    preprocessing_digest: &[u8; 32],
+pub fn fiat_shamir_preamble<PCS: CommitmentScheme>(
+    preamble: FiatShamirPreamble<'_, PCS>,
     transcript: &mut impl Transcript,
 ) {
+    let FiatShamirPreamble {
+        program_io,
+        ram_K,
+        trace_length,
+        entry_address,
+        rw_config,
+        one_hot_config,
+        pcs_config,
+        preprocessing_digest,
+    } = preamble;
+
     transcript.append_bytes(b"preprocessing_digest", preprocessing_digest);
     transcript.append_u64(b"max_input_size", program_io.memory_layout.max_input_size);
     transcript.append_u64(b"max_output_size", program_io.memory_layout.max_output_size);
@@ -305,6 +323,28 @@ pub fn fiat_shamir_preamble(
     transcript.append_u64(b"ram_K", ram_K as u64);
     transcript.append_u64(b"trace_length", trace_length as u64);
     transcript.append_u64(b"entry_address", entry_address);
+    transcript.append_u64(
+        b"ram_rw_phase1_num_rounds",
+        rw_config.ram_rw_phase1_num_rounds as u64,
+    );
+    transcript.append_u64(
+        b"ram_rw_phase2_num_rounds",
+        rw_config.ram_rw_phase2_num_rounds as u64,
+    );
+    transcript.append_u64(
+        b"registers_rw_phase1_num_rounds",
+        rw_config.registers_rw_phase1_num_rounds as u64,
+    );
+    transcript.append_u64(
+        b"registers_rw_phase2_num_rounds",
+        rw_config.registers_rw_phase2_num_rounds as u64,
+    );
+    transcript.append_u64(b"log_k_chunk", one_hot_config.log_k_chunk as u64);
+    transcript.append_u64(
+        b"lookups_ra_virtual_log_k_chunk",
+        one_hot_config.lookups_ra_virtual_log_k_chunk as u64,
+    );
+    PCS::append_pcs_config_to_transcript(pcs_config, transcript);
 }
 
 #[cfg(feature = "prover")]

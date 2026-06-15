@@ -87,7 +87,7 @@ use crate::zkvm::{
         verify_stage1_uni_skip, verify_stage2_uni_skip,
     },
     verifier::{JoltSharedPreprocessing, JoltVerifierPreprocessing},
-    ProverDebugInfo,
+    FiatShamirPreamble, ProverDebugInfo,
 };
 use crate::{
     field::JoltField,
@@ -324,12 +324,17 @@ impl<
         let _pprof_verify = pprof_scope!("verify");
 
         let preprocessing_digest = self.preprocessing.shared.digest();
-        fiat_shamir_preamble(
-            &self.program_io,
-            self.proof.ram_K,
-            self.proof.trace_length,
-            self.preprocessing.shared.bytecode.entry_address,
-            &preprocessing_digest,
+        fiat_shamir_preamble::<PCS>(
+            FiatShamirPreamble {
+                program_io: &self.program_io,
+                ram_K: self.proof.ram_K,
+                trace_length: self.proof.trace_length,
+                entry_address: self.preprocessing.shared.bytecode.entry_address,
+                rw_config: &self.proof.rw_config,
+                one_hot_config: &self.proof.one_hot_config,
+                pcs_config: &self.proof.pcs_config,
+                preprocessing_digest: &preprocessing_digest,
+            },
             &mut self.transcript,
         );
 
