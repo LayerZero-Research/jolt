@@ -59,14 +59,18 @@ pub enum CommittedPolynomial {
     /// Note that for RAM, ra and wa are the same polynomial because
     /// there is at most one load or store per cycle.
     RamRa(usize),
-    /// One-hot ra polynomial for register increment (Akita path).
+    /// One-hot increment chunk for register writes (Akita path).
+    /// Despite the `Ra` suffix, this is not a literal read address; it reuses
+    /// the RA one-hot machinery to encode chunks of `unsigned_rd_inc`.
     /// 8 polynomials `RdIncRa(0)..RdIncRa(7)` encoding the lower 64 bits of
     /// `unsigned_rd_inc = rd_inc + 2^XLEN` as chunks 1..d_inc-1.
     RdIncRa(usize),
     /// One-hot polynomial for bit 64 (MSB) of unsigned_rd_inc (Akita path).
     /// Committed as OneHot(K=256) with indices 0 or 1 for uniform treatment.
     RdIncMsb,
-    /// One-hot ra polynomial for RAM increment (Akita path).
+    /// One-hot increment chunk for RAM writes (Akita path).
+    /// Despite the `Ra` suffix, this is not a literal read address; it reuses
+    /// the RA one-hot machinery to encode chunks of `unsigned_ram_inc`.
     /// 8 polynomials `RamIncRa(0)..RamIncRa(7)` encoding the lower 64 bits of
     /// `unsigned_ram_inc = ram_inc + 2^XLEN` as chunks 1..d_inc-1.
     RamIncRa(usize),
