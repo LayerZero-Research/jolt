@@ -144,6 +144,37 @@ use tracer::{
     emulator::memory::Memory, instruction::Cycle, ChunksIterator, JoltDevice, LazyTraceIterator,
 };
 
+#[cfg(not(target_arch = "wasm32"))]
+fn write_prover_timing_breakdown(rows: &[(&'static str, f64)]) {
+    let Ok(output_path) = std::env::var("JOLT_PROVER_TIMING_CSV") else {
+        return;
+    };
+
+    if let Some(parent) = Path::new(&output_path).parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            eprintln!(
+                "Failed to create prover timing output directory {}: {e}",
+                parent.display()
+            );
+            return;
+        }
+    }
+
+    let mut output = String::from("stage,duration_ms,duration_s\n");
+    for (stage, duration_s) in rows {
+        output.push_str(&format!(
+            "{stage},{:.3},{:.6}\n",
+            duration_s * 1000.0,
+            duration_s
+        ));
+    }
+
+    match std::fs::write(&output_path, output) {
+        Ok(()) => println!("Prover timings written to {output_path}"),
+        Err(e) => eprintln!("Failed to write prover timing breakdown {output_path}: {e}"),
+    }
+}
+
 use crate::curve::JoltCurve;
 #[cfg(feature = "zk")]
 use crate::poly::commitment::pedersen::PedersenGenerators;
@@ -581,6 +612,8 @@ impl<
 
         #[cfg(not(target_arch = "wasm32"))]
         let start = Instant::now();
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut timing_rows: Vec<(&'static str, f64)> = Vec::new();
         let preprocessing_digest = self.preprocessing.shared.digest();
         fiat_shamir_preamble(
             &self.program_io,
@@ -601,11 +634,23 @@ impl<
         let t0 = Instant::now();
         let (commitments, batch_hint) = self.generate_and_commit_witness_polynomials();
         #[cfg(not(target_arch = "wasm32"))]
-        tracing::info!("commit done ({:.1}s)", t0.elapsed().as_secs_f64());
+        {
+            let elapsed = t0.elapsed();
+            tracing::info!("commit done ({:.1}s)", elapsed.as_secs_f64());
+            timing_rows.push(("witness_gen_and_commit", elapsed.as_secs_f64()));
+        }
         #[cfg(target_arch = "wasm32")]
         tracing::info!("commit done");
+        #[cfg(not(target_arch = "wasm32"))]
+        let t0 = Instant::now();
         let untrusted_advice_commitment = self.generate_and_commit_untrusted_advice();
+        #[cfg(not(target_arch = "wasm32"))]
+        timing_rows.push(("untrusted_advice_commit", t0.elapsed().as_secs_f64()));
+        #[cfg(not(target_arch = "wasm32"))]
+        let t0 = Instant::now();
         self.generate_and_commit_trusted_advice();
+        #[cfg(not(target_arch = "wasm32"))]
+        timing_rows.push(("trusted_advice_commit", t0.elapsed().as_secs_f64()));
 
         let onehot_inc = PCS::uses_onehot_inc();
         let main_polys = all_committed_polynomials(&self.one_hot_params, onehot_inc);
@@ -656,11 +701,9 @@ impl<
                 tracing::info!("{}...", $name);
                 let stage_start = Instant::now();
                 let r = $body;
-                tracing::info!(
-                    "{} done ({:.1}s)",
-                    $name,
-                    stage_start.elapsed().as_secs_f64()
-                );
+                let elapsed = stage_start.elapsed();
+                tracing::info!("{} done ({:.1}s)", $name, elapsed.as_secs_f64());
+                timing_rows.push(($name, elapsed.as_secs_f64()));
                 r
             }};
         }
@@ -697,7 +740,7 @@ impl<
             self.prove_stage8(batch_hint, advice_hints, commitment_map)
         );
         #[cfg(feature = "zk")]
-        let blindfold_proof = self.prove_blindfold(&joint_opening_proof);
+        let blindfold_proof = timed_stage!("blindfold", self.prove_blindfold(&joint_opening_proof));
 
         #[cfg(not(feature = "zk"))]
         let opening_claims =
@@ -753,6 +796,8 @@ impl<
         #[cfg(not(target_arch = "wasm32"))]
         {
             let prove_duration = start.elapsed();
+            timing_rows.push(("total_prove", prove_duration.as_secs_f64()));
+            write_prover_timing_breakdown(&timing_rows);
             tracing::info!(
                 "Proved in {:.1}s ({:.1} kHz / padded {:.1} kHz)",
                 prove_duration.as_secs_f64(),

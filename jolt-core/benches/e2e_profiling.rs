@@ -1,4 +1,4 @@
-use ark_serialize::CanonicalSerialize;
+use ark_serialize::{CanonicalSerialize, Compress};
 use jolt_core::host;
 use jolt_core::zkvm::prover::JoltProverPreprocessing;
 use jolt_core::zkvm::verifier::{JoltSharedPreprocessing, JoltVerifierPreprocessing};
@@ -22,6 +22,130 @@ const CYCLES_PER_SHA3: f64 = 4330.0;
 const CYCLES_PER_BTREEMAP_OP: f64 = 1550.0;
 const CYCLES_PER_FIBONACCI_UNIT: f64 = 12.0;
 const SAFETY_MARGIN: f64 = 0.9; // Use 90% of max trace capacity
+
+type ProofSizeRows = Vec<(&'static str, usize, usize)>;
+
+fn push_size<T: CanonicalSerialize>(rows: &mut ProofSizeRows, label: &'static str, value: &T) {
+    rows.push((
+        label,
+        value.serialized_size(Compress::Yes),
+        value.serialized_size(Compress::No),
+    ));
+}
+
+fn proof_size_filename(pcs: &str, example_name: &str, scale: Option<usize>) -> String {
+    artifact_filename(pcs, example_name, scale, "proof_sizes")
+}
+
+fn prover_timing_filename(pcs: &str, example_name: &str, scale: Option<usize>) -> String {
+    artifact_filename(pcs, example_name, scale, "prover_timings")
+}
+
+fn artifact_filename(pcs: &str, example_name: &str, scale: Option<usize>, suffix: &str) -> String {
+    let example_name = example_name
+        .strip_suffix("-guest")
+        .unwrap_or(example_name)
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+
+    match scale {
+        Some(scale) => format!("{example_name}_{pcs}_{scale}_{suffix}.csv"),
+        None => format!("{example_name}_{pcs}_{suffix}.csv"),
+    }
+}
+
+fn prover_timing_path(pcs: &str, example_name: &str, scale: Option<usize>) -> String {
+    format!(
+        "benchmark-runs/results/prover-timings/{}",
+        prover_timing_filename(pcs, example_name, scale)
+    )
+}
+
+fn write_proof_size_breakdown(
+    pcs: &str,
+    example_name: &str,
+    scale: Option<usize>,
+    rows: &ProofSizeRows,
+) {
+    let output_dir = "benchmark-runs/results/proof-sizes";
+    if let Err(e) = fs::create_dir_all(output_dir) {
+        eprintln!("Failed to create proof-size output directory {output_dir}: {e}");
+        return;
+    }
+
+    let output_path = format!(
+        "{output_dir}/{}",
+        proof_size_filename(pcs, example_name, scale)
+    );
+    let mut output = String::from("component,compressed_bytes,uncompressed_bytes\n");
+    for (label, compressed, uncompressed) in rows {
+        output.push_str(&format!("{label},{compressed},{uncompressed}\n"));
+    }
+
+    match fs::write(&output_path, output) {
+        Ok(()) => println!("Proof component sizes written to {output_path}"),
+        Err(e) => eprintln!("Failed to write proof-size breakdown {output_path}: {e}"),
+    }
+}
+
+macro_rules! push_common_proof_size_breakdown {
+    ($rows:ident, $proof:ident) => {{
+        push_size(&mut $rows, "total_proof", &$proof);
+        push_size(&mut $rows, "commitments", &$proof.commitments);
+        push_size(
+            &mut $rows,
+            "stage1_uni_skip",
+            &$proof.stage1_uni_skip_first_round_proof,
+        );
+        push_size(&mut $rows, "stage1_sumcheck", &$proof.stage1_sumcheck_proof);
+        push_size(
+            &mut $rows,
+            "stage2_uni_skip",
+            &$proof.stage2_uni_skip_first_round_proof,
+        );
+        push_size(&mut $rows, "stage2_sumcheck", &$proof.stage2_sumcheck_proof);
+        push_size(&mut $rows, "stage3_sumcheck", &$proof.stage3_sumcheck_proof);
+        push_size(&mut $rows, "stage4_sumcheck", &$proof.stage4_sumcheck_proof);
+        push_size(&mut $rows, "stage5_sumcheck", &$proof.stage5_sumcheck_proof);
+        push_size(
+            &mut $rows,
+            "stage6a_sumcheck",
+            &$proof.stage6a_sumcheck_proof,
+        );
+        push_size(
+            &mut $rows,
+            "stage6b_sumcheck",
+            &$proof.stage6b_sumcheck_proof,
+        );
+        push_size(&mut $rows, "stage7_sumcheck", &$proof.stage7_sumcheck_proof);
+        #[cfg(feature = "zk")]
+        push_size(&mut $rows, "blindfold_proof", &$proof.blindfold_proof);
+        push_size(
+            &mut $rows,
+            "joint_opening_proof_pcs",
+            &$proof.joint_opening_proof,
+        );
+        push_size(
+            &mut $rows,
+            "untrusted_advice_commitment",
+            &$proof.untrusted_advice_commitment,
+        );
+        #[cfg(not(feature = "zk"))]
+        push_size(&mut $rows, "opening_claims", &$proof.opening_claims);
+        push_size(&mut $rows, "trace_length", &$proof.trace_length);
+        push_size(&mut $rows, "ram_K", &$proof.ram_K);
+        push_size(&mut $rows, "rw_config", &$proof.rw_config);
+        push_size(&mut $rows, "one_hot_config", &$proof.one_hot_config);
+        push_size(&mut $rows, "pcs_config", &$proof.pcs_config);
+    }};
+}
 
 /// Calculate number of operations to target a specific cycle count
 fn scale_to_target_ops(target_cycles: usize, cycles_per_op: f64) -> u32 {
@@ -245,6 +369,7 @@ fn prove_example_dory(
     let (_lazy_trace, trace, _, program_io) = program.trace(&serialized_input, &[], &[]);
     let padded_trace_len = (trace.len() + 1).next_power_of_two();
     drop(trace);
+    let example_name = example_name.to_string();
 
     let task = move || {
         let shared_preprocessing = JoltSharedPreprocessing::new(
@@ -270,7 +395,29 @@ fn prove_example_dory(
             None,
         );
         let program_io = prover.program_io.clone();
+        let timing_path = prover_timing_path("dory", &example_name, None);
+        std::env::set_var("JOLT_PROVER_TIMING_CSV", &timing_path);
         let (jolt_proof, _) = prover.prove();
+        std::env::remove_var("JOLT_PROVER_TIMING_CSV");
+        let mut proof_size_rows = Vec::new();
+        push_common_proof_size_breakdown!(proof_size_rows, jolt_proof);
+        push_size(
+            &mut proof_size_rows,
+            "dory_opening_proof_inner",
+            &jolt_proof.joint_opening_proof.proof,
+        );
+        push_size(
+            &mut proof_size_rows,
+            "dory_layout",
+            &jolt_proof.joint_opening_proof.layout,
+        );
+        #[cfg(feature = "zk")]
+        push_size(
+            &mut proof_size_rows,
+            "dory_y_blinding",
+            &jolt_proof.joint_opening_proof.y_blinding,
+        );
+        write_proof_size_breakdown("dory", &example_name, None, &proof_size_rows);
 
         let verifier_preprocessing = JoltVerifierPreprocessing::from(&preprocessing);
         let verifier =
@@ -294,6 +441,7 @@ fn prove_example_akita(
     let (_lazy_trace, trace, _, program_io) = program.trace(&serialized_input, &[], &[]);
     let padded_trace_len = (trace.len() + 1).next_power_of_two();
     drop(trace);
+    let example_name = example_name.to_string();
 
     let task = move || {
         let shared_preprocessing = JoltSharedPreprocessing::new(
@@ -320,7 +468,33 @@ fn prove_example_akita(
             None,
         );
         let program_io = prover.program_io.clone();
+        let timing_path = prover_timing_path("akita", &example_name, None);
+        std::env::set_var("JOLT_PROVER_TIMING_CSV", &timing_path);
         let (jolt_proof, _) = prover.prove();
+        std::env::remove_var("JOLT_PROVER_TIMING_CSV");
+        let mut proof_size_rows = Vec::new();
+        push_common_proof_size_breakdown!(proof_size_rows, jolt_proof);
+        push_size(
+            &mut proof_size_rows,
+            "akita_packed_poly_proof",
+            &jolt_proof.joint_opening_proof.packed_poly_proof,
+        );
+        push_size(
+            &mut proof_size_rows,
+            "akita_num_packed_polys",
+            &jolt_proof.joint_opening_proof.num_packed_polys,
+        );
+        push_size(
+            &mut proof_size_rows,
+            "akita_log_k",
+            &jolt_proof.joint_opening_proof.log_k,
+        );
+        push_size(
+            &mut proof_size_rows,
+            "akita_individual_proofs",
+            &jolt_proof.joint_opening_proof.individual_proofs,
+        );
+        write_proof_size_breakdown("akita", &example_name, None, &proof_size_rows);
 
         let verifier_preprocessing = JoltVerifierPreprocessing::from(&preprocessing);
         let verifier =
@@ -376,9 +550,32 @@ fn prove_example_with_trace_dory(
         None,
     );
     let now = Instant::now();
+    let scale = max_trace_length.trailing_zeros() as usize;
+    let timing_path = prover_timing_path("dory", example_name, Some(scale));
+    std::env::set_var("JOLT_PROVER_TIMING_CSV", &timing_path);
     let (jolt_proof, _) = prover.prove();
+    std::env::remove_var("JOLT_PROVER_TIMING_CSV");
     let prove_duration = now.elapsed();
     drop(span);
+    let mut proof_size_rows = Vec::new();
+    push_common_proof_size_breakdown!(proof_size_rows, jolt_proof);
+    push_size(
+        &mut proof_size_rows,
+        "dory_opening_proof_inner",
+        &jolt_proof.joint_opening_proof.proof,
+    );
+    push_size(
+        &mut proof_size_rows,
+        "dory_layout",
+        &jolt_proof.joint_opening_proof.layout,
+    );
+    #[cfg(feature = "zk")]
+    push_size(
+        &mut proof_size_rows,
+        "dory_y_blinding",
+        &jolt_proof.joint_opening_proof.y_blinding,
+    );
+    write_proof_size_breakdown("dory", example_name, Some(scale), &proof_size_rows);
     let proof_size = jolt_proof.serialized_size(ark_serialize::Compress::Yes);
 
     let stage8_size_compressed = jolt_proof
@@ -454,9 +651,36 @@ fn prove_example_with_trace_akita(
         None,
     );
     let now = Instant::now();
+    let scale = max_trace_length.trailing_zeros() as usize;
+    let timing_path = prover_timing_path("akita", example_name, Some(scale));
+    std::env::set_var("JOLT_PROVER_TIMING_CSV", &timing_path);
     let (jolt_proof, _) = prover.prove();
+    std::env::remove_var("JOLT_PROVER_TIMING_CSV");
     let prove_duration = now.elapsed();
     drop(span);
+    let mut proof_size_rows = Vec::new();
+    push_common_proof_size_breakdown!(proof_size_rows, jolt_proof);
+    push_size(
+        &mut proof_size_rows,
+        "akita_packed_poly_proof",
+        &jolt_proof.joint_opening_proof.packed_poly_proof,
+    );
+    push_size(
+        &mut proof_size_rows,
+        "akita_num_packed_polys",
+        &jolt_proof.joint_opening_proof.num_packed_polys,
+    );
+    push_size(
+        &mut proof_size_rows,
+        "akita_log_k",
+        &jolt_proof.joint_opening_proof.log_k,
+    );
+    push_size(
+        &mut proof_size_rows,
+        "akita_individual_proofs",
+        &jolt_proof.joint_opening_proof.individual_proofs,
+    );
+    write_proof_size_breakdown("akita", example_name, Some(scale), &proof_size_rows);
     let proof_size = jolt_proof.serialized_size(ark_serialize::Compress::Yes);
 
     let verifier_preprocessing = JoltVerifierPreprocessing::from(&preprocessing);
