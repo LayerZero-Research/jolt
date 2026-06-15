@@ -24,6 +24,7 @@ use akita_prover::AkitaPolyOps;
 use akita_types::{
     sis::num_digits_for_bound, AkitaBatchedRootProof, ClaimIncidenceSummary, FlatMatrix,
 };
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 
 type Cfg = D32OneHot;
 type Scheme = JoltAkitaCommitmentScheme<{ Cfg::D }, Cfg>;
@@ -1463,6 +1464,44 @@ fn packed_k256_decompose_fold_benchmark_smoke() {
     let fast = fast_start.elapsed();
 
     eprintln!("packed K=256 decompose_fold: fast={fast:?}");
+}
+
+fn ark_bridge_proof_roundtrip(compress: ark_serialize::Compress) {
+    let original = ArkBridge(dummy_akita_proof());
+
+    let mut bytes = Vec::new();
+    original.serialize_with_mode(&mut bytes, compress).unwrap();
+    assert_eq!(
+        bytes.len(),
+        original.serialized_size(compress),
+        "proof serialized_size must match emitted byte length"
+    );
+
+    let decoded = ArkBridge::<AkitaProof<Fp128>>::deserialize_with_mode(
+        &bytes[..],
+        compress,
+        ark_serialize::Validate::Yes,
+    )
+    .expect("ArkBridge proof round trip should succeed");
+
+    let mut reencoded = Vec::new();
+    decoded
+        .serialize_with_mode(&mut reencoded, compress)
+        .unwrap();
+    assert_eq!(
+        bytes, reencoded,
+        "re-serializing a decoded proof must reproduce the original bytes"
+    );
+}
+
+#[test]
+fn ark_bridge_proof_roundtrip_compressed() {
+    ark_bridge_proof_roundtrip(ark_serialize::Compress::Yes);
+}
+
+#[test]
+fn ark_bridge_proof_roundtrip_uncompressed() {
+    ark_bridge_proof_roundtrip(ark_serialize::Compress::No);
 }
 
 #[test]
