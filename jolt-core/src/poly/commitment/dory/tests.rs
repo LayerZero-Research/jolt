@@ -801,6 +801,60 @@ mod tests {
         assert_eq!(DoryGlobals::get_layout(), DoryLayout::CycleMajor);
     }
 
+    #[test]
+    #[serial]
+    fn test_dory_commitment_layout_matches_main_globals() {
+        for layout in [DoryLayout::CycleMajor, DoryLayout::AddressMajor] {
+            DoryGlobals::reset();
+            let k = 16usize;
+            let trace_len = 64usize;
+            let main_log_embedding = k.log_2() + trace_len.log_2() + 2;
+            DoryGlobals::initialize_main_with_log_embedding(
+                k,
+                trace_len,
+                main_log_embedding,
+                Some(layout),
+            );
+
+            let engine = DoryCommitmentLayout::main(k, trace_len, main_log_embedding, layout);
+            assert_eq!(engine.matrix_shape(), DoryGlobals::matrix_shape());
+            assert_eq!(engine.stored_t(), DoryGlobals::get_T());
+            assert_eq!(engine.embedded_t(), DoryGlobals::get_embedded_t());
+            assert_eq!(engine.k(), DoryGlobals::k_from_matrix_shape());
+            assert_eq!(engine.one_hot_stride(), DoryGlobals::one_hot_stride());
+            assert_eq!(engine.dense_stride(), DoryGlobals::dense_stride());
+            assert_eq!(engine.coefficient_layout(), DoryGlobals::matrix_layout());
+            if layout == DoryLayout::AddressMajor {
+                assert_eq!(
+                    engine.address_major_cycles_per_row(),
+                    DoryGlobals::address_major_cycles_per_row()
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_dory_commitment_layout_matches_advice_globals() {
+        for (context, len) in [
+            (DoryContext::TrustedAdvice, 1usize << 10),
+            (DoryContext::UntrustedAdvice, 1usize << 11),
+        ] {
+            DoryGlobals::reset();
+            DoryGlobals::initialize_context(1, len, context, None);
+            let _context_guard = DoryGlobals::with_context(context);
+
+            let engine = DoryCommitmentLayout::advice(context, len);
+            assert_eq!(engine.matrix_shape(), DoryGlobals::matrix_shape());
+            assert_eq!(engine.stored_t(), DoryGlobals::get_T());
+            assert_eq!(engine.embedded_t(), DoryGlobals::get_embedded_t());
+            assert_eq!(engine.k(), DoryGlobals::k_from_matrix_shape());
+            assert_eq!(engine.one_hot_stride(), DoryGlobals::one_hot_stride());
+            assert_eq!(engine.dense_stride(), DoryGlobals::dense_stride());
+            assert_eq!(engine.coefficient_layout(), DoryGlobals::matrix_layout());
+        }
+    }
+
     /// Dense polynomials are treated as k=1, so `AddressMajor` and `CycleMajor`
     /// degenerate to same computation for Dory commitments
     /// Hence, we expect them to produce the same commitment.

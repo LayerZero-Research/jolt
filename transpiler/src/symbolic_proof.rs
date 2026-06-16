@@ -41,6 +41,7 @@ use ark_serialize::CanonicalSerialize;
 use jolt_core::curve::Bn254Curve;
 #[cfg(not(feature = "zk"))]
 use jolt_core::curve::JoltCurve;
+use jolt_core::poly::commitment::layout::{CommitmentLayout, NoCommitmentLayout};
 #[cfg(not(feature = "zk"))]
 use jolt_core::poly::opening_proof::OpeningPoint;
 #[cfg(not(feature = "zk"))]
@@ -404,6 +405,7 @@ pub fn symbolize_proof<OutputTranscript: Transcript>(
             ram_K: real_proof.ram_K,
             rw_config: real_proof.rw_config.clone(),
             one_hot_config: real_proof.one_hot_config.clone(),
+            layout_descriptor: NoCommitmentLayout.descriptor(),
             pcs_config: Default::default(),
         };
 

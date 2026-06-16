@@ -14,6 +14,7 @@ use crate::{
 use super::commitment_scheme::{
     canonical_coefficient_layout, CommitmentContext, CommitmentScheme, PolynomialBatchSource,
 };
+use super::layout::NoCommitmentLayout;
 
 #[derive(Clone)]
 pub struct MockCommitScheme<F: JoltField> {
@@ -49,6 +50,7 @@ where
     type Commitment = MockCommitment<F>;
     type Proof = MockProof<F>;
     type BatchedProof = MockProof<F>;
+    type CommitmentLayout = NoCommitmentLayout;
     type OpeningProofHint = ();
     type BatchOpeningHint = ();
 
@@ -70,6 +72,13 @@ where
 
     fn coefficient_layout(_config: &Self::Config, context: CommitmentContext) -> CoefficientLayout {
         canonical_coefficient_layout(context)
+    }
+
+    fn commitment_layout(
+        _config: &Self::Config,
+        _context: CommitmentContext,
+    ) -> Self::CommitmentLayout {
+        NoCommitmentLayout
     }
 
     fn commit(

@@ -2,17 +2,18 @@
 
 use super::dory_globals::{DoryContext, DoryGlobals, DoryLayout};
 use super::jolt_dory_routines::{JoltG1Routines, JoltG2Routines};
+use super::layout::DoryCommitmentLayout;
 use super::wrappers::{
     ark_to_jolt, jolt_to_ark, ArkDoryProof, ArkFr, ArkG1, ArkGT, ArkworksProverSetup,
-    ArkworksVerifierSetup, JoltToDoryTranscript, BN254,
+    ArkworksVerifierSetup, DoryLayoutBoundPolynomial, JoltToDoryTranscript, BN254,
 };
 use crate::{
     curve::JoltCurve,
     field::JoltField,
     poly::coefficient_layout::CoefficientLayout,
     poly::commitment::commitment_scheme::{
-        canonical_coefficient_layout, CommitmentContext, CommitmentScheme, PolynomialBatchSource,
-        StreamingCommitmentScheme, ZkEvalCommitment,
+        CommitmentContext, CommitmentScheme, PolynomialBatchSource, StreamingCommitmentScheme,
+        ZkEvalCommitment,
     },
     poly::commitment::opening_point::FinalOpeningPointParts,
     poly::multilinear_polynomial::MultilinearPolynomial,
@@ -52,21 +53,6 @@ pub fn balanced_sigma_nu(total_vars: usize) -> (usize, usize) {
     let sigma = total_vars.div_ceil(2);
     let nu = total_vars - sigma;
     (sigma, nu)
-}
-
-/// `(sigma, nu)` derived from the configured Dory matrix shape for the current context.
-///
-/// The configured matrix (`DoryGlobals::matrix_shape`) is the single source of truth shared by the
-/// setup sizing, the `commit_tier_1` layout/stride mapping, and the verifier. Deriving dimensions
-/// from `balanced_sigma_nu(poly.len())` is only correct when the polynomial exactly fills a balanced
-/// matrix; `AddressMajor` dense (trace-domain) polynomials are embedded into a larger configured
-/// matrix, so their commit/open dimensions must come from the matrix, not the polynomial length.
-/// For `CycleMajor` and advice contexts the configured shape already equals the balanced split, so
-/// this is a no-op there.
-#[inline]
-fn configured_sigma_nu() -> (usize, usize) {
-    let (num_rows, num_cols) = DoryGlobals::matrix_shape();
-    (num_cols.log_2(), num_rows.log_2())
 }
 
 #[derive(Clone, Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
@@ -180,6 +166,7 @@ impl CommitmentScheme for DoryCommitmentScheme {
     type Commitment = ArkGT;
     type Proof = ArkDoryProof;
     type BatchedProof = DoryBatchedProof;
+    type CommitmentLayout = DoryCommitmentLayout;
     type OpeningProofHint = DoryOpeningProofHint;
     type BatchOpeningHint = Vec<Self::OpeningProofHint>;
 
@@ -286,15 +273,14 @@ impl CommitmentScheme for DoryCommitmentScheme {
     }
 
     fn coefficient_layout(config: &Self::Config, context: CommitmentContext) -> CoefficientLayout {
-        // Pure: dims/T come from the context's balanced split (identical to
-        // `DoryGlobals::matrix_layout()`), orientation comes from the selected config.
-        let mut layout = canonical_coefficient_layout(context);
-        layout.cycle_major = *config == DoryLayout::CycleMajor;
-        layout
+        DoryCommitmentLayout::from_context(config, context).coefficient_layout()
     }
 
-    fn is_cycle_major(config: &Self::Config) -> bool {
-        *config == DoryLayout::CycleMajor
+    fn commitment_layout(
+        config: &Self::Config,
+        context: CommitmentContext,
+    ) -> Self::CommitmentLayout {
+        DoryCommitmentLayout::from_context(config, context)
     }
 
     fn final_opening_point(
@@ -309,9 +295,20 @@ impl CommitmentScheme for DoryCommitmentScheme {
         poly: &MultilinearPolynomial<ark_bn254::Fr>,
         setup: &Self::ProverSetup,
     ) -> (Self::Commitment, Self::OpeningProofHint) {
-        let _span = trace_span!("DoryCommitmentScheme::commit").entered();
+        let layout = self.compatibility_layout_for_poly(poly);
+        self.commit_with_layout(&layout, poly, setup)
+    }
 
-        let (sigma, nu) = configured_sigma_nu();
+    fn commit_with_layout(
+        &self,
+        layout: &Self::CommitmentLayout,
+        poly: &MultilinearPolynomial<ark_bn254::Fr>,
+        setup: &Self::ProverSetup,
+    ) -> (Self::Commitment, Self::OpeningProofHint) {
+        let _span = trace_span!("DoryCommitmentScheme::commit_with_layout").entered();
+
+        let (sigma, nu) = layout.sigma_nu();
+        let bound_poly = DoryLayoutBoundPolynomial::new(poly, *layout);
 
         #[cfg(feature = "zk")]
         type DoryMode = dory::ZK;
@@ -319,11 +316,11 @@ impl CommitmentScheme for DoryCommitmentScheme {
         type DoryMode = dory::Transparent;
 
         let (tier_2, row_commitments, commit_blind) =
-            <MultilinearPolynomial<ark_bn254::Fr> as Polynomial<ArkFr>>::commit::<
+            <DoryLayoutBoundPolynomial<'_> as Polynomial<ArkFr>>::commit::<
                 BN254,
                 DoryMode,
                 JoltG1Routines,
-            >(poly, nu, sigma, setup)
+            >(&bound_poly, nu, sigma, setup)
             .expect("commitment should succeed");
 
         (
@@ -341,7 +338,27 @@ impl CommitmentScheme for DoryCommitmentScheme {
 
         let results: Vec<(Self::Commitment, Self::OpeningProofHint)> = (0..source.num_polys())
             .into_par_iter()
-            .map(|i| self.commit(source.get_poly(i).unwrap(), gens))
+            .map(|i| {
+                let poly = source.get_poly(i).unwrap();
+                let layout = self.compatibility_layout_for_poly(poly);
+                self.commit_with_layout(&layout, poly, gens)
+            })
+            .collect();
+        let (commitments, hints): (Vec<_>, Vec<_>) = results.into_iter().unzip();
+        (commitments, hints)
+    }
+
+    fn batch_commit_with_layout<S: PolynomialBatchSource<ark_bn254::Fr>>(
+        &self,
+        layout: &Self::CommitmentLayout,
+        source: &S,
+        gens: &Self::ProverSetup,
+    ) -> (Vec<Self::Commitment>, Self::BatchOpeningHint) {
+        let _span = trace_span!("DoryCommitmentScheme::batch_commit_with_layout").entered();
+
+        let results: Vec<(Self::Commitment, Self::OpeningProofHint)> = (0..source.num_polys())
+            .into_par_iter()
+            .map(|i| self.commit_with_layout(layout, source.get_poly(i).unwrap(), gens))
             .collect();
         let (commitments, hints): (Vec<_>, Vec<_>) = results.into_iter().unzip();
         (commitments, hints)
@@ -354,19 +371,40 @@ impl CommitmentScheme for DoryCommitmentScheme {
         opening_point: &[<ark_bn254::Fr as JoltField>::Challenge],
         hint: Option<Self::OpeningProofHint>,
         transcript: &mut ProofTranscript,
+        commitment: &Self::Commitment,
+    ) -> (Self::Proof, Option<Self::Field>) {
+        let layout = self.compatibility_layout_for_poly(poly);
+        self.prove_with_layout(
+            &layout,
+            setup,
+            poly,
+            opening_point,
+            hint,
+            transcript,
+            commitment,
+        )
+    }
+
+    fn prove_with_layout<ProofTranscript: Transcript>(
+        &self,
+        layout: &Self::CommitmentLayout,
+        setup: &Self::ProverSetup,
+        poly: &MultilinearPolynomial<ark_bn254::Fr>,
+        opening_point: &[<ark_bn254::Fr as JoltField>::Challenge],
+        hint: Option<Self::OpeningProofHint>,
+        transcript: &mut ProofTranscript,
         _commitment: &Self::Commitment,
     ) -> (Self::Proof, Option<Self::Field>) {
-        let _span = trace_span!("DoryCommitmentScheme::prove").entered();
+        let _span = trace_span!("DoryCommitmentScheme::prove_with_layout").entered();
 
         let (row_commitments, commit_blind) = hint
             .map(DoryOpeningProofHint::into_parts)
             .unwrap_or_else(|| {
-                let (_commitment, hint) = self.commit(poly, setup);
+                let (_commitment, hint) = self.commit_with_layout(layout, poly, setup);
                 hint.into_parts()
             });
 
-        let (sigma, nu) = configured_sigma_nu();
-
+        let (sigma, nu) = layout.sigma_nu();
         let ark_point: Vec<ArkFr> = opening_point
             .iter()
             .rev()
@@ -383,9 +421,10 @@ impl CommitmentScheme for DoryCommitmentScheme {
         #[cfg(not(feature = "zk"))]
         type DoryMode = dory::Transparent;
 
+        let bound_poly = DoryLayoutBoundPolynomial::new(poly, *layout);
         let (proof, y_blinding) =
             dory::prove::<ArkFr, BN254, JoltG1Routines, JoltG2Routines, _, _, DoryMode>(
-                poly,
+                &bound_poly,
                 &ark_point,
                 row_commitments,
                 commit_blind,
@@ -450,6 +489,38 @@ impl CommitmentScheme for DoryCommitmentScheme {
         &self,
         setup: &Self::ProverSetup,
         poly_source: &S,
+        batch_hint: Self::BatchOpeningHint,
+        individual_hints: Vec<Self::OpeningProofHint>,
+        commitments: &[&Self::Commitment],
+        opening_point: &[<Self::Field as JoltField>::Challenge],
+        claims: &[Self::Field],
+        coeffs: &[Self::Field],
+        transcript: &mut ProofTranscript,
+    ) -> Self::BatchedProof {
+        let joint_poly = poly_source.build_joint_polynomial(coeffs);
+        let layout = self.compatibility_layout_for_poly(&joint_poly);
+        self.batch_prove_with_layout(
+            &layout,
+            setup,
+            poly_source,
+            batch_hint,
+            individual_hints,
+            commitments,
+            opening_point,
+            claims,
+            coeffs,
+            transcript,
+        )
+    }
+
+    fn batch_prove_with_layout<
+        ProofTranscript: Transcript,
+        S: BatchPolynomialSource<Self::Field>,
+    >(
+        &self,
+        layout: &Self::CommitmentLayout,
+        setup: &Self::ProverSetup,
+        poly_source: &S,
         _batch_hint: Self::BatchOpeningHint,
         individual_hints: Vec<Self::OpeningProofHint>,
         commitments: &[&Self::Commitment],
@@ -459,9 +530,11 @@ impl CommitmentScheme for DoryCommitmentScheme {
         transcript: &mut ProofTranscript,
     ) -> Self::BatchedProof {
         let joint_poly = poly_source.build_joint_polynomial(coeffs);
-        let combined_hint = Self::combine_hints(individual_hints, coeffs);
+        let combined_hint =
+            Self::combine_hints_for_rows(layout.num_rows(), individual_hints, coeffs);
         let joint_commitment = Self::combine_commitments_internal(commitments, coeffs);
-        let (proof, y_blinding) = self.prove(
+        let (proof, y_blinding) = self.prove_with_layout(
+            layout,
             setup,
             &joint_poly,
             opening_point,
@@ -472,7 +545,7 @@ impl CommitmentScheme for DoryCommitmentScheme {
         let _ = &y_blinding;
         DoryBatchedProof {
             proof,
-            layout: self.layout,
+            layout: layout.orientation(),
             #[cfg(feature = "zk")]
             y_blinding,
         }
@@ -509,13 +582,46 @@ impl CommitmentScheme for DoryCommitmentScheme {
         hints: Vec<Self::OpeningProofHint>,
         coeffs: &[Self::Field],
     ) -> Self::OpeningProofHint {
-        // Dory-engine seam: tier-2 hint combination needs the configured matrix row count
-        // (see `dory_globals.rs` module docs).
-        let num_rows = DoryGlobals::get_max_num_rows();
+        let num_rows = hints
+            .iter()
+            .map(|hint| hint.row_commitments().len())
+            .max()
+            .unwrap_or(0);
+        Self::combine_hints_for_rows(num_rows, hints, coeffs)
+    }
 
+    fn protocol_name() -> &'static [u8] {
+        b"Dory"
+    }
+}
+
+impl DoryCommitmentScheme {
+    fn compatibility_layout_for_poly(
+        &self,
+        poly: &MultilinearPolynomial<ark_bn254::Fr>,
+    ) -> DoryCommitmentLayout {
+        match poly {
+            MultilinearPolynomial::OneHot(poly) => DoryCommitmentLayout::main(
+                poly.K,
+                poly.nonzero_indices.len(),
+                poly.get_num_vars(),
+                self.layout,
+            ),
+            _ => {
+                let len = poly.original_len().next_power_of_two().max(1);
+                DoryCommitmentLayout::main(1, len, len.log_2(), self.layout)
+            }
+        }
+    }
+
+    fn combine_hints_for_rows(
+        num_rows: usize,
+        hints: Vec<DoryOpeningProofHint>,
+        coeffs: &[ark_bn254::Fr],
+    ) -> DoryOpeningProofHint {
         let mut rlc_hint = vec![ArkG1(G1Projective::zero()); num_rows];
         let mut rlc_commit_blind = <ArkFr as DoryField>::zero();
-        for (coeff, hint) in coeffs.iter().zip(hints.into_iter()) {
+        for (coeff, hint) in coeffs.iter().zip(hints) {
             let DoryOpeningProofHint {
                 mut row_commitments,
                 commit_blind,
@@ -550,13 +656,6 @@ impl CommitmentScheme for DoryCommitmentScheme {
 
         DoryOpeningProofHint::new(rlc_hint, rlc_commit_blind)
     }
-
-    fn protocol_name() -> &'static [u8] {
-        b"Dory"
-    }
-}
-
-impl DoryCommitmentScheme {
     #[tracing::instrument(skip_all, name = "DoryCommitmentScheme::combine_commitments_internal")]
     pub(crate) fn combine_commitments_internal(
         commitments: &[&ArkGT],
@@ -577,13 +676,26 @@ impl StreamingCommitmentScheme for DoryCommitmentScheme {
     type ChunkState = Vec<ArkG1>;
 
     #[allow(non_snake_case)]
-    fn streaming_chunk_size(&self, _K: usize, _T: usize) -> Option<usize> {
-        // Dory-engine seam: streaming chunk sizing depends on the configured matrix geometry
-        // (see `dory_globals.rs` module docs).
-        if DoryGlobals::get_layout() == DoryLayout::AddressMajor {
+    fn streaming_chunk_size(&self, K: usize, T: usize) -> Option<usize> {
+        if self.layout == DoryLayout::AddressMajor {
             None
         } else {
-            Some(DoryGlobals::get_num_columns())
+            let layout = DoryCommitmentLayout::main(K, T, K.log_2() + T.log_2(), self.layout);
+            Some(layout.num_columns())
+        }
+    }
+
+    #[allow(non_snake_case)]
+    fn streaming_chunk_size_with_layout(
+        &self,
+        layout: &Self::CommitmentLayout,
+        _K: usize,
+        _T: usize,
+    ) -> Option<usize> {
+        if layout.orientation() == DoryLayout::AddressMajor {
+            None
+        } else {
+            Some(layout.num_columns())
         }
     }
 

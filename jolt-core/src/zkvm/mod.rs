@@ -7,7 +7,7 @@ use crate::{
     field::JoltField,
     poly::commitment::commitment_scheme::CommitmentScheme,
     poly::commitment::dory::DoryCommitmentScheme,
-    poly::commitment::opening_point::FinalOpeningPointParts,
+    poly::commitment::{layout::LayoutDescriptor, opening_point::FinalOpeningPointParts},
     poly::opening_proof::{
         OpeningAccumulator, OpeningId, OpeningPoint, ProverOpeningAccumulator, SumcheckId,
         BIG_ENDIAN,
@@ -269,22 +269,19 @@ where
     pub(crate) prover_setup: PCS::ProverSetup,
 }
 
-pub struct FiatShamirPreamble<'a, PCS: CommitmentScheme> {
+pub struct FiatShamirPreamble<'a> {
     pub program_io: &'a JoltDevice,
     pub ram_K: usize,
     pub trace_length: usize,
     pub entry_address: u64,
     pub rw_config: &'a ReadWriteConfig,
     pub one_hot_config: &'a OneHotConfig,
-    pub pcs_config: &'a PCS::Config,
+    pub layout_descriptor: &'a LayoutDescriptor,
     pub preprocessing_digest: &'a [u8; 32],
 }
 
 /// Absorb public instance data into the transcript for Fiat-Shamir.
-pub fn fiat_shamir_preamble<PCS: CommitmentScheme>(
-    preamble: FiatShamirPreamble<'_, PCS>,
-    transcript: &mut impl Transcript,
-) {
+pub fn fiat_shamir_preamble(preamble: FiatShamirPreamble<'_>, transcript: &mut impl Transcript) {
     let FiatShamirPreamble {
         program_io,
         ram_K,
@@ -292,7 +289,7 @@ pub fn fiat_shamir_preamble<PCS: CommitmentScheme>(
         entry_address,
         rw_config,
         one_hot_config,
-        pcs_config,
+        layout_descriptor,
         preprocessing_digest,
     } = preamble;
 
@@ -327,7 +324,7 @@ pub fn fiat_shamir_preamble<PCS: CommitmentScheme>(
         b"lookups_ra_virtual_log_k_chunk",
         one_hot_config.lookups_ra_virtual_log_k_chunk as u64,
     );
-    PCS::append_pcs_config_to_transcript(pcs_config, transcript);
+    transcript.append_serializable(b"commitment_layout", layout_descriptor);
 }
 
 #[cfg(feature = "prover")]

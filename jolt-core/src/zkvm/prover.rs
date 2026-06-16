@@ -33,6 +33,7 @@ use crate::{
         commitment::commitment_scheme::{
             CommitmentContext, PolynomialBatchSource, StreamingCommitmentScheme, ZkEvalCommitment,
         },
+        commitment::layout::CommitmentLayout,
         multilinear_polynomial::MultilinearPolynomial,
         opening_proof::{
             compute_lagrange_factor, BatchPolynomialSource, OpeningAccumulator,
@@ -56,8 +57,8 @@ use crate::{
     zkvm::{
         bytecode::read_raf_checking::BytecodeReadRafSumcheckParams,
         claim_reductions::{
-            AdviceClaimReductionParams, AdviceClaimReductionProver, AdviceKind,
-            HammingWeightClaimReductionParams, HammingWeightClaimReductionProver,
+            advice_stage_layouts, AdviceClaimReductionParams, AdviceClaimReductionProver,
+            AdviceKind, HammingWeightClaimReductionParams, HammingWeightClaimReductionProver,
             IncClaimReductionSumcheckParams, IncClaimReductionSumcheckProver,
             InstructionLookupsClaimReductionSumcheckParams,
             InstructionLookupsClaimReductionSumcheckProver, RaReductionParams,
@@ -582,7 +583,14 @@ impl<
         let preprocessing_digest = self.preprocessing.shared.digest();
         let one_hot_config = self.one_hot_params.to_config();
         let pcs = PCS::active();
-        fiat_shamir_preamble::<PCS>(
+        let preamble_main_context = CommitmentContext::MainTrace {
+            k: self.one_hot_params.k_chunk,
+            trace_len: self.trace.len(),
+            commitment_total_vars: self.main_total_vars(),
+        };
+        let layout_descriptor =
+            PCS::commitment_layout(pcs.config(), preamble_main_context).descriptor();
+        fiat_shamir_preamble(
             FiatShamirPreamble {
                 program_io: &self.program_io,
                 ram_K: self.one_hot_params.ram_k,
@@ -590,7 +598,7 @@ impl<
                 entry_address: self.preprocessing.shared.bytecode.entry_address,
                 rw_config: &self.rw_config,
                 one_hot_config: &one_hot_config,
-                pcs_config: pcs.config(),
+                layout_descriptor: &layout_descriptor,
                 preprocessing_digest: &preprocessing_digest,
             },
             &mut self.transcript,
@@ -752,6 +760,7 @@ impl<
             ram_K: self.one_hot_params.ram_k,
             rw_config: self.rw_config.clone(),
             one_hot_config: self.one_hot_params.to_config(),
+            layout_descriptor,
             pcs_config: PCS::active().config().clone(),
         };
 
@@ -838,122 +847,129 @@ impl<
             trace_len: self.trace.len(),
             commitment_total_vars: self.main_total_vars(),
         };
-        PCS::initialize_context(pcs.config(), main_context);
+        let main_layout = PCS::commitment_layout(pcs.config(), main_context);
         let polys = all_committed_polynomials(&self.one_hot_params, PCS::uses_onehot_inc());
         let T = PCS::main_trace_commitment_len(pcs.config(), main_context, self.padded_trace_len);
         let K = 1usize << self.one_hot_params.log_k_chunk;
 
-        let (commitments, hint_map) = if let Some(chunk_size) = pcs.streaming_chunk_size(K, T) {
-            let num_chunks = T / chunk_size;
+        let (commitments, hint_map) =
+            if let Some(chunk_size) = pcs.streaming_chunk_size_with_layout(&main_layout, K, T) {
+                let num_chunks = T / chunk_size;
 
-            tracing::debug!(
-                "Streaming commit: {} polynomials, T={}, chunk_size={}, num_chunks={}",
-                polys.len(),
-                T,
-                chunk_size,
-                num_chunks,
-            );
+                tracing::debug!(
+                    "Streaming commit: {} polynomials, T={}, chunk_size={}, num_chunks={}",
+                    polys.len(),
+                    T,
+                    chunk_size,
+                    num_chunks,
+                );
 
-            // Tier 1: Compute chunk commitments for each polynomial
-            let mut row_commitments: Vec<Vec<PCS::ChunkState>> = vec![vec![]; num_chunks];
+                // Tier 1: Compute chunk commitments for each polynomial
+                let mut row_commitments: Vec<Vec<PCS::ChunkState>> = vec![vec![]; num_chunks];
 
-            self.lazy_trace
-                .clone()
-                .pad_using(T, |_| Cycle::NoOp)
-                .iter_chunks(chunk_size)
-                .zip(row_commitments.iter_mut())
-                .par_bridge()
-                .for_each(|(chunk, row_tier1_commitments)| {
-                    let res: Vec<_> = polys
+                self.lazy_trace
+                    .clone()
+                    .pad_using(T, |_| Cycle::NoOp)
+                    .iter_chunks(chunk_size)
+                    .zip(row_commitments.iter_mut())
+                    .par_bridge()
+                    .for_each(|(chunk, row_tier1_commitments)| {
+                        let res: Vec<_> = polys
+                            .par_iter()
+                            .map(|poly| {
+                                poly.stream_witness_and_commit_rows::<_, _, PCS>(
+                                    self.preprocessing,
+                                    &chunk,
+                                    &self.one_hot_params,
+                                )
+                            })
+                            .collect();
+                        *row_tier1_commitments = res;
+                    });
+
+                // Transpose: row_commitments[chunk][poly] -> tier1_per_poly[poly][chunk]
+                // Consuming drain avoids cloning each ChunkState.
+                let num_polys = polys.len();
+                let num_chunks = row_commitments.len();
+                let mut tier1_per_poly: Vec<Vec<PCS::ChunkState>> = (0..num_polys)
+                    .map(|_| Vec::with_capacity(num_chunks))
+                    .collect();
+                for mut row in row_commitments.drain(..) {
+                    for (poly_idx, state) in row.drain(..).enumerate() {
+                        tier1_per_poly[poly_idx].push(state);
+                    }
+                }
+
+                let onehot_ks: Vec<Option<usize>> = polys
+                    .iter()
+                    .map(|poly| poly.get_onehot_k(&self.one_hot_params))
+                    .collect();
+
+                if let Some((commitments, batch_hint)) = pcs.aggregate_streaming_batch(
+                    &self.preprocessing.generators,
+                    &onehot_ks,
+                    &tier1_per_poly,
+                ) {
+                    (commitments, batch_hint)
+                } else {
+                    // Tier 2: Compute final commitments from tier1 commitments
+                    let (commitments, hints): (Vec<_>, Vec<_>) = tier1_per_poly
+                        .into_par_iter()
+                        .zip(onehot_ks.into_par_iter())
+                        .map(|(tier1_commitments, onehot_k)| {
+                            pcs.aggregate_chunks(
+                                &self.preprocessing.generators,
+                                onehot_k,
+                                &tier1_commitments,
+                            )
+                        })
+                        .unzip();
+
+                    let batch_hint = PCS::streaming_batch_hint(hints);
+                    (commitments, batch_hint)
+                }
+            } else {
+                tracing::debug!("Non-streaming commit: {} polynomials, T={}", polys.len(), T,);
+
+                if PCS::uses_onehot_inc() {
+                    let source = LazyOneHotSource {
+                        trace: &self.trace,
+                        polys: &polys,
+                        preprocessing: &self.preprocessing.shared,
+                        one_hot_params: &self.one_hot_params,
+                    };
+                    let (commitments, batch_hint) = pcs.batch_commit_with_layout(
+                        &main_layout,
+                        &source,
+                        &self.preprocessing.generators,
+                    );
+                    (commitments, batch_hint)
+                } else {
+                    let trace: Vec<Cycle> = self
+                        .lazy_trace
+                        .clone()
+                        .pad_using(T, |_| Cycle::NoOp)
+                        .collect();
+                    let witnesses: Vec<MultilinearPolynomial<F>> = polys
                         .par_iter()
-                        .map(|poly| {
-                            poly.stream_witness_and_commit_rows::<_, _, PCS>(
-                                self.preprocessing,
-                                &chunk,
-                                &self.one_hot_params,
+                        .map(|poly_id| {
+                            poly_id.generate_witness(
+                                &self.preprocessing.shared.bytecode,
+                                &self.preprocessing.shared.memory_layout,
+                                &trace,
+                                Some(&self.one_hot_params),
                             )
                         })
                         .collect();
-                    *row_tier1_commitments = res;
-                });
 
-            // Transpose: row_commitments[chunk][poly] -> tier1_per_poly[poly][chunk]
-            // Consuming drain avoids cloning each ChunkState.
-            let num_polys = polys.len();
-            let num_chunks = row_commitments.len();
-            let mut tier1_per_poly: Vec<Vec<PCS::ChunkState>> = (0..num_polys)
-                .map(|_| Vec::with_capacity(num_chunks))
-                .collect();
-            for mut row in row_commitments.drain(..) {
-                for (poly_idx, state) in row.drain(..).enumerate() {
-                    tier1_per_poly[poly_idx].push(state);
+                    let (commitments, batch_hint) = pcs.batch_commit_with_layout(
+                        &main_layout,
+                        &witnesses,
+                        &self.preprocessing.generators,
+                    );
+                    (commitments, batch_hint)
                 }
-            }
-
-            let onehot_ks: Vec<Option<usize>> = polys
-                .iter()
-                .map(|poly| poly.get_onehot_k(&self.one_hot_params))
-                .collect();
-
-            if let Some((commitments, batch_hint)) = pcs.aggregate_streaming_batch(
-                &self.preprocessing.generators,
-                &onehot_ks,
-                &tier1_per_poly,
-            ) {
-                (commitments, batch_hint)
-            } else {
-                // Tier 2: Compute final commitments from tier1 commitments
-                let (commitments, hints): (Vec<_>, Vec<_>) = tier1_per_poly
-                    .into_par_iter()
-                    .zip(onehot_ks.into_par_iter())
-                    .map(|(tier1_commitments, onehot_k)| {
-                        pcs.aggregate_chunks(
-                            &self.preprocessing.generators,
-                            onehot_k,
-                            &tier1_commitments,
-                        )
-                    })
-                    .unzip();
-
-                let batch_hint = PCS::streaming_batch_hint(hints);
-                (commitments, batch_hint)
-            }
-        } else {
-            tracing::debug!("Non-streaming commit: {} polynomials, T={}", polys.len(), T,);
-
-            if PCS::uses_onehot_inc() {
-                let source = LazyOneHotSource {
-                    trace: &self.trace,
-                    polys: &polys,
-                    preprocessing: &self.preprocessing.shared,
-                    one_hot_params: &self.one_hot_params,
-                };
-                let (commitments, batch_hint) =
-                    pcs.batch_commit(&source, &self.preprocessing.generators);
-                (commitments, batch_hint)
-            } else {
-                let trace: Vec<Cycle> = self
-                    .lazy_trace
-                    .clone()
-                    .pad_using(T, |_| Cycle::NoOp)
-                    .collect();
-                let witnesses: Vec<MultilinearPolynomial<F>> = polys
-                    .par_iter()
-                    .map(|poly_id| {
-                        poly_id.generate_witness(
-                            &self.preprocessing.shared.bytecode,
-                            &self.preprocessing.shared.memory_layout,
-                            &trace,
-                            Some(&self.one_hot_params),
-                        )
-                    })
-                    .collect();
-
-                let (commitments, batch_hint) =
-                    pcs.batch_commit(&witnesses, &self.preprocessing.generators);
-                (commitments, batch_hint)
-            }
-        };
+            };
 
         // Append commitments to transcript
         for commitment in &commitments {
@@ -983,16 +999,15 @@ impl<
         );
 
         let poly = MultilinearPolynomial::from(untrusted_advice_vec);
-        let advice_len = poly.len().next_power_of_two().max(1);
+        let advice_context = AdviceKind::Untrusted
+            .commitment_context(self.program_io.memory_layout.max_untrusted_advice_size as usize);
 
         // `PCS::default()` (not `active()`) is intentional here: plain `commit` does not stamp
         // PCS-specific config into the proof. Advice context, if any, is supplied explicitly below.
         let pcs = PCS::default();
-        let (commitment, hint) = PCS::with_context(
-            pcs.config(),
-            CommitmentContext::UntrustedAdvice { len: advice_len },
-            || pcs.commit(&poly, &self.preprocessing.generators),
-        );
+        let advice_layout = PCS::commitment_layout(pcs.config(), advice_context);
+        let (commitment, hint) =
+            pcs.commit_with_layout(&advice_layout, &poly, &self.preprocessing.generators);
         self.transcript
             .append_serializable(b"untrusted_advice", &commitment);
 
@@ -1503,19 +1518,31 @@ impl<
             PCS::uses_onehot_inc(),
         );
 
-        // Advice claim reduction (Phase 1 in Stage 6b): trusted and untrusted are separate instances.
-        // Orientation is threaded explicitly from the active PCS config (not read from globals).
-        let advice_cycle_major = {
-            let pcs = PCS::active();
-            PCS::is_cycle_major(pcs.config())
+        let pcs = PCS::active();
+        let pcs_config = pcs.config();
+        let main_context = CommitmentContext::MainTrace {
+            k: self.one_hot_params.k_chunk,
+            trace_len: self.trace.len(),
+            commitment_total_vars: self.main_total_vars(),
         };
+        let advice_layouts = advice_stage_layouts::<PCS>(
+            pcs_config,
+            main_context,
+            &self.program_io.memory_layout,
+            self.advice.trusted_advice_polynomial.is_some(),
+            self.advice.untrusted_advice_polynomial.is_some(),
+        );
+
+        // Advice claim reduction (Phase 1 in Stage 6b): trusted and untrusted are separate instances.
         if self.advice.trusted_advice_polynomial.is_some() {
             let trusted_advice_params = AdviceClaimReductionParams::new(
                 AdviceKind::Trusted,
-                &self.program_io.memory_layout,
                 self.trace.len(),
                 self.one_hot_params.log_k_chunk,
-                advice_cycle_major,
+                advice_layouts.main,
+                advice_layouts
+                    .trusted
+                    .expect("trusted advice layout should be present"),
                 &self.opening_accumulator,
             );
             // Note: We clone the advice polynomial here because Stage 8 needs the original polynomial
@@ -1536,10 +1563,12 @@ impl<
         if self.advice.untrusted_advice_polynomial.is_some() {
             let untrusted_advice_params = AdviceClaimReductionParams::new(
                 AdviceKind::Untrusted,
-                &self.program_io.memory_layout,
                 self.trace.len(),
                 self.one_hot_params.log_k_chunk,
-                advice_cycle_major,
+                advice_layouts.main,
+                advice_layouts
+                    .untrusted
+                    .expect("untrusted advice layout should be present"),
                 &self.opening_accumulator,
             );
             // Note: We clone the advice polynomial here because Stage 8 needs the original polynomial
@@ -2167,13 +2196,14 @@ impl<
     ) -> PCS::BatchedProof {
         tracing::info!("Stage 8 proving (batch opening)");
 
-        let pcs_config = PCS::active().config().clone();
+        let pcs = PCS::active();
+        let pcs_config = pcs.config().clone();
         let main_context = CommitmentContext::MainTrace {
             k: self.one_hot_params.k_chunk,
             trace_len: self.trace.len(),
             commitment_total_vars: self.main_total_vars(),
         };
-        PCS::initialize_context(&pcs_config, main_context);
+        let commitment_layout = PCS::commitment_layout(&pcs_config, main_context);
 
         let native_main_vars = self.trace.len().log_2() + self.one_hot_params.log_k_chunk;
         let opening_parts = final_opening_point_parts(
@@ -2374,7 +2404,8 @@ impl<
                 one_hot_params: &self.one_hot_params,
             };
 
-            return PCS::active().batch_prove(
+            return pcs.batch_prove_with_layout(
+                &commitment_layout,
                 &self.preprocessing.generators,
                 &lazy_source,
                 batch_hint,
@@ -2481,7 +2512,8 @@ impl<
             poly_ids,
             layout: PCS::coefficient_layout(&pcs_config, main_context),
         };
-        let proof = PCS::active().batch_prove(
+        let proof = pcs.batch_prove_with_layout(
+            &commitment_layout,
             &self.preprocessing.generators,
             &poly_source,
             batch_hint,
@@ -2730,10 +2762,7 @@ mod tests {
     #[cfg(feature = "zk")]
     use crate::poly::commitment::pedersen::PedersenGenerators;
     use crate::poly::{
-        commitment::{
-            commitment_scheme::CommitmentScheme,
-            dory::{DoryCommitmentScheme, DoryContext},
-        },
+        commitment::{commitment_scheme::CommitmentScheme, dory::DoryCommitmentScheme},
         multilinear_polynomial::MultilinearPolynomial,
         opening_proof::{OpeningAccumulator, SumcheckId},
     };
@@ -2806,14 +2835,12 @@ mod tests {
         );
 
         let poly = MultilinearPolynomial::<Fr>::from(trusted_advice_words);
-        let advice_len = poly.len().next_power_of_two().max(1);
-
-        let _guard =
-            DoryGlobals::initialize_context(1, advice_len, DoryContext::TrustedAdvice, None);
-        let (commitment, hint) = {
-            let _ctx = DoryGlobals::with_context(DoryContext::TrustedAdvice);
-            DoryCommitmentScheme::default().commit(&poly, &preprocessing.generators)
-        };
+        let advice_context =
+            AdviceKind::Trusted.commitment_context(max_trusted_advice_size as usize);
+        let pcs = DoryCommitmentScheme::default();
+        let advice_layout = DoryCommitmentScheme::commitment_layout(pcs.config(), advice_context);
+        let (commitment, hint) =
+            pcs.commit_with_layout(&advice_layout, &poly, &preprocessing.generators);
         (commitment, hint)
     }
 

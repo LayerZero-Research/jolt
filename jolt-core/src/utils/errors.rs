@@ -30,6 +30,8 @@ pub enum ProofVerifyError {
     InvalidOneHotConfig(String),
     #[error("Invalid bytecode commitment configuration: {0}")]
     InvalidBytecodeConfig(String),
+    #[error("Invalid commitment layout: {0}")]
+    InvalidCommitmentLayout(String),
     #[error("Invalid ram_K: got {got}, expected power of two in [{min}, {max}]")]
     InvalidRamK { got: usize, min: usize, max: usize },
     #[error("Invalid trace_length: got {0}, max allowed {1}")]

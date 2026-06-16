@@ -17,7 +17,7 @@ use crate::{
     curve::JoltCurve,
     field::JoltField,
     poly::{
-        commitment::commitment_scheme::CommitmentScheme,
+        commitment::{commitment_scheme::CommitmentScheme, layout::LayoutDescriptor},
         opening_proof::{OpeningId, PolynomialId, SumcheckId},
     },
     utils::errors::ProofVerifyError,
@@ -62,6 +62,7 @@ pub struct JoltProof<
     pub ram_K: usize,
     pub rw_config: ReadWriteConfig,
     pub one_hot_config: OneHotConfig,
+    pub layout_descriptor: LayoutDescriptor,
     pub pcs_config: PCS::Config,
 }
 

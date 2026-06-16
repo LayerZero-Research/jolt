@@ -45,7 +45,11 @@
 
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use jolt_core::field::JoltField;
-use jolt_core::poly::commitment::commitment_scheme::{CommitmentScheme, PolynomialBatchSource};
+use jolt_core::poly::coefficient_layout::CoefficientLayout;
+use jolt_core::poly::commitment::commitment_scheme::{
+    canonical_coefficient_layout, CommitmentContext, CommitmentScheme, PolynomialBatchSource,
+};
+use jolt_core::poly::commitment::layout::NoCommitmentLayout;
 use jolt_core::poly::multilinear_polynomial::MultilinearPolynomial;
 use jolt_core::poly::opening_proof::BatchPolynomialSource;
 use jolt_core::transcripts::Transcript;
@@ -106,6 +110,7 @@ impl CommitmentScheme for AstCommitmentScheme {
     type Commitment = AstCommitment;
     type Proof = AstProof;
     type BatchedProof = AstBatchedProof;
+    type CommitmentLayout = NoCommitmentLayout;
     type OpeningProofHint = AstOpeningHint;
     type BatchOpeningHint = AstBatchOpeningHint;
 
@@ -119,6 +124,17 @@ impl CommitmentScheme for AstCommitmentScheme {
 
     fn append_pcs_config_to_transcript<T: Transcript>(_: &Self::Config, transcript: &mut T) {
         transcript.append_u64(b"ast_layout", 0);
+    }
+
+    fn coefficient_layout(_config: &Self::Config, context: CommitmentContext) -> CoefficientLayout {
+        canonical_coefficient_layout(context)
+    }
+
+    fn commitment_layout(
+        _config: &Self::Config,
+        _context: CommitmentContext,
+    ) -> Self::CommitmentLayout {
+        NoCommitmentLayout
     }
 
     fn setup_prover(_max_num_vars: usize) -> Self::ProverSetup {

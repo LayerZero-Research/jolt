@@ -19,6 +19,7 @@ use crate::poly::commitment::commitment_scheme::{
     canonical_coefficient_layout, CommitmentContext, CommitmentScheme, PolynomialBatchSource,
     StreamingCommitmentScheme, ZkEvalCommitment,
 };
+use crate::poly::commitment::layout::NoCommitmentLayout;
 use crate::poly::eq_poly::EqPolynomial;
 use crate::poly::multilinear_polynomial::MultilinearPolynomial;
 use crate::poly::opening_proof::BatchPolynomialSource;
@@ -462,6 +463,7 @@ where
     type Commitment = ArkBridge<RingCommitment<Fp128, D>>;
     type Proof = ArkBridge<AkitaProof<Fp128>>;
     type BatchedProof = AkitaBatchedProof<D>;
+    type CommitmentLayout = NoCommitmentLayout;
     type OpeningProofHint = JoltAkitaOpeningHint<D>;
     type BatchOpeningHint = JoltAkitaBatchHint<D>;
 
@@ -526,6 +528,13 @@ where
     fn coefficient_layout(_config: &Self::Config, context: CommitmentContext) -> CoefficientLayout {
         // Akita's packed path uses `PackedBitLayout`; this covers flat coefficient sources.
         canonical_coefficient_layout(context)
+    }
+
+    fn commitment_layout(
+        _config: &Self::Config,
+        _context: CommitmentContext,
+    ) -> Self::CommitmentLayout {
+        NoCommitmentLayout
     }
 
     fn commit(

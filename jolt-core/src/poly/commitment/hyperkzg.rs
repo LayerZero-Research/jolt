@@ -13,6 +13,7 @@ use super::{
         canonical_coefficient_layout, CommitmentContext, CommitmentScheme, PolynomialBatchSource,
     },
     kzg::{KZGProverKey, KZGVerifierKey, UnivariateKZG},
+    layout::NoCommitmentLayout,
 };
 use crate::field::JoltField;
 use crate::poly::coefficient_layout::CoefficientLayout;
@@ -468,6 +469,7 @@ where
     type Commitment = HyperKZGCommitment<P>;
     type Proof = HyperKZGProof<P>;
     type BatchedProof = HyperKZGProof<P>;
+    type CommitmentLayout = NoCommitmentLayout;
     type OpeningProofHint = ();
     type BatchOpeningHint = ();
 
@@ -498,6 +500,13 @@ where
 
     fn coefficient_layout(_config: &Self::Config, context: CommitmentContext) -> CoefficientLayout {
         canonical_coefficient_layout(context)
+    }
+
+    fn commitment_layout(
+        _config: &Self::Config,
+        _context: CommitmentContext,
+    ) -> Self::CommitmentLayout {
+        NoCommitmentLayout
     }
 
     #[tracing::instrument(skip_all, name = "HyperKZG::commit")]

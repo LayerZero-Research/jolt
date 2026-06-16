@@ -43,10 +43,11 @@
 
 use crate::curve::JoltCurve;
 use crate::poly::commitment::commitment_scheme::{CommitmentContext, CommitmentScheme};
+use crate::poly::commitment::layout::{CommitmentLayout, LayoutPublicInputs};
 #[cfg(not(feature = "zk"))]
 use crate::poly::opening_proof::{OpeningPoint, BIG_ENDIAN};
 use crate::subprotocols::sumcheck::{BatchedSumcheck, ClearSumcheckProof, SumcheckInstanceProof};
-use crate::zkvm::claim_reductions::advice::ReductionPhase;
+use crate::zkvm::claim_reductions::advice::{advice_stage_layouts, ReductionPhase};
 use crate::zkvm::claim_reductions::{
     AdviceClaimReductionVerifier, AdviceKind, HammingWeightClaimReductionVerifier,
     RegistersClaimReductionSumcheckVerifier,
@@ -325,7 +326,7 @@ impl<
         let _pprof_verify = pprof_scope!("verify");
 
         let preprocessing_digest = self.preprocessing.shared.digest();
-        fiat_shamir_preamble::<PCS>(
+        fiat_shamir_preamble(
             FiatShamirPreamble {
                 program_io: &self.program_io,
                 ram_K: self.proof.ram_K,
@@ -333,11 +334,21 @@ impl<
                 entry_address: self.preprocessing.shared.bytecode.entry_address,
                 rw_config: &self.proof.rw_config,
                 one_hot_config: &self.proof.one_hot_config,
-                pcs_config: &self.proof.pcs_config,
+                layout_descriptor: &self.proof.layout_descriptor,
                 preprocessing_digest: &preprocessing_digest,
             },
             &mut self.transcript,
         );
+        let layout_public_inputs = LayoutPublicInputs {
+            log_k: self.one_hot_params.log_k_chunk,
+            log_t: self.proof.trace_length.log_2(),
+            main_log_embedding: Some(self.main_total_vars()),
+        };
+        <PCS::CommitmentLayout as CommitmentLayout>::validate_descriptor(
+            &self.proof.layout_descriptor,
+            &layout_public_inputs,
+        )
+        .map_err(|err| ProofVerifyError::InvalidCommitmentLayout(format!("{err:?}")))?;
 
         // Append commitments to transcript
         for commitment in &self.proof.commitments {
@@ -577,14 +588,6 @@ impl<
     }
 
     fn verify_stage6(&mut self) -> Result<(), ProofVerifyError> {
-        PCS::initialize_context(
-            &self.proof.pcs_config,
-            CommitmentContext::MainTrace {
-                k: self.one_hot_params.k_chunk,
-                trace_len: self.proof.trace_length,
-                commitment_total_vars: self.main_total_vars(),
-            },
-        );
         let (bytecode_read_raf_params, booleanity_params) = self.verify_stage6a()?;
         self.verify_stage6b(bytecode_read_raf_params, booleanity_params)?;
         Ok(())
@@ -657,24 +660,39 @@ impl<
             PCS::uses_onehot_inc(),
         );
 
-        let advice_cycle_major = PCS::is_cycle_major(&self.proof.pcs_config);
+        let advice_layouts = advice_stage_layouts::<PCS>(
+            &self.proof.pcs_config,
+            CommitmentContext::MainTrace {
+                k: self.one_hot_params.k_chunk,
+                trace_len: self.proof.trace_length,
+                commitment_total_vars: self.main_total_vars(),
+            },
+            &self.program_io.memory_layout,
+            self.trusted_advice_commitment.is_some(),
+            self.proof.untrusted_advice_commitment.is_some(),
+        );
+
         if self.trusted_advice_commitment.is_some() {
             self.advice_reduction_verifier_trusted = Some(AdviceClaimReductionVerifier::new(
                 AdviceKind::Trusted,
-                &self.program_io.memory_layout,
                 self.proof.trace_length,
                 self.one_hot_params.log_k_chunk,
-                advice_cycle_major,
+                advice_layouts.main,
+                advice_layouts
+                    .trusted
+                    .expect("trusted advice layout should be present"),
                 &self.opening_accumulator,
             ));
         }
         if self.proof.untrusted_advice_commitment.is_some() {
             self.advice_reduction_verifier_untrusted = Some(AdviceClaimReductionVerifier::new(
                 AdviceKind::Untrusted,
-                &self.program_io.memory_layout,
                 self.proof.trace_length,
                 self.one_hot_params.log_k_chunk,
-                advice_cycle_major,
+                advice_layouts.main,
+                advice_layouts
+                    .untrusted
+                    .expect("untrusted advice layout should be present"),
                 &self.opening_accumulator,
             ));
         }

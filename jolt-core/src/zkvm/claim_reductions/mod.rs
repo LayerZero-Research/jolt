@@ -6,8 +6,8 @@ pub mod ram_ra;
 pub mod registers;
 
 pub use advice::{
-    AdviceClaimReductionParams, AdviceClaimReductionProver, AdviceClaimReductionVerifier,
-    AdviceKind,
+    advice_stage_layouts, AdviceClaimReductionParams, AdviceClaimReductionProver,
+    AdviceClaimReductionVerifier, AdviceKind,
 };
 #[cfg(feature = "prover")]
 pub use hamming_weight::HammingWeightClaimReductionProver;

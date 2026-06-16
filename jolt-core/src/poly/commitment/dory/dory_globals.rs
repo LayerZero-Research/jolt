@@ -1,18 +1,12 @@
 //! Global state management for Dory parameters.
 //!
-//! WHY THIS IS GLOBAL: the external `dory-pcs` crate drives commitment/opening, and its generic
-//! algorithms call back into Jolt via `DoryPolynomial::commit(nu, sigma, ...)` and
-//! `MultilinearLagrange::vector_matrix_product(left, nu, sigma)` (see `wrappers.rs`). Those
-//! callbacks receive only `(nu, sigma)`, but Jolt's matrix/embedding placement needs more
-//! (orientation, dense embedding stride, embedded var count, K, T). Since we cannot change the
-//! upstream trait signatures, this module is the seam that supplies that context to those
-//! callbacks, plus the one-time generator/prepared-point cache.
+//! The external `dory-pcs` crate calls back into Jolt with only `(nu, sigma)`, while Jolt's
+//! matrix/embedding placement also needs orientation, dense embedding stride, embedded var count,
+//! K, and T. This module supplies that Dory-specific context to those callbacks, plus the one-time
+//! generator/prepared-point cache.
 //!
-//! This is NOT the protocol-layer source of truth for layout. The PCS-agnostic
-//! [`CoefficientLayout`] (constructed purely via `CommitmentScheme::coefficient_layout`) is the
-//! source of truth, and is threaded explicitly through the prover/verifier (e.g. into the advice
-//! claim reduction and the streaming opening source). New protocol code should take a
-//! `CoefficientLayout` (or an explicit `cycle_major` flag) rather than reading these globals.
+//! Protocol code should use the explicit [`CoefficientLayout`] passed through prover/verifier
+//! instead of reading this state directly.
 
 use crate::poly::coefficient_layout::CoefficientLayout;
 use crate::utils::math::Math;

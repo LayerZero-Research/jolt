@@ -1,11 +1,11 @@
 //! Two-phase advice claim reduction (Stage 6 cycle → Stage 7 address)
 //!
 //! This module generalizes the previous single-phase `AdviceClaimReduction` so that trusted and
-//! untrusted advice can be committed as an arbitrary Dory matrix `2^{nu_a} x 2^{sigma_a}` (balanced
-//! by default), while still keeping a **single Stage 8 Dory opening** at the unified Dory point.
+//! untrusted advice can use their own commitment layout while still keeping a single Stage 8
+//! opening at the unified PCS point.
 //!
 //! For an advice matrix embedded as the **top-left block** `2^{nu_a} x 2^{sigma_a}`, the *native*
-//! advice evaluation point (in Dory order, LSB-first) is:
+//! advice evaluation point (in coefficient-layout order, LSB-first) is:
 //! - `advice_cols = col_coords[0..sigma_a]`
 //! - `advice_rows = row_coords[0..nu_a]`
 //! - `advice_point = [advice_cols || advice_rows]`
@@ -34,7 +34,8 @@ use std::cmp::{min, Ordering};
 use std::ops::Range;
 
 use crate::field::JoltField;
-use crate::poly::commitment::dory::DoryGlobals;
+use crate::poly::coefficient_layout::CoefficientLayout;
+use crate::poly::commitment::commitment_scheme::{CommitmentContext, CommitmentScheme};
 use crate::poly::eq_poly::EqPolynomial;
 use crate::poly::multilinear_polynomial::{BindingOrder, MultilinearPolynomial, PolynomialBinding};
 #[cfg(feature = "zk")]
@@ -62,6 +63,57 @@ pub enum AdviceKind {
     Untrusted,
 }
 
+fn advice_commitment_len(max_advice_size_bytes: usize) -> usize {
+    let words = max_advice_size_bytes / 8;
+    words.next_power_of_two().max(1)
+}
+
+impl AdviceKind {
+    pub(crate) fn commitment_context(self, max_advice_size_bytes: usize) -> CommitmentContext {
+        let len = advice_commitment_len(max_advice_size_bytes);
+        match self {
+            Self::Trusted => CommitmentContext::TrustedAdvice { len },
+            Self::Untrusted => CommitmentContext::UntrustedAdvice { len },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AdviceStageLayouts {
+    pub main: CoefficientLayout,
+    pub trusted: Option<CoefficientLayout>,
+    pub untrusted: Option<CoefficientLayout>,
+}
+
+pub fn advice_stage_layouts<PCS: CommitmentScheme>(
+    pcs_config: &PCS::Config,
+    main_context: CommitmentContext,
+    memory_layout: &MemoryLayout,
+    has_trusted: bool,
+    has_untrusted: bool,
+) -> AdviceStageLayouts {
+    let main = PCS::coefficient_layout(pcs_config, main_context);
+    let trusted = has_trusted.then(|| {
+        PCS::coefficient_layout(
+            pcs_config,
+            AdviceKind::Trusted.commitment_context(memory_layout.max_trusted_advice_size as usize),
+        )
+    });
+    let untrusted = has_untrusted.then(|| {
+        PCS::coefficient_layout(
+            pcs_config,
+            AdviceKind::Untrusted
+                .commitment_context(memory_layout.max_untrusted_advice_size as usize),
+        )
+    });
+
+    AdviceStageLayouts {
+        main,
+        trusted,
+        untrusted,
+    }
+}
+
 #[derive(Debug, Clone, Allocative, PartialEq, Eq)]
 pub enum ReductionPhase {
     CycleVariables,
@@ -72,15 +124,15 @@ pub enum ReductionPhase {
 pub struct AdviceClaimReductionParams<F: JoltField> {
     pub kind: AdviceKind,
     pub phase: ReductionPhase,
-    /// Whether the main Dory matrix is laid out cycle-major (threaded from the PCS config).
+    /// Whether the main coefficient layout is cycle-major.
     pub cycle_major: bool,
     pub log_k_chunk: usize,
     pub log_t: usize,
     pub advice_col_vars: usize,
     pub advice_row_vars: usize,
-    /// Number of column variables in the main Dory matrix
+    /// Number of column variables in the main coefficient layout.
     pub main_col_vars: usize,
-    /// Number of row variables in the main Dory matrix
+    /// Number of row variables in the main coefficient layout.
     pub main_row_vars: usize,
     #[allocative(skip)]
     pub cycle_phase_row_rounds: Range<usize>,
@@ -125,40 +177,36 @@ fn cycle_phase_round_schedule(
 impl<F: JoltField> AdviceClaimReductionParams<F> {
     pub fn new(
         kind: AdviceKind,
-        memory_layout: &MemoryLayout,
         trace_len: usize,
         log_k_chunk: usize,
-        cycle_major: bool,
+        main_layout: CoefficientLayout,
+        advice_layout: CoefficientLayout,
         accumulator: &dyn OpeningAccumulator<F>,
     ) -> Self {
-        let max_advice_size_bytes = match kind {
-            AdviceKind::Trusted => memory_layout.max_trusted_advice_size as usize,
-            AdviceKind::Untrusted => memory_layout.max_untrusted_advice_size as usize,
-        };
-
         let log_t = trace_len.log_2();
-        let (main_col_vars, main_row_vars) = DoryGlobals::main_sigma_nu(log_k_chunk, log_t);
+        let main_col_vars = main_layout.num_columns.log_2();
+        let main_row_vars = main_layout.num_rows.log_2();
 
         let r_val = accumulator
             .get_advice_opening(kind, SumcheckId::RamValCheck)
             .map(|(p, _)| p)
             .unwrap();
 
-        let (advice_col_vars, advice_row_vars) =
-            DoryGlobals::advice_sigma_nu_from_max_bytes(max_advice_size_bytes);
+        let advice_col_vars = advice_layout.num_columns.log_2();
+        let advice_row_vars = advice_layout.num_rows.log_2();
         let (col_binding_rounds, row_binding_rounds) = cycle_phase_round_schedule(
             log_t,
             log_k_chunk,
             main_col_vars,
             advice_row_vars,
             advice_col_vars,
-            cycle_major,
+            main_layout.cycle_major,
         );
 
         Self {
             kind,
             phase: ReductionPhase::CycleVariables,
-            cycle_major,
+            cycle_major: main_layout.cycle_major,
             advice_col_vars,
             advice_row_vars,
             log_k_chunk,
@@ -355,8 +403,8 @@ impl<F: JoltField> AdviceClaimReductionProver<F> {
         let eq_evals = EqPolynomial::evals(&params.r_val.r);
 
         let main_cols = 1 << params.main_col_vars;
-        // Maps a (row, col) position in the Dory matrix layout to its
-        // implied (address, cycle).
+        // Maps a (row, col) position in the main coefficient layout to its implied
+        // (address, cycle).
         let row_col_to_address_cycle = |row: usize, col: usize| -> (usize, usize) {
             let global_index = row as u128 * main_cols + col as u128;
             if params.cycle_major {
@@ -372,7 +420,7 @@ impl<F: JoltField> AdviceClaimReductionProver<F> {
 
         let advice_cols = 1 << params.advice_col_vars;
         // Maps an index in the advice vector to its implied (address, cycle), based
-        // on the position the index maps to in the Dory matrix layout.
+        // on the position the index maps to in the advice coefficient layout.
         let advice_index_to_address_cycle = |index: usize| -> (usize, usize) {
             let row = index / advice_cols;
             let col = index % advice_cols;
@@ -562,7 +610,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for AdviceClaimRe
         match self.params.phase {
             ReductionPhase::CycleVariables => {
                 // Align to the *start* of Booleanity's cycle segment, so local rounds correspond
-                // to low Dory column bits in the unified point ordering. After the Stage 6
+                // to low column bits in the unified point ordering. After the Stage 6
                 // address/cycle split, Booleanity contributes only its cycle rounds (log_t) to
                 // this batch (its log_k_chunk address rounds live in Stage 6a), so the cycle
                 // segment starts at `max_num_rounds - log_t`.
@@ -585,18 +633,18 @@ pub struct AdviceClaimReductionVerifier<F: JoltField> {
 impl<F: JoltField> AdviceClaimReductionVerifier<F> {
     pub fn new(
         kind: AdviceKind,
-        memory_layout: &MemoryLayout,
         trace_len: usize,
         log_k_chunk: usize,
-        cycle_major: bool,
+        main_layout: CoefficientLayout,
+        advice_layout: CoefficientLayout,
         accumulator: &dyn OpeningAccumulator<F>,
     ) -> Self {
         let params = AdviceClaimReductionParams::new(
             kind,
-            memory_layout,
             trace_len,
             log_k_chunk,
-            cycle_major,
+            main_layout,
+            advice_layout,
             accumulator,
         );
 

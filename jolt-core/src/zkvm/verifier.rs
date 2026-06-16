@@ -12,6 +12,7 @@ use crate::poly::commitment::commitment_scheme::{
 use crate::poly::commitment::dory::bind_opening_inputs;
 #[cfg(feature = "zk")]
 use crate::poly::commitment::dory::bind_opening_inputs_zk;
+use crate::poly::commitment::layout::{CommitmentLayout, LayoutPublicInputs};
 use crate::poly::commitment::pedersen::PedersenGenerators;
 #[cfg(feature = "zk")]
 use crate::poly::lagrange_poly::LagrangeHelper;
@@ -29,7 +30,7 @@ use crate::subprotocols::sumcheck_verifier::SumcheckInstanceParams;
 #[cfg(feature = "zk")]
 use crate::subprotocols::univariate_skip::UniSkipFirstRoundProofVariant;
 use crate::zkvm::bytecode::{BytecodePreprocessing, PreprocessingError};
-use crate::zkvm::claim_reductions::advice::ReductionPhase;
+use crate::zkvm::claim_reductions::advice::{advice_stage_layouts, ReductionPhase};
 use crate::zkvm::claim_reductions::RegistersClaimReductionSumcheckVerifier;
 use crate::zkvm::config::{OneHotParams, ProgramMode};
 #[cfg(feature = "prover")]
@@ -384,7 +385,7 @@ impl<
         let zk_mode = self.opening_accumulator.zk_mode;
 
         let preprocessing_digest = self.preprocessing.shared.digest();
-        fiat_shamir_preamble::<PCS>(
+        fiat_shamir_preamble(
             FiatShamirPreamble {
                 program_io: &self.program_io,
                 ram_K: self.proof.ram_K,
@@ -392,21 +393,21 @@ impl<
                 entry_address: self.preprocessing.shared.bytecode.entry_address,
                 rw_config: &self.proof.rw_config,
                 one_hot_config: &self.proof.one_hot_config,
-                pcs_config: &self.proof.pcs_config,
+                layout_descriptor: &self.proof.layout_descriptor,
                 preprocessing_digest: &preprocessing_digest,
             },
             &mut self.transcript,
         );
-
-        PCS::initialize_context(
-            &self.proof.pcs_config,
-            CommitmentContext::MainTrace {
-                k: 1 << self.one_hot_params.log_k_chunk,
-                trace_len: self.proof.trace_length.next_power_of_two(),
-                commitment_total_vars: self.one_hot_params.log_k_chunk
-                    + self.proof.trace_length.next_power_of_two().log_2(),
-            },
-        );
+        let layout_public_inputs = LayoutPublicInputs {
+            log_k: self.one_hot_params.log_k_chunk,
+            log_t: self.proof.trace_length.log_2(),
+            main_log_embedding: Some(self.main_total_vars()),
+        };
+        <PCS::CommitmentLayout as CommitmentLayout>::validate_descriptor(
+            &self.proof.layout_descriptor,
+            &layout_public_inputs,
+        )
+        .map_err(|err| ProofVerifyError::InvalidCommitmentLayout(format!("{err:?}")))?;
 
         // Append commitments to transcript
         for commitment in &self.proof.commitments {
@@ -1011,14 +1012,6 @@ impl<
     fn verify_stage6(
         &mut self,
     ) -> Result<(StageVerifyResult<F>, StageVerifyResult<F>), ProofVerifyError> {
-        PCS::initialize_context(
-            &self.proof.pcs_config,
-            CommitmentContext::MainTrace {
-                k: self.one_hot_params.k_chunk,
-                trace_len: self.proof.trace_length,
-                commitment_total_vars: self.main_total_vars(),
-            },
-        );
         let (bytecode_read_raf_params, booleanity_params, stage6a_result) =
             self.verify_stage6a()?;
         let stage6b_result = self.verify_stage6b(bytecode_read_raf_params, booleanity_params)?;
@@ -1128,25 +1121,40 @@ impl<
             PCS::uses_onehot_inc(),
         );
 
+        let advice_layouts = advice_stage_layouts::<PCS>(
+            &self.proof.pcs_config,
+            CommitmentContext::MainTrace {
+                k: self.one_hot_params.k_chunk,
+                trace_len: self.proof.trace_length,
+                commitment_total_vars: self.main_total_vars(),
+            },
+            &self.program_io.memory_layout,
+            self.trusted_advice_commitment.is_some(),
+            self.proof.untrusted_advice_commitment.is_some(),
+        );
+
         // Advice claim reduction (Phase 1 in Stage 6b): trusted and untrusted are separate instances.
-        let advice_cycle_major = PCS::is_cycle_major(&self.proof.pcs_config);
         if self.trusted_advice_commitment.is_some() {
             self.advice_reduction_verifier_trusted = Some(AdviceClaimReductionVerifier::new(
                 AdviceKind::Trusted,
-                &self.program_io.memory_layout,
                 self.proof.trace_length,
                 self.one_hot_params.log_k_chunk,
-                advice_cycle_major,
+                advice_layouts.main,
+                advice_layouts
+                    .trusted
+                    .expect("trusted advice layout should be present"),
                 &self.opening_accumulator,
             ));
         }
         if self.proof.untrusted_advice_commitment.is_some() {
             self.advice_reduction_verifier_untrusted = Some(AdviceClaimReductionVerifier::new(
                 AdviceKind::Untrusted,
-                &self.program_io.memory_layout,
                 self.proof.trace_length,
                 self.one_hot_params.log_k_chunk,
-                advice_cycle_major,
+                advice_layouts.main,
+                advice_layouts
+                    .untrusted
+                    .expect("untrusted advice layout should be present"),
                 &self.opening_accumulator,
             ));
         }
@@ -2018,9 +2026,9 @@ impl JoltSharedPreprocessing {
         )
     }
 
-    /// Candidate total-variable counts for advice polynomials that may dominate
-    /// the main Dory matrix dimensions. Committed-program candidates are excised
-    /// (Akita runs `ProgramMode::Full` only).
+    /// Candidate total-variable counts for precommitted polynomials that may dominate
+    /// the main trace layout. Committed-program candidates are omitted because Akita
+    /// runs `ProgramMode::Full` only.
     pub(crate) fn precommitted_candidate_total_vars<PCS: CommitmentScheme>(
         &self,
         include_trusted_advice: bool,

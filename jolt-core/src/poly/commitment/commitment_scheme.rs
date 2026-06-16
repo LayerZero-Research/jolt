@@ -3,6 +3,7 @@ use common::constants::ONEHOT_CHUNK_THRESHOLD_LOG_T;
 use std::borrow::Borrow;
 use std::fmt::Debug;
 
+use crate::poly::commitment::layout::CommitmentLayout;
 use crate::poly::commitment::opening_point::FinalOpeningPointParts;
 use crate::poly::{coefficient_layout::CoefficientLayout, opening_proof::BatchPolynomialSource};
 use crate::transcripts::Transcript;
@@ -117,6 +118,7 @@ pub trait CommitmentScheme: Clone + Sync + Send + Default + 'static {
         + Clone;
     type Proof: Sync + Send + CanonicalSerialize + CanonicalDeserialize + Clone + Debug;
     type BatchedProof: Sync + Send + CanonicalSerialize + CanonicalDeserialize;
+    type CommitmentLayout: CommitmentLayout;
     // NOTE: main added `CanonicalSerialize + CanonicalDeserialize` here for Dory's
     // disk-persistence, but no PCS-generic code serializes this hint — Dory derives those
     // traits on its own concrete hint type. We keep the lighter bound so Akita's
@@ -187,14 +189,10 @@ pub trait CommitmentScheme: Clone + Sync + Send + Default + 'static {
 
     fn coefficient_layout(config: &Self::Config, context: CommitmentContext) -> CoefficientLayout;
 
-    /// Whether this PCS lays coefficients out cycle-major (address contiguous within a cycle).
-    ///
-    /// Defaults to `true` (all non-Dory schemes). Dory overrides this based on its selected
-    /// orientation so the protocol layer can thread the choice explicitly (e.g. into advice
-    /// claim reduction) instead of reading it from `DoryGlobals`.
-    fn is_cycle_major(_config: &Self::Config) -> bool {
-        true
-    }
+    fn commitment_layout(
+        _config: &Self::Config,
+        _context: CommitmentContext,
+    ) -> Self::CommitmentLayout;
 
     fn advice_precommitted_total_vars(max_advice_size_bytes: usize) -> usize {
         let words = max_advice_size_bytes / 8;
@@ -214,11 +212,29 @@ pub trait CommitmentScheme: Clone + Sync + Send + Default + 'static {
         setup: &Self::ProverSetup,
     ) -> (Self::Commitment, Self::OpeningProofHint);
 
+    fn commit_with_layout(
+        &self,
+        _layout: &Self::CommitmentLayout,
+        poly: &MultilinearPolynomial<Self::Field>,
+        setup: &Self::ProverSetup,
+    ) -> (Self::Commitment, Self::OpeningProofHint) {
+        self.commit(poly, setup)
+    }
+
     fn batch_commit<S: PolynomialBatchSource<Self::Field>>(
         &self,
         source: &S,
         gens: &Self::ProverSetup,
     ) -> (Vec<Self::Commitment>, Self::BatchOpeningHint);
+
+    fn batch_commit_with_layout<S: PolynomialBatchSource<Self::Field>>(
+        &self,
+        _layout: &Self::CommitmentLayout,
+        source: &S,
+        gens: &Self::ProverSetup,
+    ) -> (Vec<Self::Commitment>, Self::BatchOpeningHint) {
+        self.batch_commit(source, gens)
+    }
 
     /// Homomorphically combines multiple commitments into a single commitment, computed as a
     /// linear combination with the given coefficients.
@@ -262,6 +278,20 @@ pub trait CommitmentScheme: Clone + Sync + Send + Default + 'static {
         commitment: &Self::Commitment,
     ) -> (Self::Proof, Option<Self::Field>);
 
+    #[allow(clippy::too_many_arguments)]
+    fn prove_with_layout<ProofTranscript: Transcript>(
+        &self,
+        _layout: &Self::CommitmentLayout,
+        setup: &Self::ProverSetup,
+        poly: &MultilinearPolynomial<Self::Field>,
+        opening_point: &[<Self::Field as JoltField>::Challenge],
+        hint: Option<Self::OpeningProofHint>,
+        transcript: &mut ProofTranscript,
+        commitment: &Self::Commitment,
+    ) -> (Self::Proof, Option<Self::Field>) {
+        self.prove(setup, poly, opening_point, hint, transcript, commitment)
+    }
+
     fn verify<ProofTranscript: Transcript>(
         &self,
         proof: &Self::Proof,
@@ -285,6 +315,36 @@ pub trait CommitmentScheme: Clone + Sync + Send + Default + 'static {
         coeffs: &[Self::Field],
         transcript: &mut ProofTranscript,
     ) -> Self::BatchedProof;
+
+    #[allow(clippy::too_many_arguments)]
+    fn batch_prove_with_layout<
+        ProofTranscript: Transcript,
+        S: BatchPolynomialSource<Self::Field>,
+    >(
+        &self,
+        _layout: &Self::CommitmentLayout,
+        setup: &Self::ProverSetup,
+        poly_source: &S,
+        batch_hint: Self::BatchOpeningHint,
+        individual_hints: Vec<Self::OpeningProofHint>,
+        commitments: &[&Self::Commitment],
+        opening_point: &[<Self::Field as JoltField>::Challenge],
+        claims: &[Self::Field],
+        coeffs: &[Self::Field],
+        transcript: &mut ProofTranscript,
+    ) -> Self::BatchedProof {
+        self.batch_prove(
+            setup,
+            poly_source,
+            batch_hint,
+            individual_hints,
+            commitments,
+            opening_point,
+            claims,
+            coeffs,
+            transcript,
+        )
+    }
 
     #[allow(clippy::too_many_arguments)]
     fn batch_verify<ProofTranscript: Transcript>(
@@ -389,6 +449,16 @@ pub trait StreamingCommitmentScheme: CommitmentScheme {
     /// path (materialize full polynomial, then commit).
     #[allow(non_snake_case)]
     fn streaming_chunk_size(&self, K: usize, T: usize) -> Option<usize>;
+
+    #[allow(non_snake_case)]
+    fn streaming_chunk_size_with_layout(
+        &self,
+        _layout: &Self::CommitmentLayout,
+        K: usize,
+        T: usize,
+    ) -> Option<usize> {
+        self.streaming_chunk_size(K, T)
+    }
 
     fn process_chunk<T: SmallScalar>(
         &self,
