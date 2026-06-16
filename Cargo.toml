@@ -119,7 +119,11 @@ members = [
 exclude = ["jolt-eval/fuzz"]
 
 [features]
-host = ["jolt-sdk/host"]
+default = ["host", "dory-pcs"]
+host = ["jolt-core/host", "jolt-sdk/host"]
+dory-pcs = ["jolt-core/dory-pcs", "jolt-sdk/dory-pcs"]
+akita-pcs = ["jolt-core/akita-pcs", "jolt-sdk/akita-pcs"]
+zk = ["jolt-core/zk", "jolt-sdk/zk"]
 
 [lib]
 path = "./src/lib.rs"
@@ -142,8 +146,8 @@ zeroos-build.workspace = true
 
 ark-bn254.workspace = true
 
-jolt-sdk = { workspace = true, features = ["host"] }
-jolt-core = { workspace = true, features = ["default"] }
+jolt-sdk = { workspace = true, default-features = false, features = ["host"] }
+jolt-core = { workspace = true, default-features = false }
 common = { workspace = true, features = ["std"] }
 
 [profile.test]
