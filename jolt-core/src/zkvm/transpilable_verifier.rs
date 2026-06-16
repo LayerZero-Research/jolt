@@ -42,8 +42,7 @@
 //! - Stage 7: AddressVariables phase (bind address-derived coordinates)
 
 use crate::curve::JoltCurve;
-use crate::poly::commitment::commitment_scheme::CommitmentScheme;
-use crate::poly::commitment::dory::DoryGlobals;
+use crate::poly::commitment::commitment_scheme::{CommitmentContext, CommitmentScheme};
 #[cfg(not(feature = "zk"))]
 use crate::poly::opening_proof::{OpeningPoint, BIG_ENDIAN};
 use crate::subprotocols::sumcheck::{BatchedSumcheck, ClearSumcheckProof, SumcheckInstanceProof};
@@ -307,10 +306,12 @@ impl<
         let log_k_chunk = self.one_hot_params.log_k_chunk;
         JoltSharedPreprocessing::max_total_vars_from_candidates(
             trace_log_t + log_k_chunk,
-            self.preprocessing.shared.precommitted_candidate_total_vars(
-                self.trusted_advice_commitment.is_some(),
-                self.proof.untrusted_advice_commitment.is_some(),
-            ),
+            self.preprocessing
+                .shared
+                .precommitted_candidate_total_vars::<PCS>(
+                    self.trusted_advice_commitment.is_some(),
+                    self.proof.untrusted_advice_commitment.is_some(),
+                ),
         )
     }
 
@@ -576,11 +577,13 @@ impl<
     }
 
     fn verify_stage6(&mut self) -> Result<(), ProofVerifyError> {
-        let _ = DoryGlobals::initialize_main_with_log_embedding(
-            self.one_hot_params.k_chunk,
-            self.proof.trace_length,
-            self.main_total_vars(),
-            PCS::dory_layout(&self.proof.pcs_config),
+        PCS::initialize_context(
+            &self.proof.pcs_config,
+            CommitmentContext::MainTrace {
+                k: self.one_hot_params.k_chunk,
+                trace_len: self.proof.trace_length,
+                commitment_total_vars: self.main_total_vars(),
+            },
         );
         let (bytecode_read_raf_params, booleanity_params) = self.verify_stage6a()?;
         self.verify_stage6b(bytecode_read_raf_params, booleanity_params)?;
@@ -654,12 +657,14 @@ impl<
             PCS::uses_onehot_inc(),
         );
 
+        let advice_cycle_major = PCS::is_cycle_major(&self.proof.pcs_config);
         if self.trusted_advice_commitment.is_some() {
             self.advice_reduction_verifier_trusted = Some(AdviceClaimReductionVerifier::new(
                 AdviceKind::Trusted,
                 &self.program_io.memory_layout,
                 self.proof.trace_length,
                 self.one_hot_params.log_k_chunk,
+                advice_cycle_major,
                 &self.opening_accumulator,
             ));
         }
@@ -669,6 +674,7 @@ impl<
                 &self.program_io.memory_layout,
                 self.proof.trace_length,
                 self.one_hot_params.log_k_chunk,
+                advice_cycle_major,
                 &self.opening_accumulator,
             ));
         }

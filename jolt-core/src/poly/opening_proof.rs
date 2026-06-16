@@ -6,7 +6,7 @@
 //! necessarily of the same size, each opened at a different point) into a single opening.
 
 use crate::{
-    poly::matrix_layout::MatrixLayout,
+    poly::coefficient_layout::CoefficientLayout,
     poly::rlc_polynomial::{RLCPolynomial, RLCStreamingData, TraceSource},
     zkvm::{claim_reductions::AdviceKind, config::OneHotParams},
 };
@@ -17,9 +17,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use super::{
-    commitment::commitment_scheme::CommitmentScheme, multilinear_polynomial::MultilinearPolynomial,
-};
+use super::multilinear_polynomial::MultilinearPolynomial;
 use crate::{
     field::JoltField,
     transcripts::Transcript,
@@ -68,7 +66,7 @@ pub struct StreamingBatchSource<F: JoltField> {
     pub streaming_data: Arc<RLCStreamingData>,
     pub advice_polys: HashMap<CommittedPolynomial, MultilinearPolynomial<F>>,
     pub poly_ids: Vec<CommittedPolynomial>,
-    pub layout: MatrixLayout,
+    pub layout: CoefficientLayout,
 }
 
 impl<F: JoltField> BatchPolynomialSource<F> for StreamingBatchSource<F> {
@@ -375,62 +373,6 @@ pub trait AbstractVerifierOpeningAccumulator<F: JoltField>: OpeningAccumulator<F
 
     /// Take pending claims (for ZK mode output commitment).
     fn take_pending_claims(&mut self) -> Vec<F>;
-}
-
-/// State for Dory batch opening (Stage 8).
-/// This is a generic interface for batch opening proofs.
-#[derive(Clone, Allocative)]
-pub struct DoryOpeningState<F: JoltField> {
-    /// Unified opening point for all polynomials (length = log_k_chunk + log_T)
-    pub opening_point: Vec<F::Challenge>,
-    /// γ^i coefficients for the RLC polynomial
-    pub gamma_powers: Vec<F>,
-    /// (polynomial, claim) pairs at the opening point
-    /// (with Lagrange factors already applied for shorter polys)
-    pub polynomial_claims: Vec<(CommittedPolynomial, F)>,
-}
-
-impl<F: JoltField> DoryOpeningState<F> {
-    /// Build streaming RLC polynomial from this state.
-    /// Streams directly from trace - no witness regeneration needed.
-    /// Advice polynomials are passed separately (not streamed from trace).
-    #[tracing::instrument(skip_all)]
-    pub fn build_streaming_rlc<PCS: CommitmentScheme<Field = F>>(
-        &self,
-        one_hot_params: OneHotParams,
-        trace_source: TraceSource,
-        rlc_streaming_data: Arc<RLCStreamingData>,
-        mut opening_hints: HashMap<CommittedPolynomial, PCS::OpeningProofHint>,
-        advice_polys: HashMap<CommittedPolynomial, MultilinearPolynomial<F>>,
-    ) -> (MultilinearPolynomial<F>, PCS::OpeningProofHint) {
-        // Accumulate gamma coefficients per polynomial
-        let mut rlc_map = BTreeMap::new();
-        for (gamma, (poly, _claim)) in self.gamma_powers.iter().zip(self.polynomial_claims.iter()) {
-            *rlc_map.entry(*poly).or_insert(F::zero()) += *gamma;
-        }
-
-        let (poly_ids, coeffs): (Vec<CommittedPolynomial>, Vec<F>) =
-            rlc_map.iter().map(|(k, v)| (*k, *v)).unzip();
-
-        let joint_poly = MultilinearPolynomial::RLC(RLCPolynomial::new_streaming(
-            one_hot_params,
-            rlc_streaming_data,
-            trace_source,
-            poly_ids.clone(),
-            &coeffs,
-            advice_polys,
-            crate::poly::commitment::dory::DoryGlobals::matrix_layout(),
-        ));
-
-        let hints: Vec<PCS::OpeningProofHint> = rlc_map
-            .into_keys()
-            .map(|k| opening_hints.remove(&k).unwrap())
-            .collect();
-
-        let hint = PCS::combine_hints(hints, &coeffs);
-
-        (joint_poly, hint)
-    }
 }
 
 impl<F> Default for ProverOpeningAccumulator<F>

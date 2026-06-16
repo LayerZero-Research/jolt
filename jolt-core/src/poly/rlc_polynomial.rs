@@ -1,6 +1,6 @@
 use crate::field::{BarrettReduce, FMAdd, JoltField};
+use crate::poly::coefficient_layout::CoefficientLayout;
 use crate::poly::commitment::dory::balanced_sigma_nu;
-use crate::poly::matrix_layout::MatrixLayout;
 use crate::poly::multilinear_polynomial::MultilinearPolynomial;
 use crate::utils::accumulation::MedAccumS;
 use crate::utils::math::{s64_from_diff_u64s, Math};
@@ -86,7 +86,7 @@ pub struct RLCPolynomial<F: JoltField> {
     /// (vector_matrix_product, len). None for non-Dory paths (e.g. HyperKZG)
     /// that only use RLCPolynomial as an eager linear combination container.
     #[allocative(skip)]
-    pub layout: Option<MatrixLayout>,
+    pub layout: Option<CoefficientLayout>,
 }
 
 impl<F: JoltField> PartialEq for RLCPolynomial<F> {
@@ -103,7 +103,7 @@ impl<F: JoltField> RLCPolynomial<F> {
         layout.num_columns * layout.num_rows
     }
 
-    pub fn new(layout: MatrixLayout) -> Self {
+    pub fn new(layout: CoefficientLayout) -> Self {
         Self {
             dense_rlc: unsafe_allocate_zero_vec(layout.T),
             one_hot_rlc: vec![],
@@ -122,7 +122,7 @@ impl<F: JoltField> RLCPolynomial<F> {
         polynomials: Vec<Arc<MultilinearPolynomial<F>>>,
         coefficients: &[F],
         streaming_context: Option<Arc<StreamingRLCContext<F>>>,
-        layout: Option<MatrixLayout>,
+        layout: Option<CoefficientLayout>,
     ) -> Self {
         debug_assert_eq!(polynomials.len(), coefficients.len());
         debug_assert_eq!(polynomials.len(), poly_ids.len());
@@ -189,7 +189,7 @@ impl<F: JoltField> RLCPolynomial<F> {
         poly_ids: Vec<CommittedPolynomial>,
         coefficients: &[F],
         mut advice_poly_map: HashMap<CommittedPolynomial, MultilinearPolynomial<F>>,
-        layout: MatrixLayout,
+        layout: CoefficientLayout,
     ) -> Self {
         debug_assert_eq!(poly_ids.len(), coefficients.len());
 
@@ -428,7 +428,7 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
     fn streaming_vector_matrix_product(
         &self,
         left_vec: &[F],
-        layout: &MatrixLayout,
+        layout: &CoefficientLayout,
         ctx: Arc<StreamingRLCContext<F>>,
     ) -> Vec<F> {
         let num_columns = layout.num_columns;

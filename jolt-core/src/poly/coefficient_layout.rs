@@ -1,20 +1,16 @@
-/// PCS-agnostic matrix geometry for laying out 1D polynomial coefficients
-/// into a 2D matrix (rows × columns).
-///
-/// For Dory, this is derived from `DoryGlobals`. For Akita, it will be
-/// derived from ring packing parameters.
+/// PCS-agnostic geometry for arranging 1D polynomial coefficients.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MatrixLayout {
+pub struct CoefficientLayout {
     pub num_columns: usize,
     pub num_rows: usize,
     /// Total number of cycles (T) in the OneHot polynomial.
     pub T: usize,
-    /// Whether the layout is cycle-major (true) or address-major (false).
+    /// Whether coefficients are ordered by address first, then cycle.
     pub cycle_major: bool,
 }
 
-impl MatrixLayout {
-    /// Convert a (address, cycle) pair to a flat coefficient index.
+impl CoefficientLayout {
+    /// Convert an (address, cycle) pair to a flat coefficient index.
     pub fn address_cycle_to_index(
         &self,
         address: usize,

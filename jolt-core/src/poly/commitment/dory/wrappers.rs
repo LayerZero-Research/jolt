@@ -172,6 +172,8 @@ impl MultilinearLagrange<ArkFr> for MultilinearPolynomial<Fr> {
             }
             MultilinearPolynomial::OneHot(poly) => {
                 let mut result = vec![Fr::zero(); num_cols];
+                // Callback seam: dory-pcs passes only (nu, sigma); the full layout for OneHot
+                // placement comes from DoryGlobals (see module docs).
                 let layout = DoryGlobals::matrix_layout();
                 poly.vector_matrix_product(&wrapped_left_side, Fr::one(), &mut result, &layout);
                 result.into_iter().map(|v| jolt_to_ark(&v)).collect()
@@ -200,6 +202,11 @@ where
         std::slice::from_raw_parts(g1_generators.as_ptr() as *const ArkG1, g1_generators.len())
     };
 
+    // Callback seam: `commit_tier_1` is invoked by dory-pcs's generic `commit`, which supplies only
+    // `(nu, sigma)` (via `row_len`). The AddressMajor dense-embedding placement below needs the full
+    // Dory matrix/embedding context, which is only available here through DoryGlobals (see the
+    // module docs in `dory_globals.rs`). `CoefficientLayout` is the protocol-layer source of truth;
+    // these reads are intentionally the residual seam to the external crate.
     let dory_context = DoryGlobals::current_context();
     let dory_layout = DoryGlobals::get_layout();
 
@@ -394,6 +401,8 @@ where
                 .take(row_len)
                 .map(|g| g.0.into_affine())
                 .collect();
+            // Callback seam (see module docs): OneHot row commitment needs the full layout, which
+            // dory-pcs's `commit` does not pass through.
             let layout = DoryGlobals::matrix_layout();
             poly.commit_rows(&affine_bases, &layout)
                 .into_iter()

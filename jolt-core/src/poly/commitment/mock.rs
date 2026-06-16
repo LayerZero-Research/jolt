@@ -4,13 +4,16 @@ use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 
 use crate::{
     field::JoltField,
+    poly::coefficient_layout::CoefficientLayout,
     poly::multilinear_polynomial::MultilinearPolynomial,
     poly::opening_proof::BatchPolynomialSource,
     transcripts::Transcript,
     utils::{errors::ProofVerifyError, small_scalar::SmallScalar},
 };
 
-use super::commitment_scheme::{CommitmentScheme, PolynomialBatchSource};
+use super::commitment_scheme::{
+    canonical_coefficient_layout, CommitmentContext, CommitmentScheme, PolynomialBatchSource,
+};
 
 #[derive(Clone)]
 pub struct MockCommitScheme<F: JoltField> {
@@ -63,6 +66,10 @@ where
 
     fn append_pcs_config_to_transcript<T: Transcript>(_: &Self::Config, transcript: &mut T) {
         transcript.append_u64(b"mock_layout", 0);
+    }
+
+    fn coefficient_layout(_config: &Self::Config, context: CommitmentContext) -> CoefficientLayout {
+        canonical_coefficient_layout(context)
     }
 
     fn commit(

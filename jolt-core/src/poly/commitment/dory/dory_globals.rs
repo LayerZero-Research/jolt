@@ -1,9 +1,27 @@
-//! Global state management for Dory parameters
+//! Global state management for Dory parameters.
+//!
+//! WHY THIS IS GLOBAL: the external `dory-pcs` crate drives commitment/opening, and its generic
+//! algorithms call back into Jolt via `DoryPolynomial::commit(nu, sigma, ...)` and
+//! `MultilinearLagrange::vector_matrix_product(left, nu, sigma)` (see `wrappers.rs`). Those
+//! callbacks receive only `(nu, sigma)`, but Jolt's matrix/embedding placement needs more
+//! (orientation, dense embedding stride, embedded var count, K, T). Since we cannot change the
+//! upstream trait signatures, this module is the seam that supplies that context to those
+//! callbacks, plus the one-time generator/prepared-point cache.
+//!
+//! This is NOT the protocol-layer source of truth for layout. The PCS-agnostic
+//! [`CoefficientLayout`] (constructed purely via `CommitmentScheme::coefficient_layout`) is the
+//! source of truth, and is threaded explicitly through the prover/verifier (e.g. into the advice
+//! claim reduction and the streaming opening source). New protocol code should take a
+//! `CoefficientLayout` (or an explicit `cycle_major` flag) rather than reading these globals.
 
-use crate::poly::matrix_layout::MatrixLayout;
+use crate::poly::coefficient_layout::CoefficientLayout;
 use crate::utils::math::Math;
 use allocative::Allocative;
+use ark_serialize::{
+    CanonicalDeserialize, CanonicalSerialize, Compress, SerializationError, Valid, Validate,
+};
 use dory::backends::arkworks::{init_cache, ArkG1, ArkG2};
+use std::io::{Read, Write};
 use std::sync::{
     atomic::{AtomicU8, AtomicUsize, Ordering},
     RwLock,
@@ -139,6 +157,40 @@ impl From<DoryLayout> for u8 {
             DoryLayout::CycleMajor => 0,
             DoryLayout::AddressMajor => 1,
         }
+    }
+}
+
+impl CanonicalSerialize for DoryLayout {
+    fn serialize_with_mode<W: Write>(
+        &self,
+        writer: W,
+        compress: Compress,
+    ) -> Result<(), SerializationError> {
+        u8::from(*self).serialize_with_mode(writer, compress)
+    }
+
+    fn serialized_size(&self, compress: Compress) -> usize {
+        u8::from(*self).serialized_size(compress)
+    }
+}
+
+impl Valid for DoryLayout {
+    fn check(&self) -> Result<(), SerializationError> {
+        Ok(())
+    }
+}
+
+impl CanonicalDeserialize for DoryLayout {
+    fn deserialize_with_mode<R: Read>(
+        reader: R,
+        compress: Compress,
+        validate: Validate,
+    ) -> Result<Self, SerializationError> {
+        let value = u8::deserialize_with_mode(reader, compress, validate)?;
+        if value > 1 {
+            return Err(SerializationError::InvalidData);
+        }
+        Ok(DoryLayout::from(value))
     }
 }
 
@@ -403,9 +455,9 @@ impl DoryGlobals {
         num_cols / k
     }
 
-    pub fn matrix_layout() -> MatrixLayout {
+    pub fn matrix_layout() -> CoefficientLayout {
         let (num_rows, num_columns) = Self::matrix_shape();
-        MatrixLayout {
+        CoefficientLayout {
             num_columns,
             num_rows,
             T: Self::get_T(),

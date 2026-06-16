@@ -1,5 +1,5 @@
 use crate::field::JoltField;
-use crate::poly::commitment::dory::DoryGlobals;
+use crate::poly::coefficient_layout::CoefficientLayout;
 use crate::poly::multilinear_polynomial::MultilinearPolynomial;
 use crate::utils::thread::unsafe_allocate_zero_vec;
 use crate::zkvm::instruction::{
@@ -152,6 +152,7 @@ pub fn for_each_active_lane_value<F: JoltField>(
 pub fn build_committed_bytecode_chunk_coeffs<F: JoltField>(
     instructions: &[JoltInstructionRow],
     chunk_count: usize,
+    layout: &CoefficientLayout,
 ) -> Vec<Vec<F>> {
     let bytecode_len = instructions.len();
     let chunk_cycle_len = committed_bytecode_chunk_cycle_len(bytecode_len, chunk_count);
@@ -166,7 +167,7 @@ pub fn build_committed_bytecode_chunk_coeffs<F: JoltField>(
         let coeffs = &mut chunk_coeffs[cycle_chunk_idx];
 
         for_each_active_lane_value::<F>(instr, |global_lane, lane_val| {
-            let idx = DoryGlobals::get_layout().address_cycle_to_index(
+            let idx = layout.address_cycle_to_index(
                 global_lane,
                 chunk_cycle,
                 lane_capacity,
@@ -190,8 +191,9 @@ pub fn build_committed_bytecode_chunk_coeffs<F: JoltField>(
 pub fn build_committed_bytecode_chunk_polynomials<F: JoltField>(
     instructions: &[JoltInstructionRow],
     chunk_count: usize,
+    layout: &CoefficientLayout,
 ) -> Vec<MultilinearPolynomial<F>> {
-    build_committed_bytecode_chunk_coeffs::<F>(instructions, chunk_count)
+    build_committed_bytecode_chunk_coeffs::<F>(instructions, chunk_count, layout)
         .into_iter()
         .map(MultilinearPolynomial::from)
         .collect()

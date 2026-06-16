@@ -17,7 +17,7 @@ use crate::{
     curve::JoltCurve,
     field::JoltField,
     poly::{
-        commitment::{commitment_scheme::CommitmentScheme, dory::DoryLayout},
+        commitment::commitment_scheme::CommitmentScheme,
         opening_proof::{OpeningId, PolynomialId, SumcheckId},
     },
     utils::errors::ProofVerifyError,
@@ -140,40 +140,6 @@ impl<F: JoltField> CanonicalDeserialize for Claims<F> {
             claims.insert(key, (OpeningPoint::default(), claim));
         }
         Ok(Claims(claims))
-    }
-}
-
-impl CanonicalSerialize for DoryLayout {
-    fn serialize_with_mode<W: Write>(
-        &self,
-        writer: W,
-        compress: Compress,
-    ) -> Result<(), SerializationError> {
-        u8::from(*self).serialize_with_mode(writer, compress)
-    }
-
-    fn serialized_size(&self, compress: Compress) -> usize {
-        u8::from(*self).serialized_size(compress)
-    }
-}
-
-impl Valid for DoryLayout {
-    fn check(&self) -> Result<(), SerializationError> {
-        Ok(())
-    }
-}
-
-impl CanonicalDeserialize for DoryLayout {
-    fn deserialize_with_mode<R: Read>(
-        reader: R,
-        compress: Compress,
-        validate: Validate,
-    ) -> Result<Self, SerializationError> {
-        let value = u8::deserialize_with_mode(reader, compress, validate)?;
-        if value > 1 {
-            return Err(SerializationError::InvalidData);
-        }
-        Ok(DoryLayout::from(value))
     }
 }
 

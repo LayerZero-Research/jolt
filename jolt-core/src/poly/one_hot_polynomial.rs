@@ -1,7 +1,7 @@
 use crate::field::JoltField;
 use crate::msm::VariableBaseMSM;
+use crate::poly::coefficient_layout::CoefficientLayout;
 use crate::poly::eq_poly::EqPolynomial;
-use crate::poly::matrix_layout::MatrixLayout;
 use crate::utils::math::Math;
 use allocative::Allocative;
 use ark_bn254::G1Affine;
@@ -47,7 +47,7 @@ impl<F: JoltField> Default for OneHotPolynomial<F> {
 
 impl<F: JoltField> OneHotPolynomial<F> {
     /// The number of rows in the coefficient matrix used to commit to this polynomial.
-    pub fn num_rows(&self, layout: &MatrixLayout) -> usize {
+    pub fn num_rows(&self, layout: &CoefficientLayout) -> usize {
         let t = self.nonzero_indices.len();
         layout.one_hot_num_rows(self.K, t)
     }
@@ -105,7 +105,7 @@ impl<F: JoltField> OneHotPolynomial<F> {
     pub fn commit_rows<G: CurveGroup<ScalarField = F> + VariableBaseMSM>(
         &self,
         bases: &[G::Affine],
-        layout: &MatrixLayout,
+        layout: &CoefficientLayout,
     ) -> Vec<G> {
         let num_rows = self.num_rows(layout);
         let row_len = layout.num_columns;
@@ -197,7 +197,7 @@ impl<F: JoltField> OneHotPolynomial<F> {
         left_vec: &[F],
         coeff: F,
         result: &mut [F],
-        layout: &MatrixLayout,
+        layout: &CoefficientLayout,
     ) {
         let t = self.nonzero_indices.len();
         let num_columns = layout.num_columns;
@@ -243,9 +243,9 @@ mod tests {
     use rand_core::RngCore;
     use serial_test::serial;
 
-    fn layout_from_globals() -> MatrixLayout {
+    fn layout_from_globals() -> CoefficientLayout {
         let (num_rows, num_columns) = DoryGlobals::matrix_shape();
-        MatrixLayout {
+        CoefficientLayout {
             num_columns,
             num_rows,
             T: DoryGlobals::get_T(),

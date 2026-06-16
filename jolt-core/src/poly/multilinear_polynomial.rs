@@ -14,7 +14,6 @@ use super::{
     compact_polynomial::CompactPolynomial, dense_mlpoly::DensePolynomial, eq_poly::EqPolynomial,
 };
 use crate::field::JoltField;
-use crate::poly::commitment::dory::DoryGlobals;
 use crate::utils::math::Math;
 
 /// Wrapper enum for the various multilinear polynomial types used in Jolt
@@ -826,10 +825,9 @@ impl<F: JoltField> PolynomialEvaluation<F> for MultilinearPolynomial<F> {
                 poly.split_eq_evaluate(r.len(), &eq_one, &eq_two)
             }
             MultilinearPolynomial::RLC(poly) => {
-                let num_columns = DoryGlobals::get_num_columns();
-                let num_rows = DoryGlobals::get_max_num_rows();
-                let sigma = num_columns.log_2();
-                let nu = num_rows.log_2();
+                let layout = poly.layout.expect("RLC evaluate requires layout");
+                let sigma = layout.num_columns.log_2();
+                let nu = layout.num_rows.log_2();
 
                 let mut left_vec = vec![F::zero(); 1 << nu];
                 let mut right_vec = vec![F::zero(); 1 << sigma];

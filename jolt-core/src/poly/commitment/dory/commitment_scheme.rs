@@ -1,6 +1,6 @@
 //! Dory polynomial commitment scheme implementation
 
-use super::dory_globals::{DoryGlobals, DoryLayout};
+use super::dory_globals::{DoryContext, DoryGlobals, DoryLayout};
 use super::jolt_dory_routines::{JoltG1Routines, JoltG2Routines};
 use super::wrappers::{
     ark_to_jolt, jolt_to_ark, ArkDoryProof, ArkFr, ArkG1, ArkGT, ArkworksProverSetup,
@@ -9,11 +9,14 @@ use super::wrappers::{
 use crate::{
     curve::JoltCurve,
     field::JoltField,
+    poly::coefficient_layout::CoefficientLayout,
     poly::commitment::commitment_scheme::{
-        CommitmentScheme, PolynomialBatchSource, StreamingCommitmentScheme, ZkEvalCommitment,
+        canonical_coefficient_layout, CommitmentContext, CommitmentScheme, PolynomialBatchSource,
+        StreamingCommitmentScheme, ZkEvalCommitment,
     },
+    poly::commitment::opening_point::FinalOpeningPointParts,
     poly::multilinear_polynomial::MultilinearPolynomial,
-    poly::opening_proof::BatchPolynomialSource,
+    poly::opening_proof::{BatchPolynomialSource, OpeningPoint, BIG_ENDIAN},
     transcripts::Transcript,
     utils::{errors::ProofVerifyError, math::Math, small_scalar::SmallScalar},
 };
@@ -104,6 +107,25 @@ fn maybe_blind_commitment(setup: &ArkworksProverSetup, commitment: ArkGT) -> (Ar
     {
         let _ = setup;
         (commitment, <ArkFr as DoryField>::zero())
+    }
+}
+
+fn compute_final_opening_point<F: JoltField>(
+    layout: DoryLayout,
+    parts: FinalOpeningPointParts<F>,
+) -> Result<OpeningPoint<BIG_ENDIAN, F>, ProofVerifyError> {
+    match (layout, parts) {
+        (
+            DoryLayout::AddressMajor,
+            FinalOpeningPointParts::Native {
+                r_address_stage7,
+                r_cycle_stage6,
+                ..
+            },
+        ) => Ok(OpeningPoint::<BIG_ENDIAN, F>::new(
+            [r_cycle_stage6.r.as_slice(), r_address_stage7.as_slice()].concat(),
+        )),
+        (_, parts) => parts.into_canonical(),
     }
 }
 
@@ -206,8 +228,80 @@ impl CommitmentScheme for DoryCommitmentScheme {
         transcript.append_u64(b"dory_layout", *config as u64);
     }
 
-    fn dory_layout(config: &Self::Config) -> Option<DoryLayout> {
-        Some(*config)
+    fn initialize_context(config: &Self::Config, context: CommitmentContext) {
+        match context {
+            CommitmentContext::MainTrace {
+                k,
+                trace_len,
+                commitment_total_vars,
+            } => {
+                DoryGlobals::initialize_main_with_log_embedding(
+                    k,
+                    trace_len,
+                    commitment_total_vars,
+                    Some(*config),
+                );
+            }
+            CommitmentContext::TrustedAdvice { len } => {
+                DoryGlobals::initialize_context(1, len, DoryContext::TrustedAdvice, None);
+            }
+            CommitmentContext::UntrustedAdvice { len } => {
+                DoryGlobals::initialize_context(1, len, DoryContext::UntrustedAdvice, None);
+            }
+        }
+    }
+
+    fn with_context<R, Op: FnOnce() -> R>(
+        config: &Self::Config,
+        context: CommitmentContext,
+        op: Op,
+    ) -> R {
+        Self::initialize_context(config, context);
+        match context {
+            CommitmentContext::TrustedAdvice { .. } => {
+                let _ctx = DoryGlobals::with_context(DoryContext::TrustedAdvice);
+                op()
+            }
+            CommitmentContext::UntrustedAdvice { .. } => {
+                let _ctx = DoryGlobals::with_context(DoryContext::UntrustedAdvice);
+                op()
+            }
+            CommitmentContext::MainTrace { .. } => op(),
+        }
+    }
+
+    fn main_trace_commitment_len(
+        _config: &Self::Config,
+        context: CommitmentContext,
+        padded_trace_len: usize,
+    ) -> usize {
+        match context {
+            CommitmentContext::MainTrace {
+                k,
+                commitment_total_vars,
+                ..
+            } => 1usize << commitment_total_vars.saturating_sub(k.log_2()),
+            _ => padded_trace_len,
+        }
+    }
+
+    fn coefficient_layout(config: &Self::Config, context: CommitmentContext) -> CoefficientLayout {
+        // Pure: dims/T come from the context's balanced split (identical to
+        // `DoryGlobals::matrix_layout()`), orientation comes from the selected config.
+        let mut layout = canonical_coefficient_layout(context);
+        layout.cycle_major = *config == DoryLayout::CycleMajor;
+        layout
+    }
+
+    fn is_cycle_major(config: &Self::Config) -> bool {
+        *config == DoryLayout::CycleMajor
+    }
+
+    fn final_opening_point(
+        config: &Self::Config,
+        parts: FinalOpeningPointParts<Self::Field>,
+    ) -> Result<OpeningPoint<BIG_ENDIAN, Self::Field>, ProofVerifyError> {
+        compute_final_opening_point(*config, parts)
     }
 
     fn commit(
@@ -415,6 +509,8 @@ impl CommitmentScheme for DoryCommitmentScheme {
         hints: Vec<Self::OpeningProofHint>,
         coeffs: &[Self::Field],
     ) -> Self::OpeningProofHint {
+        // Dory-engine seam: tier-2 hint combination needs the configured matrix row count
+        // (see `dory_globals.rs` module docs).
         let num_rows = DoryGlobals::get_max_num_rows();
 
         let mut rlc_hint = vec![ArkG1(G1Projective::zero()); num_rows];
@@ -482,6 +578,8 @@ impl StreamingCommitmentScheme for DoryCommitmentScheme {
 
     #[allow(non_snake_case)]
     fn streaming_chunk_size(&self, _K: usize, _T: usize) -> Option<usize> {
+        // Dory-engine seam: streaming chunk sizing depends on the configured matrix geometry
+        // (see `dory_globals.rs` module docs).
         if DoryGlobals::get_layout() == DoryLayout::AddressMajor {
             None
         } else {

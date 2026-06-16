@@ -9,10 +9,13 @@
 //! (2) HyperKZG is specialized to use KZG as the univariate commitment scheme, so it includes several optimizations (both during the transformation of multilinear-to-univariate claims
 //! and within the KZG commitment scheme implementation itself).
 use super::{
-    commitment_scheme::{CommitmentScheme, PolynomialBatchSource},
+    commitment_scheme::{
+        canonical_coefficient_layout, CommitmentContext, CommitmentScheme, PolynomialBatchSource,
+    },
     kzg::{KZGProverKey, KZGVerifierKey, UnivariateKZG},
 };
 use crate::field::JoltField;
+use crate::poly::coefficient_layout::CoefficientLayout;
 use crate::poly::multilinear_polynomial::{MultilinearPolynomial, PolynomialEvaluation};
 use crate::poly::opening_proof::BatchPolynomialSource;
 use crate::poly::rlc_polynomial::RLCPolynomial;
@@ -491,6 +494,10 @@ where
 
     fn append_pcs_config_to_transcript<T: Transcript>(_: &Self::Config, transcript: &mut T) {
         transcript.append_u64(b"hyperkzg_layout", 0);
+    }
+
+    fn coefficient_layout(_config: &Self::Config, context: CommitmentContext) -> CoefficientLayout {
+        canonical_coefficient_layout(context)
     }
 
     #[tracing::instrument(skip_all, name = "HyperKZG::commit")]

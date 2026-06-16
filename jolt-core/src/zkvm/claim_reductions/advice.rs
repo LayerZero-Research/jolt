@@ -34,7 +34,7 @@ use std::cmp::{min, Ordering};
 use std::ops::Range;
 
 use crate::field::JoltField;
-use crate::poly::commitment::dory::{DoryGlobals, DoryLayout};
+use crate::poly::commitment::dory::DoryGlobals;
 use crate::poly::eq_poly::EqPolynomial;
 use crate::poly::multilinear_polynomial::{BindingOrder, MultilinearPolynomial, PolynomialBinding};
 #[cfg(feature = "zk")]
@@ -72,6 +72,8 @@ pub enum ReductionPhase {
 pub struct AdviceClaimReductionParams<F: JoltField> {
     pub kind: AdviceKind,
     pub phase: ReductionPhase,
+    /// Whether the main Dory matrix is laid out cycle-major (threaded from the PCS config).
+    pub cycle_major: bool,
     pub log_k_chunk: usize,
     pub log_t: usize,
     pub advice_col_vars: usize,
@@ -95,30 +97,28 @@ fn cycle_phase_round_schedule(
     main_col_vars: usize,
     advice_row_vars: usize,
     advice_col_vars: usize,
+    cycle_major: bool,
 ) -> (Range<usize>, Range<usize>) {
-    match DoryGlobals::get_layout() {
-        DoryLayout::CycleMajor => {
-            // Low-order cycle variables correspond to the low-order bits of the
-            // column index
-            let col_binding_rounds = 0..min(log_T, advice_col_vars);
-            // High-order cycle variables correspond to the low-order bits of the
-            // rows index
-            let row_binding_rounds =
-                min(log_T, main_col_vars)..min(log_T, main_col_vars + advice_row_vars);
-            (col_binding_rounds, row_binding_rounds)
-        }
-        DoryLayout::AddressMajor => {
-            // Low-order cycle variables correspond to the high-order bits of the
-            // column index
-            let col_binding_rounds = 0..advice_col_vars.saturating_sub(log_k_chunk);
-            // High-order cycle variables correspond to the bits of the row index
-            let row_binding_rounds = main_col_vars.saturating_sub(log_k_chunk)
-                ..min(
-                    log_T,
-                    main_col_vars.saturating_sub(log_k_chunk) + advice_row_vars,
-                );
-            (col_binding_rounds, row_binding_rounds)
-        }
+    if cycle_major {
+        // Low-order cycle variables correspond to the low-order bits of the
+        // column index
+        let col_binding_rounds = 0..min(log_T, advice_col_vars);
+        // High-order cycle variables correspond to the low-order bits of the
+        // rows index
+        let row_binding_rounds =
+            min(log_T, main_col_vars)..min(log_T, main_col_vars + advice_row_vars);
+        (col_binding_rounds, row_binding_rounds)
+    } else {
+        // Low-order cycle variables correspond to the high-order bits of the
+        // column index
+        let col_binding_rounds = 0..advice_col_vars.saturating_sub(log_k_chunk);
+        // High-order cycle variables correspond to the bits of the row index
+        let row_binding_rounds = main_col_vars.saturating_sub(log_k_chunk)
+            ..min(
+                log_T,
+                main_col_vars.saturating_sub(log_k_chunk) + advice_row_vars,
+            );
+        (col_binding_rounds, row_binding_rounds)
     }
 }
 
@@ -128,6 +128,7 @@ impl<F: JoltField> AdviceClaimReductionParams<F> {
         memory_layout: &MemoryLayout,
         trace_len: usize,
         log_k_chunk: usize,
+        cycle_major: bool,
         accumulator: &dyn OpeningAccumulator<F>,
     ) -> Self {
         let max_advice_size_bytes = match kind {
@@ -151,11 +152,13 @@ impl<F: JoltField> AdviceClaimReductionParams<F> {
             main_col_vars,
             advice_row_vars,
             advice_col_vars,
+            cycle_major,
         );
 
         Self {
             kind,
             phase: ReductionPhase::CycleVariables,
+            cycle_major,
             advice_col_vars,
             advice_row_vars,
             log_k_chunk,
@@ -236,15 +239,16 @@ impl<F: JoltField> SumcheckInstanceParams<F> for AdviceClaimReductionParams<F> {
             return OpeningPoint::<LITTLE_ENDIAN, F>::new(advice_var_challenges).match_endianness();
         }
 
-        match DoryGlobals::get_layout() {
-            DoryLayout::CycleMajor => OpeningPoint::<LITTLE_ENDIAN, F>::new(
+        if self.cycle_major {
+            OpeningPoint::<LITTLE_ENDIAN, F>::new(
                 [self.cycle_var_challenges.as_slice(), challenges].concat(),
             )
-            .match_endianness(),
-            DoryLayout::AddressMajor => OpeningPoint::<LITTLE_ENDIAN, F>::new(
+            .match_endianness()
+        } else {
+            OpeningPoint::<LITTLE_ENDIAN, F>::new(
                 [challenges, self.cycle_var_challenges.as_slice()].concat(),
             )
-            .match_endianness(),
+            .match_endianness()
         }
     }
 
@@ -354,19 +358,15 @@ impl<F: JoltField> AdviceClaimReductionProver<F> {
         // Maps a (row, col) position in the Dory matrix layout to its
         // implied (address, cycle).
         let row_col_to_address_cycle = |row: usize, col: usize| -> (usize, usize) {
-            match DoryGlobals::get_layout() {
-                DoryLayout::CycleMajor => {
-                    let global_index = row as u128 * main_cols + col as u128;
-                    let address = global_index / (1 << params.log_t);
-                    let cycle = global_index % (1 << params.log_t);
-                    (address as usize, cycle as usize)
-                }
-                DoryLayout::AddressMajor => {
-                    let global_index = row as u128 * main_cols + col as u128;
-                    let address = global_index % (1 << params.log_k_chunk);
-                    let cycle = global_index / (1 << params.log_k_chunk);
-                    (address as usize, cycle as usize)
-                }
+            let global_index = row as u128 * main_cols + col as u128;
+            if params.cycle_major {
+                let address = global_index / (1 << params.log_t);
+                let cycle = global_index % (1 << params.log_t);
+                (address as usize, cycle as usize)
+            } else {
+                let address = global_index % (1 << params.log_k_chunk);
+                let cycle = global_index / (1 << params.log_k_chunk);
+                (address as usize, cycle as usize)
             }
         };
 
@@ -588,6 +588,7 @@ impl<F: JoltField> AdviceClaimReductionVerifier<F> {
         memory_layout: &MemoryLayout,
         trace_len: usize,
         log_k_chunk: usize,
+        cycle_major: bool,
         accumulator: &dyn OpeningAccumulator<F>,
     ) -> Self {
         let params = AdviceClaimReductionParams::new(
@@ -595,6 +596,7 @@ impl<F: JoltField> AdviceClaimReductionVerifier<F> {
             memory_layout,
             trace_len,
             log_k_chunk,
+            cycle_major,
             accumulator,
         );
 

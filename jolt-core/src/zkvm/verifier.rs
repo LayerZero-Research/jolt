@@ -5,12 +5,13 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::curve::JoltCurve;
-use crate::poly::commitment::commitment_scheme::{CommitmentScheme, ZkEvalCommitment};
+use crate::poly::commitment::commitment_scheme::{
+    CommitmentContext, CommitmentScheme, ZkEvalCommitment,
+};
 #[cfg(not(feature = "zk"))]
 use crate::poly::commitment::dory::bind_opening_inputs;
 #[cfg(feature = "zk")]
 use crate::poly::commitment::dory::bind_opening_inputs_zk;
-use crate::poly::commitment::dory::{DoryContext, DoryGlobals};
 use crate::poly::commitment::pedersen::PedersenGenerators;
 #[cfg(feature = "zk")]
 use crate::poly::lagrange_poly::LagrangeHelper;
@@ -51,7 +52,7 @@ use crate::zkvm::{
         IncClaimReductionSumcheckVerifier, InstructionLookupsClaimReductionSumcheckVerifier,
         RamRaClaimReductionSumcheckVerifier,
     },
-    compute_final_opening_point, fiat_shamir_preamble,
+    fiat_shamir_preamble, final_opening_point_parts,
     instruction_lookups::{
         ra_virtual::RaSumcheckVerifier as LookupsRaSumcheckVerifier,
         read_raf_checking::InstructionReadRafSumcheckVerifier,
@@ -260,10 +261,12 @@ impl<
         let log_k_chunk = self.one_hot_params.log_k_chunk;
         JoltSharedPreprocessing::max_total_vars_from_candidates(
             trace_log_t + log_k_chunk,
-            self.preprocessing.shared.precommitted_candidate_total_vars(
-                self.trusted_advice_commitment.is_some(),
-                self.proof.untrusted_advice_commitment.is_some(),
-            ),
+            self.preprocessing
+                .shared
+                .precommitted_candidate_total_vars::<PCS>(
+                    self.trusted_advice_commitment.is_some(),
+                    self.proof.untrusted_advice_commitment.is_some(),
+                ),
         )
     }
 
@@ -395,14 +398,15 @@ impl<
             &mut self.transcript,
         );
 
-        let _guard = PCS::dory_layout(&self.proof.pcs_config).map(|layout| {
-            DoryGlobals::initialize_context(
-                1 << self.one_hot_params.log_k_chunk,
-                self.proof.trace_length.next_power_of_two(),
-                DoryContext::Main,
-                Some(layout),
-            )
-        });
+        PCS::initialize_context(
+            &self.proof.pcs_config,
+            CommitmentContext::MainTrace {
+                k: 1 << self.one_hot_params.log_k_chunk,
+                trace_len: self.proof.trace_length.next_power_of_two(),
+                commitment_total_vars: self.one_hot_params.log_k_chunk
+                    + self.proof.trace_length.next_power_of_two().log_2(),
+            },
+        );
 
         // Append commitments to transcript
         for commitment in &self.proof.commitments {
@@ -1007,14 +1011,13 @@ impl<
     fn verify_stage6(
         &mut self,
     ) -> Result<(StageVerifyResult<F>, StageVerifyResult<F>), ProofVerifyError> {
-        // `proof.pcs_config` carries the orientation the prover committed/opened with (sourced
-        // from `PCS::active()`), so initializing `DoryGlobals` from it reproduces the prover's
-        // layout exactly.
-        let _ = DoryGlobals::initialize_main_with_log_embedding(
-            self.one_hot_params.k_chunk,
-            self.proof.trace_length,
-            self.main_total_vars(),
-            PCS::dory_layout(&self.proof.pcs_config),
+        PCS::initialize_context(
+            &self.proof.pcs_config,
+            CommitmentContext::MainTrace {
+                k: self.one_hot_params.k_chunk,
+                trace_len: self.proof.trace_length,
+                commitment_total_vars: self.main_total_vars(),
+            },
         );
         let (bytecode_read_raf_params, booleanity_params, stage6a_result) =
             self.verify_stage6a()?;
@@ -1126,12 +1129,14 @@ impl<
         );
 
         // Advice claim reduction (Phase 1 in Stage 6b): trusted and untrusted are separate instances.
+        let advice_cycle_major = PCS::is_cycle_major(&self.proof.pcs_config);
         if self.trusted_advice_commitment.is_some() {
             self.advice_reduction_verifier_trusted = Some(AdviceClaimReductionVerifier::new(
                 AdviceKind::Trusted,
                 &self.program_io.memory_layout,
                 self.proof.trace_length,
                 self.one_hot_params.log_k_chunk,
+                advice_cycle_major,
                 &self.opening_accumulator,
             ));
         }
@@ -1141,6 +1146,7 @@ impl<
                 &self.program_io.memory_layout,
                 self.proof.trace_length,
                 self.one_hot_params.log_k_chunk,
+                advice_cycle_major,
                 &self.opening_accumulator,
             ));
         }
@@ -1571,14 +1577,14 @@ impl<
 
     fn verify_stage8(&mut self) -> Result<Stage8VerifyData<F>, ProofVerifyError> {
         let native_main_vars = self.proof.trace_length.log_2() + self.one_hot_params.log_k_chunk;
-        let opening_point = compute_final_opening_point(
+        let opening_parts = final_opening_point_parts(
             &self.opening_accumulator,
             native_main_vars,
             self.one_hot_params.log_k_chunk,
-            DoryGlobals::get_layout(),
             ProgramMode::Full,
             0,
         )?;
+        let opening_point = PCS::final_opening_point(&self.proof.pcs_config, opening_parts)?;
 
         let mut polynomial_claims = Vec::new();
         let mut scaling_factors = Vec::new();
@@ -2015,7 +2021,7 @@ impl JoltSharedPreprocessing {
     /// Candidate total-variable counts for advice polynomials that may dominate
     /// the main Dory matrix dimensions. Committed-program candidates are excised
     /// (Akita runs `ProgramMode::Full` only).
-    pub(crate) fn precommitted_candidate_total_vars(
+    pub(crate) fn precommitted_candidate_total_vars<PCS: CommitmentScheme>(
         &self,
         include_trusted_advice: bool,
         include_untrusted_advice: bool,
@@ -2024,17 +2030,17 @@ impl JoltSharedPreprocessing {
             Vec::with_capacity(include_trusted_advice as usize + include_untrusted_advice as usize);
 
         if include_trusted_advice {
-            let (trusted_sigma, trusted_nu) = DoryGlobals::advice_sigma_nu_from_max_bytes(
+            let trusted_total_vars = PCS::advice_precommitted_total_vars(
                 self.memory_layout.max_trusted_advice_size as usize,
             );
-            candidates.push(trusted_sigma + trusted_nu);
+            candidates.push(trusted_total_vars);
         }
 
         if include_untrusted_advice {
-            let (untrusted_sigma, untrusted_nu) = DoryGlobals::advice_sigma_nu_from_max_bytes(
+            let untrusted_total_vars = PCS::advice_precommitted_total_vars(
                 self.memory_layout.max_untrusted_advice_size as usize,
             );
-            candidates.push(untrusted_sigma + untrusted_nu);
+            candidates.push(untrusted_total_vars);
         }
 
         candidates

@@ -15,7 +15,6 @@ use std::{
 
 #[cfg(not(feature = "zk"))]
 use crate::poly::commitment::dory::bind_opening_inputs;
-use crate::poly::commitment::dory::DoryContext;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use common::constants::XLEN;
 
@@ -31,11 +30,8 @@ use crate::{
     field::JoltField,
     guest,
     poly::{
-        commitment::{
-            commitment_scheme::{
-                PolynomialBatchSource, StreamingCommitmentScheme, ZkEvalCommitment,
-            },
-            dory::DoryGlobals,
+        commitment::commitment_scheme::{
+            CommitmentContext, PolynomialBatchSource, StreamingCommitmentScheme, ZkEvalCommitment,
         },
         multilinear_polynomial::MultilinearPolynomial,
         opening_proof::{
@@ -105,7 +101,7 @@ use crate::{
         bytecode::read_raf_checking::{
             BytecodeReadRafAddressSumcheckProver, BytecodeReadRafCycleSumcheckProver,
         },
-        compute_final_opening_point, fiat_shamir_preamble,
+        fiat_shamir_preamble, final_opening_point_parts,
         instruction::LookupQuery,
         instruction_lookups::{
             ra_virtual::InstructionRaSumcheckProver as LookupsRaSumcheckProver,
@@ -446,10 +442,12 @@ impl<
         let log_k_chunk = self.one_hot_params.log_k_chunk;
         JoltSharedPreprocessing::max_total_vars_from_candidates(
             trace_log_t + log_k_chunk,
-            self.preprocessing.shared.precommitted_candidate_total_vars(
-                !self.program_io.trusted_advice.is_empty(),
-                !self.program_io.untrusted_advice.is_empty(),
-            ),
+            self.preprocessing
+                .shared
+                .precommitted_candidate_total_vars::<PCS>(
+                    !self.program_io.trusted_advice.is_empty(),
+                    !self.program_io.untrusted_advice.is_empty(),
+                ),
         )
     }
 
@@ -488,7 +486,7 @@ impl<
 
         trace.resize(padded_trace_len, Cycle::NoOp);
 
-        // Calculate K for DoryGlobals initialization
+        // Calculate the RAM address-space bound used by the read/write configuration.
         let ram_K = trace
             .par_iter()
             .filter_map(|cycle| {
@@ -835,22 +833,14 @@ impl<
         &mut self,
     ) -> (Vec<PCS::Commitment>, PCS::BatchOpeningHint) {
         let pcs = PCS::active();
-        let dory_layout = PCS::dory_layout(pcs.config());
-        let main_total_vars = self.main_total_vars();
-        let _guard = dory_layout.map(|layout| {
-            DoryGlobals::initialize_main_with_log_embedding(
-                1 << self.one_hot_params.log_k_chunk,
-                self.trace.len(),
-                main_total_vars,
-                Some(layout),
-            )
-        });
-        let polys = all_committed_polynomials(&self.one_hot_params, PCS::uses_onehot_inc());
-        let T = if dory_layout.is_some() {
-            DoryGlobals::get_embedded_t()
-        } else {
-            self.padded_trace_len
+        let main_context = CommitmentContext::MainTrace {
+            k: 1 << self.one_hot_params.log_k_chunk,
+            trace_len: self.trace.len(),
+            commitment_total_vars: self.main_total_vars(),
         };
+        PCS::initialize_context(pcs.config(), main_context);
+        let polys = all_committed_polynomials(&self.one_hot_params, PCS::uses_onehot_inc());
+        let T = PCS::main_trace_commitment_len(pcs.config(), main_context, self.padded_trace_len);
         let K = 1usize << self.one_hot_params.log_k_chunk;
 
         let (commitments, hint_map) = if let Some(chunk_size) = pcs.streaming_chunk_size(K, T) {
@@ -995,13 +985,14 @@ impl<
         let poly = MultilinearPolynomial::from(untrusted_advice_vec);
         let advice_len = poly.len().next_power_of_two().max(1);
 
-        let _guard =
-            DoryGlobals::initialize_context(1, advice_len, DoryContext::UntrustedAdvice, None);
-        let _ctx = DoryGlobals::with_context(DoryContext::UntrustedAdvice);
-        // `PCS::default()` (not `active()`) is intentional here: plain `commit` does not stamp the
-        // orientation into the proof, and Dory's commit geometry reads `DoryGlobals` directly, so
-        // the instance's `layout` field is irrelevant for advice commitments.
-        let (commitment, hint) = PCS::default().commit(&poly, &self.preprocessing.generators);
+        // `PCS::default()` (not `active()`) is intentional here: plain `commit` does not stamp
+        // PCS-specific config into the proof. Advice context, if any, is supplied explicitly below.
+        let pcs = PCS::default();
+        let (commitment, hint) = PCS::with_context(
+            pcs.config(),
+            CommitmentContext::UntrustedAdvice { len: advice_len },
+            || pcs.commit(&poly, &self.preprocessing.generators),
+        );
         self.transcript
             .append_serializable(b"untrusted_advice", &commitment);
 
@@ -1513,12 +1504,18 @@ impl<
         );
 
         // Advice claim reduction (Phase 1 in Stage 6b): trusted and untrusted are separate instances.
+        // Orientation is threaded explicitly from the active PCS config (not read from globals).
+        let advice_cycle_major = {
+            let pcs = PCS::active();
+            PCS::is_cycle_major(pcs.config())
+        };
         if self.advice.trusted_advice_polynomial.is_some() {
             let trusted_advice_params = AdviceClaimReductionParams::new(
                 AdviceKind::Trusted,
                 &self.program_io.memory_layout,
                 self.trace.len(),
                 self.one_hot_params.log_k_chunk,
+                advice_cycle_major,
                 &self.opening_accumulator,
             );
             // Note: We clone the advice polynomial here because Stage 8 needs the original polynomial
@@ -1542,6 +1539,7 @@ impl<
                 &self.program_io.memory_layout,
                 self.trace.len(),
                 self.one_hot_params.log_k_chunk,
+                advice_cycle_major,
                 &self.opening_accumulator,
             );
             // Note: We clone the advice polynomial here because Stage 8 needs the original polynomial
@@ -2169,27 +2167,25 @@ impl<
     ) -> PCS::BatchedProof {
         tracing::info!("Stage 8 proving (batch opening)");
 
-        let dory_layout = PCS::dory_layout(PCS::active().config());
-        let main_total_vars = self.main_total_vars();
-        let _guard = dory_layout.map(|layout| {
-            DoryGlobals::initialize_main_with_log_embedding(
-                self.one_hot_params.k_chunk,
-                self.trace.len(),
-                main_total_vars,
-                Some(layout),
-            )
-        });
+        let pcs_config = PCS::active().config().clone();
+        let main_context = CommitmentContext::MainTrace {
+            k: self.one_hot_params.k_chunk,
+            trace_len: self.trace.len(),
+            commitment_total_vars: self.main_total_vars(),
+        };
+        PCS::initialize_context(&pcs_config, main_context);
 
         let native_main_vars = self.trace.len().log_2() + self.one_hot_params.log_k_chunk;
-        let opening_point = compute_final_opening_point(
+        let opening_parts = final_opening_point_parts(
             &self.opening_accumulator,
             native_main_vars,
             self.one_hot_params.log_k_chunk,
-            DoryGlobals::get_layout(),
             ProgramMode::Full,
             0,
         )
         .expect("invalid prover Stage-8 opening point");
+        let opening_point = PCS::final_opening_point(&pcs_config, opening_parts)
+            .expect("invalid prover Stage-8 opening point");
 
         let mut polynomial_claims = Vec::new();
         let mut scaling_factors = Vec::new();
@@ -2483,7 +2479,7 @@ impl<
             streaming_data,
             advice_polys,
             poly_ids,
-            layout: DoryGlobals::matrix_layout(),
+            layout: PCS::coefficient_layout(&pcs_config, main_context),
         };
         let proof = PCS::active().batch_prove(
             &self.preprocessing.generators,

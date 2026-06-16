@@ -3,13 +3,14 @@ use common::constants::ONEHOT_CHUNK_THRESHOLD_LOG_T;
 use std::borrow::Borrow;
 use std::fmt::Debug;
 
-use crate::poly::opening_proof::BatchPolynomialSource;
+use crate::poly::commitment::opening_point::FinalOpeningPointParts;
+use crate::poly::{coefficient_layout::CoefficientLayout, opening_proof::BatchPolynomialSource};
 use crate::transcripts::Transcript;
 use crate::{
     curve::JoltCurve,
     field::JoltField,
-    poly::commitment::dory::DoryLayout,
     poly::multilinear_polynomial::MultilinearPolynomial,
+    poly::opening_proof::{OpeningPoint, BIG_ENDIAN},
     utils::{errors::ProofVerifyError, small_scalar::SmallScalar},
 };
 
@@ -52,6 +53,51 @@ impl<F: JoltField, U: Borrow<MultilinearPolynomial<F>> + Sync> PolynomialBatchSo
     }
     fn get_poly(&self, idx: usize) -> Option<&MultilinearPolynomial<F>> {
         Some(self[idx].borrow())
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum CommitmentContext {
+    MainTrace {
+        k: usize,
+        trace_len: usize,
+        commitment_total_vars: usize,
+    },
+    TrustedAdvice {
+        len: usize,
+    },
+    UntrustedAdvice {
+        len: usize,
+    },
+}
+
+pub fn canonical_coefficient_layout(context: CommitmentContext) -> CoefficientLayout {
+    match context {
+        CommitmentContext::MainTrace {
+            trace_len,
+            commitment_total_vars,
+            ..
+        } => {
+            let sigma = commitment_total_vars.div_ceil(2);
+            let nu = commitment_total_vars - sigma;
+            CoefficientLayout {
+                num_columns: 1usize << sigma,
+                num_rows: 1usize << nu,
+                T: trace_len,
+                cycle_major: true,
+            }
+        }
+        CommitmentContext::TrustedAdvice { len } | CommitmentContext::UntrustedAdvice { len } => {
+            let total_vars = len.next_power_of_two().ilog2() as usize;
+            let sigma = total_vars.div_ceil(2);
+            let nu = total_vars - sigma;
+            CoefficientLayout {
+                num_columns: 1usize << sigma,
+                num_rows: 1usize << nu,
+                T: len,
+                cycle_major: true,
+            }
+        }
     }
 }
 
@@ -120,10 +166,46 @@ pub trait CommitmentScheme: Clone + Sync + Send + Default + 'static {
     /// orientation actually used to commit and open (for Dory, cycle-major vs address-major).
     fn append_pcs_config_to_transcript<T: Transcript>(config: &Self::Config, transcript: &mut T);
 
-    /// Exposes Dory matrix layout when this PCS uses Dory contexts.
-    /// Non-Dory schemes return `None`.
-    fn dory_layout(_config: &Self::Config) -> Option<DoryLayout> {
-        None
+    fn initialize_context(_config: &Self::Config, _context: CommitmentContext) {}
+
+    fn with_context<R, Op: FnOnce() -> R>(
+        config: &Self::Config,
+        context: CommitmentContext,
+        op: Op,
+    ) -> R {
+        Self::initialize_context(config, context);
+        op()
+    }
+
+    fn main_trace_commitment_len(
+        _config: &Self::Config,
+        _context: CommitmentContext,
+        padded_trace_len: usize,
+    ) -> usize {
+        padded_trace_len
+    }
+
+    fn coefficient_layout(config: &Self::Config, context: CommitmentContext) -> CoefficientLayout;
+
+    /// Whether this PCS lays coefficients out cycle-major (address contiguous within a cycle).
+    ///
+    /// Defaults to `true` (all non-Dory schemes). Dory overrides this based on its selected
+    /// orientation so the protocol layer can thread the choice explicitly (e.g. into advice
+    /// claim reduction) instead of reading it from `DoryGlobals`.
+    fn is_cycle_major(_config: &Self::Config) -> bool {
+        true
+    }
+
+    fn advice_precommitted_total_vars(max_advice_size_bytes: usize) -> usize {
+        let words = max_advice_size_bytes / 8;
+        words.next_power_of_two().max(1).ilog2() as usize
+    }
+
+    fn final_opening_point(
+        _config: &Self::Config,
+        parts: FinalOpeningPointParts<Self::Field>,
+    ) -> Result<OpeningPoint<BIG_ENDIAN, Self::Field>, ProofVerifyError> {
+        parts.into_canonical()
     }
 
     fn commit(

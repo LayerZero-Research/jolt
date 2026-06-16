@@ -14,8 +14,10 @@ use super::wrappers::{
 use crate::curve::JoltCurve;
 use crate::field::fp128::JoltFp128;
 use crate::field::JoltField;
+use crate::poly::coefficient_layout::CoefficientLayout;
 use crate::poly::commitment::commitment_scheme::{
-    CommitmentScheme, PolynomialBatchSource, StreamingCommitmentScheme, ZkEvalCommitment,
+    canonical_coefficient_layout, CommitmentContext, CommitmentScheme, PolynomialBatchSource,
+    StreamingCommitmentScheme, ZkEvalCommitment,
 };
 use crate::poly::eq_poly::EqPolynomial;
 use crate::poly::multilinear_polynomial::MultilinearPolynomial;
@@ -519,6 +521,11 @@ where
 
     fn append_pcs_config_to_transcript<T: Transcript>(_: &Self::Config, transcript: &mut T) {
         transcript.append_u64(b"akita_layout", 0);
+    }
+
+    fn coefficient_layout(_config: &Self::Config, context: CommitmentContext) -> CoefficientLayout {
+        // Akita's packed path uses `PackedBitLayout`; this covers flat coefficient sources.
+        canonical_coefficient_layout(context)
     }
 
     fn commit(
