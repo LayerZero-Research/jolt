@@ -24,7 +24,7 @@ use crate::transcripts::Transcript;
 use crate::utils::errors::ProofVerifyError;
 use crate::utils::small_scalar::SmallScalar;
 use akita_algebra::CyclotomicRing;
-use akita_config::proof_optimized::fp128::D32OneHot;
+use akita_config::proof_optimized::fp128::D64OneHot;
 use akita_config::CommitmentConfig;
 use akita_field::CanonicalField;
 use akita_pcs::AkitaCommitmentScheme;
@@ -35,7 +35,7 @@ use akita_prover::{
 use akita_types::BasisMode;
 use akita_types::{
     sis::{num_digits_fold, num_digits_for_bound, FoldChallengeNorms},
-    AkitaCommitmentHint as AkitaBatchedCommitmentHint, ClaimIncidenceSummary,
+    AkitaCommitmentHint as AkitaBatchedCommitmentHint, OpeningBatch,
     CommitmentVerifier as AkitaCommitmentVerifierTrait, CommittedOpenings, LevelParams,
     RingCommitment, SetupContributionMode,
 };
@@ -45,25 +45,27 @@ use rayon::prelude::*;
 
 const FIELD_BITS: u32 = 128;
 
-/// Onehot-friendly Akita preset. Adaptive `D=32`; the per-level decomposition
+/// Onehot-friendly Akita preset. Adaptive `D=64`; the per-level decomposition
 /// basis is chosen by the preset's runtime schedule.
-pub type Fp128OneHot32Config = D32OneHot;
+pub type Fp128OneHot64Config = D64OneHot;
 
-fn root_level_params<
-    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
->(
+/// Jolt's fp128 integration only supports presets whose extension field equals the base field.
+pub trait JoltFp128AkitaCfg: CommitmentConfig<Field = Fp128, ExtField = Fp128> {}
+impl<T: CommitmentConfig<Field = Fp128, ExtField = Fp128>> JoltFp128AkitaCfg for T {}
+
+fn root_level_params<Cfg: JoltFp128AkitaCfg>(
     max_num_vars: usize,
     num_polys: usize,
 ) -> LevelParams {
-    let incidence = ClaimIncidenceSummary::same_point(max_num_vars, num_polys)
-        .expect("root level incidence should be valid");
-    Cfg::get_params_for_batched_commitment(&incidence)
+    let opening_batch = OpeningBatch::same_point(max_num_vars, num_polys)
+        .expect("root level opening batch should be valid");
+    Cfg::get_params_for_batched_commitment(&opening_batch)
         .expect("Akita runtime schedule should produce root commit params")
 }
 
 /// Level-0 `log_basis` chosen by the preset's policy for the given envelope.
 fn level0_log_basis<
-    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
+    Cfg: JoltFp128AkitaCfg,
 >(
     max_num_vars: usize,
 ) -> u32 {
@@ -71,7 +73,7 @@ fn level0_log_basis<
 }
 
 fn level0_level_params<
-    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
+    Cfg: JoltFp128AkitaCfg,
 >(
     max_num_vars: usize,
     _log_basis: u32,
@@ -103,7 +105,7 @@ fn compute_num_digits_fold_for_params(
 }
 
 fn level0_layout_params<
-    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
+    Cfg: JoltFp128AkitaCfg,
 >(
     max_num_vars: usize,
     log_basis: u32,
@@ -112,7 +114,7 @@ fn level0_layout_params<
 }
 
 fn optimal_advice_m_r_split<
-    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
+    Cfg: JoltFp128AkitaCfg,
 >(
     reduced_vars: usize,
     log_basis: u32,
@@ -150,7 +152,7 @@ fn optimal_advice_m_r_split<
 #[derive(Clone, Default)]
 pub struct JoltAkitaCommitmentScheme<
     const D: usize,
-    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
+    Cfg: JoltFp128AkitaCfg,
 > {
     _cfg: PhantomData<Cfg>,
 }
@@ -196,7 +198,7 @@ fn prepare_cpu<const D: usize>(
 
 fn akita_prove_one<
     const D: usize,
-    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
+    Cfg: JoltFp128AkitaCfg,
     P: AkitaPolyOps<Fp128, D>,
     ProofTranscript: akita_transcript::Transcript<Fp128>,
 >(
@@ -208,18 +210,19 @@ fn akita_prove_one<
     commitment: &RingCommitment<Fp128, D>,
 ) -> AkitaProof<Fp128> {
     let prepared = prepare_cpu(setup);
+    let claims = (
+        opening_point,
+        vec![CommittedPolynomials {
+            polynomials: from_ref(poly),
+            commitment,
+            hint,
+        }],
+    );
     <AkitaCommitmentScheme<D, Cfg> as AkitaCommitmentSchemeTrait<Fp128, D>>::batched_prove(
         setup,
         &CpuBackend,
         &prepared,
-        vec![(
-            opening_point,
-            CommittedPolynomials {
-                polynomials: from_ref(poly),
-                commitment,
-                hint,
-            },
-        )],
+        claims,
         transcript,
         BasisMode::Lagrange,
         SetupContributionMode::Direct,
@@ -229,7 +232,7 @@ fn akita_prove_one<
 
 fn akita_verify_one<
     const D: usize,
-    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
+    Cfg: JoltFp128AkitaCfg,
     ProofTranscript: akita_transcript::Transcript<Fp128>,
 >(
     proof: &AkitaProof<Fp128>,
@@ -240,17 +243,18 @@ fn akita_verify_one<
     commitment: &RingCommitment<Fp128, D>,
 ) -> Result<(), ProofVerifyError> {
     let openings = [*opening];
+    let claims = (
+        opening_point,
+        vec![CommittedOpenings {
+            openings: &openings,
+            commitment,
+        }],
+    );
     <AkitaCommitmentScheme<D, Cfg> as AkitaCommitmentVerifierTrait<Fp128, D>>::batched_verify(
         proof,
         setup,
         transcript,
-        vec![(
-            opening_point,
-            CommittedOpenings {
-                openings: &openings,
-                commitment,
-            },
-        )],
+        claims,
         BasisMode::Lagrange,
         SetupContributionMode::Direct,
     )
@@ -279,7 +283,7 @@ fn to_akita_packed_opening_point<const D: usize>(
 }
 
 fn advice_commit_layout<
-    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
+    Cfg: JoltFp128AkitaCfg,
 >(
     m_vars: usize,
     r_vars: usize,
@@ -306,7 +310,7 @@ fn advice_commit_layout<
 /// rather than inheriting from the setup envelope.
 fn compute_advice_layout<
     const D: usize,
-    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
+    Cfg: JoltFp128AkitaCfg,
 >(
     poly_num_vars: usize,
 ) -> LevelParams {
@@ -325,7 +329,7 @@ fn compute_advice_layout<
 
 fn choose_packed_layout_for_shape<
     const D: usize,
-    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
+    Cfg: JoltFp128AkitaCfg,
 >(
     log_k: usize,
     log_t: usize,
@@ -339,7 +343,7 @@ fn choose_packed_layout_for_shape<
 
 fn choose_packed_layout_for_dims<
     const D: usize,
-    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
+    Cfg: JoltFp128AkitaCfg,
 >(
     num_cycles: usize,
     num_polys: usize,
@@ -361,7 +365,7 @@ fn choose_packed_layout_for_dims<
 
 fn akita_commit_dense<
     const D: usize,
-    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
+    Cfg: JoltFp128AkitaCfg,
 >(
     ring_coeffs: Vec<CyclotomicRing<Fp128, D>>,
     setup: &AkitaProverSetup<Fp128, D>,
@@ -387,7 +391,7 @@ fn akita_commit_dense<
 
 fn akita_commit_onehot<
     const D: usize,
-    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
+    Cfg: JoltFp128AkitaCfg,
     I: OneHotIndex,
 >(
     onehot_k: usize,
@@ -427,7 +431,7 @@ fn fused_build_and_commit<const D: usize, Cfg, F, B>(
     AkitaBatchedCommitmentHint<Fp128, D>,
 )
 where
-    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128>,
+    Cfg: JoltFp128AkitaCfg,
     F: Fn(usize, usize) -> Option<u8> + Clone + Send + Sync,
     B: Fn(usize, usize, &mut [Option<u8>]) + Clone + Send + Sync,
 {
@@ -451,7 +455,7 @@ where
 
 impl<const D: usize, Cfg> CommitmentScheme for JoltAkitaCommitmentScheme<D, Cfg>
 where
-    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128> + Default,
+    Cfg: JoltFp128AkitaCfg + Default,
 {
     type Field = JoltFp128;
     type Config = ();
@@ -467,7 +471,6 @@ where
         ArkBridge(
             <AkitaCommitmentScheme<D, Cfg> as AkitaCommitmentSchemeTrait<Fp128, D>>::setup_prover(
                 max_num_vars,
-                1,
                 1,
             )
             .expect("Akita setup_prover failed"),
@@ -494,7 +497,6 @@ where
         ArkBridge(
             <AkitaCommitmentScheme<D, Cfg> as AkitaCommitmentSchemeTrait<Fp128, D>>::setup_prover(
                 max_num_vars,
-                1,
                 1,
             )
             .expect("Akita setup_prover failed"),
@@ -909,7 +911,7 @@ where
 
 impl<const D: usize, Cfg> StreamingCommitmentScheme for JoltAkitaCommitmentScheme<D, Cfg>
 where
-    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128> + Default,
+    Cfg: JoltFp128AkitaCfg + Default,
 {
     type ChunkState = AkitaChunkState<D>;
 
@@ -1049,7 +1051,7 @@ fn pack_field_to_ring<const D: usize>(field_coeffs: &[Fp128]) -> Vec<CyclotomicR
 
 impl<const D: usize, Cfg, C> ZkEvalCommitment<C> for JoltAkitaCommitmentScheme<D, Cfg>
 where
-    Cfg: CommitmentConfig<Field = Fp128, ClaimField = Fp128, ChallengeField = Fp128> + Default,
+    Cfg: JoltFp128AkitaCfg + Default,
     C: JoltCurve<F = <Self as CommitmentScheme>::Field>,
 {
     fn eval_commitment(_proof: &Self::BatchedProof) -> Option<C::G1> {

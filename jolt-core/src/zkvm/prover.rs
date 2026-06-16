@@ -2729,7 +2729,7 @@ mod tests {
     use crate::field::fp128::JoltFp128;
     use crate::host;
     #[cfg(not(feature = "zk"))]
-    use crate::poly::commitment::akita::{Fp128OneHot32Config, JoltAkitaCommitmentScheme};
+    use crate::poly::commitment::akita::{Fp128OneHot64Config, JoltAkitaCommitmentScheme};
     use crate::poly::commitment::dory::{DoryGlobals, DoryLayout};
     #[cfg(feature = "zk")]
     use crate::poly::commitment::pedersen::PedersenGenerators;
@@ -2764,7 +2764,7 @@ mod tests {
     use jolt_riscv::JoltInstructionRow;
 
     #[cfg(not(feature = "zk"))]
-    type AkitaPcs = JoltAkitaCommitmentScheme<{ Fp128OneHot32Config::D }, Fp128OneHot32Config>;
+    type AkitaPcs = JoltAkitaCommitmentScheme<{ Fp128OneHot64Config::D }, Fp128OneHot64Config>;
     #[cfg(not(feature = "zk"))]
     type RV64IMACAkitaProver<'a> =
         JoltCpuProver<'a, JoltFp128, Fp128Curve, AkitaPcs, Blake2bTranscript>;

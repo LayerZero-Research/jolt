@@ -267,7 +267,7 @@ impl_ark_serde_via_akita_context_free!(AkitaVerifierSetup<F>, [+ RandomSampling]
 /// context-free codec cannot supply. We make the wire encoding self-describing by
 /// writing the proof's shape (`Context = ()`) as a prefix, then reading it back to
 /// drive the shape-aware proof decoder.
-impl<F: FieldCore + AkitaSerialize> CanonicalSerialize for ArkBridge<AkitaProof<F>> {
+impl<F: CanonicalField + FieldCore + AkitaSerialize> CanonicalSerialize for ArkBridge<AkitaProof<F>> {
     fn serialize_with_mode<W: Write>(
         &self,
         mut writer: W,
@@ -289,7 +289,7 @@ impl<F: FieldCore + AkitaSerialize> CanonicalSerialize for ArkBridge<AkitaProof<
     }
 }
 
-impl<F: FieldCore + AkitaDeserialize<Context = ()> + AkitaValid> CanonicalDeserialize
+impl<F: CanonicalField + FieldCore + AkitaDeserialize<Context = ()> + AkitaValid> CanonicalDeserialize
     for ArkBridge<AkitaProof<F>>
 {
     fn deserialize_with_mode<R: Read>(
@@ -395,7 +395,7 @@ mod tests {
     use crate::field::JoltField;
     use akita_algebra::CyclotomicRing;
 
-    const D: usize = 32;
+    const D: usize = 64;
 
     fn sample_ring(seed: u64) -> CyclotomicRing<Fp128, D> {
         let coeffs = std::array::from_fn(|i| {
