@@ -1007,6 +1007,9 @@ impl<
     fn verify_stage6(
         &mut self,
     ) -> Result<(StageVerifyResult<F>, StageVerifyResult<F>), ProofVerifyError> {
+        // `proof.pcs_config` carries the orientation the prover committed/opened with (sourced
+        // from `PCS::active()`), so initializing `DoryGlobals` from it reproduces the prover's
+        // layout exactly.
         let _ = DoryGlobals::initialize_main_with_log_embedding(
             self.one_hot_params.k_chunk,
             self.proof.trace_length,

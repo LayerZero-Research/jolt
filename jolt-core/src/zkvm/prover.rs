@@ -583,7 +583,7 @@ impl<
         let start = Instant::now();
         let preprocessing_digest = self.preprocessing.shared.digest();
         let one_hot_config = self.one_hot_params.to_config();
-        let pcs = PCS::default();
+        let pcs = PCS::active();
         fiat_shamir_preamble::<PCS>(
             FiatShamirPreamble {
                 program_io: &self.program_io,
@@ -754,7 +754,7 @@ impl<
             ram_K: self.one_hot_params.ram_k,
             rw_config: self.rw_config.clone(),
             one_hot_config: self.one_hot_params.to_config(),
-            pcs_config: PCS::default().config().clone(),
+            pcs_config: PCS::active().config().clone(),
         };
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -834,7 +834,7 @@ impl<
     fn generate_and_commit_witness_polynomials(
         &mut self,
     ) -> (Vec<PCS::Commitment>, PCS::BatchOpeningHint) {
-        let pcs = PCS::default();
+        let pcs = PCS::active();
         let dory_layout = PCS::dory_layout(pcs.config());
         let main_total_vars = self.main_total_vars();
         let _guard = dory_layout.map(|layout| {
@@ -998,6 +998,9 @@ impl<
         let _guard =
             DoryGlobals::initialize_context(1, advice_len, DoryContext::UntrustedAdvice, None);
         let _ctx = DoryGlobals::with_context(DoryContext::UntrustedAdvice);
+        // `PCS::default()` (not `active()`) is intentional here: plain `commit` does not stamp the
+        // orientation into the proof, and Dory's commit geometry reads `DoryGlobals` directly, so
+        // the instance's `layout` field is irrelevant for advice commitments.
         let (commitment, hint) = PCS::default().commit(&poly, &self.preprocessing.generators);
         self.transcript
             .append_serializable(b"untrusted_advice", &commitment);
@@ -2166,7 +2169,7 @@ impl<
     ) -> PCS::BatchedProof {
         tracing::info!("Stage 8 proving (batch opening)");
 
-        let dory_layout = PCS::dory_layout(PCS::default().config());
+        let dory_layout = PCS::dory_layout(PCS::active().config());
         let main_total_vars = self.main_total_vars();
         let _guard = dory_layout.map(|layout| {
             DoryGlobals::initialize_main_with_log_embedding(
@@ -2375,7 +2378,7 @@ impl<
                 one_hot_params: &self.one_hot_params,
             };
 
-            return PCS::default().batch_prove(
+            return PCS::active().batch_prove(
                 &self.preprocessing.generators,
                 &lazy_source,
                 batch_hint,
@@ -2482,7 +2485,7 @@ impl<
             poly_ids,
             layout: DoryGlobals::matrix_layout(),
         };
-        let proof = PCS::default().batch_prove(
+        let proof = PCS::active().batch_prove(
             &self.preprocessing.generators,
             &poly_source,
             batch_hint,
@@ -4116,6 +4119,10 @@ mod tests {
         let io_device = prover.program_io.clone();
         let (proof, debug_info) = prover.prove();
 
+        // Guard against vacuous coverage: the proof must actually carry the address-major
+        // orientation, proving the commit/open path genuinely ran address-major.
+        assert_eq!(proof.pcs_config, DoryLayout::AddressMajor);
+
         let verifier_preprocessing = JoltVerifierPreprocessing::from(&prover_preprocessing);
 
         // DoryGlobals is now initialized inside the verifier's verify_stage8
@@ -4168,6 +4175,10 @@ mod tests {
         );
         let io_device = prover.program_io.clone();
         let (jolt_proof, debug_info) = prover.prove();
+
+        // Guard against vacuous coverage: the proof must actually carry the address-major
+        // orientation, proving the commit/open path genuinely ran address-major.
+        assert_eq!(jolt_proof.pcs_config, DoryLayout::AddressMajor);
 
         let verifier_preprocessing = JoltVerifierPreprocessing::from(&prover_preprocessing);
         RV64IMACVerifier::new(

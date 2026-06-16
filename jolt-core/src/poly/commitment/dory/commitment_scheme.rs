@@ -51,6 +51,21 @@ pub fn balanced_sigma_nu(total_vars: usize) -> (usize, usize) {
     (sigma, nu)
 }
 
+/// `(sigma, nu)` derived from the configured Dory matrix shape for the current context.
+///
+/// The configured matrix (`DoryGlobals::matrix_shape`) is the single source of truth shared by the
+/// setup sizing, the `commit_tier_1` layout/stride mapping, and the verifier. Deriving dimensions
+/// from `balanced_sigma_nu(poly.len())` is only correct when the polynomial exactly fills a balanced
+/// matrix; `AddressMajor` dense (trace-domain) polynomials are embedded into a larger configured
+/// matrix, so their commit/open dimensions must come from the matrix, not the polynomial length.
+/// For `CycleMajor` and advice contexts the configured shape already equals the balanced split, so
+/// this is a no-op there.
+#[inline]
+fn configured_sigma_nu() -> (usize, usize) {
+    let (num_rows, num_cols) = DoryGlobals::matrix_shape();
+    (num_cols.log_2(), num_rows.log_2())
+}
+
 #[derive(Clone, Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct DoryOpeningProofHint {
     row_commitments: Vec<ArkG1>,
@@ -177,6 +192,12 @@ impl CommitmentScheme for DoryCommitmentScheme {
         }
     }
 
+    fn active() -> Self {
+        Self {
+            layout: DoryGlobals::get_layout(),
+        }
+    }
+
     fn config(&self) -> &DoryLayout {
         &self.layout
     }
@@ -196,8 +217,7 @@ impl CommitmentScheme for DoryCommitmentScheme {
     ) -> (Self::Commitment, Self::OpeningProofHint) {
         let _span = trace_span!("DoryCommitmentScheme::commit").entered();
 
-        let total_vars = poly.len().log_2();
-        let (sigma, nu) = balanced_sigma_nu(total_vars);
+        let (sigma, nu) = configured_sigma_nu();
 
         #[cfg(feature = "zk")]
         type DoryMode = dory::ZK;
@@ -251,8 +271,7 @@ impl CommitmentScheme for DoryCommitmentScheme {
                 hint.into_parts()
             });
 
-        let total_vars = poly.len().log_2();
-        let (sigma, nu) = balanced_sigma_nu(total_vars);
+        let (sigma, nu) = configured_sigma_nu();
 
         let ark_point: Vec<ArkFr> = opening_point
             .iter()

@@ -104,7 +104,20 @@ pub trait CommitmentScheme: Clone + Sync + Send + Default + 'static {
 
     fn config(&self) -> &Self::Config;
 
-    /// Absorb the public PCS layout/configuration identity into the Fiat-Shamir transcript.
+    /// The PCS instance reflecting the orientation/config currently selected for proving.
+    ///
+    /// Defaults to the scheme default. Schemes whose layout is selected externally (e.g. Dory's
+    /// cycle-major vs address-major orientation) override this to report the active selection, so
+    /// the prover threads one consistent config into commit, opening, the Fiat-Shamir preamble,
+    /// and the serialized proof.
+    fn active() -> Self {
+        Self::default()
+    }
+
+    /// Absorb the PCS's selected `Config` into the Fiat-Shamir transcript for domain separation.
+    ///
+    /// When the prover sources `config` from [`CommitmentScheme::active`], this binds the
+    /// orientation actually used to commit and open (for Dory, cycle-major vs address-major).
     fn append_pcs_config_to_transcript<T: Transcript>(config: &Self::Config, transcript: &mut T);
 
     /// Exposes Dory matrix layout when this PCS uses Dory contexts.
