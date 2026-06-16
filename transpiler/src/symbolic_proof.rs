@@ -406,7 +406,7 @@ pub fn symbolize_proof<OutputTranscript: Transcript>(
             ram_K: real_proof.ram_K,
             rw_config: real_proof.rw_config.clone(),
             one_hot_config: real_proof.one_hot_config.clone(),
-            dory_layout: real_proof.dory_layout,
+            pcs_config: real_proof.pcs_config,
         };
 
         // Build the opening accumulator with the symbolic claims we created

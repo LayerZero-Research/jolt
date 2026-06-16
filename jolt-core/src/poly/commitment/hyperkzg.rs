@@ -449,6 +449,7 @@ where
     <P as Pairing>::ScalarField: JoltField,
 {
     type Field = P::ScalarField;
+    type Config = ();
     type ProverSetup = HyperKZGProverKey<P>;
     type VerifierSetup = HyperKZGVerifierKey<P>;
 

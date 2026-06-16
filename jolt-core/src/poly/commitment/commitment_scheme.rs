@@ -12,6 +12,14 @@ use crate::{
 
 pub trait CommitmentScheme: Clone + Sync + Send + 'static {
     type Field: JoltField + Sized;
+    type Config: Clone
+        + Sync
+        + Send
+        + Debug
+        + Default
+        + PartialEq
+        + CanonicalSerialize
+        + CanonicalDeserialize;
     type ProverSetup: Clone + Sync + Send + Debug + CanonicalSerialize + CanonicalDeserialize;
     type VerifierSetup: Clone + Sync + Send + Debug + CanonicalSerialize + CanonicalDeserialize;
     type Commitment: Default
@@ -41,6 +49,21 @@ pub trait CommitmentScheme: Clone + Sync + Send + 'static {
 
     /// Generates the verifier setup from the prover setup.
     fn setup_verifier(setup: &Self::ProverSetup) -> Self::VerifierSetup;
+
+    fn active_config() -> Self::Config {
+        Self::Config::default()
+    }
+
+    fn append_pcs_config_to_transcript<ProofTranscript: Transcript>(
+        config: &Self::Config,
+        transcript: &mut ProofTranscript,
+    ) {
+        transcript.append_serializable(b"pcs_config", config);
+    }
+
+    fn dory_layout(_config: &Self::Config) -> Option<crate::poly::commitment::dory::DoryLayout> {
+        None
+    }
 
     /// Commits to a multilinear polynomial using the provided setup.
     ///

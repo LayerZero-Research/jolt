@@ -61,7 +61,7 @@ pub struct JoltProof<
     pub ram_K: usize,
     pub rw_config: ReadWriteConfig,
     pub one_hot_config: OneHotConfig,
-    pub dory_layout: DoryLayout,
+    pub pcs_config: PCS::Config,
 }
 
 impl<F: JoltField, C: JoltCurve<F = F>, PCS: CommitmentScheme<Field = F>, FS: Transcript>

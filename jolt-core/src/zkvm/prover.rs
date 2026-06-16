@@ -436,14 +436,15 @@ impl<
         #[cfg(not(target_arch = "wasm32"))]
         let start = Instant::now();
         let preprocessing_digest = self.preprocessing.shared.digest();
-        fiat_shamir_preamble(
+        let pcs_config = PCS::active_config();
+        fiat_shamir_preamble::<PCS>(
             &self.program_io,
             self.one_hot_params.ram_k,
             self.trace.len(),
             self.preprocessing.shared.program_meta.entry_address,
             &self.rw_config,
             &self.one_hot_params.to_config(),
-            DoryGlobals::get_layout(),
+            &pcs_config,
             &preprocessing_digest,
             &mut self.transcript,
         );
@@ -558,7 +559,7 @@ impl<
             ram_K: self.one_hot_params.ram_k,
             rw_config: self.rw_config.clone(),
             one_hot_config: self.one_hot_params.to_config(),
-            dory_layout: DoryGlobals::get_layout(),
+            pcs_config,
         };
 
         #[cfg(not(target_arch = "wasm32"))]

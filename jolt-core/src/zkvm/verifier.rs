@@ -438,25 +438,28 @@ impl<
         let zk_mode = self.opening_accumulator.zk_mode;
 
         let preprocessing_digest = self.preprocessing.shared.digest();
-        fiat_shamir_preamble(
+        fiat_shamir_preamble::<PCS>(
             &self.program_io,
             self.proof.ram_K,
             self.proof.trace_length,
             self.preprocessing.shared.program_meta.entry_address,
             &self.proof.rw_config,
             &self.proof.one_hot_config,
-            self.proof.dory_layout,
+            &self.proof.pcs_config,
             &preprocessing_digest,
             &mut self.transcript,
         );
 
+        let dory_layout = PCS::dory_layout(&self.proof.pcs_config).ok_or_else(|| {
+            ProofVerifyError::DoryError("PCS config does not contain a Dory layout".to_string())
+        })?;
         // Initialize DoryGlobals with the layout from the proof
         // This ensures the verifier uses the same layout as the prover
         let _guard = DoryGlobals::initialize_context(
             1 << self.one_hot_params.log_k_chunk,
             self.proof.trace_length.next_power_of_two(),
             DoryContext::Main,
-            Some(self.proof.dory_layout),
+            Some(dory_layout),
         );
 
         // Append commitments to transcript
@@ -1099,7 +1102,7 @@ impl<
             self.one_hot_params.k_chunk,
             self.proof.trace_length,
             self.main_total_vars(),
-            Some(self.proof.dory_layout),
+            PCS::dory_layout(&self.proof.pcs_config),
         );
         let (bytecode_read_raf_params, booleanity_params, stage6a_result) =
             self.verify_stage6a()?;
@@ -1744,7 +1747,9 @@ impl<
             &self.opening_accumulator,
             native_main_vars,
             self.one_hot_params.log_k_chunk,
-            self.proof.dory_layout,
+            PCS::dory_layout(&self.proof.pcs_config).ok_or_else(|| {
+                ProofVerifyError::DoryError("PCS config does not contain a Dory layout".to_string())
+            })?,
             if self.preprocessing.shared.program.is_committed() {
                 ProgramMode::Committed
             } else {

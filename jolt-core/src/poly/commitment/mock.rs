@@ -32,6 +32,7 @@ where
     F: JoltField,
 {
     type Field = F;
+    type Config = ();
     type ProverSetup = ();
     type VerifierSetup = ();
     type Commitment = MockCommitment<F>;

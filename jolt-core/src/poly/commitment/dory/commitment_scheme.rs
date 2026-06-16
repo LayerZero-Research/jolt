@@ -117,6 +117,7 @@ pub fn bind_opening_inputs_zk<F: JoltField, C: JoltCurve<F = F>, ProofTranscript
 
 impl CommitmentScheme for DoryCommitmentScheme {
     type Field = ark_bn254::Fr;
+    type Config = super::DoryLayout;
     type ProverSetup = ArkworksProverSetup;
     type VerifierSetup = ArkworksVerifierSetup;
     type Commitment = ArkGT;
@@ -147,6 +148,21 @@ impl CommitmentScheme for DoryCommitmentScheme {
     fn setup_verifier(setup: &Self::ProverSetup) -> Self::VerifierSetup {
         let _span = trace_span!("DoryCommitmentScheme::setup_verifier").entered();
         setup.to_verifier_setup()
+    }
+
+    fn active_config() -> Self::Config {
+        DoryGlobals::get_layout()
+    }
+
+    fn append_pcs_config_to_transcript<ProofTranscript: Transcript>(
+        config: &Self::Config,
+        transcript: &mut ProofTranscript,
+    ) {
+        transcript.append_u64(b"dory_layout", *config as u64);
+    }
+
+    fn dory_layout(config: &Self::Config) -> Option<super::DoryLayout> {
+        Some(*config)
     }
 
     fn commit(

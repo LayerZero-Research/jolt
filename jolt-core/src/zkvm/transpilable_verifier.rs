@@ -333,14 +333,14 @@ impl<
         let _pprof_verify = pprof_scope!("verify");
 
         let preprocessing_digest = self.preprocessing.shared.digest();
-        fiat_shamir_preamble(
+        fiat_shamir_preamble::<PCS>(
             &self.program_io,
             self.proof.ram_K,
             self.proof.trace_length,
             self.preprocessing.shared.program_meta.entry_address,
             &self.proof.rw_config,
             &self.proof.one_hot_config,
-            self.proof.dory_layout,
+            &self.proof.pcs_config,
             &preprocessing_digest,
             &mut self.transcript,
         );
@@ -627,7 +627,7 @@ impl<
             self.one_hot_params.k_chunk,
             self.proof.trace_length,
             self.main_total_vars(),
-            Some(self.proof.dory_layout),
+            PCS::dory_layout(&self.proof.pcs_config),
         );
         let (bytecode_read_raf_params, booleanity_params) = self.verify_stage6a()?;
         self.verify_stage6b(bytecode_read_raf_params, booleanity_params)?;

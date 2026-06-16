@@ -68,11 +68,11 @@ pub mod transpilable_verifier;
 pub mod verifier;
 pub mod witness;
 
-#[cfg(feature = "dory-pcs")]
+#[cfg(not(feature = "akita-pcs"))]
 pub type F = ark_bn254::Fr;
-#[cfg(feature = "dory-pcs")]
+#[cfg(not(feature = "akita-pcs"))]
 pub type Curve = crate::curve::Bn254Curve;
-#[cfg(feature = "dory-pcs")]
+#[cfg(not(feature = "akita-pcs"))]
 pub type PCS = crate::poly::commitment::dory::DoryCommitmentScheme;
 
 pub(crate) fn stage8_opening_ids(
@@ -316,14 +316,14 @@ where
 
 /// Absorb public instance data into the transcript for Fiat-Shamir.
 #[allow(clippy::too_many_arguments)]
-pub fn fiat_shamir_preamble(
+pub fn fiat_shamir_preamble<PCS: CommitmentScheme>(
     program_io: &JoltDevice,
     ram_K: usize,
     trace_length: usize,
     entry_address: u64,
     rw_config: &ReadWriteConfig,
     one_hot_config: &OneHotConfig,
-    dory_layout: DoryLayout,
+    pcs_config: &PCS::Config,
     preprocessing_digest: &[u8; 32],
     transcript: &mut impl Transcript,
 ) {
@@ -358,7 +358,7 @@ pub fn fiat_shamir_preamble(
         b"lookups_ra_virtual_log_k_chunk",
         one_hot_config.lookups_ra_virtual_log_k_chunk as u64,
     );
-    transcript.append_u64(b"dory_layout", dory_layout as u64);
+    PCS::append_pcs_config_to_transcript(pcs_config, transcript);
 }
 
 #[cfg(all(feature = "prover", feature = "transcript-poseidon"))]

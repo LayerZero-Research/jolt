@@ -46,6 +46,7 @@
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use jolt_core::field::JoltField;
 use jolt_core::poly::commitment::commitment_scheme::CommitmentScheme;
+use jolt_core::poly::commitment::dory::DoryLayout;
 use jolt_core::poly::multilinear_polynomial::MultilinearPolynomial;
 use jolt_core::transcripts::Transcript;
 use jolt_core::utils::errors::ProofVerifyError;
@@ -90,6 +91,7 @@ pub struct AstOpeningHint;
 
 impl CommitmentScheme for AstCommitmentScheme {
     type Field = MleAst;
+    type Config = DoryLayout;
     type ProverSetup = AstProverSetup;
     type VerifierSetup = AstVerifierSetup;
     type Commitment = AstCommitment;
@@ -103,6 +105,10 @@ impl CommitmentScheme for AstCommitmentScheme {
 
     fn setup_verifier(_setup: &Self::ProverSetup) -> Self::VerifierSetup {
         AstVerifierSetup
+    }
+
+    fn dory_layout(config: &Self::Config) -> Option<DoryLayout> {
+        Some(*config)
     }
 
     fn commit(

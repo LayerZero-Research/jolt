@@ -25,7 +25,6 @@ keywords = ["SNARK", "cryptography", "proofs", "zkVM"]
 [features]
 default = ["host", "dory-pcs"]
 dory-pcs = [
-  "dep:dory",
   "dory/backends",
   "dory/cache",            # This includes `parallel` feature
   "dory/disk-persistence",
@@ -85,7 +84,7 @@ common.workspace = true
 tracer = { workspace = true, default-features = false, features = ["std"] }
 bincode.workspace = true
 derive_more.workspace = true
-dory = { workspace = true, optional = true }
+dory.workspace = true
 allocative.workspace = true
 inferno = { workspace = true, optional = true }
 jolt-program = { workspace = true, features = ["image", "serialization"] }

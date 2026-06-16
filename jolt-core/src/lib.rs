@@ -11,7 +11,10 @@
 )]
 #[cfg(all(feature = "dory-pcs", feature = "akita-pcs"))]
 compile_error!("Features `dory-pcs` and `akita-pcs` are mutually exclusive.");
-#[cfg(not(any(feature = "dory-pcs", feature = "akita-pcs")))]
+#[cfg(all(
+    any(feature = "host", feature = "prover"),
+    not(any(feature = "dory-pcs", feature = "akita-pcs"))
+))]
 compile_error!("Enable exactly one PCS backend: `dory-pcs` or `akita-pcs`.");
 #[cfg(all(feature = "akita-pcs", feature = "zk"))]
 compile_error!("`akita-pcs` does not support the `zk` feature yet.");
