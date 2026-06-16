@@ -21,9 +21,7 @@ use akita_challenges::SparseChallenge;
 use akita_config::proof_optimized::fp128::D64OneHot;
 use akita_config::CommitmentConfig;
 use akita_prover::AkitaPolyOps;
-use akita_types::{
-    sis::num_digits_for_bound, AkitaBatchedRootProof, FlatMatrix, OpeningBatch,
-};
+use akita_types::{sis::num_digits_for_bound, AkitaBatchedRootProof, FlatMatrix, OpeningBatch};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 
 type Cfg = D64OneHot;
@@ -1506,7 +1504,8 @@ fn ark_bridge_proof_roundtrip_uncompressed() {
 
 #[test]
 fn akita_batch_roundtrip_with_packed_layout() {
-    let log_k = Cfg::D.trailing_zeros() as usize;
+    const ONEHOT_K: usize = 256;
+    let log_k = ONEHOT_K.trailing_zeros() as usize;
     let num_cycles = 1usize << 3;
     let source = TestPackedSource::new(
         vec![
@@ -1514,7 +1513,7 @@ fn akita_batch_roundtrip_with_packed_layout() {
             (0u8..8).rev().map(Some).collect(),
             vec![1, 3, 5, 7, 1, 3, 5, 7].into_iter().map(Some).collect(),
         ],
-        Cfg::D,
+        ONEHOT_K,
     );
     let log_packed = source.per_poly.len().next_power_of_two().trailing_zeros() as usize;
     let setup = Scheme::setup_prover_from_shape(
@@ -1540,7 +1539,7 @@ fn akita_batch_roundtrip_with_packed_layout() {
         .per_poly
         .iter()
         .map(|indices| {
-            OneHotPolynomial::<JoltFp128>::from_indices(indices.clone(), Cfg::D, num_cycles)
+            OneHotPolynomial::<JoltFp128>::from_indices(indices.clone(), ONEHOT_K, num_cycles)
                 .evaluate(&opening_point)
         })
         .collect();
@@ -1573,11 +1572,9 @@ fn akita_batch_roundtrip_with_packed_layout() {
 }
 
 #[test]
-fn akita_batch_roundtrip_with_packed_layout_k16() {
-    type FastCfg = Fp128OneHot64Config;
-    type FastScheme = JoltAkitaCommitmentScheme<{ FastCfg::D }, FastCfg>;
-
-    let log_k = 4usize;
+fn akita_batch_roundtrip_with_many_polys() {
+    const ONEHOT_K: usize = 256;
+    let log_k = ONEHOT_K.trailing_zeros() as usize;
     let num_cycles = 1usize << 4;
     let source = TestPackedSource::new(
         vec![
@@ -1606,22 +1603,22 @@ fn akita_batch_roundtrip_with_packed_layout_k16() {
                 Some(5),
             ],
         ],
-        16,
+        ONEHOT_K,
     );
     let log_packed = source.per_poly.len().next_power_of_two().trailing_zeros() as usize;
-    let setup = FastScheme::setup_prover_from_shape(
+    let setup = Scheme::setup_prover_from_shape(
         num_cycles.trailing_zeros() as usize,
         log_k,
         Some(log_packed),
     );
-    let verifier_setup = FastScheme::setup_verifier(&setup);
-    let pcs = FastScheme::default();
+    let verifier_setup = Scheme::setup_verifier(&setup);
+    let pcs = Scheme::default();
 
     let (commitments, batch_hint) = pcs.batch_commit(&source, &setup);
     assert_eq!(
         commitments.len(),
         1,
-        "packed Akita should produce one commitment for K=16"
+        "packed Akita should produce one commitment for many polys"
     );
 
     let opening_point: Vec<JoltFp128> = (0..(log_k + num_cycles.trailing_zeros() as usize))
@@ -1632,13 +1629,13 @@ fn akita_batch_roundtrip_with_packed_layout_k16() {
         .per_poly
         .iter()
         .map(|indices| {
-            OneHotPolynomial::<JoltFp128>::from_indices(indices.clone(), 16, num_cycles)
+            OneHotPolynomial::<JoltFp128>::from_indices(indices.clone(), ONEHOT_K, num_cycles)
                 .evaluate(&opening_point)
         })
         .collect();
     let commitment_refs = vec![&commitments[0]];
 
-    let mut prove_transcript = Blake2bTranscript::new(b"akita_batch_roundtrip_k16");
+    let mut prove_transcript = Blake2bTranscript::new(b"akita_batch_roundtrip_many");
     let proof = pcs.batch_prove(
         &setup,
         &source,
@@ -1651,7 +1648,7 @@ fn akita_batch_roundtrip_with_packed_layout_k16() {
         &mut prove_transcript,
     );
 
-    let mut verify_transcript = Blake2bTranscript::new(b"akita_batch_roundtrip_k16");
+    let mut verify_transcript = Blake2bTranscript::new(b"akita_batch_roundtrip_many");
     pcs.batch_verify(
         &proof,
         &verifier_setup,
@@ -1661,91 +1658,7 @@ fn akita_batch_roundtrip_with_packed_layout_k16() {
         &claims,
         &[],
     )
-    .expect("packed Akita batch verify should succeed for K=16");
-}
-
-#[test]
-fn akita_k256_setup_envelope_supports_k16_roundtrip() {
-    type FastCfg = Fp128OneHot64Config;
-    type FastScheme = JoltAkitaCommitmentScheme<{ FastCfg::D }, FastCfg>;
-
-    let num_cycles = 1usize << 4;
-    let source = TestPackedSource::new(
-        vec![
-            (0u8..16).map(Some).collect(),
-            (0u8..16).rev().map(Some).collect(),
-            vec![1, 3, 5, 7, 9, 11, 13, 15, 1, 3, 5, 7, 9, 11, 13, 15]
-                .into_iter()
-                .map(Some)
-                .collect(),
-            vec![
-                Some(0),
-                None,
-                Some(2),
-                Some(4),
-                None,
-                Some(6),
-                Some(8),
-                Some(10),
-                None,
-                Some(12),
-                Some(14),
-                Some(0),
-                Some(1),
-                None,
-                Some(3),
-                Some(5),
-            ],
-        ],
-        16,
-    );
-    let log_packed = source.per_poly.len().next_power_of_two().trailing_zeros() as usize;
-    let setup = FastScheme::setup_prover_from_shape(
-        num_cycles.trailing_zeros() as usize,
-        8,
-        Some(log_packed),
-    );
-    let verifier_setup = FastScheme::setup_verifier(&setup);
-    let pcs = FastScheme::default();
-
-    let (commitments, batch_hint) = pcs.batch_commit(&source, &setup);
-    let opening_point: Vec<JoltFp128> = (0..(4 + num_cycles.trailing_zeros() as usize))
-        .map(|i| JoltFp128::from_u64((i + 7) as u64))
-        .collect();
-    let claims: Vec<JoltFp128> = source
-        .per_poly
-        .iter()
-        .map(|indices| {
-            OneHotPolynomial::<JoltFp128>::from_indices(indices.clone(), 16, num_cycles)
-                .evaluate(&opening_point)
-        })
-        .collect();
-    let commitment_refs = vec![&commitments[0]];
-
-    let mut prove_transcript = Blake2bTranscript::new(b"akita_setup_envelope_k16");
-    let proof = pcs.batch_prove(
-        &setup,
-        &source,
-        batch_hint,
-        vec![],
-        &commitment_refs,
-        &opening_point,
-        &claims,
-        &[],
-        &mut prove_transcript,
-    );
-
-    let mut verify_transcript = Blake2bTranscript::new(b"akita_setup_envelope_k16");
-    pcs.batch_verify(
-        &proof,
-        &verifier_setup,
-        &mut verify_transcript,
-        &opening_point,
-        &commitment_refs,
-        &claims,
-        &[],
-    )
-    .expect("K=256 setup envelope should still verify K=16 packed proofs");
+    .expect("packed Akita batch verify should succeed for many polys");
 }
 
 #[test]

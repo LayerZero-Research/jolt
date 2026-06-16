@@ -35,12 +35,11 @@ use akita_prover::{
 use akita_types::BasisMode;
 use akita_types::{
     sis::{num_digits_fold, num_digits_for_bound, FoldChallengeNorms},
-    AkitaCommitmentHint as AkitaBatchedCommitmentHint, OpeningBatch,
+    AkitaCommitmentHint as AkitaBatchedCommitmentHint,
     CommitmentVerifier as AkitaCommitmentVerifierTrait, CommittedOpenings, LevelParams,
-    RingCommitment, SetupContributionMode,
+    OpeningBatch, RingCommitment, SetupContributionMode,
 };
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use common::constants::AKITA_ONEHOT_CHUNK_THRESHOLD_LOG_T;
 use rayon::prelude::*;
 
 const FIELD_BITS: u32 = 128;
@@ -53,10 +52,7 @@ pub type Fp128OneHot64Config = D64OneHot;
 pub trait JoltFp128AkitaCfg: CommitmentConfig<Field = Fp128, ExtField = Fp128> {}
 impl<T: CommitmentConfig<Field = Fp128, ExtField = Fp128>> JoltFp128AkitaCfg for T {}
 
-fn root_level_params<Cfg: JoltFp128AkitaCfg>(
-    max_num_vars: usize,
-    num_polys: usize,
-) -> LevelParams {
+fn root_level_params<Cfg: JoltFp128AkitaCfg>(max_num_vars: usize, num_polys: usize) -> LevelParams {
     let opening_batch = OpeningBatch::same_point(max_num_vars, num_polys)
         .expect("root level opening batch should be valid");
     Cfg::get_params_for_batched_commitment(&opening_batch)
@@ -64,17 +60,11 @@ fn root_level_params<Cfg: JoltFp128AkitaCfg>(
 }
 
 /// Level-0 `log_basis` chosen by the preset's policy for the given envelope.
-fn level0_log_basis<
-    Cfg: JoltFp128AkitaCfg,
->(
-    max_num_vars: usize,
-) -> u32 {
+fn level0_log_basis<Cfg: JoltFp128AkitaCfg>(max_num_vars: usize) -> u32 {
     root_level_params::<Cfg>(max_num_vars, 1).log_basis
 }
 
-fn level0_level_params<
-    Cfg: JoltFp128AkitaCfg,
->(
+fn level0_level_params<Cfg: JoltFp128AkitaCfg>(
     max_num_vars: usize,
     _log_basis: u32,
 ) -> LevelParams {
@@ -104,18 +94,14 @@ fn compute_num_digits_fold_for_params(
     .expect("Akita fold digit count should be valid")
 }
 
-fn level0_layout_params<
-    Cfg: JoltFp128AkitaCfg,
->(
+fn level0_layout_params<Cfg: JoltFp128AkitaCfg>(
     max_num_vars: usize,
     log_basis: u32,
 ) -> LevelParams {
     level0_level_params::<Cfg>(max_num_vars, log_basis)
 }
 
-fn optimal_advice_m_r_split<
-    Cfg: JoltFp128AkitaCfg,
->(
+fn optimal_advice_m_r_split<Cfg: JoltFp128AkitaCfg>(
     reduced_vars: usize,
     log_basis: u32,
 ) -> (usize, usize) {
@@ -150,10 +136,7 @@ fn optimal_advice_m_r_split<
 }
 
 #[derive(Clone, Default)]
-pub struct JoltAkitaCommitmentScheme<
-    const D: usize,
-    Cfg: JoltFp128AkitaCfg,
-> {
+pub struct JoltAkitaCommitmentScheme<const D: usize, Cfg: JoltFp128AkitaCfg> {
     _cfg: PhantomData<Cfg>,
 }
 
@@ -282,9 +265,7 @@ fn to_akita_packed_opening_point<const D: usize>(
     packed_layout.reorder_packed_point(&reversed[..log_t], &reversed[log_t..], &rho_le)
 }
 
-fn advice_commit_layout<
-    Cfg: JoltFp128AkitaCfg,
->(
+fn advice_commit_layout<Cfg: JoltFp128AkitaCfg>(
     m_vars: usize,
     r_vars: usize,
     log_basis: u32,
@@ -308,10 +289,7 @@ fn advice_commit_layout<
 
 /// Compute the advice commit layout using the polynomial's own optimal m/r split
 /// rather than inheriting from the setup envelope.
-fn compute_advice_layout<
-    const D: usize,
-    Cfg: JoltFp128AkitaCfg,
->(
+fn compute_advice_layout<const D: usize, Cfg: JoltFp128AkitaCfg>(
     poly_num_vars: usize,
 ) -> LevelParams {
     let alpha = D.trailing_zeros() as usize;
@@ -327,10 +305,7 @@ fn compute_advice_layout<
     advice_commit_layout::<Cfg>(m_vars, r_vars, log_basis)
 }
 
-fn choose_packed_layout_for_shape<
-    const D: usize,
-    Cfg: JoltFp128AkitaCfg,
->(
+fn choose_packed_layout_for_shape<const D: usize, Cfg: JoltFp128AkitaCfg>(
     log_k: usize,
     log_t: usize,
     log_packed: usize,
@@ -341,10 +316,7 @@ fn choose_packed_layout_for_shape<
     (packed_layout, akita_layout)
 }
 
-fn choose_packed_layout_for_dims<
-    const D: usize,
-    Cfg: JoltFp128AkitaCfg,
->(
+fn choose_packed_layout_for_dims<const D: usize, Cfg: JoltFp128AkitaCfg>(
     num_cycles: usize,
     num_polys: usize,
     onehot_k: usize,
@@ -363,10 +335,7 @@ fn choose_packed_layout_for_dims<
     choose_packed_layout_for_shape::<D, Cfg>(log_k, log_t, log_packed)
 }
 
-fn akita_commit_dense<
-    const D: usize,
-    Cfg: JoltFp128AkitaCfg,
->(
+fn akita_commit_dense<const D: usize, Cfg: JoltFp128AkitaCfg>(
     ring_coeffs: Vec<CyclotomicRing<Fp128, D>>,
     setup: &AkitaProverSetup<Fp128, D>,
 ) -> (RingCommitment<Fp128, D>, JoltAkitaOpeningHint<D>) {
@@ -389,11 +358,7 @@ fn akita_commit_dense<
     )
 }
 
-fn akita_commit_onehot<
-    const D: usize,
-    Cfg: JoltFp128AkitaCfg,
-    I: OneHotIndex,
->(
+fn akita_commit_onehot<const D: usize, Cfg: JoltFp128AkitaCfg, I: OneHotIndex>(
     onehot_k: usize,
     indices: Vec<Option<I>>,
     setup: &AkitaProverSetup<Fp128, D>,
@@ -878,20 +843,13 @@ where
         true
     }
 
-    fn log_k_chunk_for_trace(log_T: usize) -> usize {
-        if log_T >= AKITA_ONEHOT_CHUNK_THRESHOLD_LOG_T {
-            8
-        } else {
-            4
-        }
+    fn log_k_chunk_for_trace(_log_T: usize) -> usize {
+        // D64OneHot fixes onehot_k=256 (log_k_chunk=8); smaller chunks are rejected at commit.
+        8
     }
 
     fn supported_log_k_chunks(max_log_k: usize) -> Vec<usize> {
-        if max_log_k > 4 {
-            vec![4, max_log_k]
-        } else {
-            vec![max_log_k]
-        }
+        vec![max_log_k]
     }
 
     fn validate_batch_proof_shape(
