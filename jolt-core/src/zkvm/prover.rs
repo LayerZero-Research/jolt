@@ -37,12 +37,14 @@ use crate::{
     guest,
     poly::{
         commitment::{
-            commitment_scheme::{StreamingCommitmentScheme, ZkEvalCommitment},
+            commitment_scheme::{
+                BatchOpeningProverContext, StreamingCommitmentScheme, ZkEvalCommitment,
+            },
             dory::{DoryGlobals, DoryLayout},
         },
         multilinear_polynomial::MultilinearPolynomial,
         opening_proof::{
-            compute_lagrange_factor, DoryOpeningState, OpeningAccumulator,
+            compute_lagrange_factor, BatchOpeningState, OpeningAccumulator,
             ProverOpeningAccumulator, SumcheckId,
         },
         rlc_polynomial::{RLCStreamingData, TraceSource},
@@ -2244,8 +2246,7 @@ impl<
             self.preprocessing.shared.bytecode_chunk_count,
         );
 
-        // Build DoryOpeningState
-        let state = DoryOpeningState {
+        let state = BatchOpeningState {
             opening_point: opening_point.r.clone(),
             gamma_powers,
             polynomial_claims,
@@ -2270,20 +2271,16 @@ impl<
             );
         }
 
-        // Build streaming RLC polynomial directly (no witness poly regeneration!)
-        // Use materialized trace (default, single pass) instead of lazy trace
-        let (joint_poly, hint) = state.build_streaming_rlc::<PCS>(
-            self.one_hot_params.clone(),
-            TraceSource::Materialized(Arc::clone(&self.trace)),
-            streaming_data,
-            opening_proof_hints,
-            precommitted_polys,
-        );
-        let (proof, _y_blinding) = PCS::prove(
-            &self.preprocessing.generators,
-            &joint_poly,
-            &opening_point.r,
-            Some(hint),
+        let (proof, _y_blinding) = PCS::prove_batch_opening(
+            &state,
+            BatchOpeningProverContext {
+                setup: &self.preprocessing.generators,
+                one_hot_params: self.one_hot_params.clone(),
+                trace_source: TraceSource::Materialized(Arc::clone(&self.trace)),
+                rlc_streaming_data: streaming_data,
+                opening_hints: opening_proof_hints,
+                precommitted_polys,
+            },
             &mut self.transcript,
         );
 

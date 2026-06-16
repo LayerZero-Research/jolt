@@ -1,13 +1,22 @@
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+use ark_std::Zero;
 use std::borrow::Borrow;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
+use std::sync::Arc;
 
 use crate::transcripts::Transcript;
 use crate::{
     curve::JoltCurve,
     field::JoltField,
     poly::multilinear_polynomial::MultilinearPolynomial,
+    poly::opening_proof::BatchOpeningState,
+    poly::rlc_polynomial::{RLCStreamingData, TraceSource},
     utils::{errors::ProofVerifyError, small_scalar::SmallScalar},
+    zkvm::{
+        claim_reductions::PrecommittedPolynomial, config::OneHotParams,
+        witness::CommittedPolynomial,
+    },
 };
 
 pub trait CommitmentScheme: Clone + Sync + Send + 'static {
@@ -63,6 +72,63 @@ pub trait CommitmentScheme: Clone + Sync + Send + 'static {
 
     fn dory_layout(_config: &Self::Config) -> Option<crate::poly::commitment::dory::DoryLayout> {
         None
+    }
+
+    fn prove_batch_opening<ProofTranscript: Transcript>(
+        state: &BatchOpeningState<Self::Field>,
+        context: BatchOpeningProverContext<'_, Self::Field, Self>,
+        transcript: &mut ProofTranscript,
+    ) -> (Self::Proof, Option<Self::Field>)
+    where
+        Self: Sized,
+    {
+        let (joint_poly, hint) = state.build_streaming_rlc::<Self>(
+            context.one_hot_params,
+            context.trace_source,
+            context.rlc_streaming_data,
+            context.opening_hints,
+            context.precommitted_polys,
+        );
+        Self::prove(
+            context.setup,
+            &joint_poly,
+            &state.opening_point,
+            Some(hint),
+            transcript,
+        )
+    }
+
+    fn combine_batch_commitments(
+        state: &BatchOpeningState<Self::Field>,
+        commitment_map: &mut HashMap<CommittedPolynomial, Self::Commitment>,
+    ) -> Result<Self::Commitment, ProofVerifyError> {
+        let mut rlc_map = BTreeMap::new();
+        for (gamma, (poly, _claim)) in state
+            .gamma_powers
+            .iter()
+            .zip(state.polynomial_claims.iter())
+        {
+            *rlc_map.entry(*poly).or_insert(Self::Field::zero()) += *gamma;
+        }
+
+        let (coeffs, commitments): (Vec<Self::Field>, Vec<Self::Commitment>) = rlc_map
+            .into_iter()
+            .map(|(polynomial, coefficient)| {
+                commitment_map
+                    .remove(&polynomial)
+                    .map(|commitment| (coefficient, commitment))
+                    .ok_or_else(|| {
+                        ProofVerifyError::DoryError(format!(
+                            "missing commitment for Stage 8 polynomial {:?}",
+                            polynomial
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .unzip();
+
+        Ok(Self::combine_commitments(&commitments, &coeffs))
     }
 
     /// Commits to a multilinear polynomial using the provided setup.
@@ -174,6 +240,19 @@ pub trait ZkEvalCommitment<C: JoltCurve>: CommitmentScheme {
     fn zk_generators(_setup: &Self::ProverSetup, _count: usize) -> Option<(Vec<C::G1>, C::G1)> {
         None
     }
+}
+
+pub struct BatchOpeningProverContext<'a, F, PCS>
+where
+    F: JoltField,
+    PCS: CommitmentScheme<Field = F>,
+{
+    pub setup: &'a PCS::ProverSetup,
+    pub one_hot_params: OneHotParams,
+    pub trace_source: TraceSource,
+    pub rlc_streaming_data: Arc<RLCStreamingData>,
+    pub opening_hints: HashMap<CommittedPolynomial, PCS::OpeningProofHint>,
+    pub precommitted_polys: HashMap<CommittedPolynomial, PrecommittedPolynomial<F>>,
 }
 
 pub trait StreamingCommitmentScheme: CommitmentScheme {

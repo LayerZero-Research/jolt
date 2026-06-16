@@ -320,20 +320,14 @@ pub trait AbstractVerifierOpeningAccumulator<F: JoltField>: OpeningAccumulator<F
     fn take_pending_claims(&mut self) -> Vec<F>;
 }
 
-/// State for Dory batch opening (Stage 8).
-/// This is a generic interface for batch opening proofs.
 #[derive(Clone, Allocative)]
-pub struct DoryOpeningState<F: JoltField> {
-    /// Unified opening point for all polynomials (length = log_k_chunk + log_T)
+pub struct BatchOpeningState<F: JoltField> {
     pub opening_point: Vec<F::Challenge>,
-    /// γ^i coefficients for the RLC polynomial
     pub gamma_powers: Vec<F>,
-    /// (polynomial, claim) pairs at the opening point
-    /// (with Lagrange factors already applied for shorter polys)
     pub polynomial_claims: Vec<(CommittedPolynomial, F)>,
 }
 
-impl<F: JoltField> DoryOpeningState<F> {
+impl<F: JoltField> BatchOpeningState<F> {
     /// Build streaming RLC polynomial from this state.
     /// Streams directly from trace - no witness regeneration needed.
     /// Precommitted polynomials are passed separately (not streamed from trace).

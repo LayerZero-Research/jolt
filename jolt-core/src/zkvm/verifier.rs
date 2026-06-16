@@ -78,7 +78,7 @@ use crate::zkvm::{
 use crate::{
     field::JoltField,
     poly::opening_proof::{
-        compute_lagrange_factor, DoryOpeningState, OpeningAccumulator, OpeningId, SumcheckId,
+        compute_lagrange_factor, BatchOpeningState, OpeningAccumulator, OpeningId, SumcheckId,
         VerifierOpeningAccumulator,
     },
     pprof_scope,
@@ -1908,7 +1908,7 @@ impl<
             .sum();
 
         // Build state for computing joint commitment/claim
-        let state = DoryOpeningState {
+        let state = BatchOpeningState {
             opening_point: opening_point.r.clone(),
             gamma_powers: gamma_powers.clone(),
             polynomial_claims,
@@ -1976,7 +1976,7 @@ impl<
             }
         }
 
-        let joint_commitment = self.compute_joint_commitment(&mut commitments_map, &state)?;
+        let joint_commitment = PCS::combine_batch_commitments(&state, &mut commitments_map)?;
 
         let zk_mode = self.opening_accumulator.zk_mode;
         if zk_mode {
@@ -2016,38 +2016,6 @@ impl<
             opening_ids,
             constraint_coeffs,
         })
-    }
-
-    /// Compute joint commitment for the batch opening.
-    fn compute_joint_commitment(
-        &self,
-        commitment_map: &mut HashMap<CommittedPolynomial, PCS::Commitment>,
-        state: &DoryOpeningState<F>,
-    ) -> Result<PCS::Commitment, ProofVerifyError> {
-        let mut rlc_map = HashMap::new();
-        for (gamma, (poly, _claim)) in state
-            .gamma_powers
-            .iter()
-            .zip(state.polynomial_claims.iter())
-        {
-            *rlc_map.entry(*poly).or_insert(F::zero()) += *gamma;
-        }
-
-        let (coeffs, commitments): (Vec<F>, Vec<PCS::Commitment>) = rlc_map
-            .into_iter()
-            .map(|(k, v)| {
-                commitment_map.remove(&k).map(|c| (v, c)).ok_or_else(|| {
-                    ProofVerifyError::DoryError(format!(
-                        "missing commitment for Stage 8 polynomial {:?}",
-                        k
-                    ))
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .unzip();
-
-        Ok(PCS::combine_commitments(&commitments, &coeffs))
     }
 }
 
