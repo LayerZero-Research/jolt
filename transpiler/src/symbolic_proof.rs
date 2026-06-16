@@ -41,6 +41,7 @@ use ark_serialize::CanonicalSerialize;
 use jolt_core::curve::Bn254Curve;
 #[cfg(not(feature = "zk"))]
 use jolt_core::curve::JoltCurve;
+#[cfg(not(feature = "zk"))]
 use jolt_core::poly::commitment::layout::{CommitmentLayout, NoCommitmentLayout};
 #[cfg(not(feature = "zk"))]
 use jolt_core::poly::opening_proof::OpeningPoint;
