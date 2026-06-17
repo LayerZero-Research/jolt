@@ -323,6 +323,7 @@ pub trait AbstractVerifierOpeningAccumulator<F: JoltField>: OpeningAccumulator<F
 #[derive(Clone, Allocative)]
 pub struct BatchOpeningState<F: JoltField> {
     pub opening_point: Vec<F::Challenge>,
+    pub packed_log_k: Option<usize>,
     pub gamma_powers: Vec<F>,
     pub polynomial_claims: Vec<(CommittedPolynomial, F)>,
     pub individual_openings: Vec<BatchOpening<F>>,

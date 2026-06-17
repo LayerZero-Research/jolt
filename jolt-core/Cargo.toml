@@ -42,12 +42,7 @@ akita-pcs = [
 ]
 zk = ["dory-pcs", "dory/zk"]
 host = ["prover", "dep:jolt-inlines-sha2", "dep:jolt-inlines-keccak256"]
-prover = [
-  "minimal",
-  "ark-ec/parallel",
-  "ark-ff/parallel",
-  "ark-std/parallel",
-]
+prover = ["minimal", "ark-ec/parallel", "ark-ff/parallel", "ark-std/parallel"]
 # This is for building jolt-core without prover capabilities, e.g. for recursion
 # jolt-core needs std and rayon to compile, so these are the minimal set of features.
 minimal = ["ark-ec/std", "ark-ff/std", "ark-std/std", "ark-ff/asm", "rayon"]

@@ -6,7 +6,7 @@ use std::slice::from_ref;
 use super::packed_layout::{choose_packed_bit_layout, PackedBitLayout};
 use super::packed_poly::build_packed_poly;
 use akita_algebra::CyclotomicRing;
-use akita_config::proof_optimized::fp128::D32OneHot;
+use akita_config::proof_optimized::fp128::{D32Full, D32OneHot};
 use akita_config::CommitmentConfig;
 use akita_field::CanonicalField;
 use akita_pcs::AkitaCommitmentScheme;
@@ -41,10 +41,13 @@ use crate::poly::opening_proof::BatchOpeningState;
 use crate::poly::rlc_polynomial::TraceSource;
 use crate::transcripts::Transcript;
 use crate::utils::errors::ProofVerifyError;
+use crate::utils::math::Math;
 use crate::utils::small_scalar::SmallScalar;
 use crate::zkvm::witness::{all_committed_polynomials, CommittedPolynomial};
 
 pub type Fp128OneHot32Config = D32OneHot;
+
+type Fp128DenseConfig = D32Full;
 
 #[derive(Clone, Default)]
 pub struct JoltAkitaCommitmentScheme<
@@ -60,6 +63,18 @@ pub struct JoltAkitaProof {
     num_packed_polys: u32,
     log_k: u32,
     individual_proofs: Vec<ArkBridge<AkitaProof<Fp128>>>,
+}
+
+#[derive(Clone, Debug, CanonicalSerialize, CanonicalDeserialize)]
+pub struct JoltAkitaProverSetup<const D: usize> {
+    main: ArkBridge<AkitaProverSetup<Fp128, D>>,
+    dense: ArkBridge<AkitaProverSetup<Fp128, D>>,
+}
+
+#[derive(Clone, Debug, CanonicalSerialize, CanonicalDeserialize)]
+pub struct JoltAkitaVerifierSetup<const D: usize> {
+    main: ArkBridge<AkitaVerifierSetup<Fp128>>,
+    dense: ArkBridge<AkitaVerifierSetup<Fp128>>,
 }
 
 #[derive(Clone, Debug)]
@@ -196,6 +211,28 @@ fn to_akita_opening_point(point: &[JoltFp128]) -> Vec<Fp128> {
     point.iter().rev().map(jolt_to_akita).collect()
 }
 
+fn to_akita_dense_opening_point<const D: usize>(point: &[JoltFp128]) -> Vec<Fp128> {
+    let mut akita_point = to_akita_opening_point(point);
+    akita_point.resize(akita_point.len().max(D.log_2()), Fp128::zero());
+    akita_point
+}
+
+fn dense_poly_from_ring_coeffs<const D: usize>(
+    ring_coeffs: Vec<CyclotomicRing<Fp128, D>>,
+) -> DensePoly<Fp128, D> {
+    let total = ring_coeffs
+        .len()
+        .checked_mul(D)
+        .expect("ring elems * D overflow");
+    let num_vars = total.trailing_zeros() as usize;
+    let mut field_evals = Vec::with_capacity(total);
+    for ring in ring_coeffs {
+        field_evals.extend_from_slice(ring.coefficients());
+    }
+    DensePoly::from_field_evals(num_vars, &field_evals)
+        .expect("Akita DensePoly construction failed")
+}
+
 fn to_akita_packed_opening_point(
     opening_point: &[JoltFp128],
     rho: &[JoltFp128],
@@ -254,7 +291,7 @@ fn to_akita_onehot_opening_point(point: &[JoltFp128], log_k: usize) -> Vec<Fp128
 impl<const D: usize> JoltAkitaOpeningHint<D> {
     fn prove<ProofTranscript, Cfg>(
         self,
-        setup: &AkitaProverSetup<Fp128, D>,
+        setup: &JoltAkitaProverSetup<D>,
         opening_point: &[JoltFp128],
         transcript: &mut ProofTranscript,
     ) -> AkitaProof<Fp128>
@@ -269,7 +306,7 @@ impl<const D: usize> JoltAkitaOpeningHint<D> {
             let poly = OneHotPoly::<Fp128, D, u8>::new(onehot_k, self.onehot_indices)
                 .expect("OneHotPoly construction failed");
             akita_prove_one::<D, Cfg, _, _>(
-                setup,
+                &setup.main.0,
                 &poly,
                 &akita_point,
                 self.akita_hint.0,
@@ -277,10 +314,10 @@ impl<const D: usize> JoltAkitaOpeningHint<D> {
                 &self.commitment.0,
             )
         } else {
-            let akita_point = to_akita_opening_point(opening_point);
-            let poly = DensePoly::from_ring_coeffs(self.ring_coeffs);
-            akita_prove_one::<D, Cfg, _, _>(
-                setup,
+            let akita_point = to_akita_dense_opening_point::<D>(opening_point);
+            let poly = dense_poly_from_ring_coeffs(self.ring_coeffs);
+            akita_prove_one::<D, Fp128DenseConfig, _, _>(
+                &setup.dense.0,
                 &poly,
                 &akita_point,
                 self.akita_hint.0,
@@ -297,8 +334,8 @@ where
 {
     type Field = JoltFp128;
     type Config = ();
-    type ProverSetup = ArkBridge<AkitaProverSetup<Fp128, D>>;
-    type VerifierSetup = ArkBridge<AkitaVerifierSetup<Fp128>>;
+    type ProverSetup = JoltAkitaProverSetup<D>;
+    type VerifierSetup = JoltAkitaVerifierSetup<D>;
     type Commitment = ArkBridge<RingCommitment<Fp128, D>>;
     type Proof = JoltAkitaProof;
     type BatchedProof = JoltAkitaProof;
@@ -306,13 +343,21 @@ where
     type BatchOpeningHint = JoltAkitaBatchHint<D>;
 
     fn setup_prover(max_num_vars: usize) -> Self::ProverSetup {
-        ArkBridge(
+        let main =
             <AkitaCommitmentScheme<D, Cfg> as AkitaCommitmentProver<Fp128, D>>::setup_prover(
                 max_num_vars,
                 1,
             )
-            .expect("Akita setup_prover failed"),
-        )
+            .expect("Akita setup_prover failed");
+        let dense = <AkitaCommitmentScheme<D, Fp128DenseConfig> as AkitaCommitmentProver<
+            Fp128,
+            D,
+        >>::setup_prover(max_num_vars, 1)
+        .expect("Akita dense setup_prover failed");
+        JoltAkitaProverSetup {
+            main: ArkBridge(main),
+            dense: ArkBridge(dense),
+        }
     }
 
     fn setup_prover_from_shape(
@@ -320,20 +365,42 @@ where
         max_log_k: usize,
         log_packed: Option<usize>,
     ) -> Self::ProverSetup {
+        Self::setup_prover_from_shape_with_extra(max_log_t, max_log_k, log_packed, &[])
+    }
+
+    fn setup_prover_from_shape_with_extra(
+        max_log_t: usize,
+        max_log_k: usize,
+        log_packed: Option<usize>,
+        extra_num_vars: &[usize],
+    ) -> Self::ProverSetup {
         let max_num_vars = if let Some(log_packed) = log_packed {
             choose_packed_layout_for_shape::<D, Cfg>(max_log_k, max_log_t, log_packed)
                 .total_num_vars()
         } else {
             max_log_t + max_log_k
         };
+        let max_num_vars = extra_num_vars
+            .iter()
+            .copied()
+            .fold(max_num_vars, usize::max);
         Self::setup_prover(max_num_vars)
     }
 
     fn setup_verifier(setup: &Self::ProverSetup) -> Self::VerifierSetup {
-        ArkBridge(<AkitaCommitmentScheme<D, Cfg> as AkitaCommitmentProver<
-            Fp128,
-            D,
-        >>::setup_verifier(&setup.0))
+        JoltAkitaVerifierSetup {
+            main: ArkBridge(<AkitaCommitmentScheme<D, Cfg> as AkitaCommitmentProver<
+                Fp128,
+                D,
+            >>::setup_verifier(&setup.main.0)),
+            dense:
+                ArkBridge(
+                    <AkitaCommitmentScheme<D, Fp128DenseConfig> as AkitaCommitmentProver<
+                        Fp128,
+                        D,
+                    >>::setup_verifier(&setup.dense.0),
+                ),
+        }
     }
 
     fn append_pcs_config_to_transcript<ProofTranscript: Transcript>(
@@ -352,12 +419,13 @@ where
                 let indices = onehot.nonzero_indices.as_ref().clone();
                 let poly = OneHotPoly::<Fp128, D, u8>::new(onehot.K, indices.clone())
                     .expect("OneHotPoly construction failed");
-                let (commitment, hint) = commit_akita_poly::<D, Cfg, _>(&setup.0, &poly);
+                let (commitment, hint) = commit_akita_poly::<D, Cfg, _>(&setup.main.0, &poly);
                 (commitment, hint, Vec::new(), Some(onehot.K), indices)
             } else {
                 let ring_coeffs = poly_to_ring_coeffs::<D>(poly);
-                let poly = DensePoly::from_ring_coeffs(ring_coeffs.clone());
-                let (commitment, hint) = commit_akita_poly::<D, Cfg, _>(&setup.0, &poly);
+                let poly = dense_poly_from_ring_coeffs(ring_coeffs.clone());
+                let (commitment, hint) =
+                    commit_akita_poly::<D, Fp128DenseConfig, _>(&setup.dense.0, &poly);
                 (commitment, hint, ring_coeffs, None, Vec::new())
             };
 
@@ -394,7 +462,7 @@ where
         };
         let packed_poly =
             build_packed_poly(index_fn, batch_fn, num_cycles, num_polys, packed_layout);
-        let (commitment, akita_hint) = commit_akita_poly::<D, Cfg, _>(&setup.0, &packed_poly);
+        let (commitment, akita_hint) = commit_akita_poly::<D, Cfg, _>(&setup.main.0, &packed_poly);
         let commitment = ArkBridge(commitment);
         let hint = JoltAkitaBatchHint {
             commitment: commitment.clone(),
@@ -439,7 +507,7 @@ where
     ) -> (Self::Proof, Option<Self::Field>) {
         let hint = hint.expect("Akita prove requires an opening hint");
         let mut adapter = JoltToAkitaTranscript::new(transcript);
-        let proof = hint.prove::<_, Cfg>(&setup.0, opening_point, &mut adapter);
+        let proof = hint.prove::<_, Cfg>(setup, opening_point, &mut adapter);
         (
             JoltAkitaProof {
                 packed_poly_proof: ArkBridge(proof),
@@ -471,17 +539,7 @@ where
             })
             .collect::<Vec<_>>();
 
-        let individual_openings = state
-            .individual_openings
-            .iter()
-            .filter(|opening| {
-                matches!(
-                    opening.polynomial,
-                    CommittedPolynomial::TrustedAdvice | CommittedPolynomial::UntrustedAdvice
-                )
-            })
-            .cloned()
-            .collect::<Vec<_>>();
+        let individual_openings = state.individual_openings.clone();
 
         let num_packed = context.batch_hint.num_packed_polys;
         assert_eq!(packed_claims.len(), num_packed);
@@ -504,7 +562,6 @@ where
             b"akita_packed_claim",
             &akita_combined.to_canonical_u128().to_le_bytes(),
         );
-
         let trace = match &context.trace_source {
             TraceSource::Materialized(trace) => trace,
             TraceSource::Lazy(_) => panic!("Akita packed opening requires materialized trace"),
@@ -536,7 +593,7 @@ where
         );
         let mut adapter = JoltToAkitaTranscript::new(transcript);
         let packed_proof = akita_prove_one::<D, Cfg, _, _>(
-            &context.setup.0,
+            &context.setup.main.0,
             &packed_poly,
             &packed_point,
             context.batch_hint.akita_hint.0,
@@ -555,22 +612,21 @@ where
                 transcript.append_bytes(b"akita_individual_item", &(index as u64).to_le_bytes());
                 let mut adapter = JoltToAkitaTranscript::new(transcript);
                 ArkBridge(hint.prove::<_, Cfg>(
-                    &context.setup.0,
+                    context.setup,
                     &opening.opening_point.r,
                     &mut adapter,
                 ))
             })
             .collect();
 
-        (
-            JoltAkitaProof {
-                packed_poly_proof: ArkBridge(packed_proof),
-                num_packed_polys: num_packed as u32,
-                log_k: context.batch_hint.log_k as u32,
-                individual_proofs,
-            },
-            None,
-        )
+        let proof = JoltAkitaProof {
+            packed_poly_proof: ArkBridge(packed_proof),
+            num_packed_polys: num_packed as u32,
+            log_k: context.batch_hint.log_k as u32,
+            individual_proofs,
+        };
+
+        (proof, None)
     }
 
     fn verify<ProofTranscript: Transcript>(
@@ -581,12 +637,12 @@ where
         opening: &JoltFp128,
         commitment: &Self::Commitment,
     ) -> Result<(), ProofVerifyError> {
-        let akita_point = to_akita_opening_point(opening_point);
+        let akita_point = to_akita_dense_opening_point::<D>(opening_point);
         let akita_opening = jolt_to_akita(opening);
         let mut adapter = JoltToAkitaTranscript::new(transcript);
-        akita_verify_one::<D, Cfg, _>(
+        akita_verify_one::<D, Fp128DenseConfig, _>(
             &proof.packed_poly_proof.0,
-            &setup.0,
+            &setup.dense.0,
             &mut adapter,
             &akita_point,
             &akita_opening,
@@ -602,9 +658,20 @@ where
         commitment_map: &mut HashMap<CommittedPolynomial, Self::Commitment>,
         _joint_claim: &Self::Field,
     ) -> Result<(), ProofVerifyError> {
-        let num_packed = proof.num_packed_polys as usize;
+        let num_packed = state
+            .polynomial_claims
+            .len()
+            .checked_sub(state.individual_openings.len())
+            .ok_or(ProofVerifyError::InvalidOpeningProof)?;
         if num_packed == 0 {
             return Err(ProofVerifyError::InvalidInputLength(1, 0));
+        }
+        let proof_num_packed = proof.num_packed_polys as usize;
+        if proof_num_packed != num_packed {
+            return Err(ProofVerifyError::InvalidInputLength(
+                num_packed,
+                proof_num_packed,
+            ));
         }
         let packed_claims = state
             .polynomial_claims
@@ -621,7 +688,13 @@ where
             .zip(eq_table.iter())
             .map(|(&claim, &eq)| claim * eq)
             .sum::<JoltFp128>();
-        let log_k = proof.log_k as usize;
+        let log_k = state
+            .packed_log_k
+            .ok_or(ProofVerifyError::InvalidOpeningProof)?;
+        let proof_log_k = proof.log_k as usize;
+        if proof_log_k != log_k {
+            return Err(ProofVerifyError::InvalidInputLength(log_k, proof_log_k));
+        }
         let log_t = state.opening_point.len().checked_sub(log_k).ok_or(
             ProofVerifyError::InvalidInputLength(log_k, state.opening_point.len()),
         )?;
@@ -632,6 +705,7 @@ where
             b"akita_packed_claim",
             &akita_combined.to_canonical_u128().to_le_bytes(),
         );
+        let individual_openings = state.individual_openings.iter().collect::<Vec<_>>();
         let packed_commitment = commitment_map
             .remove(
                 &state
@@ -644,23 +718,13 @@ where
         let mut adapter = JoltToAkitaTranscript::new(transcript);
         akita_verify_one::<D, Cfg, _>(
             &proof.packed_poly_proof.0,
-            &setup.0,
+            &setup.main.0,
             &mut adapter,
             &packed_point,
             &akita_combined,
             &packed_commitment.0,
         )?;
 
-        let individual_openings = state
-            .individual_openings
-            .iter()
-            .filter(|opening| {
-                matches!(
-                    opening.polynomial,
-                    CommittedPolynomial::TrustedAdvice | CommittedPolynomial::UntrustedAdvice
-                )
-            })
-            .collect::<Vec<_>>();
         if proof.individual_proofs.len() != individual_openings.len() {
             return Err(ProofVerifyError::InvalidInputLength(
                 individual_openings.len(),
@@ -675,13 +739,13 @@ where
             let commitment = commitment_map
                 .remove(&opening.polynomial)
                 .ok_or(ProofVerifyError::InvalidOpeningProof)?;
-            let akita_point = to_akita_opening_point(&opening.opening_point.r);
+            let akita_point = to_akita_dense_opening_point::<D>(&opening.opening_point.r);
             let akita_claim = jolt_to_akita(&opening.claim);
             transcript.append_bytes(b"akita_individual_item", &(index as u64).to_le_bytes());
             let mut adapter = JoltToAkitaTranscript::new(transcript);
-            akita_verify_one::<D, Cfg, _>(
+            akita_verify_one::<D, Fp128DenseConfig, _>(
                 &proof.0,
-                &setup.0,
+                &setup.dense.0,
                 &mut adapter,
                 &akita_point,
                 &akita_claim,
@@ -775,7 +839,7 @@ where
                     .collect::<Vec<_>>();
                 let poly = OneHotPoly::<Fp128, D, u8>::new(onehot_k, indices.clone())
                     .expect("OneHotPoly construction failed");
-                let (commitment, akita_hint) = commit_akita_poly::<D, Cfg, _>(&setup.0, &poly);
+                let (commitment, akita_hint) = commit_akita_poly::<D, Cfg, _>(&setup.main.0, &poly);
                 let commitment = ArkBridge(commitment);
                 let hint = JoltAkitaOpeningHint {
                     commitment: commitment.clone(),
@@ -795,8 +859,9 @@ where
                     })
                     .collect::<Vec<_>>();
                 let ring_coeffs = pack_field_to_ring::<D>(&coeffs);
-                let poly = DensePoly::from_ring_coeffs(ring_coeffs.clone());
-                let (commitment, akita_hint) = commit_akita_poly::<D, Cfg, _>(&setup.0, &poly);
+                let poly = dense_poly_from_ring_coeffs(ring_coeffs.clone());
+                let (commitment, akita_hint) =
+                    commit_akita_poly::<D, Fp128DenseConfig, _>(&setup.dense.0, &poly);
                 let commitment = ArkBridge(commitment);
                 let hint = JoltAkitaOpeningHint {
                     commitment: commitment.clone(),

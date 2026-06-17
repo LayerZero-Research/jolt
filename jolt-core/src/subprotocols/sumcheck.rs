@@ -198,7 +198,12 @@ impl BatchedSumcheck {
     ///
     /// Returns (proof, challenges, initial_batched_claim)
     #[cfg(feature = "zk")]
-    pub fn prove_zk<F: JoltField, C: JoltCurve, ProofTranscript: Transcript, R: CryptoRngCore>(
+    pub fn prove_zk<
+        F: JoltField,
+        C: JoltCurve<F = F>,
+        ProofTranscript: Transcript,
+        R: CryptoRngCore,
+    >(
         mut sumcheck_instances: Vec<&mut dyn SumcheckInstanceProver<F, ProofTranscript>>,
         opening_accumulator: &mut ProverOpeningAccumulator<F>,
         blindfold_accumulator: &mut crate::subprotocols::blindfold::BlindFoldAccumulator<F, C>,

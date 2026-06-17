@@ -102,6 +102,20 @@ pub trait JoltCurve: Clone + Sync + Send + 'static {
     fn random_g1<R: rand_core::RngCore>(rng: &mut R) -> Self::G1;
 }
 
+/// Curves whose scalar field must match the proof field whenever ZK/BlindFold is compiled.
+/// Non-ZK Akita still carries a curve type parameter even though it does not use curve arithmetic.
+#[cfg(feature = "zk")]
+pub trait ZkCompatibleCurve<F: JoltField>: JoltCurve<F = F> {}
+
+#[cfg(feature = "zk")]
+impl<F: JoltField, C: JoltCurve<F = F>> ZkCompatibleCurve<F> for C {}
+
+#[cfg(not(feature = "zk"))]
+pub trait ZkCompatibleCurve<F: JoltField>: JoltCurve {}
+
+#[cfg(not(feature = "zk"))]
+impl<F: JoltField, C: JoltCurve> ZkCompatibleCurve<F> for C {}
+
 use ark_bn254::{Bn254, Fq12, Fr, G1Affine, G1Projective, G2Affine, G2Projective};
 use ark_ec::{pairing::Pairing, AdditiveGroup, AffineRepr, CurveGroup, VariableBaseMSM};
 use ark_ff::{One, Zero};

@@ -109,10 +109,23 @@ pub trait CommitmentScheme: Clone + Sync + Send + 'static {
         max_log_k: usize,
         log_packed: Option<usize>,
     ) -> Self::ProverSetup {
+        Self::setup_prover_from_shape_with_extra(max_log_t, max_log_k, log_packed, &[])
+    }
+
+    fn setup_prover_from_shape_with_extra(
+        max_log_t: usize,
+        max_log_k: usize,
+        log_packed: Option<usize>,
+        extra_num_vars: &[usize],
+    ) -> Self::ProverSetup {
         let max_num_vars = max_log_t
             .checked_add(max_log_k)
             .and_then(|n| n.checked_add(log_packed.unwrap_or(0)))
             .expect("setup_prover_from_shape max_num_vars overflow");
+        let max_num_vars = extra_num_vars
+            .iter()
+            .copied()
+            .fold(max_num_vars, usize::max);
         Self::setup_prover(max_num_vars)
     }
 

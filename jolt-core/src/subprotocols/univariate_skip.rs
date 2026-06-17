@@ -153,7 +153,7 @@ pub fn prove_uniskip_round<F: JoltField, T: Transcript, I: SumcheckInstanceProve
 #[cfg(feature = "zk")]
 pub fn prove_uniskip_round_zk<
     F: JoltField,
-    C: JoltCurve,
+    C: JoltCurve<F = F>,
     T: Transcript,
     I: SumcheckInstanceProver<F, T>,
     R: CryptoRngCore,

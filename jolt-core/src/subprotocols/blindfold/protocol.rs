@@ -28,7 +28,7 @@ use super::spartan::{INNER_SUMCHECK_DEGREE_BOUND, SPARTAN_DEGREE_BOUND};
 /// eval_commitments, public_inputs. The random instance IS included — verifier reads
 /// it from the proof and absorbs into transcript, never learning the random witness.
 #[derive(Clone, Debug, CanonicalSerialize, CanonicalDeserialize)]
-pub struct BlindFoldProof<F: JoltField, C: JoltCurve<F = F>> {
+pub struct BlindFoldProof<F: JoltField, C: JoltCurve> {
     pub random_instance: RelaxedR1CSInstance<F, C>,
 
     /// Non-coefficient W row commitments from the real instance
