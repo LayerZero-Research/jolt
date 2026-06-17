@@ -3,8 +3,10 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::slice::from_ref;
 
+use super::packed_layout::{choose_packed_bit_layout, PackedBitLayout};
+use super::packed_poly::build_packed_poly;
 use akita_algebra::CyclotomicRing;
-use akita_config::proof_optimized::fp128::D128Full;
+use akita_config::proof_optimized::fp128::D32OneHot;
 use akita_config::CommitmentConfig;
 use akita_field::CanonicalField;
 use akita_pcs::AkitaCommitmentScheme;
@@ -30,16 +32,19 @@ use crate::curve::JoltCurve;
 use crate::field::fp128::JoltFp128;
 use crate::field::JoltField;
 use crate::poly::commitment::commitment_scheme::{
-    BatchOpeningProverContext, CommitmentScheme, StreamingCommitmentScheme, ZkEvalCommitment,
+    BatchOpeningProverContext, CommitmentScheme, PolynomialBatchSource, StreamingCommitmentScheme,
+    ZkEvalCommitment,
 };
+use crate::poly::eq_poly::EqPolynomial;
 use crate::poly::multilinear_polynomial::MultilinearPolynomial;
 use crate::poly::opening_proof::BatchOpeningState;
+use crate::poly::rlc_polynomial::TraceSource;
 use crate::transcripts::Transcript;
 use crate::utils::errors::ProofVerifyError;
 use crate::utils::small_scalar::SmallScalar;
-use crate::zkvm::witness::CommittedPolynomial;
+use crate::zkvm::witness::{all_committed_polynomials, CommittedPolynomial};
 
-pub type Fp128Dense128Config = D128Full;
+pub type Fp128OneHot32Config = D32OneHot;
 
 #[derive(Clone, Default)]
 pub struct JoltAkitaCommitmentScheme<
@@ -51,7 +56,19 @@ pub struct JoltAkitaCommitmentScheme<
 
 #[derive(Clone, Debug, CanonicalSerialize, CanonicalDeserialize)]
 pub struct JoltAkitaProof {
-    proofs: Vec<ArkBridge<AkitaProof<Fp128>>>,
+    packed_poly_proof: ArkBridge<AkitaProof<Fp128>>,
+    num_packed_polys: u32,
+    log_k: u32,
+    individual_proofs: Vec<ArkBridge<AkitaProof<Fp128>>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct JoltAkitaBatchHint<const D: usize> {
+    commitment: ArkBridge<RingCommitment<Fp128, D>>,
+    akita_hint: ArkBridge<akita_types::AkitaCommitmentHint<Fp128, D>>,
+    packed_layout: PackedBitLayout,
+    num_packed_polys: usize,
+    log_k: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -179,6 +196,49 @@ fn to_akita_opening_point(point: &[JoltFp128]) -> Vec<Fp128> {
     point.iter().rev().map(jolt_to_akita).collect()
 }
 
+fn to_akita_packed_opening_point(
+    opening_point: &[JoltFp128],
+    rho: &[JoltFp128],
+    packed_layout: PackedBitLayout,
+) -> Vec<Fp128> {
+    let reversed = to_akita_opening_point(opening_point);
+    let log_k = packed_layout.log_k();
+    assert!(
+        log_k <= reversed.len(),
+        "packed opening point expects log_k <= num_vars"
+    );
+    let log_t = reversed.len() - log_k;
+    let rho_le = rho.iter().rev().map(jolt_to_akita).collect::<Vec<_>>();
+    packed_layout.reorder_packed_point(&reversed[..log_t], &reversed[log_t..], &rho_le)
+}
+
+fn choose_packed_layout_for_shape<const D: usize, Cfg>(
+    log_k: usize,
+    log_t: usize,
+    log_packed: usize,
+) -> PackedBitLayout
+where
+    Cfg: CommitmentConfig<Field = Fp128, ExtField = Fp128>,
+{
+    choose_packed_bit_layout::<D, Cfg>(log_k, log_t, log_packed)
+}
+
+fn choose_packed_layout_for_dims<const D: usize, Cfg>(
+    num_cycles: usize,
+    num_polys: usize,
+    onehot_k: usize,
+) -> PackedBitLayout
+where
+    Cfg: CommitmentConfig<Field = Fp128, ExtField = Fp128>,
+{
+    assert!(num_cycles.is_power_of_two());
+    assert!(onehot_k.is_power_of_two());
+    let log_k = onehot_k.trailing_zeros() as usize;
+    let log_t = num_cycles.trailing_zeros() as usize;
+    let log_packed = num_polys.next_power_of_two().trailing_zeros() as usize;
+    choose_packed_layout_for_shape::<D, Cfg>(log_k, log_t, log_packed)
+}
+
 // Akita stores one-hot chunks as cycle-major `cycle * K + address`, while Jolt
 // sumcheck openings are ordered as `[address, cycle]`.
 fn to_akita_onehot_opening_point(point: &[JoltFp128], log_k: usize) -> Vec<Fp128> {
@@ -189,15 +249,6 @@ fn to_akita_onehot_opening_point(point: &[JoltFp128], log_k: usize) -> Vec<Fp128
         .chain(r_cycle.iter().rev())
         .map(jolt_to_akita)
         .collect()
-}
-
-fn is_onehot_polynomial(polynomial: CommittedPolynomial) -> bool {
-    matches!(
-        polynomial,
-        CommittedPolynomial::InstructionRa(_)
-            | CommittedPolynomial::BytecodeRa(_)
-            | CommittedPolynomial::RamRa(_)
-    )
 }
 
 impl<const D: usize> JoltAkitaOpeningHint<D> {
@@ -252,6 +303,7 @@ where
     type Proof = JoltAkitaProof;
     type BatchedProof = JoltAkitaProof;
     type OpeningProofHint = JoltAkitaOpeningHint<D>;
+    type BatchOpeningHint = JoltAkitaBatchHint<D>;
 
     fn setup_prover(max_num_vars: usize) -> Self::ProverSetup {
         ArkBridge(
@@ -261,6 +313,20 @@ where
             )
             .expect("Akita setup_prover failed"),
         )
+    }
+
+    fn setup_prover_from_shape(
+        max_log_t: usize,
+        max_log_k: usize,
+        log_packed: Option<usize>,
+    ) -> Self::ProverSetup {
+        let max_num_vars = if let Some(log_packed) = log_packed {
+            choose_packed_layout_for_shape::<D, Cfg>(max_log_k, max_log_t, log_packed)
+                .total_num_vars()
+        } else {
+            max_log_t + max_log_k
+        };
+        Self::setup_prover(max_num_vars)
     }
 
     fn setup_verifier(setup: &Self::ProverSetup) -> Self::VerifierSetup {
@@ -306,17 +372,38 @@ where
         (commitment, hint)
     }
 
-    fn batch_commit<U>(
-        polys: &[U],
+    fn batch_commit<S>(
+        source: &S,
         setup: &Self::ProverSetup,
-    ) -> Vec<(Self::Commitment, Self::OpeningProofHint)>
+    ) -> (Vec<Self::Commitment>, Self::BatchOpeningHint)
     where
-        U: Borrow<MultilinearPolynomial<Self::Field>> + Sync,
+        S: PolynomialBatchSource<Self::Field>,
     {
-        polys
-            .par_iter()
-            .map(|poly| Self::commit(poly.borrow(), setup))
-            .collect()
+        let num_cycles = source
+            .num_cycles()
+            .expect("Akita batch_commit requires lazy source");
+        let onehot_k = source
+            .onehot_k()
+            .expect("Akita batch_commit requires one-hot source");
+        let num_polys = source.num_polys();
+        let packed_layout =
+            choose_packed_layout_for_dims::<D, Cfg>(num_cycles, num_polys, onehot_k);
+        let index_fn = |cycle_idx: usize, poly_idx: usize| source.onehot_index(cycle_idx, poly_idx);
+        let batch_fn = |cycle_idx: usize, poly_start: usize, buf: &mut [Option<u8>]| {
+            source.batch_onehot_indices(cycle_idx, poly_start, buf);
+        };
+        let packed_poly =
+            build_packed_poly(index_fn, batch_fn, num_cycles, num_polys, packed_layout);
+        let (commitment, akita_hint) = commit_akita_poly::<D, Cfg, _>(&setup.0, &packed_poly);
+        let commitment = ArkBridge(commitment);
+        let hint = JoltAkitaBatchHint {
+            commitment: commitment.clone(),
+            akita_hint: ArkBridge(akita_hint),
+            packed_layout,
+            num_packed_polys: num_polys,
+            log_k: onehot_k.trailing_zeros() as usize,
+        };
+        (vec![commitment], hint)
     }
 
     fn combine_commitments<C: Borrow<Self::Commitment>>(
@@ -355,7 +442,10 @@ where
         let proof = hint.prove::<_, Cfg>(&setup.0, opening_point, &mut adapter);
         (
             JoltAkitaProof {
-                proofs: vec![ArkBridge(proof)],
+                packed_poly_proof: ArkBridge(proof),
+                num_packed_polys: 1,
+                log_k: opening_point.len() as u32,
+                individual_proofs: Vec::new(),
             },
             None,
         )
@@ -366,15 +456,102 @@ where
         mut context: BatchOpeningProverContext<'_, Self::Field, Self>,
         transcript: &mut ProofTranscript,
     ) -> (Self::Proof, Option<Self::Field>) {
-        let proofs = state
+        let main_polys = all_committed_polynomials(&context.one_hot_params, true);
+        let mut claim_map = state
+            .polynomial_claims
+            .iter()
+            .copied()
+            .collect::<HashMap<_, _>>();
+        let packed_claims = main_polys
+            .iter()
+            .map(|poly| {
+                claim_map
+                    .remove(poly)
+                    .expect("missing packed Akita main claim")
+            })
+            .collect::<Vec<_>>();
+
+        let individual_openings = state
             .individual_openings
+            .iter()
+            .filter(|opening| {
+                matches!(
+                    opening.polynomial,
+                    CommittedPolynomial::TrustedAdvice | CommittedPolynomial::UntrustedAdvice
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let num_packed = context.batch_hint.num_packed_polys;
+        assert_eq!(packed_claims.len(), num_packed);
+        let selector_vars = num_packed.next_power_of_two().trailing_zeros() as usize;
+        transcript.append_bytes(b"akita_packed_num", &(num_packed as u64).to_le_bytes());
+        let rho = transcript.challenge_vector(selector_vars);
+        let eq_table = EqPolynomial::<JoltFp128>::evals(&rho);
+        let combined_claim = packed_claims
+            .iter()
+            .zip(eq_table.iter())
+            .map(|(&claim, &eq)| claim * eq)
+            .sum::<JoltFp128>();
+        let packed_point = to_akita_packed_opening_point(
+            &state.opening_point,
+            &rho,
+            context.batch_hint.packed_layout,
+        );
+        let akita_combined = jolt_to_akita(&combined_claim);
+        transcript.append_bytes(
+            b"akita_packed_claim",
+            &akita_combined.to_canonical_u128().to_le_bytes(),
+        );
+
+        let trace = match &context.trace_source {
+            TraceSource::Materialized(trace) => trace,
+            TraceSource::Lazy(_) => panic!("Akita packed opening requires materialized trace"),
+        };
+        let index_fn = |cycle_idx: usize, poly_idx: usize| {
+            main_polys[poly_idx].extract_index(
+                &trace[cycle_idx],
+                &context.rlc_streaming_data.bytecode,
+                &context.rlc_streaming_data.memory_layout,
+                &context.one_hot_params,
+            )
+        };
+        let batch_fn = |cycle_idx: usize, poly_start: usize, buf: &mut [Option<u8>]| {
+            for (i, slot) in buf.iter_mut().enumerate() {
+                *slot = main_polys[poly_start + i].extract_index(
+                    &trace[cycle_idx],
+                    &context.rlc_streaming_data.bytecode,
+                    &context.rlc_streaming_data.memory_layout,
+                    &context.one_hot_params,
+                );
+            }
+        };
+        let packed_poly = build_packed_poly(
+            index_fn,
+            batch_fn,
+            trace.len(),
+            main_polys.len(),
+            context.batch_hint.packed_layout,
+        );
+        let mut adapter = JoltToAkitaTranscript::new(transcript);
+        let packed_proof = akita_prove_one::<D, Cfg, _, _>(
+            &context.setup.0,
+            &packed_poly,
+            &packed_point,
+            context.batch_hint.akita_hint.0,
+            &mut adapter,
+            &context.batch_hint.commitment.0,
+        );
+
+        let individual_proofs = individual_openings
             .iter()
             .enumerate()
             .map(|(index, opening)| {
                 let hint = context
                     .opening_hints
                     .remove(&opening.polynomial)
-                    .expect("missing Akita opening hint");
+                    .expect("missing Akita individual opening hint");
                 transcript.append_bytes(b"akita_individual_item", &(index as u64).to_le_bytes());
                 let mut adapter = JoltToAkitaTranscript::new(transcript);
                 ArkBridge(hint.prove::<_, Cfg>(
@@ -384,7 +561,16 @@ where
                 ))
             })
             .collect();
-        (JoltAkitaProof { proofs }, None)
+
+        (
+            JoltAkitaProof {
+                packed_poly_proof: ArkBridge(packed_proof),
+                num_packed_polys: num_packed as u32,
+                log_k: context.batch_hint.log_k as u32,
+                individual_proofs,
+            },
+            None,
+        )
     }
 
     fn verify<ProofTranscript: Transcript>(
@@ -395,14 +581,11 @@ where
         opening: &JoltFp128,
         commitment: &Self::Commitment,
     ) -> Result<(), ProofVerifyError> {
-        if proof.proofs.len() != 1 {
-            return Err(ProofVerifyError::InvalidInputLength(1, proof.proofs.len()));
-        }
         let akita_point = to_akita_opening_point(opening_point);
         let akita_opening = jolt_to_akita(opening);
         let mut adapter = JoltToAkitaTranscript::new(transcript);
         akita_verify_one::<D, Cfg, _>(
-            &proof.proofs[0].0,
+            &proof.packed_poly_proof.0,
             &setup.0,
             &mut adapter,
             &akita_point,
@@ -419,41 +602,80 @@ where
         commitment_map: &mut HashMap<CommittedPolynomial, Self::Commitment>,
         _joint_claim: &Self::Field,
     ) -> Result<(), ProofVerifyError> {
-        if proof.proofs.len() != state.individual_openings.len() {
+        let num_packed = proof.num_packed_polys as usize;
+        if num_packed == 0 {
+            return Err(ProofVerifyError::InvalidInputLength(1, 0));
+        }
+        let packed_claims = state
+            .polynomial_claims
+            .iter()
+            .take(num_packed)
+            .map(|(_, claim)| *claim)
+            .collect::<Vec<_>>();
+        let selector_vars = num_packed.next_power_of_two().trailing_zeros() as usize;
+        transcript.append_bytes(b"akita_packed_num", &(num_packed as u64).to_le_bytes());
+        let rho = transcript.challenge_vector(selector_vars);
+        let eq_table = EqPolynomial::<JoltFp128>::evals(&rho);
+        let combined_claim = packed_claims
+            .iter()
+            .zip(eq_table.iter())
+            .map(|(&claim, &eq)| claim * eq)
+            .sum::<JoltFp128>();
+        let log_k = proof.log_k as usize;
+        let log_t = state.opening_point.len().checked_sub(log_k).ok_or(
+            ProofVerifyError::InvalidInputLength(log_k, state.opening_point.len()),
+        )?;
+        let packed_layout = choose_packed_layout_for_shape::<D, Cfg>(log_k, log_t, selector_vars);
+        let packed_point = to_akita_packed_opening_point(&state.opening_point, &rho, packed_layout);
+        let akita_combined = jolt_to_akita(&combined_claim);
+        transcript.append_bytes(
+            b"akita_packed_claim",
+            &akita_combined.to_canonical_u128().to_le_bytes(),
+        );
+        let packed_commitment = commitment_map
+            .remove(
+                &state
+                    .polynomial_claims
+                    .first()
+                    .ok_or(ProofVerifyError::InvalidOpeningProof)?
+                    .0,
+            )
+            .ok_or(ProofVerifyError::InvalidOpeningProof)?;
+        let mut adapter = JoltToAkitaTranscript::new(transcript);
+        akita_verify_one::<D, Cfg, _>(
+            &proof.packed_poly_proof.0,
+            &setup.0,
+            &mut adapter,
+            &packed_point,
+            &akita_combined,
+            &packed_commitment.0,
+        )?;
+
+        let individual_openings = state
+            .individual_openings
+            .iter()
+            .filter(|opening| {
+                matches!(
+                    opening.polynomial,
+                    CommittedPolynomial::TrustedAdvice | CommittedPolynomial::UntrustedAdvice
+                )
+            })
+            .collect::<Vec<_>>();
+        if proof.individual_proofs.len() != individual_openings.len() {
             return Err(ProofVerifyError::InvalidInputLength(
-                state.individual_openings.len(),
-                proof.proofs.len(),
+                individual_openings.len(),
+                proof.individual_proofs.len(),
             ));
         }
-
-        let log_T = state
-            .individual_openings
-            .iter()
-            .find_map(|opening| match opening.polynomial {
-                CommittedPolynomial::RamInc | CommittedPolynomial::RdInc => {
-                    Some(opening.opening_point.r.len())
-                }
-                _ => None,
-            });
-
-        for (index, (opening, proof)) in state
-            .individual_openings
-            .iter()
-            .zip(&proof.proofs)
+        for (index, (opening, proof)) in individual_openings
+            .into_iter()
+            .zip(proof.individual_proofs.iter())
             .enumerate()
         {
             let commitment = commitment_map
                 .remove(&opening.polynomial)
                 .ok_or(ProofVerifyError::InvalidOpeningProof)?;
-            let akita_point = if is_onehot_polynomial(opening.polynomial) {
-                let log_T = log_T.ok_or(ProofVerifyError::InvalidOpeningProof)?;
-                let log_k = opening.opening_point.r.len().checked_sub(log_T).ok_or(
-                    ProofVerifyError::InvalidInputLength(log_T, opening.opening_point.r.len()),
-                )?;
-                to_akita_onehot_opening_point(&opening.opening_point.r, log_k)
-            } else {
-                to_akita_opening_point(&opening.opening_point.r)
-            };
+            let akita_point = to_akita_opening_point(&opening.opening_point.r);
             let akita_claim = jolt_to_akita(&opening.claim);
             transcript.append_bytes(b"akita_individual_item", &(index as u64).to_le_bytes());
             let mut adapter = JoltToAkitaTranscript::new(transcript);
@@ -472,6 +694,40 @@ where
 
     fn protocol_name() -> &'static [u8] {
         b"Akita"
+    }
+
+    fn split_batch_hint(_batch_hint: &Self::BatchOpeningHint) -> Vec<Self::OpeningProofHint> {
+        Vec::new()
+    }
+
+    fn packed_main_commitment_arity() -> Option<usize> {
+        Some(1)
+    }
+
+    fn uses_onehot_inc() -> bool {
+        true
+    }
+
+    fn supported_log_k_chunks(max_log_k: usize) -> Vec<usize> {
+        if max_log_k > 4 {
+            vec![4, max_log_k]
+        } else {
+            vec![max_log_k]
+        }
+    }
+
+    fn validate_batch_proof_shape(
+        proof: &Self::BatchedProof,
+        one_hot_log_k_chunk: usize,
+    ) -> Result<(), ProofVerifyError> {
+        let proof_log_k = proof.log_k as usize;
+        if proof_log_k != one_hot_log_k_chunk {
+            return Err(ProofVerifyError::InvalidInputLength(
+                one_hot_log_k_chunk,
+                proof_log_k,
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -552,6 +808,10 @@ where
                 (commitment, hint)
             }
         }
+    }
+
+    fn streaming_batch_hint(_hints: Vec<Self::OpeningProofHint>) -> Self::BatchOpeningHint {
+        panic!("Akita uses packed batch_commit via PolynomialBatchSource")
     }
 }
 

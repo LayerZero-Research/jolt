@@ -3028,6 +3028,7 @@ name = "jolt-core"
 version = "0.1.0"
 dependencies = [
  "akita-algebra",
+ "akita-challenges",
  "akita-config",
  "akita-field",
  "akita-pcs",

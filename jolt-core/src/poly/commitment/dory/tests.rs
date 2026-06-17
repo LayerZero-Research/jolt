@@ -640,10 +640,7 @@ mod tests {
         let verifier_setup = DoryCommitmentScheme::setup_verifier(&prover_setup);
 
         // Step 2: Use batch_commit
-        let commitments_and_hints = DoryCommitmentScheme::batch_commit(&polys, &prover_setup);
-
-        let commitments: Vec<_> = commitments_and_hints.iter().map(|(c, _)| *c).collect();
-        let hints: Vec<_> = commitments_and_hints.into_iter().map(|(_, h)| h).collect();
+        let (commitments, hints) = DoryCommitmentScheme::batch_commit(&polys, &prover_setup);
 
         // Step 3: Generate random coefficients (like gamma powers in opening_proof.rs)
         let coeffs: Vec<Fr> = (0..num_polys).map(|_| Fr::rand(&mut rng)).collect();

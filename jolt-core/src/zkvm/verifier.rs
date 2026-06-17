@@ -1121,6 +1121,7 @@ impl<
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
+            PCS::uses_onehot_inc(),
         ));
         let instances: Vec<
             &dyn SumcheckInstanceVerifier<F, ProofTranscript, VerifierOpeningAccumulator<F>>,
@@ -1205,6 +1206,7 @@ impl<
             self.proof.trace_length,
             &self.opening_accumulator,
             &mut self.transcript,
+            PCS::uses_onehot_inc(),
         );
 
         let main_total_vars = self.proof.trace_length.log_2() + self.one_hot_params.log_k_chunk;
@@ -1626,6 +1628,7 @@ impl<
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
+            PCS::uses_onehot_inc(),
         );
 
         let mut instances: Vec<
@@ -1754,6 +1757,13 @@ impl<
                 },
                 self.preprocessing.shared.bytecode_chunk_count,
             )?
+        } else if PCS::packed_main_commitment_arity().is_some() {
+            self.opening_accumulator
+                .get_committed_polynomial_opening(
+                    CommittedPolynomial::InstructionRa(0),
+                    SumcheckId::HammingWeightClaimReduction,
+                )
+                .0
         } else {
             OpeningPoint::<BIG_ENDIAN, F>::new(Vec::new())
         };
@@ -1783,31 +1793,58 @@ impl<
             scaling_factors.push(lagrange);
         };
 
-        // Dense polynomials: RamInc and RdInc (from IncClaimReduction in Stage 6)
-        let (ram_inc_point, ram_inc_claim) =
-            self.opening_accumulator.get_committed_polynomial_opening(
+        if PCS::uses_onehot_inc() {
+            for i in 0..self.one_hot_params.inc_onehot_d() {
+                let (point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
+                    CommittedPolynomial::RdIncRa(i),
+                    SumcheckId::HammingWeightClaimReduction,
+                );
+                record_opening(CommittedPolynomial::RdIncRa(i), point, claim, F::one());
+            }
+            let (point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
+                CommittedPolynomial::RdIncMsb,
+                SumcheckId::HammingWeightClaimReduction,
+            );
+            record_opening(CommittedPolynomial::RdIncMsb, point, claim, F::one());
+            for i in 0..self.one_hot_params.inc_onehot_d() {
+                let (point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
+                    CommittedPolynomial::RamIncRa(i),
+                    SumcheckId::HammingWeightClaimReduction,
+                );
+                record_opening(CommittedPolynomial::RamIncRa(i), point, claim, F::one());
+            }
+            let (point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
+                CommittedPolynomial::RamIncMsb,
+                SumcheckId::HammingWeightClaimReduction,
+            );
+            record_opening(CommittedPolynomial::RamIncMsb, point, claim, F::one());
+        } else {
+            // Dense polynomials: RamInc and RdInc (from IncClaimReduction in Stage 6)
+            let (ram_inc_point, ram_inc_claim) =
+                self.opening_accumulator.get_committed_polynomial_opening(
+                    CommittedPolynomial::RamInc,
+                    SumcheckId::IncClaimReduction,
+                );
+            let (rd_inc_point, rd_inc_claim) =
+                self.opening_accumulator.get_committed_polynomial_opening(
+                    CommittedPolynomial::RdInc,
+                    SumcheckId::IncClaimReduction,
+                );
+            let ram_inc_lagrange = lagrange_factor_for(&ram_inc_point);
+            let rd_inc_lagrange = lagrange_factor_for(&rd_inc_point);
+            record_opening(
                 CommittedPolynomial::RamInc,
-                SumcheckId::IncClaimReduction,
+                ram_inc_point,
+                ram_inc_claim,
+                ram_inc_lagrange,
             );
-        let (rd_inc_point, rd_inc_claim) =
-            self.opening_accumulator.get_committed_polynomial_opening(
+            record_opening(
                 CommittedPolynomial::RdInc,
-                SumcheckId::IncClaimReduction,
+                rd_inc_point,
+                rd_inc_claim,
+                rd_inc_lagrange,
             );
-        let ram_inc_lagrange = lagrange_factor_for(&ram_inc_point);
-        let rd_inc_lagrange = lagrange_factor_for(&rd_inc_point);
-        record_opening(
-            CommittedPolynomial::RamInc,
-            ram_inc_point,
-            ram_inc_claim,
-            ram_inc_lagrange,
-        );
-        record_opening(
-            CommittedPolynomial::RdInc,
-            rd_inc_point,
-            rd_inc_claim,
-            rd_inc_lagrange,
-        );
+        }
 
         // Sparse polynomials: all RA polys (from HammingWeightClaimReduction)
         for i in 0..self.one_hot_params.instruction_d {
@@ -1911,6 +1948,40 @@ impl<
             );
         }
 
+        if PCS::packed_main_commitment_arity().is_some() {
+            let mut claim_map = polynomial_claims
+                .drain(..)
+                .collect::<HashMap<CommittedPolynomial, F>>();
+            let mut sorted_claims = Vec::new();
+            for poly in all_committed_polynomials(&self.one_hot_params, PCS::uses_onehot_inc()) {
+                let claim = claim_map
+                    .remove(&poly)
+                    .ok_or(ProofVerifyError::InvalidOpeningProof)?;
+                sorted_claims.push((poly, claim));
+            }
+            let mut sorted_individual = Vec::new();
+            for opening in individual_openings.drain(..) {
+                if sorted_claims
+                    .iter()
+                    .any(|(poly, _)| *poly == opening.polynomial)
+                {
+                    continue;
+                }
+                sorted_individual.push(opening);
+            }
+            for opening in &sorted_individual {
+                let claim = claim_map
+                    .remove(&opening.polynomial)
+                    .ok_or(ProofVerifyError::InvalidOpeningProof)?;
+                sorted_claims.push((opening.polynomial, claim));
+            }
+            if !claim_map.is_empty() {
+                return Err(ProofVerifyError::InvalidOpeningProof);
+            }
+            polynomial_claims = sorted_claims;
+            individual_openings = sorted_individual;
+        }
+
         // 2. Sample gamma and compute powers for RLC
         let claims: Vec<F> = polynomial_claims.iter().map(|(_, c)| *c).collect();
         // In non-ZK mode, absorb claims before sampling gamma for Fiat-Shamir binding.
@@ -1953,18 +2024,36 @@ impl<
 
         // Build commitments map
         let mut commitments_map = HashMap::new();
-        let expected_polynomials = all_committed_polynomials(&self.one_hot_params);
-        if expected_polynomials.len() != self.proof.commitments.len() {
+        let expected_polynomials =
+            all_committed_polynomials(&self.one_hot_params, PCS::uses_onehot_inc());
+        if let Some(arity) = PCS::packed_main_commitment_arity() {
+            if self.proof.commitments.len() != arity {
+                return Err(ProofVerifyError::InvalidInputLength(
+                    arity,
+                    self.proof.commitments.len(),
+                ));
+            }
+            let packed_commitment = self
+                .proof
+                .commitments
+                .first()
+                .ok_or(ProofVerifyError::InvalidOpeningProof)?
+                .clone();
+            for polynomial in expected_polynomials {
+                commitments_map.insert(polynomial, packed_commitment.clone());
+            }
+        } else if expected_polynomials.len() != self.proof.commitments.len() {
             return Err(ProofVerifyError::InvalidInputLength(
                 expected_polynomials.len(),
                 self.proof.commitments.len(),
             ));
-        }
-        for (polynomial, commitment) in expected_polynomials
-            .into_iter()
-            .zip(&self.proof.commitments)
-        {
-            commitments_map.insert(polynomial, commitment.clone());
+        } else {
+            for (polynomial, commitment) in expected_polynomials
+                .into_iter()
+                .zip(&self.proof.commitments)
+            {
+                commitments_map.insert(polynomial, commitment.clone());
+            }
         }
 
         // Add advice commitments if they're part of the batch

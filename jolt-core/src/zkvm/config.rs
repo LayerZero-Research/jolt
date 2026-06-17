@@ -8,8 +8,14 @@ use crate::field::JoltField;
 use crate::utils::math::Math;
 use crate::zkvm::instruction_lookups::LOG_K;
 use common::constants::{
-    INSTRUCTION_PHASES_THRESHOLD_LOG_T, ONEHOT_CHUNK_THRESHOLD_LOG_T, REGISTER_COUNT,
+    INSTRUCTION_PHASES_THRESHOLD_LOG_T, ONEHOT_CHUNK_THRESHOLD_LOG_T, REGISTER_COUNT, XLEN,
 };
+
+/// Bits needed to represent the unsigned offset increment.
+///
+/// Increment range is `[-(2^XLEN - 1), 2^XLEN - 1]`; adding `2^XLEN`
+/// maps to `[1, 2^(XLEN+1) - 1]`, which requires `XLEN + 1` bits.
+const INC_BITS: usize = XLEN + 1;
 
 /// Returns the number of phases for instruction sumcheck based on trace length.
 ///
@@ -253,6 +259,8 @@ pub struct OneHotParams {
     pub instruction_d: usize,
     pub bytecode_d: usize,
     pub ram_d: usize,
+    /// Number of one-hot chunks needed to encode an unsigned-offset increment.
+    pub d_inc: usize,
 
     instruction_shifts: Vec<usize>,
     ram_shifts: Vec<usize>,
@@ -271,6 +279,7 @@ impl OneHotParams {
         let instruction_d = LOG_K.div_ceil(log_k_chunk);
         let bytecode_d = bytecode_len.log_2().div_ceil(log_k_chunk);
         let ram_d = ram_k.log_2().div_ceil(log_k_chunk);
+        let d_inc = INC_BITS.div_ceil(log_k_chunk);
 
         let instruction_shifts = (0..instruction_d)
             .map(|i| log_k_chunk * (instruction_d - 1 - i))
@@ -289,6 +298,7 @@ impl OneHotParams {
             instruction_d,
             bytecode_d,
             ram_d,
+            d_inc,
             instruction_shifts,
             ram_shifts,
             bytecode_shifts,
@@ -311,6 +321,11 @@ impl OneHotParams {
         }
     }
 
+    /// Number of lower increment chunks, excluding the dedicated MSB chunk.
+    pub fn inc_onehot_d(&self) -> usize {
+        self.d_inc - 1
+    }
+
     pub fn ram_address_chunk(&self, address: u64, idx: usize) -> u8 {
         ((address >> self.ram_shifts[idx]) & (self.k_chunk - 1) as u64) as u8
     }
@@ -321,6 +336,15 @@ impl OneHotParams {
 
     pub fn lookup_index_chunk(&self, index: u128, idx: usize) -> u8 {
         ((index >> self.instruction_shifts[idx]) & (self.k_chunk - 1) as u128) as u8
+    }
+
+    /// Extract the `idx`-th big-endian chunk from an unsigned-offset increment.
+    ///
+    /// `idx == 0` is the most significant chunk. The Akita one-hot path commits
+    /// chunks `1..d_inc` as `*IncRa` plus chunk `0` as the dedicated MSB polynomial.
+    pub fn inc_chunk(&self, unsigned_inc: u128, idx: usize) -> u8 {
+        let shift = self.log_k_chunk * (self.d_inc - 1 - idx);
+        ((unsigned_inc >> shift) & (self.k_chunk - 1) as u128) as u8
     }
 
     pub fn compute_r_address_chunks<F: JoltField>(

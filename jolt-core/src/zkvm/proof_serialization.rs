@@ -300,6 +300,16 @@ impl CanonicalSerialize for CommittedPolynomial {
                 (u8::try_from(*i).unwrap()).serialize_with_mode(writer, compress)
             }
             Self::ProgramImageInit => 8u8.serialize_with_mode(writer, compress),
+            Self::RdIncRa(i) => {
+                9u8.serialize_with_mode(&mut writer, compress)?;
+                (u8::try_from(*i).unwrap()).serialize_with_mode(writer, compress)
+            }
+            Self::RdIncMsb => 10u8.serialize_with_mode(writer, compress),
+            Self::RamIncRa(i) => {
+                11u8.serialize_with_mode(&mut writer, compress)?;
+                (u8::try_from(*i).unwrap()).serialize_with_mode(writer, compress)
+            }
+            Self::RamIncMsb => 12u8.serialize_with_mode(writer, compress),
         }
     }
 
@@ -309,11 +319,15 @@ impl CanonicalSerialize for CommittedPolynomial {
             | Self::RamInc
             | Self::TrustedAdvice
             | Self::UntrustedAdvice
-            | Self::ProgramImageInit => 1,
+            | Self::ProgramImageInit
+            | Self::RdIncMsb
+            | Self::RamIncMsb => 1,
             Self::InstructionRa(_)
             | Self::BytecodeRa(_)
             | Self::RamRa(_)
-            | Self::BytecodeChunk(_) => 2,
+            | Self::BytecodeChunk(_)
+            | Self::RdIncRa(_)
+            | Self::RamIncRa(_) => 2,
         }
     }
 }
@@ -353,6 +367,16 @@ impl CanonicalDeserialize for CommittedPolynomial {
                     Self::BytecodeChunk(i as usize)
                 }
                 8 => Self::ProgramImageInit,
+                9 => {
+                    let i = u8::deserialize_with_mode(reader, compress, validate)?;
+                    Self::RdIncRa(i as usize)
+                }
+                10 => Self::RdIncMsb,
+                11 => {
+                    let i = u8::deserialize_with_mode(reader, compress, validate)?;
+                    Self::RamIncRa(i as usize)
+                }
+                12 => Self::RamIncMsb,
                 _ => return Err(SerializationError::InvalidData),
             },
         )

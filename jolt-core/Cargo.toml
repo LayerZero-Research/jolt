@@ -31,6 +31,7 @@ dory-pcs = [
 ]
 akita-pcs = [
   "dep:akita-algebra",
+  "dep:akita-challenges",
   "dep:akita-config",
   "dep:akita-field",
   "dep:akita-pcs",
@@ -95,6 +96,7 @@ bincode.workspace = true
 derive_more.workspace = true
 dory.workspace = true
 akita-algebra = { workspace = true, optional = true }
+akita-challenges = { workspace = true, optional = true }
 akita-config = { workspace = true, optional = true }
 akita-field = { workspace = true, optional = true }
 akita-pcs = { workspace = true, optional = true }

@@ -19,7 +19,7 @@ use crate::poly::commitment::dory::bind_opening_inputs_zk;
 use crate::poly::commitment::dory::DoryContext;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 
-use crate::zkvm::config::{ProgramMode, ReadWriteConfig};
+use crate::zkvm::config::{OneHotConfig, ProgramMode, ReadWriteConfig};
 use crate::zkvm::program::{
     build_program_image_words_padded, CommittedProgramProverData, FullProgramPreprocessing,
     ProgramPreprocessing,
@@ -38,7 +38,8 @@ use crate::{
     poly::{
         commitment::{
             commitment_scheme::{
-                BatchOpeningProverContext, StreamingCommitmentScheme, ZkEvalCommitment,
+                BatchOpeningProverContext, PolynomialBatchSource, StreamingCommitmentScheme,
+                ZkEvalCommitment,
             },
             dory::{DoryGlobals, DoryLayout},
         },
@@ -176,6 +177,54 @@ use crate::zkvm::r1cs::constraints::{
 };
 #[cfg(feature = "zk")]
 use crate::zkvm::verifier::BlindfoldSetup;
+
+struct LazyOneHotSource<'a, PCS: CommitmentScheme> {
+    trace: &'a [Cycle],
+    polys: &'a [CommittedPolynomial],
+    preprocessing: &'a JoltSharedPreprocessing<PCS>,
+    one_hot_params: &'a OneHotParams,
+}
+
+impl<F, PCS> PolynomialBatchSource<F> for LazyOneHotSource<'_, PCS>
+where
+    F: JoltField,
+    PCS: CommitmentScheme,
+{
+    fn num_polys(&self) -> usize {
+        self.polys.len()
+    }
+
+    #[inline(always)]
+    fn onehot_index(&self, cycle_idx: usize, poly_idx: usize) -> Option<u8> {
+        self.polys[poly_idx].extract_index(
+            &self.trace[cycle_idx],
+            &self
+                .preprocessing
+                .program
+                .as_full()
+                .expect("Akita packed path requires full program mode")
+                .bytecode,
+            &self.preprocessing.memory_layout,
+            self.one_hot_params,
+        )
+    }
+
+    #[inline]
+    fn batch_onehot_indices(&self, cycle_idx: usize, poly_start: usize, buf: &mut [Option<u8>]) {
+        for (i, slot) in buf.iter_mut().enumerate() {
+            *slot =
+                <Self as PolynomialBatchSource<F>>::onehot_index(self, cycle_idx, poly_start + i);
+        }
+    }
+
+    fn num_cycles(&self) -> Option<usize> {
+        Some(self.trace.len())
+    }
+
+    fn onehot_k(&self) -> Option<usize> {
+        Some(self.one_hot_params.k_chunk)
+    }
+}
 
 /// Jolt CPU prover for RV64IMAC.
 pub struct JoltCpuProver<
@@ -462,7 +511,11 @@ impl<
         let log_T = trace.len().log_2();
         let ram_log_K = ram_K.log_2();
         let rw_config = ReadWriteConfig::new(log_T, ram_log_K);
-        let one_hot_params = OneHotParams::new(log_T, preprocessing.shared.bytecode_size(), ram_K);
+        let log_k_chunk = PCS::log_k_chunk_for_trace(log_T);
+        let mut one_hot_config = OneHotConfig::new(log_T);
+        one_hot_config.log_k_chunk = log_k_chunk as u8;
+        let one_hot_params =
+            OneHotParams::from_config(&one_hot_config, preprocessing.shared.bytecode_size(), ram_K);
 
         #[cfg(feature = "zk")]
         let pedersen_generators = {
@@ -535,9 +588,18 @@ impl<
             self.preprocessing.shared.bytecode_size()
         );
 
-        let (commitments, mut opening_proof_hints) = self.generate_and_commit_witness_polynomials();
+        let (commitments, batch_hint) = self.generate_and_commit_witness_polynomials();
         let untrusted_advice_commitment = self.generate_and_commit_untrusted_advice();
         self.generate_and_commit_trusted_advice();
+
+        let mut opening_proof_hints = if PCS::packed_main_commitment_arity().is_some() {
+            HashMap::new()
+        } else {
+            HashMap::from_iter(zip_eq(
+                all_committed_polynomials(&self.one_hot_params, PCS::uses_onehot_inc()),
+                PCS::split_batch_hint(&batch_hint),
+            ))
+        };
 
         // Add advice hints for batched Stage 8 opening
         if let Some(hint) = self.advice.trusted_advice_hint.take() {
@@ -588,7 +650,7 @@ impl<
             r_stage1, r_stage2, r_stage3, r_stage4, r_stage5, r_stage6, r_stage7,
         ];
 
-        let joint_opening_proof = self.prove_stage8(opening_proof_hints);
+        let joint_opening_proof = self.prove_stage8(batch_hint, opening_proof_hints);
         #[cfg(feature = "zk")]
         let blindfold_proof = self.prove_blindfold(&joint_opening_proof);
 
@@ -719,48 +781,58 @@ impl<
     #[tracing::instrument(skip_all, name = "generate_and_commit_witness_polynomials")]
     fn generate_and_commit_witness_polynomials(
         &mut self,
-    ) -> (
-        Vec<PCS::Commitment>,
-        HashMap<CommittedPolynomial, PCS::OpeningProofHint>,
-    ) {
+    ) -> (Vec<PCS::Commitment>, PCS::BatchOpeningHint) {
         let main_total_vars = self.main_total_vars();
+        let dory_layout = PCS::dory_layout(&PCS::active_config());
         let trace = Arc::clone(&self.trace);
         let _guard = DoryGlobals::initialize_main_with_log_embedding(
             1 << self.one_hot_params.log_k_chunk,
             trace.len(),
             main_total_vars,
-            Some(DoryGlobals::get_layout()),
+            dory_layout,
         );
 
-        let polys = all_committed_polynomials(&self.one_hot_params);
-        let T = DoryGlobals::get_embedded_t();
+        let polys = all_committed_polynomials(&self.one_hot_params, PCS::uses_onehot_inc());
+        let T = if dory_layout.is_some() {
+            DoryGlobals::get_embedded_t()
+        } else {
+            self.padded_trace_len
+        };
 
         // AddressMajor uses non-streaming commit path, and we also use non-streaming when
         // Stage 6/8 embedding domain exceeds the trace domain.
-        let use_materialized_commit =
-            DoryGlobals::get_layout() == DoryLayout::AddressMajor || self.trace.len() != T;
+        let use_materialized_commit = dory_layout
+            .map(|layout| layout == DoryLayout::AddressMajor || self.trace.len() != T)
+            .unwrap_or(true);
         let (commitments, hint_map) = if use_materialized_commit {
             tracing::debug!(
                 "Using non-streaming commit path with {} polynomials",
                 polys.len()
             );
 
-            // Generate witnesses and commit using the regular (non-streaming) path
-            let (commitments, hints): (Vec<_>, Vec<_>) = polys
-                .par_iter()
-                .map(|poly_id| {
-                    let witness: MultilinearPolynomial<F> = poly_id.generate_witness(
-                        &self.preprocessing.materialized_program().bytecode,
-                        &self.preprocessing.shared.memory_layout,
-                        &trace,
-                        Some(&self.one_hot_params),
-                    );
-                    PCS::commit(&witness, &self.preprocessing.generators)
-                })
-                .unzip();
-
-            let hint_map = HashMap::from_iter(zip_eq(polys, hints));
-            (commitments, hint_map)
+            if PCS::packed_main_commitment_arity().is_some() {
+                let source = LazyOneHotSource {
+                    trace: &trace,
+                    polys: &polys,
+                    preprocessing: &self.preprocessing.shared,
+                    one_hot_params: &self.one_hot_params,
+                };
+                PCS::batch_commit(&source, &self.preprocessing.generators)
+            } else {
+                // Generate witnesses and commit using the regular (non-streaming) path
+                let witnesses: Vec<MultilinearPolynomial<F>> = polys
+                    .par_iter()
+                    .map(|poly_id| {
+                        poly_id.generate_witness(
+                            &self.preprocessing.materialized_program().bytecode,
+                            &self.preprocessing.shared.memory_layout,
+                            &trace,
+                            Some(&self.one_hot_params),
+                        )
+                    })
+                    .collect();
+                PCS::batch_commit(&witnesses, &self.preprocessing.generators)
+            }
         } else {
             // CycleMajor: use streaming
             let row_len = DoryGlobals::get_num_columns();
@@ -822,8 +894,7 @@ impl<
                 })
                 .unzip();
 
-            let hint_map = HashMap::from_iter(zip_eq(polys, hints));
-            (commitments, hint_map)
+            (commitments, PCS::streaming_batch_hint(hints))
         };
 
         // Append commitments to transcript
@@ -1299,6 +1370,7 @@ impl<
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
+            PCS::uses_onehot_inc(),
         );
         let mut bytecode_read_raf = BytecodeReadRafAddressSumcheckProver::initialize(
             bytecode_read_raf_params,
@@ -1373,6 +1445,7 @@ impl<
             self.trace.len(),
             &self.opening_accumulator,
             &mut self.transcript,
+            PCS::uses_onehot_inc(),
         );
 
         let main_total_vars = self.trace.len().log_2() + self.one_hot_params.log_k_chunk;
@@ -2025,6 +2098,7 @@ impl<
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
+            PCS::uses_onehot_inc(),
         );
         let hw_prover = HammingWeightClaimReductionProver::initialize(
             hw_params,
@@ -2111,29 +2185,37 @@ impl<
     #[tracing::instrument(skip_all)]
     fn prove_stage8(
         &mut self,
+        batch_hint: PCS::BatchOpeningHint,
         opening_proof_hints: HashMap<CommittedPolynomial, PCS::OpeningProofHint>,
     ) -> PCS::Proof {
-        tracing::info!("Stage 8 proving (Dory batch opening)");
+        tracing::info!("Stage 8 proving (PCS batch opening)");
 
         let native_main_vars = self.trace.len().log_2() + self.one_hot_params.log_k_chunk;
         let dory_layout = PCS::dory_layout(&PCS::active_config());
-        let opening_point = dory_layout
-            .map(|layout| {
-                compute_final_opening_point(
-                    &self.opening_accumulator,
-                    native_main_vars,
-                    self.one_hot_params.log_k_chunk,
-                    layout,
-                    if self.preprocessing.is_committed_mode() {
-                        ProgramMode::Committed
-                    } else {
-                        ProgramMode::Full
-                    },
-                    self.preprocessing.shared.bytecode_chunk_count,
+        let opening_point = if let Some(layout) = dory_layout {
+            compute_final_opening_point(
+                &self.opening_accumulator,
+                native_main_vars,
+                self.one_hot_params.log_k_chunk,
+                layout,
+                if self.preprocessing.is_committed_mode() {
+                    ProgramMode::Committed
+                } else {
+                    ProgramMode::Full
+                },
+                self.preprocessing.shared.bytecode_chunk_count,
+            )
+            .expect("invalid prover Stage-8 opening point")
+        } else if PCS::packed_main_commitment_arity().is_some() {
+            self.opening_accumulator
+                .get_committed_polynomial_opening(
+                    CommittedPolynomial::InstructionRa(0),
+                    SumcheckId::HammingWeightClaimReduction,
                 )
-                .expect("invalid prover Stage-8 opening point")
-            })
-            .unwrap_or_else(|| OpeningPoint::<BIG_ENDIAN, F>::new(Vec::new()));
+                .0
+        } else {
+            OpeningPoint::<BIG_ENDIAN, F>::new(Vec::new())
+        };
         let uses_joint_opening_point = dory_layout.is_some();
         let lagrange_factor_for = |point: &OpeningPoint<BIG_ENDIAN, F>| {
             if uses_joint_opening_point {
@@ -2161,31 +2243,58 @@ impl<
             scaling_factors.push(lagrange);
         };
 
-        let (ram_inc_point, ram_inc_claim) =
-            self.opening_accumulator.get_committed_polynomial_opening(
-                CommittedPolynomial::RamInc,
-                SumcheckId::IncClaimReduction,
+        if PCS::uses_onehot_inc() {
+            for i in 0..self.one_hot_params.inc_onehot_d() {
+                let (point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
+                    CommittedPolynomial::RdIncRa(i),
+                    SumcheckId::HammingWeightClaimReduction,
+                );
+                record_opening(CommittedPolynomial::RdIncRa(i), point, claim, F::one());
+            }
+            let (point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
+                CommittedPolynomial::RdIncMsb,
+                SumcheckId::HammingWeightClaimReduction,
             );
-        let (rd_inc_point, rd_inc_claim) =
-            self.opening_accumulator.get_committed_polynomial_opening(
-                CommittedPolynomial::RdInc,
-                SumcheckId::IncClaimReduction,
+            record_opening(CommittedPolynomial::RdIncMsb, point, claim, F::one());
+            for i in 0..self.one_hot_params.inc_onehot_d() {
+                let (point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
+                    CommittedPolynomial::RamIncRa(i),
+                    SumcheckId::HammingWeightClaimReduction,
+                );
+                record_opening(CommittedPolynomial::RamIncRa(i), point, claim, F::one());
+            }
+            let (point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
+                CommittedPolynomial::RamIncMsb,
+                SumcheckId::HammingWeightClaimReduction,
             );
+            record_opening(CommittedPolynomial::RamIncMsb, point, claim, F::one());
+        } else {
+            let (ram_inc_point, ram_inc_claim) =
+                self.opening_accumulator.get_committed_polynomial_opening(
+                    CommittedPolynomial::RamInc,
+                    SumcheckId::IncClaimReduction,
+                );
+            let (rd_inc_point, rd_inc_claim) =
+                self.opening_accumulator.get_committed_polynomial_opening(
+                    CommittedPolynomial::RdInc,
+                    SumcheckId::IncClaimReduction,
+                );
 
-        let ram_inc_lagrange = lagrange_factor_for(&ram_inc_point);
-        let rd_inc_lagrange = lagrange_factor_for(&rd_inc_point);
-        record_opening(
-            CommittedPolynomial::RamInc,
-            ram_inc_point,
-            ram_inc_claim,
-            ram_inc_lagrange,
-        );
-        record_opening(
-            CommittedPolynomial::RdInc,
-            rd_inc_point,
-            rd_inc_claim,
-            rd_inc_lagrange,
-        );
+            let ram_inc_lagrange = lagrange_factor_for(&ram_inc_point);
+            let rd_inc_lagrange = lagrange_factor_for(&rd_inc_point);
+            record_opening(
+                CommittedPolynomial::RamInc,
+                ram_inc_point,
+                ram_inc_claim,
+                ram_inc_lagrange,
+            );
+            record_opening(
+                CommittedPolynomial::RdInc,
+                rd_inc_point,
+                rd_inc_claim,
+                rd_inc_lagrange,
+            );
+        }
 
         // Sparse polynomials: all RA polys (from HammingWeightClaimReduction)
         // These are at (r_address_stage7, r_cycle_stage6)
@@ -2332,6 +2441,38 @@ impl<
             );
         }
 
+        if PCS::packed_main_commitment_arity().is_some() {
+            let mut claim_map = polynomial_claims
+                .drain(..)
+                .collect::<HashMap<CommittedPolynomial, F>>();
+            let mut sorted_claims = Vec::new();
+            for poly in all_committed_polynomials(&self.one_hot_params, PCS::uses_onehot_inc()) {
+                let claim = claim_map
+                    .remove(&poly)
+                    .expect("missing packed main polynomial claim");
+                sorted_claims.push((poly, claim));
+            }
+            let mut sorted_individual = Vec::new();
+            for opening in individual_openings.drain(..) {
+                if sorted_claims
+                    .iter()
+                    .any(|(poly, _)| *poly == opening.polynomial)
+                {
+                    continue;
+                }
+                sorted_individual.push(opening);
+            }
+            for opening in &sorted_individual {
+                let claim = claim_map
+                    .remove(&opening.polynomial)
+                    .expect("missing individual polynomial claim");
+                sorted_claims.push((opening.polynomial, claim));
+            }
+            assert!(claim_map.is_empty(), "unexpected leftover Stage 8 claims");
+            polynomial_claims = sorted_claims;
+            individual_openings = sorted_individual;
+        }
+
         // 2. Sample gamma and compute powers for RLC
         let claims: Vec<F> = polynomial_claims.iter().map(|(_, c)| *c).collect();
         // In non-ZK mode, absorb claims before sampling gamma for Fiat-Shamir binding.
@@ -2397,6 +2538,7 @@ impl<
                 one_hot_params: self.one_hot_params.clone(),
                 trace_source: TraceSource::Materialized(Arc::clone(&self.trace)),
                 rlc_streaming_data: streaming_data,
+                batch_hint,
                 opening_hints: opening_proof_hints,
                 precommitted_polys,
             },
@@ -2591,8 +2733,30 @@ where
             "JoltProverPreprocessing::new requires full shared preprocessing; use \
              JoltProverPreprocessing::new_committed for committed programs"
         );
-        let (max_total_vars, _) = shared.compute_max_total_vars(false);
-        let generators = PCS::setup_prover(max_total_vars);
+        let max_T = shared.max_padded_trace_length.next_power_of_two();
+        let max_log_T = max_T.log_2();
+        let max_log_k_chunk = PCS::log_k_chunk_for_trace(max_log_T);
+        let log_packed = if PCS::uses_onehot_inc() {
+            let bytecode_len = shared.bytecode_size();
+            let ram_k = crate::zkvm::ram::compute_max_ram_K(&shared.memory_layout);
+            let max_n_polys = PCS::supported_log_k_chunks(max_log_k_chunk)
+                .into_iter()
+                .map(|log_k_chunk| {
+                    let mut config = OneHotConfig::new(max_log_T);
+                    config.log_k_chunk = log_k_chunk as u8;
+                    all_committed_polynomials(
+                        &OneHotParams::from_config(&config, bytecode_len, ram_k),
+                        true,
+                    )
+                    .len()
+                })
+                .max()
+                .unwrap_or(1);
+            Some(max_n_polys.next_power_of_two().log_2())
+        } else {
+            None
+        };
+        let generators = PCS::setup_prover_from_shape(max_log_T, max_log_k_chunk, log_packed);
 
         Self::new_with_generators(shared, generators)
     }

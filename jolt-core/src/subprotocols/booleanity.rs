@@ -94,12 +94,19 @@ impl<F: JoltField> BooleanitySumcheckParams<F> {
         one_hot_params: &OneHotParams,
         accumulator: &dyn OpeningAccumulator<F>,
         transcript: &mut impl Transcript,
+        onehot_inc: bool,
     ) -> Self {
         let log_k_chunk = one_hot_params.log_k_chunk;
         let instruction_d = one_hot_params.instruction_d;
         let bytecode_d = one_hot_params.bytecode_d;
         let ram_d = one_hot_params.ram_d;
-        let total_d = instruction_d + bytecode_d + ram_d;
+        let inc_d = if onehot_inc {
+            one_hot_params.inc_onehot_d()
+        } else {
+            0
+        };
+        let msb_d = if onehot_inc { 1 } else { 0 };
+        let total_d = instruction_d + bytecode_d + ram_d + 2 * (inc_d + msb_d);
         let log_k_instruction = one_hot_params.lookups_ra_virtual_log_k_chunk;
 
         // Get Stage 5 opening point: order is address (LOG_K_INSTRUCTION) => cycle (log_t)
@@ -143,6 +150,18 @@ impl<F: JoltField> BooleanitySumcheckParams<F> {
         }
         for i in 0..ram_d {
             polynomial_types.push(CommittedPolynomial::RamRa(i));
+        }
+        for i in 0..inc_d {
+            polynomial_types.push(CommittedPolynomial::RdIncRa(i));
+        }
+        if onehot_inc {
+            polynomial_types.push(CommittedPolynomial::RdIncMsb);
+        }
+        for i in 0..inc_d {
+            polynomial_types.push(CommittedPolynomial::RamIncRa(i));
+        }
+        if onehot_inc {
+            polynomial_types.push(CommittedPolynomial::RamIncMsb);
         }
 
         // Sample a single batching challenge γ, and derive per-polynomial weights γ^{2i}.
@@ -257,6 +276,15 @@ impl<F: JoltField> BooleanityAddressSumcheckProver<F> {
             memory_layout,
             &params.one_hot_params,
             &params.r_cycle,
+            params.polynomial_types.iter().any(|poly| {
+                matches!(
+                    poly,
+                    CommittedPolynomial::RdIncRa(_)
+                        | CommittedPolynomial::RamIncRa(_)
+                        | CommittedPolynomial::RdIncMsb
+                        | CommittedPolynomial::RamIncMsb
+                )
+            }),
         );
         let B = GruenSplitEqPolynomial::new(&params.r_address, BindingOrder::LowToHigh);
         let k_chunk = 1 << params.log_k_chunk;

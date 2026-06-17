@@ -656,6 +656,7 @@ impl<
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
+            false,
         );
         let booleanity = BooleanityAddressSumcheckVerifier::new(booleanity_params.clone());
 
@@ -696,6 +697,7 @@ impl<
             self.proof.trace_length,
             &self.opening_accumulator,
             &mut self.transcript,
+            false,
         );
 
         let main_total_vars = self.proof.trace_length.log_2() + self.one_hot_params.log_k_chunk;
@@ -803,6 +805,7 @@ impl<
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
+            false,
         );
 
         let mut instances: Vec<&dyn SumcheckInstanceVerifier<F, ProofTranscript, A>> =

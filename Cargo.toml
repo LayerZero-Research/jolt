@@ -279,6 +279,7 @@ dory = { package = "dory-pcs", version = "0.3.0", features = [
 akita-pcs = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "71b4765725aeed940ea1e0ddf233128df6410048" }
 akita-prover = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "71b4765725aeed940ea1e0ddf233128df6410048" }
 akita-algebra = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "71b4765725aeed940ea1e0ddf233128df6410048" }
+akita-challenges = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "71b4765725aeed940ea1e0ddf233128df6410048" }
 akita-config = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "71b4765725aeed940ea1e0ddf233128df6410048" }
 akita-types = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "71b4765725aeed940ea1e0ddf233128df6410048" }
 akita-field = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "71b4765725aeed940ea1e0ddf233128df6410048" }
