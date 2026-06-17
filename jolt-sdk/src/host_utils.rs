@@ -3,7 +3,9 @@ pub use jolt_core::host;
 #[cfg(feature = "host")]
 pub use jolt_core::zkvm::proof_serialization::serialize_and_print_size;
 #[cfg(feature = "host")]
-pub use jolt_core::zkvm::{prover::JoltProverPreprocessing, RV64IMACProver};
+pub use jolt_core::zkvm::prover::JoltProverPreprocessing;
+#[cfg(all(feature = "host", not(feature = "akita-pcs")))]
+pub use jolt_core::zkvm::RV64IMACProver;
 #[cfg(feature = "host")]
 pub use jolt_program::execution::{
     ExecutionBackend, OwnedTrace, TraceError, TraceInputs, TraceOutput, TraceSource,
@@ -21,12 +23,15 @@ pub use jolt_core::zkvm::{
     proof_serialization::JoltProof,
     verifier::JoltSharedPreprocessing,
     verifier::JoltVerifierPreprocessing,
-    Curve, RV64IMACProof, RV64IMACVerifier, Serializable, F, PCS,
+    Serializable, F, PCS,
 };
+#[cfg(not(feature = "akita-pcs"))]
+pub use jolt_core::zkvm::{Curve, RV64IMACProof, RV64IMACVerifier};
 pub use jolt_core::AdviceTape;
 
 // Re-exports needed by the provable macro
 pub use jolt_core::poly::commitment::commitment_scheme::CommitmentScheme;
+#[cfg(not(feature = "akita-pcs"))]
 pub use jolt_core::poly::commitment::dory::{DoryContext, DoryGlobals, DoryLayout};
 pub use jolt_core::poly::multilinear_polynomial::MultilinearPolynomial;
 pub use jolt_core::zkvm::ram::populate_memory_states;
