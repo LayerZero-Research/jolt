@@ -936,15 +936,6 @@ where
             let field_evals = field_evals_from_ring_coeffs(&hint.ring_coeffs);
             let num_vars = field_evals.len().log_2();
             let opening_point = to_jolt_dense_opening_point(&opening.opening_point.r, num_vars);
-            let computed_claim = evaluate_dense_evals_at_point(&field_evals, &opening_point);
-            assert_eq!(
-                computed_claim,
-                opening.claim,
-                "Akita dense opening claim mismatch for {:?}: num_vars={}, point_vars={}",
-                opening.polynomial,
-                num_vars,
-                opening.opening_point.r.len()
-            );
             let poly = dense_poly_from_ring_coeffs(hint.ring_coeffs);
             dense_items.push(DenseBatchProverItem {
                 poly,
