@@ -926,7 +926,15 @@ impl<
         };
         let K = 1usize << self.one_hot_params.log_k_chunk;
 
-        let (commitments, hint_map) = if let Some(chunk_size) = pcs.streaming_chunk_size(K, T) {
+        // The streaming commit path lays the trace out assuming the commitment matrix matches
+        // the trace domain. When a precommitted polynomial widens the matrix beyond the trace
+        // (committed dominance, `trace.len() != T`), that layout disagrees with the Stage-8
+        // open, so fall back to the materialized commit path (matches main's behavior).
+        let streaming_chunk = pcs
+            .streaming_chunk_size(K, T)
+            .filter(|_| self.trace.len() == T);
+
+        let (commitments, hint_map) = if let Some(chunk_size) = streaming_chunk {
             let num_chunks = T / chunk_size;
 
             tracing::debug!(
@@ -1015,18 +1023,17 @@ impl<
                     pcs.batch_commit(&source, &self.preprocessing.generators);
                 (commitments, batch_hint)
             } else {
-                let trace: Vec<Cycle> = self
-                    .lazy_trace
-                    .clone()
-                    .pad_using(T, |_| Cycle::NoOp)
-                    .collect();
+                // Generate witnesses over the unpadded trace so the one-hot witnesses are laid
+                // out on the trace prefix (`k * trace_len + cycle`), matching the Stage-8 open.
+                // When a precommitted polynomial widens the matrix beyond the trace, padding to
+                // `T` here would place them at `k * T + cycle` and break the opening.
                 let witnesses: Vec<MultilinearPolynomial<F>> = polys
                     .par_iter()
                     .map(|poly_id| {
                         poly_id.generate_witness(
                             &self.preprocessing.shared.bytecode,
                             &self.preprocessing.shared.memory_layout,
-                            &trace,
+                            &self.trace,
                             Some(&self.one_hot_params),
                         )
                     })
@@ -3285,10 +3292,9 @@ mod tests {
     // Stages 6b/7, and the Stage-8 batched Dory opening with main's per-type precommitted
     // embedding (`PrecommittedPolynomial::{Dense, BytecodeChunk, ProgramImage}`).
     //
-    // `chunk_count = 256` keeps each committed bytecode chunk within the main commitment matrix
-    // (no reference-domain "dominance"). The dominated case (a committed polynomial larger than
-    // the trace matrix, e.g. `chunk_count = 1` on a tiny trace) is a separate, documented
-    // limitation of Akita's Dory commit/open under matrix widening.
+    // `chunk_count = 1` is the reference-domain "dominance" case: the committed bytecode chunk
+    // is larger than the main commitment matrix, which widens to the reference domain. The main
+    // trace then embeds as a sub-block (materialized commit + `main_embedding_mode` VMV).
     #[test]
     #[serial]
     fn muldiv_e2e_dory_committed_program_commitments() {
@@ -3303,7 +3309,7 @@ mod tests {
             e_entry,
             io_device.memory_layout.clone(),
             1 << 16,
-            256,
+            1,
         );
         let elf_contents_opt = program.get_elf_contents();
         let elf_contents = elf_contents_opt.as_deref().expect("elf contents is None");
