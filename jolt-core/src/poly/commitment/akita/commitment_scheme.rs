@@ -228,14 +228,19 @@ fn akita_prove_dense_batch<const D: usize, ProofTranscript: akita_transcript::Tr
             hint: item.hint.clone(),
         })
         .collect::<Vec<_>>();
-    <AkitaCommitmentScheme<D, Fp128DenseConfig> as AkitaCommitmentProver<Fp128, D>>::batched_prove(
-        setup,
+    akita_prover::batched_prove_root_direct::<
+        Fp128DenseConfig,
+        ProofTranscript,
+        DensePoly<Fp128, D>,
+        CpuBackend,
+        D,
+    >(
+        &setup.expanded,
         &CpuBackend,
         &prepared,
         (opening_point, claims),
         transcript,
         akita_types::BasisMode::Lagrange,
-        SetupContributionMode::Direct,
     )
     .expect("Akita dense batched prove failed")
 }
@@ -271,7 +276,7 @@ fn akita_verify_dense_batch<
             commitment,
         })
         .collect::<Vec<_>>();
-    <AkitaCommitmentScheme<D, Fp128DenseConfig> as AkitaCommitmentVerifier<Fp128, D>>::batched_verify_shaped(
+    akita_verifier::batched_verify_shaped_root_direct::<Fp128DenseConfig, ProofTranscript, D>(
         proof,
         setup,
         transcript,

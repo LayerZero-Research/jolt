@@ -282,6 +282,7 @@ akita-algebra = { git = "https://github.com/LayerZero-Labs/akita.git", branch = 
 akita-challenges = { git = "https://github.com/LayerZero-Labs/akita.git", branch = "lz/jolt-dense-batch-openings" }
 akita-config = { git = "https://github.com/LayerZero-Labs/akita.git", branch = "lz/jolt-dense-batch-openings" }
 akita-types = { git = "https://github.com/LayerZero-Labs/akita.git", branch = "lz/jolt-dense-batch-openings" }
+akita-verifier = { git = "https://github.com/LayerZero-Labs/akita.git", branch = "lz/jolt-dense-batch-openings" }
 akita-field = { git = "https://github.com/LayerZero-Labs/akita.git", branch = "lz/jolt-dense-batch-openings" }
 akita-serialization = { git = "https://github.com/LayerZero-Labs/akita.git", branch = "lz/jolt-dense-batch-openings" }
 akita-transcript = { git = "https://github.com/LayerZero-Labs/akita.git", branch = "lz/jolt-dense-batch-openings" }
