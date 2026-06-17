@@ -181,7 +181,7 @@ use crate::zkvm::verifier::BlindfoldSetup;
 pub struct JoltCpuProver<
     'a,
     F: JoltField,
-    C: JoltCurve<F = F>,
+    C: JoltCurve,
     PCS: StreamingCommitmentScheme<Field = F>,
     ProofTranscript: Transcript,
 > {
@@ -217,10 +217,62 @@ pub struct JoltCpuProver<
     _curve: std::marker::PhantomData<C>,
 }
 
+#[cfg(all(test, feature = "akita-pcs"))]
+mod akita_tests {
+    use serial_test::serial;
+
+    use crate::host;
+    use crate::zkvm::program::ProgramPreprocessing;
+    use crate::zkvm::prover::JoltProverPreprocessing;
+    use crate::zkvm::verifier::{JoltSharedPreprocessing, JoltVerifierPreprocessing};
+    use crate::zkvm::{RV64IMACProver, RV64IMACVerifier};
+
+    #[test]
+    #[serial]
+    fn muldiv_e2e_akita() {
+        let mut program = host::Program::new("muldiv-guest");
+        let (bytecode, init_memory_state, _, e_entry) = program.decode();
+        let inputs = postcard::to_stdvec(&[9u32, 5u32, 3u32]).unwrap();
+        let (_, _, _, io_device) = program.trace(&inputs, &[], &[]);
+
+        let program_preprocessing =
+            ProgramPreprocessing::preprocess(bytecode, init_memory_state, e_entry).unwrap();
+        let shared_preprocessing =
+            JoltSharedPreprocessing::new(program_preprocessing, io_device.memory_layout, 1 << 16);
+        let prover_preprocessing = JoltProverPreprocessing::new(shared_preprocessing);
+        let elf_contents = program.get_elf_contents().expect("elf contents is None");
+
+        let prover = RV64IMACProver::gen_from_elf(
+            &prover_preprocessing,
+            &elf_contents,
+            &inputs,
+            &[],
+            &[],
+            None,
+            None,
+            None,
+        );
+        let io_device = prover.program_io.clone();
+        let (jolt_proof, debug_info) = prover.prove();
+
+        let verifier_preprocessing = JoltVerifierPreprocessing::from(&prover_preprocessing);
+        RV64IMACVerifier::new(
+            &verifier_preprocessing,
+            jolt_proof,
+            io_device,
+            None,
+            debug_info,
+        )
+        .expect("Failed to create verifier")
+        .verify()
+        .expect("Verification failed");
+    }
+}
+
 impl<
         'a,
         F: JoltField,
-        C: JoltCurve<F = F>,
+        C: JoltCurve,
         PCS: StreamingCommitmentScheme<Field = F> + ZkEvalCommitment<C>,
         ProofTranscript: Transcript,
     > JoltCpuProver<'a, F, C, PCS, ProofTranscript>
@@ -2039,19 +2091,32 @@ impl<
         tracing::info!("Stage 8 proving (Dory batch opening)");
 
         let native_main_vars = self.trace.len().log_2() + self.one_hot_params.log_k_chunk;
-        let opening_point = compute_final_opening_point(
-            &self.opening_accumulator,
-            native_main_vars,
-            self.one_hot_params.log_k_chunk,
-            DoryGlobals::get_layout(),
-            if self.preprocessing.is_committed_mode() {
-                ProgramMode::Committed
+        let dory_layout = PCS::dory_layout(&PCS::active_config());
+        let opening_point = dory_layout
+            .map(|layout| {
+                compute_final_opening_point(
+                    &self.opening_accumulator,
+                    native_main_vars,
+                    self.one_hot_params.log_k_chunk,
+                    layout,
+                    if self.preprocessing.is_committed_mode() {
+                        ProgramMode::Committed
+                    } else {
+                        ProgramMode::Full
+                    },
+                    self.preprocessing.shared.bytecode_chunk_count,
+                )
+                .expect("invalid prover Stage-8 opening point")
+            })
+            .unwrap_or_else(|| OpeningPoint::<BIG_ENDIAN, F>::new(Vec::new()));
+        let uses_joint_opening_point = dory_layout.is_some();
+        let lagrange_factor_for = |point: &OpeningPoint<BIG_ENDIAN, F>| {
+            if uses_joint_opening_point {
+                compute_lagrange_factor::<F>(&opening_point.r, &point.r)
             } else {
-                ProgramMode::Full
-            },
-            self.preprocessing.shared.bytecode_chunk_count,
-        )
-        .expect("invalid prover Stage-8 opening point");
+                F::from_u64(1)
+            }
+        };
 
         let mut polynomial_claims = Vec::new();
         let mut scaling_factors = Vec::new();
@@ -2082,8 +2147,8 @@ impl<
                 SumcheckId::IncClaimReduction,
             );
 
-        let ram_inc_lagrange = compute_lagrange_factor::<F>(&opening_point.r, &ram_inc_point.r);
-        let rd_inc_lagrange = compute_lagrange_factor::<F>(&opening_point.r, &rd_inc_point.r);
+        let ram_inc_lagrange = lagrange_factor_for(&ram_inc_point);
+        let rd_inc_lagrange = lagrange_factor_for(&rd_inc_point);
         record_opening(
             CommittedPolynomial::RamInc,
             ram_inc_point,
@@ -2104,7 +2169,7 @@ impl<
                 CommittedPolynomial::InstructionRa(i),
                 SumcheckId::HammingWeightClaimReduction,
             );
-            let lagrange = compute_lagrange_factor::<F>(&opening_point.r, &ra_point.r);
+            let lagrange = lagrange_factor_for(&ra_point);
             record_opening(
                 CommittedPolynomial::InstructionRa(i),
                 ra_point,
@@ -2117,7 +2182,7 @@ impl<
                 CommittedPolynomial::BytecodeRa(i),
                 SumcheckId::HammingWeightClaimReduction,
             );
-            let lagrange = compute_lagrange_factor::<F>(&opening_point.r, &ra_point.r);
+            let lagrange = lagrange_factor_for(&ra_point);
             record_opening(
                 CommittedPolynomial::BytecodeRa(i),
                 ra_point,
@@ -2130,7 +2195,7 @@ impl<
                 CommittedPolynomial::RamRa(i),
                 SumcheckId::HammingWeightClaimReduction,
             );
-            let lagrange = compute_lagrange_factor::<F>(&opening_point.r, &ra_point.r);
+            let lagrange = lagrange_factor_for(&ra_point);
             record_opening(CommittedPolynomial::RamRa(i), ra_point, claim, lagrange);
         }
 
@@ -2146,7 +2211,7 @@ impl<
             .opening_accumulator
             .get_advice_opening(AdviceKind::Trusted, SumcheckId::AdviceClaimReduction)
         {
-            let lagrange_factor = compute_lagrange_factor::<F>(&opening_point.r, &advice_point.r);
+            let lagrange_factor = lagrange_factor_for(&advice_point);
             record_opening(
                 CommittedPolynomial::TrustedAdvice,
                 advice_point,
@@ -2163,7 +2228,7 @@ impl<
             .opening_accumulator
             .get_advice_opening(AdviceKind::Untrusted, SumcheckId::AdviceClaimReduction)
         {
-            let lagrange_factor = compute_lagrange_factor::<F>(&opening_point.r, &advice_point.r);
+            let lagrange_factor = lagrange_factor_for(&advice_point);
             record_opening(
                 CommittedPolynomial::UntrustedAdvice,
                 advice_point,
@@ -2192,8 +2257,7 @@ impl<
                         CommittedPolynomial::BytecodeChunk(chunk_idx),
                         SumcheckId::BytecodeClaimReduction,
                     );
-                let lagrange_factor =
-                    compute_lagrange_factor::<F>(&opening_point.r, &chunk_point.r);
+                let lagrange_factor = lagrange_factor_for(&chunk_point);
                 record_opening(
                     CommittedPolynomial::BytecodeChunk(chunk_idx),
                     chunk_point,
@@ -2221,7 +2285,7 @@ impl<
                     CommittedPolynomial::ProgramImageInit,
                     SumcheckId::ProgramImageClaimReduction,
                 );
-            let lagrange_factor = compute_lagrange_factor::<F>(&opening_point.r, &program_point.r);
+            let lagrange_factor = lagrange_factor_for(&program_point);
             record_opening(
                 CommittedPolynomial::ProgramImageInit,
                 program_point,
@@ -2371,11 +2435,7 @@ fn write_instance_flamegraph_svg(
 }
 
 #[derive(Clone)]
-pub struct JoltProverPreprocessing<
-    F: JoltField,
-    C: JoltCurve<F = F>,
-    PCS: CommitmentScheme<Field = F>,
-> {
+pub struct JoltProverPreprocessing<F: JoltField, C: JoltCurve, PCS: CommitmentScheme<Field = F>> {
     pub generators: PCS::ProverSetup,
     pub shared: JoltSharedPreprocessing<PCS>,
     pub committed_program_prover_data: Option<CommittedProgramProverData<PCS>>,
@@ -2385,7 +2445,7 @@ pub struct JoltProverPreprocessing<
 impl<F, C, PCS> CanonicalSerialize for JoltProverPreprocessing<F, C, PCS>
 where
     F: JoltField,
-    C: JoltCurve<F = F>,
+    C: JoltCurve,
     PCS: CommitmentScheme<Field = F>,
 {
     fn serialize_with_mode<W: Write>(
@@ -2410,7 +2470,7 @@ where
 impl<F, C, PCS> ark_serialize::Valid for JoltProverPreprocessing<F, C, PCS>
 where
     F: JoltField,
-    C: JoltCurve<F = F>,
+    C: JoltCurve,
     PCS: CommitmentScheme<Field = F>,
 {
     fn check(&self) -> Result<(), ark_serialize::SerializationError> {
@@ -2429,7 +2489,7 @@ where
 impl<F, C, PCS> CanonicalDeserialize for JoltProverPreprocessing<F, C, PCS>
 where
     F: JoltField,
-    C: JoltCurve<F = F>,
+    C: JoltCurve,
     PCS: CommitmentScheme<Field = F>,
 {
     fn deserialize_with_mode<R: Read>(
@@ -2462,7 +2522,7 @@ where
 impl<F, C, PCS> JoltProverPreprocessing<F, C, PCS>
 where
     F: JoltField,
-    C: JoltCurve<F = F>,
+    C: JoltCurve,
     PCS: CommitmentScheme<Field = F>,
 {
     pub fn new_with_generators(
@@ -2587,7 +2647,7 @@ where
     }
 }
 
-impl<F: JoltField, C: JoltCurve<F = F>, PCS: CommitmentScheme<Field = F>> Serializable
+impl<F: JoltField, C: JoltCurve, PCS: CommitmentScheme<Field = F>> Serializable
     for JoltProverPreprocessing<F, C, PCS>
 {
 }

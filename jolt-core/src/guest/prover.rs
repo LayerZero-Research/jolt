@@ -39,7 +39,7 @@ pub fn preprocess(
 #[cfg(feature = "prover")]
 pub fn prove<
     F: JoltField,
-    C: JoltCurve<F = F>,
+    C: JoltCurve,
     PCS: StreamingCommitmentScheme<Field = F> + ZkEvalCommitment<C>,
     FS: Transcript,
 >(

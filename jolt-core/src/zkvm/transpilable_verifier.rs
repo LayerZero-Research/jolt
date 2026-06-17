@@ -108,7 +108,7 @@ use tracer::JoltDevice;
 
 /// Extract the Clear (non-ZK) proof from a SumcheckInstanceProof enum.
 /// TranspilableVerifier only handles non-ZK proofs; ZK mode uses the main verifier.
-fn extract_clear_proof<F: JoltField, C: JoltCurve<F = F>, T: Transcript>(
+fn extract_clear_proof<F: JoltField, C: JoltCurve, T: Transcript>(
     proof: &SumcheckInstanceProof<F, C, T>,
 ) -> &ClearSumcheckProof<F, T> {
     match proof {
@@ -127,7 +127,7 @@ fn extract_clear_proof<F: JoltField, C: JoltCurve<F = F>, T: Transcript>(
 pub struct TranspilableVerifier<
     'a,
     F: JoltField,
-    C: JoltCurve<F = F>,
+    C: JoltCurve,
     PCS: CommitmentScheme<Field = F>,
     ProofTranscript: Transcript,
     A: AbstractVerifierOpeningAccumulator<F> = VerifierOpeningAccumulator<F>,
@@ -149,7 +149,7 @@ pub struct TranspilableVerifier<
 impl<
         'a,
         F: JoltField,
-        C: JoltCurve<F = F>,
+        C: JoltCurve,
         PCS: CommitmentScheme<Field = F>,
         ProofTranscript: Transcript,
         A: AbstractVerifierOpeningAccumulator<F>,

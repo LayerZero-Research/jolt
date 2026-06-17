@@ -53,7 +53,7 @@ fn preprocess_shared(
 
 pub fn verify<
     F: JoltField,
-    C: JoltCurve<F = F>,
+    C: JoltCurve,
     PCS: StreamingCommitmentScheme<Field = F> + ZkEvalCommitment<C>,
     FS: Transcript,
 >(

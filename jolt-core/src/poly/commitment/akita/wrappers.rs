@@ -18,7 +18,6 @@ use ark_serialize::{
     CanonicalDeserialize, CanonicalSerialize, Compress, SerializationError, Valid, Validate,
 };
 use std::io::{Read, Write};
-use std::sync::Arc;
 
 pub type Fp128 = Prime128OffsetA7F7;
 
@@ -35,13 +34,6 @@ pub fn akita_to_jolt(f: &Fp128) -> JoltFp128 {
     unsafe { std::mem::transmute_copy(f) }
 }
 
-struct TranscriptSyncTarget<T: JoltTranscript> {
-    ptr: *mut T,
-}
-
-unsafe impl<T: JoltTranscript> Send for TranscriptSyncTarget<T> {}
-unsafe impl<T: JoltTranscript> Sync for TranscriptSyncTarget<T> {}
-
 pub type AkitaProof<F> = AkitaBatchedProof<F, F>;
 pub type AkitaVerifierSetup<F> = UpstreamAkitaVerifierSetup<F>;
 pub type AkitaProverSetup<F, const D: usize> = UpstreamAkitaProverSetup<F, D>;
@@ -52,8 +44,7 @@ pub type AkitaProverSetup<F, const D: usize> = UpstreamAkitaProverSetup<F, D>;
 /// but we need to borrow a Jolt transcript that has a limited lifetime. The adapter is
 /// always used in a strictly scoped manner within a single prove/verify call.
 pub struct JoltToAkitaTranscript<T: JoltTranscript> {
-    state: T,
-    sync_target: Option<Arc<TranscriptSyncTarget<T>>>,
+    ptr: *mut T,
 }
 
 unsafe impl<T: JoltTranscript> Send for JoltToAkitaTranscript<T> {}
@@ -62,45 +53,19 @@ unsafe impl<T: JoltTranscript> Sync for JoltToAkitaTranscript<T> {}
 impl<T: JoltTranscript> JoltToAkitaTranscript<T> {
     pub fn new(transcript: &mut T) -> Self {
         Self {
-            state: transcript.clone(),
-            sync_target: Some(Arc::new(TranscriptSyncTarget {
-                ptr: transcript as *mut T,
-            })),
+            ptr: transcript as *mut T,
         }
     }
 
     fn inner(&mut self) -> &mut T {
-        &mut self.state
+        // SAFETY: `ptr` is created from a unique `&mut T` in `new` and the adapter is
+        // used only for the dynamic extent of that call into Akita.
+        unsafe { &mut *self.ptr }
     }
 
     #[inline]
     fn absorb_label(&mut self, label: &[u8]) {
         self.inner().append_bytes(b"akita_label", label);
-    }
-}
-
-impl<T: JoltTranscript> Clone for JoltToAkitaTranscript<T> {
-    fn clone(&self) -> Self {
-        Self {
-            state: self.state.clone(),
-            sync_target: self.sync_target.clone(),
-        }
-    }
-}
-
-impl<T: JoltTranscript> Drop for JoltToAkitaTranscript<T> {
-    fn drop(&mut self) {
-        if let Some(target) = &self.sync_target {
-            if Arc::strong_count(target) == 1 {
-                // SAFETY: `sync_target` originates from `new(&mut T)` and remains valid for the
-                // scoped lifetime of all adapter clones. Only the last surviving clone syncs back,
-                // which preserves Akita's clone-and-commit transcript pattern without letting
-                // speculative clones overwrite the caller transcript.
-                unsafe {
-                    *target.ptr = self.state.clone();
-                }
-            }
-        }
     }
 }
 
@@ -113,34 +78,34 @@ impl<T: JoltTranscript> AkitaTranscript<Fp128> for JoltToAkitaTranscript<T> {
         self.inner().append_bytes(b"akita_instance", instance_bytes);
     }
 
-    fn append_bytes(&mut self, _label: &[u8], bytes: &[u8]) {
-        self.absorb_label(_label);
+    fn append_bytes(&mut self, label: &[u8], bytes: &[u8]) {
+        self.absorb_label(label);
         self.inner().append_bytes(b"akita_bytes", bytes);
     }
 
-    fn append_field(&mut self, _label: &[u8], x: &Fp128) {
-        self.absorb_label(_label);
+    fn append_field(&mut self, label: &[u8], x: &Fp128) {
+        self.absorb_label(label);
         let val = x.to_canonical_u128();
         self.inner()
             .append_bytes(b"akita_field", &val.to_le_bytes());
     }
 
-    fn append_serde<S: AkitaSerialize>(&mut self, _label: &[u8], s: &S) {
-        self.absorb_label(_label);
+    fn append_serde<S: AkitaSerialize>(&mut self, label: &[u8], s: &S) {
+        self.absorb_label(label);
         let mut buf = Vec::with_capacity(s.serialized_size(AkitaCompress::No));
         s.serialize_uncompressed(&mut buf)
             .expect("AkitaSerialize should not fail");
         self.inner().append_bytes(b"akita_serde", &buf);
     }
 
-    fn challenge_scalar(&mut self, _label: &[u8]) -> Fp128 {
-        self.absorb_label(_label);
+    fn challenge_scalar(&mut self, label: &[u8]) -> Fp128 {
+        self.absorb_label(label);
         let jolt_challenge: JoltFp128 = self.inner().challenge_scalar();
         jolt_to_akita(&jolt_challenge)
     }
 
-    fn challenge_bytes(&mut self, _label: &[u8], len: usize) -> Vec<u8> {
-        self.absorb_label(_label);
+    fn challenge_bytes(&mut self, label: &[u8], len: usize) -> Vec<u8> {
+        self.absorb_label(label);
         let mut out = Vec::with_capacity(len);
         while out.len() < len {
             out.extend_from_slice(&self.inner().challenge_u128().to_le_bytes());

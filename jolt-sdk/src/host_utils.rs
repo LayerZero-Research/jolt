@@ -4,7 +4,7 @@ pub use jolt_core::host;
 pub use jolt_core::zkvm::proof_serialization::serialize_and_print_size;
 #[cfg(feature = "host")]
 pub use jolt_core::zkvm::prover::JoltProverPreprocessing;
-#[cfg(all(feature = "host", not(feature = "akita-pcs")))]
+#[cfg(feature = "host")]
 pub use jolt_core::zkvm::RV64IMACProver;
 #[cfg(feature = "host")]
 pub use jolt_program::execution::{
@@ -23,10 +23,8 @@ pub use jolt_core::zkvm::{
     proof_serialization::JoltProof,
     verifier::JoltSharedPreprocessing,
     verifier::JoltVerifierPreprocessing,
-    Serializable, F, PCS,
+    Curve, RV64IMACProof, RV64IMACVerifier, Serializable, F, PCS,
 };
-#[cfg(not(feature = "akita-pcs"))]
-pub use jolt_core::zkvm::{Curve, RV64IMACProof, RV64IMACVerifier};
 pub use jolt_core::AdviceTape;
 
 // Re-exports needed by the provable macro

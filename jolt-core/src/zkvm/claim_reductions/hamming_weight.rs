@@ -442,7 +442,7 @@ impl<F: JoltField> HammingWeightClaimReductionProver<F> {
         one_hot_params: &OneHotParams,
     ) -> Self
     where
-        C: JoltCurve<F = F>,
+        C: JoltCurve,
         PCS: CommitmentScheme<Field = F>,
     {
         // Compute all G_i polynomials via streaming.

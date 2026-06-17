@@ -179,6 +179,27 @@ fn to_akita_opening_point(point: &[JoltFp128]) -> Vec<Fp128> {
     point.iter().rev().map(jolt_to_akita).collect()
 }
 
+// Akita stores one-hot chunks as cycle-major `cycle * K + address`, while Jolt
+// sumcheck openings are ordered as `[address, cycle]`.
+fn to_akita_onehot_opening_point(point: &[JoltFp128], log_k: usize) -> Vec<Fp128> {
+    let (r_address, r_cycle) = point.split_at(log_k);
+    r_address
+        .iter()
+        .rev()
+        .chain(r_cycle.iter().rev())
+        .map(jolt_to_akita)
+        .collect()
+}
+
+fn is_onehot_polynomial(polynomial: CommittedPolynomial) -> bool {
+    matches!(
+        polynomial,
+        CommittedPolynomial::InstructionRa(_)
+            | CommittedPolynomial::BytecodeRa(_)
+            | CommittedPolynomial::RamRa(_)
+    )
+}
+
 impl<const D: usize> JoltAkitaOpeningHint<D> {
     fn prove<ProofTranscript, Cfg>(
         self,
@@ -190,8 +211,10 @@ impl<const D: usize> JoltAkitaOpeningHint<D> {
         ProofTranscript: akita_transcript::Transcript<Fp128>,
         Cfg: CommitmentConfig<Field = Fp128, ExtField = Fp128>,
     {
-        let akita_point = to_akita_opening_point(opening_point);
         if let Some(onehot_k) = self.onehot_k {
+            debug_assert!(onehot_k.is_power_of_two());
+            let akita_point =
+                to_akita_onehot_opening_point(opening_point, onehot_k.trailing_zeros() as usize);
             let poly = OneHotPoly::<Fp128, D, u8>::new(onehot_k, self.onehot_indices)
                 .expect("OneHotPoly construction failed");
             akita_prove_one::<D, Cfg, _, _>(
@@ -203,6 +226,7 @@ impl<const D: usize> JoltAkitaOpeningHint<D> {
                 &self.commitment.0,
             )
         } else {
+            let akita_point = to_akita_opening_point(opening_point);
             let poly = DensePoly::from_ring_coeffs(self.ring_coeffs);
             akita_prove_one::<D, Cfg, _, _>(
                 setup,
@@ -345,11 +369,13 @@ where
         let proofs = state
             .individual_openings
             .iter()
-            .map(|opening| {
+            .enumerate()
+            .map(|(index, opening)| {
                 let hint = context
                     .opening_hints
                     .remove(&opening.polynomial)
                     .expect("missing Akita opening hint");
+                transcript.append_bytes(b"akita_individual_item", &(index as u64).to_le_bytes());
                 let mut adapter = JoltToAkitaTranscript::new(transcript);
                 ArkBridge(hint.prove::<_, Cfg>(
                     &context.setup.0,
@@ -400,12 +426,36 @@ where
             ));
         }
 
-        for (opening, proof) in state.individual_openings.iter().zip(&proof.proofs) {
+        let log_T = state
+            .individual_openings
+            .iter()
+            .find_map(|opening| match opening.polynomial {
+                CommittedPolynomial::RamInc | CommittedPolynomial::RdInc => {
+                    Some(opening.opening_point.r.len())
+                }
+                _ => None,
+            });
+
+        for (index, (opening, proof)) in state
+            .individual_openings
+            .iter()
+            .zip(&proof.proofs)
+            .enumerate()
+        {
             let commitment = commitment_map
                 .remove(&opening.polynomial)
                 .ok_or(ProofVerifyError::InvalidOpeningProof)?;
-            let akita_point = to_akita_opening_point(&opening.opening_point.r);
+            let akita_point = if is_onehot_polynomial(opening.polynomial) {
+                let log_T = log_T.ok_or(ProofVerifyError::InvalidOpeningProof)?;
+                let log_k = opening.opening_point.r.len().checked_sub(log_T).ok_or(
+                    ProofVerifyError::InvalidInputLength(log_T, opening.opening_point.r.len()),
+                )?;
+                to_akita_onehot_opening_point(&opening.opening_point.r, log_k)
+            } else {
+                to_akita_opening_point(&opening.opening_point.r)
+            };
             let akita_claim = jolt_to_akita(&opening.claim);
+            transcript.append_bytes(b"akita_individual_item", &(index as u64).to_le_bytes());
             let mut adapter = JoltToAkitaTranscript::new(transcript);
             akita_verify_one::<D, Cfg, _>(
                 &proof.0,
@@ -507,7 +557,7 @@ where
 impl<const D: usize, Cfg, C> ZkEvalCommitment<C> for JoltAkitaCommitmentScheme<D, Cfg>
 where
     Cfg: CommitmentConfig<Field = Fp128, ExtField = Fp128> + Default,
-    C: JoltCurve<F = JoltFp128>,
+    C: JoltCurve,
 {
     fn eval_commitment(_proof: &Self::Proof) -> Option<C::G1> {
         None

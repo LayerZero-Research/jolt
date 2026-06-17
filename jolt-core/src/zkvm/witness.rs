@@ -76,7 +76,7 @@ impl CommittedPolynomial {
     ) -> <PCS as StreamingCommitmentScheme>::ChunkState
     where
         F: JoltField,
-        C: JoltCurve<F = F>,
+        C: JoltCurve,
         PCS: StreamingCommitmentScheme<Field = F>,
     {
         match self {

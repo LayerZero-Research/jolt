@@ -232,7 +232,7 @@ use tracer::JoltDevice;
 pub struct JoltVerifier<
     'a,
     F: JoltField,
-    C: JoltCurve<F = F>,
+    C: JoltCurve,
     PCS: CommitmentScheme<Field = F>,
     ProofTranscript: Transcript,
 > {
@@ -266,7 +266,7 @@ struct Stage8VerifyData<F: JoltField> {
 impl<
         'a,
         F: JoltField,
-        C: JoltCurve<F = F>,
+        C: JoltCurve,
         PCS: CommitmentScheme<Field = F> + ZkEvalCommitment<C>,
         ProofTranscript: Transcript,
     > JoltVerifier<'a, F, C, PCS, ProofTranscript>
@@ -450,16 +450,13 @@ impl<
             &mut self.transcript,
         );
 
-        let dory_layout = PCS::dory_layout(&self.proof.pcs_config).ok_or_else(|| {
-            ProofVerifyError::DoryError("PCS config does not contain a Dory layout".to_string())
-        })?;
-        // Initialize DoryGlobals with the layout from the proof
-        // This ensures the verifier uses the same layout as the prover
+        let verifier_layout =
+            PCS::dory_layout(&self.proof.pcs_config).unwrap_or_else(DoryGlobals::get_layout);
         let _guard = DoryGlobals::initialize_context(
             1 << self.one_hot_params.log_k_chunk,
             self.proof.trace_length.next_power_of_two(),
             DoryContext::Main,
-            Some(dory_layout),
+            Some(verifier_layout),
         );
 
         // Append commitments to transcript
@@ -491,30 +488,30 @@ impl<
             );
         }
 
-        let (stage1_result, uniskip_challenge1) = self
-            .verify_stage1()
-            .inspect_err(|e| tracing::error!("Stage 1: {e}"))?;
-        let (stage2_result, uniskip_challenge2) = self
-            .verify_stage2()
-            .inspect_err(|e| tracing::error!("Stage 2: {e}"))?;
-        let stage3_result = self
-            .verify_stage3()
-            .inspect_err(|e| tracing::error!("Stage 3: {e}"))?;
-        let stage4_result = self
-            .verify_stage4()
-            .inspect_err(|e| tracing::error!("Stage 4: {e}"))?;
-        let stage5_result = self
-            .verify_stage5()
-            .inspect_err(|e| tracing::error!("Stage 5: {e}"))?;
-        let (stage6a_result, stage6b_result) = self
-            .verify_stage6()
-            .inspect_err(|e| tracing::error!("Stage 6: {e}"))?;
-        let stage7_result = self
-            .verify_stage7()
-            .inspect_err(|e| tracing::error!("Stage 7: {e}"))?;
-        let stage8_data = self
-            .verify_stage8()
-            .inspect_err(|e| tracing::error!("Stage 8: {e}"))?;
+        let (stage1_result, uniskip_challenge1) = self.verify_stage1().inspect_err(|e| {
+            tracing::error!("Stage 1: {e}");
+        })?;
+        let (stage2_result, uniskip_challenge2) = self.verify_stage2().inspect_err(|e| {
+            tracing::error!("Stage 2: {e}");
+        })?;
+        let stage3_result = self.verify_stage3().inspect_err(|e| {
+            tracing::error!("Stage 3: {e}");
+        })?;
+        let stage4_result = self.verify_stage4().inspect_err(|e| {
+            tracing::error!("Stage 4: {e}");
+        })?;
+        let stage5_result = self.verify_stage5().inspect_err(|e| {
+            tracing::error!("Stage 5: {e}");
+        })?;
+        let (stage6a_result, stage6b_result) = self.verify_stage6().inspect_err(|e| {
+            tracing::error!("Stage 6: {e}");
+        })?;
+        let stage7_result = self.verify_stage7().inspect_err(|e| {
+            tracing::error!("Stage 7: {e}");
+        })?;
+        let stage8_data = self.verify_stage8().inspect_err(|e| {
+            tracing::error!("Stage 8: {e}");
+        })?;
 
         if zk_mode {
             #[cfg(feature = "zk")]
@@ -1743,20 +1740,31 @@ impl<
 
     fn verify_stage8(&mut self) -> Result<Stage8VerifyData<F>, ProofVerifyError> {
         let native_main_vars = self.proof.trace_length.log_2() + self.one_hot_params.log_k_chunk;
-        let opening_point = compute_final_opening_point(
-            &self.opening_accumulator,
-            native_main_vars,
-            self.one_hot_params.log_k_chunk,
-            PCS::dory_layout(&self.proof.pcs_config).ok_or_else(|| {
-                ProofVerifyError::DoryError("PCS config does not contain a Dory layout".to_string())
-            })?,
-            if self.preprocessing.shared.program.is_committed() {
-                ProgramMode::Committed
+        let dory_layout = PCS::dory_layout(&self.proof.pcs_config);
+        let opening_point = if let Some(layout) = dory_layout {
+            compute_final_opening_point(
+                &self.opening_accumulator,
+                native_main_vars,
+                self.one_hot_params.log_k_chunk,
+                layout,
+                if self.preprocessing.shared.program.is_committed() {
+                    ProgramMode::Committed
+                } else {
+                    ProgramMode::Full
+                },
+                self.preprocessing.shared.bytecode_chunk_count,
+            )?
+        } else {
+            OpeningPoint::<BIG_ENDIAN, F>::new(Vec::new())
+        };
+        let uses_joint_opening_point = dory_layout.is_some();
+        let lagrange_factor_for = |point: &OpeningPoint<BIG_ENDIAN, F>| {
+            if uses_joint_opening_point {
+                compute_lagrange_factor::<F>(&opening_point.r, &point.r)
             } else {
-                ProgramMode::Full
-            },
-            self.preprocessing.shared.bytecode_chunk_count,
-        )?;
+                F::from_u64(1)
+            }
+        };
 
         // 1. Collect all (polynomial, claim) pairs
         let mut polynomial_claims = Vec::new();
@@ -1786,8 +1794,8 @@ impl<
                 CommittedPolynomial::RdInc,
                 SumcheckId::IncClaimReduction,
             );
-        let ram_inc_lagrange = compute_lagrange_factor::<F>(&opening_point.r, &ram_inc_point.r);
-        let rd_inc_lagrange = compute_lagrange_factor::<F>(&opening_point.r, &rd_inc_point.r);
+        let ram_inc_lagrange = lagrange_factor_for(&ram_inc_point);
+        let rd_inc_lagrange = lagrange_factor_for(&rd_inc_point);
         record_opening(
             CommittedPolynomial::RamInc,
             ram_inc_point,
@@ -1807,7 +1815,7 @@ impl<
                 CommittedPolynomial::InstructionRa(i),
                 SumcheckId::HammingWeightClaimReduction,
             );
-            let lagrange = compute_lagrange_factor::<F>(&opening_point.r, &ra_point.r);
+            let lagrange = lagrange_factor_for(&ra_point);
             record_opening(
                 CommittedPolynomial::InstructionRa(i),
                 ra_point,
@@ -1820,7 +1828,7 @@ impl<
                 CommittedPolynomial::BytecodeRa(i),
                 SumcheckId::HammingWeightClaimReduction,
             );
-            let lagrange = compute_lagrange_factor::<F>(&opening_point.r, &ra_point.r);
+            let lagrange = lagrange_factor_for(&ra_point);
             record_opening(
                 CommittedPolynomial::BytecodeRa(i),
                 ra_point,
@@ -1833,7 +1841,7 @@ impl<
                 CommittedPolynomial::RamRa(i),
                 SumcheckId::HammingWeightClaimReduction,
             );
-            let lagrange = compute_lagrange_factor::<F>(&opening_point.r, &ra_point.r);
+            let lagrange = lagrange_factor_for(&ra_point);
             record_opening(CommittedPolynomial::RamRa(i), ra_point, claim, lagrange);
         }
 
@@ -1847,7 +1855,7 @@ impl<
             .opening_accumulator
             .get_advice_opening(AdviceKind::Trusted, SumcheckId::AdviceClaimReduction)
         {
-            let lagrange_factor = compute_lagrange_factor::<F>(&opening_point.r, &advice_point.r);
+            let lagrange_factor = lagrange_factor_for(&advice_point);
             record_opening(
                 CommittedPolynomial::TrustedAdvice,
                 advice_point,
@@ -1861,7 +1869,7 @@ impl<
             .opening_accumulator
             .get_advice_opening(AdviceKind::Untrusted, SumcheckId::AdviceClaimReduction)
         {
-            let lagrange_factor = compute_lagrange_factor::<F>(&opening_point.r, &advice_point.r);
+            let lagrange_factor = lagrange_factor_for(&advice_point);
             record_opening(
                 CommittedPolynomial::UntrustedAdvice,
                 advice_point,
@@ -1879,8 +1887,7 @@ impl<
                         CommittedPolynomial::BytecodeChunk(chunk_idx),
                         SumcheckId::BytecodeClaimReduction,
                     );
-                let lagrange_factor =
-                    compute_lagrange_factor::<F>(&opening_point.r, &chunk_point.r);
+                let lagrange_factor = lagrange_factor_for(&chunk_point);
                 record_opening(
                     CommittedPolynomial::BytecodeChunk(chunk_idx),
                     chunk_point,
@@ -1895,7 +1902,7 @@ impl<
                     CommittedPolynomial::ProgramImageInit,
                     SumcheckId::ProgramImageClaimReduction,
                 );
-            let lagrange_factor = compute_lagrange_factor::<F>(&opening_point.r, &program_point.r);
+            let lagrange_factor = lagrange_factor_for(&program_point);
             record_opening(
                 CommittedPolynomial::ProgramImageInit,
                 program_point,
@@ -2313,7 +2320,7 @@ impl<C: JoltCurve> From<BlindfoldSetup<C>> for PedersenGenerators<C> {
 pub struct JoltVerifierPreprocessing<F, C, PCS>
 where
     F: JoltField,
-    C: JoltCurve<F = F>,
+    C: JoltCurve,
     PCS: CommitmentScheme<Field = F>,
 {
     _curve: std::marker::PhantomData<C>,
@@ -2325,7 +2332,7 @@ where
 impl<F, C, PCS> CanonicalSerialize for JoltVerifierPreprocessing<F, C, PCS>
 where
     F: JoltField,
-    C: JoltCurve<F = F>,
+    C: JoltCurve,
     PCS: CommitmentScheme<Field = F>,
     PCS::VerifierSetup: CanonicalSerialize,
     PCS::Commitment: CanonicalSerialize,
@@ -2352,7 +2359,7 @@ where
 impl<F, C, PCS> CanonicalDeserialize for JoltVerifierPreprocessing<F, C, PCS>
 where
     F: JoltField,
-    C: JoltCurve<F = F>,
+    C: JoltCurve,
     PCS: CommitmentScheme<Field = F>,
     PCS::VerifierSetup: CanonicalDeserialize,
     PCS::Commitment: CanonicalDeserialize,
@@ -2382,7 +2389,7 @@ where
 impl<F, C, PCS> ark_serialize::Valid for JoltVerifierPreprocessing<F, C, PCS>
 where
     F: JoltField,
-    C: JoltCurve<F = F>,
+    C: JoltCurve,
     PCS: CommitmentScheme<Field = F>,
     PCS::VerifierSetup: ark_serialize::Valid,
     PCS::Commitment: ark_serialize::Valid,
@@ -2398,7 +2405,7 @@ where
 impl<F, C, PCS> Serializable for JoltVerifierPreprocessing<F, C, PCS>
 where
     F: JoltField,
-    C: JoltCurve<F = F>,
+    C: JoltCurve,
     PCS: CommitmentScheme<Field = F>,
     PCS::VerifierSetup: CanonicalSerialize + CanonicalDeserialize,
     PCS::Commitment: CanonicalSerialize + CanonicalDeserialize,
@@ -2408,7 +2415,7 @@ where
 impl<F, C, PCS> JoltVerifierPreprocessing<F, C, PCS>
 where
     F: JoltField,
-    C: JoltCurve<F = F>,
+    C: JoltCurve,
     PCS: CommitmentScheme<Field = F>,
     PCS::VerifierSetup: CanonicalSerialize + CanonicalDeserialize,
     PCS::Commitment: CanonicalSerialize + CanonicalDeserialize,
@@ -2431,7 +2438,7 @@ where
     }
 }
 
-impl<F: JoltField, C: JoltCurve<F = F>, PCS: CommitmentScheme<Field = F>>
+impl<F: JoltField, C: JoltCurve, PCS: CommitmentScheme<Field = F>>
     JoltVerifierPreprocessing<F, C, PCS>
 {
     #[tracing::instrument(skip_all, name = "JoltVerifierPreprocessing::new")]
@@ -2469,7 +2476,7 @@ impl<F: JoltField, C: JoltCurve<F = F>, PCS: CommitmentScheme<Field = F>>
 }
 
 #[cfg(feature = "prover")]
-impl<F: JoltField, C: JoltCurve<F = F>, PCS: CommitmentScheme<Field = F> + ZkEvalCommitment<C>>
+impl<F: JoltField, C: JoltCurve, PCS: CommitmentScheme<Field = F> + ZkEvalCommitment<C>>
     From<&JoltProverPreprocessing<F, C, PCS>> for JoltVerifierPreprocessing<F, C, PCS>
 {
     fn from(prover_preprocessing: &JoltProverPreprocessing<F, C, PCS>) -> Self {
