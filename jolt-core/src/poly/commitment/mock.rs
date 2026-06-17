@@ -66,10 +66,6 @@ where
         &()
     }
 
-    fn append_pcs_config_to_transcript<T: Transcript>(_: &Self::Config, transcript: &mut T) {
-        transcript.append_u64(b"mock_layout", 0);
-    }
-
     fn coefficient_layout(_config: &Self::Config, context: CommitmentContext) -> CoefficientLayout {
         canonical_coefficient_layout(context)
     }
@@ -83,6 +79,7 @@ where
 
     fn commit(
         &self,
+        _layout: &Self::CommitmentLayout,
         _poly: &MultilinearPolynomial<Self::Field>,
         _setup: &Self::ProverSetup,
     ) -> (Self::Commitment, Self::OpeningProofHint) {
@@ -91,17 +88,19 @@ where
 
     fn batch_commit<S: PolynomialBatchSource<Self::Field>>(
         &self,
+        layout: &Self::CommitmentLayout,
         source: &S,
         gens: &Self::ProverSetup,
     ) -> (Vec<Self::Commitment>, Self::BatchOpeningHint) {
         let commitments = (0..source.num_polys())
-            .map(|i| self.commit(source.get_poly(i).unwrap(), gens).0)
+            .map(|i| self.commit(layout, source.get_poly(i).unwrap(), gens).0)
             .collect();
         (commitments, ())
     }
 
     fn prove<ProofTranscript: Transcript>(
         &self,
+        _layout: &Self::CommitmentLayout,
         _setup: &Self::ProverSetup,
         _poly: &MultilinearPolynomial<Self::Field>,
         opening_point: &[<Self::Field as JoltField>::Challenge],
@@ -132,6 +131,7 @@ where
 
     fn batch_prove<ProofTranscript: Transcript, S: BatchPolynomialSource<Self::Field>>(
         &self,
+        _layout: &Self::CommitmentLayout,
         _setup: &Self::ProverSetup,
         _poly_source: &S,
         _batch_hint: Self::BatchOpeningHint,
@@ -177,7 +177,12 @@ where
     type ChunkState = ();
 
     #[allow(non_snake_case)]
-    fn streaming_chunk_size(&self, _K: usize, _T: usize) -> Option<usize> {
+    fn streaming_chunk_size(
+        &self,
+        _layout: &Self::CommitmentLayout,
+        _K: usize,
+        _T: usize,
+    ) -> Option<usize> {
         None
     }
 

@@ -336,17 +336,12 @@ impl DoryGlobals {
         }
     }
 
-    /// Get the current Dory matrix layout
+    /// Get the current Dory matrix layout.
+    ///
+    /// Only the golden-reference parity tests still read this; production proving threads the
+    /// orientation explicitly via the prover's `PCS` instance.
     pub fn get_layout() -> DoryLayout {
         CURRENT_LAYOUT.load(Ordering::SeqCst).into()
-    }
-
-    /// Set the Dory matrix layout directly (test-only).
-    ///
-    /// In production code, prefer passing the layout to `initialize_context` instead.
-    #[cfg(test)]
-    pub fn set_layout(layout: DoryLayout) {
-        CURRENT_LAYOUT.store(layout as u8, Ordering::SeqCst);
     }
 
     /// Returns the configured Dory matrix shape `(num_rows, num_cols)` for the current context.

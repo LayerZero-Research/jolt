@@ -122,10 +122,6 @@ impl CommitmentScheme for AstCommitmentScheme {
         &self.config
     }
 
-    fn append_pcs_config_to_transcript<T: Transcript>(_: &Self::Config, transcript: &mut T) {
-        transcript.append_u64(b"ast_layout", 0);
-    }
-
     fn coefficient_layout(_config: &Self::Config, context: CommitmentContext) -> CoefficientLayout {
         canonical_coefficient_layout(context)
     }
@@ -147,6 +143,7 @@ impl CommitmentScheme for AstCommitmentScheme {
 
     fn commit(
         &self,
+        _layout: &Self::CommitmentLayout,
         _poly: &MultilinearPolynomial<Self::Field>,
         _setup: &Self::ProverSetup,
     ) -> (Self::Commitment, Self::OpeningProofHint) {
@@ -155,6 +152,7 @@ impl CommitmentScheme for AstCommitmentScheme {
 
     fn batch_commit<S: PolynomialBatchSource<Self::Field>>(
         &self,
+        _layout: &Self::CommitmentLayout,
         _source: &S,
         _gens: &Self::ProverSetup,
     ) -> (Vec<Self::Commitment>, Self::BatchOpeningHint) {
@@ -172,6 +170,7 @@ impl CommitmentScheme for AstCommitmentScheme {
 
     fn prove<ProofTranscript: Transcript>(
         &self,
+        _layout: &Self::CommitmentLayout,
         _setup: &Self::ProverSetup,
         _poly: &MultilinearPolynomial<Self::Field>,
         _opening_point: &[<Self::Field as JoltField>::Challenge],
@@ -198,6 +197,7 @@ impl CommitmentScheme for AstCommitmentScheme {
 
     fn batch_prove<ProofTranscript: Transcript, S: BatchPolynomialSource<Self::Field>>(
         &self,
+        _layout: &Self::CommitmentLayout,
         _setup: &Self::ProverSetup,
         _poly_source: &S,
         _batch_hint: Self::BatchOpeningHint,

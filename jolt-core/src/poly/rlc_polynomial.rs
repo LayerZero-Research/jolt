@@ -1,9 +1,9 @@
 use crate::field::{BarrettReduce, FMAdd, JoltField};
 use crate::poly::coefficient_layout::CoefficientLayout;
-use crate::poly::commitment::dory::balanced_sigma_nu;
+use crate::poly::commitment::commitment_scheme::{canonical_coefficient_layout, CommitmentContext};
 use crate::poly::multilinear_polynomial::MultilinearPolynomial;
 use crate::utils::accumulation::MedAccumS;
-use crate::utils::math::{s64_from_diff_u64s, Math};
+use crate::utils::math::s64_from_diff_u64s;
 use crate::utils::thread::unsafe_allocate_zero_vec;
 use crate::zkvm::config::OneHotParams;
 use crate::zkvm::instruction::LookupQuery;
@@ -57,9 +57,9 @@ impl TraceSource {
 pub struct StreamingRLCContext<F: JoltField> {
     pub dense_polys: Vec<(CommittedPolynomial, F)>,
     pub onehot_polys: Vec<(CommittedPolynomial, F)>,
-    /// Advice polynomials with their RLC coefficients.
+    /// Advice polynomials with their RLC coefficients and commitment layout.
     /// These are NOT streamed from trace - they're passed in directly.
-    pub advice_polys: Vec<(F, MultilinearPolynomial<F>)>,
+    pub advice_polys: Vec<(F, MultilinearPolynomial<F>, CoefficientLayout)>,
     pub trace_source: TraceSource,
     pub preprocessing: Arc<RLCStreamingData>,
     pub one_hot_params: OneHotParams,
@@ -212,9 +212,19 @@ impl<F: JoltField> RLCPolynomial<F> {
                     onehot_polys.push((*poly_id, *coeff));
                 }
                 CommittedPolynomial::TrustedAdvice | CommittedPolynomial::UntrustedAdvice => {
-                    // Advice polynomials are passed in directly (not streamed from trace)
-                    if advice_poly_map.contains_key(poly_id) {
-                        advice_polys.push((*coeff, advice_poly_map.remove(poly_id).unwrap()));
+                    // Advice polynomials are passed in directly (not streamed from trace).
+                    // Advice geometry is canonical (balanced, cycle-major) and a pure function of
+                    // length, so derive it here rather than reaching into a PCS-specific helper.
+                    if let Some(advice_poly) = advice_poly_map.remove(poly_id) {
+                        let len = advice_poly.original_len();
+                        let context = match poly_id {
+                            CommittedPolynomial::TrustedAdvice => {
+                                CommitmentContext::TrustedAdvice { len }
+                            }
+                            _ => CommitmentContext::UntrustedAdvice { len },
+                        };
+                        let advice_layout = canonical_coefficient_layout(context);
+                        advice_polys.push((*coeff, advice_poly, advice_layout));
                     }
                 }
                 CommittedPolynomial::BytecodeChunk(_) | CommittedPolynomial::ProgramImageInit => {
@@ -374,13 +384,10 @@ impl<F: JoltField> RLCPolynomial<F> {
         // For each advice polynomial, compute its contribution to the result
         ctx.advice_polys
             .iter()
-            .filter(|(_, advice_poly)| advice_poly.original_len() > 0)
-            .for_each(|(coeff, advice_poly)| {
-                let advice_len = advice_poly.original_len();
-                let advice_vars = advice_len.log_2();
-                let (sigma_a, nu_a) = balanced_sigma_nu(advice_vars);
-                let advice_cols = 1usize << sigma_a;
-                let advice_rows = 1usize << nu_a;
+            .filter(|(_, advice_poly, _)| advice_poly.original_len() > 0)
+            .for_each(|(coeff, advice_poly, advice_layout)| {
+                let advice_cols = advice_layout.num_columns;
+                let advice_rows = advice_layout.num_rows;
 
                 debug_assert!(
                     advice_cols <= num_columns,

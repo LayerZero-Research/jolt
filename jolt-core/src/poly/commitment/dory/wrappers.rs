@@ -7,7 +7,6 @@ use crate::{
         multilinear_polynomial::{MultilinearPolynomial, PolynomialEvaluation},
     },
     transcripts::Transcript,
-    utils::math::Math,
 };
 use ark_bn254::Fr;
 use ark_ec::CurveGroup;
@@ -50,70 +49,6 @@ pub struct DoryLayoutBoundPolynomial<'a> {
 impl<'a> DoryLayoutBoundPolynomial<'a> {
     pub fn new(poly: &'a MultilinearPolynomial<Fr>, layout: DoryCommitmentLayout) -> Self {
         Self { poly, layout }
-    }
-}
-
-fn compatibility_layout_for_poly(
-    poly: &MultilinearPolynomial<Fr>,
-    layout: DoryLayout,
-) -> DoryCommitmentLayout {
-    match poly {
-        MultilinearPolynomial::OneHot(poly) => DoryCommitmentLayout::main(
-            poly.K,
-            poly.nonzero_indices.len(),
-            poly.get_num_vars(),
-            layout,
-        ),
-        _ => {
-            let len = poly.original_len().next_power_of_two().max(1);
-            DoryCommitmentLayout::main(1, len, len.log_2(), layout)
-        }
-    }
-}
-
-impl DoryPolynomial<ArkFr> for MultilinearPolynomial<Fr> {
-    fn num_vars(&self) -> usize {
-        self.get_num_vars()
-    }
-
-    fn evaluate(&self, point: &[ArkFr]) -> ArkFr {
-        // Dory uses little-endian variable order; reverse to match Jolt's big-endian order.
-        // Use Fr directly (not Challenge type) to avoid type mismatch issues.
-        let native_point: Vec<Fr> = point.iter().rev().map(ark_to_jolt).collect();
-        let result = PolynomialEvaluation::evaluate(self, native_point.as_slice());
-        jolt_to_ark(&result)
-    }
-
-    fn commit<E, Mo, _M1>(
-        &self,
-        _nu: usize,
-        sigma: usize,
-        setup: &ProverSetup<E>,
-    ) -> Result<(E::GT, Vec<E::G1>, ArkFr), DoryError>
-    where
-        E: PairingCurve,
-        Mo: dory::Mode,
-        _M1: DoryRoutines<E::G1>,
-        E::G1: DoryGroup<Scalar = ArkFr>,
-        E::GT: DoryGroup<Scalar = ArkFr>,
-    {
-        let num_cols = 1 << sigma;
-
-        let row_commitments = commit_tier_1::<E>(
-            self,
-            compatibility_layout_for_poly(self, DoryLayout::CycleMajor),
-            &setup.g1_vec,
-            num_cols,
-        )?;
-
-        let g2_bases = &setup.g2_vec[..row_commitments.len()];
-        let commitment = E::multi_pair_g2_setup(&row_commitments, g2_bases);
-
-        // In ZK mode, blind the tier-2 commitment with r_d1 * HT
-        let r_d1: ArkFr = Mo::sample();
-        let commitment = Mo::mask(commitment, &setup.ht, &r_d1);
-
-        Ok((commitment, row_commitments, r_d1))
     }
 }
 
@@ -260,18 +195,6 @@ fn vector_matrix_product_with_layout(
             .into_iter()
             .map(|v| jolt_to_ark(&v))
             .collect(),
-    }
-}
-
-impl MultilinearLagrange<ArkFr> for MultilinearPolynomial<Fr> {
-    fn vector_matrix_product(&self, left_vec: &[ArkFr], nu: usize, sigma: usize) -> Vec<ArkFr> {
-        vector_matrix_product_with_layout(
-            self,
-            compatibility_layout_for_poly(self, DoryLayout::CycleMajor),
-            left_vec,
-            nu,
-            sigma,
-        )
     }
 }
 

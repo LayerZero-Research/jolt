@@ -521,10 +521,6 @@ where
         &()
     }
 
-    fn append_pcs_config_to_transcript<T: Transcript>(_: &Self::Config, transcript: &mut T) {
-        transcript.append_u64(b"akita_layout", 0);
-    }
-
     fn coefficient_layout(_config: &Self::Config, context: CommitmentContext) -> CoefficientLayout {
         // Akita's packed path uses `PackedBitLayout`; this covers flat coefficient sources.
         canonical_coefficient_layout(context)
@@ -539,6 +535,7 @@ where
 
     fn commit(
         &self,
+        _layout: &Self::CommitmentLayout,
         poly: &MultilinearPolynomial<JoltFp128>,
         setup: &Self::ProverSetup,
     ) -> (Self::Commitment, Self::OpeningProofHint) {
@@ -557,6 +554,7 @@ where
 
     fn batch_commit<S: PolynomialBatchSource<JoltFp128>>(
         &self,
+        _layout: &Self::CommitmentLayout,
         source: &S,
         setup: &Self::ProverSetup,
     ) -> (Vec<Self::Commitment>, Self::BatchOpeningHint) {
@@ -593,6 +591,7 @@ where
 
     fn prove<ProofTranscript: Transcript>(
         &self,
+        _layout: &Self::CommitmentLayout,
         setup: &Self::ProverSetup,
         poly: &MultilinearPolynomial<JoltFp128>,
         opening_point: &[JoltFp128],
@@ -661,6 +660,7 @@ where
     #[allow(clippy::too_many_arguments)]
     fn batch_prove<ProofTranscript: Transcript, PolySource: BatchPolynomialSource<JoltFp128>>(
         &self,
+        _layout: &Self::CommitmentLayout,
         setup: &Self::ProverSetup,
         poly_source: &PolySource,
         batch_hint: Self::BatchOpeningHint,
@@ -930,7 +930,12 @@ where
     type ChunkState = AkitaChunkState<D>;
 
     #[allow(non_snake_case)]
-    fn streaming_chunk_size(&self, _K: usize, _T: usize) -> Option<usize> {
+    fn streaming_chunk_size(
+        &self,
+        _layout: &Self::CommitmentLayout,
+        _K: usize,
+        _T: usize,
+    ) -> Option<usize> {
         None
     }
 

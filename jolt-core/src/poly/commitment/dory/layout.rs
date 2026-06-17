@@ -2,10 +2,9 @@ use crate::poly::{
     coefficient_layout::CoefficientLayout,
     commitment::{
         commitment_scheme::CommitmentContext,
-        layout::{
-            CommitmentLayout, LayoutDescriptor, LayoutError, LayoutPublicInputs, LogicalDimensions,
-        },
+        layout::{CommitmentLayout, LayoutDescriptor, LayoutError, LayoutPublicInputs},
     },
+    multilinear_polynomial::MultilinearPolynomial,
 };
 use crate::utils::math::Math;
 
@@ -88,6 +87,26 @@ impl DoryCommitmentLayout {
         }
     }
 
+    /// Balanced layout for committing a single standalone polynomial (not the main RLC matrix).
+    /// A one-hot poly occupies its full `K x T`; any other poly is treated as a flat `k = 1` vector.
+    pub fn for_polynomial(
+        poly: &MultilinearPolynomial<ark_bn254::Fr>,
+        orientation: DoryLayout,
+    ) -> Self {
+        match poly {
+            MultilinearPolynomial::OneHot(poly) => Self::main(
+                poly.K,
+                poly.nonzero_indices.len(),
+                poly.get_num_vars(),
+                orientation,
+            ),
+            _ => {
+                let len = poly.original_len().next_power_of_two().max(1);
+                Self::main(1, len, len.log_2(), orientation)
+            }
+        }
+    }
+
     pub fn from_context(config: &DoryLayout, context: CommitmentContext) -> Self {
         match context {
             CommitmentContext::MainTrace {
@@ -136,10 +155,6 @@ impl DoryCommitmentLayout {
         self.embedding.embedded_t
     }
 
-    pub fn main_log_embedding(self) -> usize {
-        self.embedding.main_log_embedding
-    }
-
     pub fn k(self) -> usize {
         if self.context == DoryContext::Main {
             self.k
@@ -179,15 +194,6 @@ impl DoryCommitmentLayout {
         debug_assert!(k > 0);
         debug_assert_eq!(self.shape.num_columns % k, 0);
         self.shape.num_columns / k
-    }
-
-    pub fn logical_dimensions(self) -> LogicalDimensions {
-        LogicalDimensions {
-            log_k: self.k().log_2(),
-            log_t: self.embedding.stored_t.log_2(),
-            main_log_embedding: (self.context == DoryContext::Main)
-                .then_some(self.embedding.main_log_embedding),
-        }
     }
 
     fn main_embedding_extra_vars(self) -> usize {
@@ -232,8 +238,97 @@ impl CommitmentLayout for DoryCommitmentLayout {
             DoryLayout::from(*layout),
         ))
     }
+}
 
-    fn max_setup_vars(&self) -> usize {
-        self.shape.num_columns.log_2() + self.shape.num_rows.log_2()
+#[cfg(test)]
+mod tests {
+    use super::{DoryCommitmentLayout, DoryLayout};
+    use crate::poly::commitment::layout::{
+        CommitmentLayout, LayoutDescriptor, LayoutError, LayoutPublicInputs,
+    };
+    use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Compress, Validate};
+
+    fn public() -> LayoutPublicInputs {
+        LayoutPublicInputs {
+            log_k: 4,
+            log_t: 6,
+            main_log_embedding: Some(10),
+        }
+    }
+
+    fn round_trip(descriptor: &LayoutDescriptor, compress: Compress) -> LayoutDescriptor {
+        let mut bytes = Vec::new();
+        descriptor
+            .serialize_with_mode(&mut bytes, compress)
+            .unwrap();
+        LayoutDescriptor::deserialize_with_mode(&bytes[..], compress, Validate::Yes).unwrap()
+    }
+
+    #[test]
+    fn descriptor_round_trips_in_both_compress_modes() {
+        for orientation in [DoryLayout::CycleMajor, DoryLayout::AddressMajor] {
+            let descriptor = DoryCommitmentLayout::main(16, 64, 10, orientation).descriptor();
+            for compress in [Compress::Yes, Compress::No] {
+                assert_eq!(round_trip(&descriptor, compress), descriptor);
+            }
+        }
+    }
+
+    #[test]
+    fn validate_descriptor_recovers_orientation() {
+        for orientation in [DoryLayout::CycleMajor, DoryLayout::AddressMajor] {
+            let descriptor = DoryCommitmentLayout::main(16, 64, 10, orientation).descriptor();
+            let reconstructed =
+                DoryCommitmentLayout::validate_descriptor(&descriptor, &public()).unwrap();
+            assert_eq!(reconstructed.orientation(), orientation);
+        }
+    }
+
+    #[test]
+    fn validate_descriptor_rejects_wrong_scheme_tag() {
+        let descriptor = LayoutDescriptor {
+            scheme_tag: 999,
+            payload: vec![0],
+        };
+        assert!(matches!(
+            DoryCommitmentLayout::validate_descriptor(&descriptor, &public()),
+            Err(LayoutError::SchemeTagMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn validate_descriptor_rejects_malformed_payload() {
+        for payload in [vec![], vec![0u8, 0u8], vec![2u8]] {
+            let descriptor = LayoutDescriptor {
+                scheme_tag: 1,
+                payload,
+            };
+            assert!(matches!(
+                DoryCommitmentLayout::validate_descriptor(&descriptor, &public()),
+                Err(LayoutError::MalformedDescriptor)
+            ));
+        }
+    }
+
+    #[test]
+    fn tampered_descriptor_flips_reconstructed_orientation() {
+        let cycle = DoryCommitmentLayout::main(16, 64, 10, DoryLayout::CycleMajor).descriptor();
+        let address = DoryCommitmentLayout::main(16, 64, 10, DoryLayout::AddressMajor).descriptor();
+        // The free choice is genuinely carried in the descriptor, so the two differ and each
+        // reconstructs to its own orientation. A verifier that binds the descriptor in
+        // Fiat-Shamir therefore cannot have the orientation silently swapped.
+        assert_ne!(cycle, address);
+        assert_eq!(
+            DoryCommitmentLayout::validate_descriptor(&cycle, &public())
+                .unwrap()
+                .orientation(),
+            DoryLayout::CycleMajor
+        );
+        assert_eq!(
+            DoryCommitmentLayout::validate_descriptor(&address, &public())
+                .unwrap()
+                .orientation(),
+            DoryLayout::AddressMajor
+        );
     }
 }

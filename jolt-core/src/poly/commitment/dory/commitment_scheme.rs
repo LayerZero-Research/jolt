@@ -1,6 +1,6 @@
 //! Dory polynomial commitment scheme implementation
 
-use super::dory_globals::{DoryContext, DoryGlobals, DoryLayout};
+use super::dory_globals::{DoryGlobals, DoryLayout};
 use super::jolt_dory_routines::{JoltG1Routines, JoltG2Routines};
 use super::layout::DoryCommitmentLayout;
 use super::wrappers::{
@@ -201,60 +201,8 @@ impl CommitmentScheme for DoryCommitmentScheme {
         }
     }
 
-    fn active() -> Self {
-        Self {
-            layout: DoryGlobals::get_layout(),
-        }
-    }
-
     fn config(&self) -> &DoryLayout {
         &self.layout
-    }
-
-    fn append_pcs_config_to_transcript<T: Transcript>(config: &Self::Config, transcript: &mut T) {
-        transcript.append_u64(b"dory_layout", *config as u64);
-    }
-
-    fn initialize_context(config: &Self::Config, context: CommitmentContext) {
-        match context {
-            CommitmentContext::MainTrace {
-                k,
-                trace_len,
-                commitment_total_vars,
-            } => {
-                DoryGlobals::initialize_main_with_log_embedding(
-                    k,
-                    trace_len,
-                    commitment_total_vars,
-                    Some(*config),
-                );
-            }
-            CommitmentContext::TrustedAdvice { len } => {
-                DoryGlobals::initialize_context(1, len, DoryContext::TrustedAdvice, None);
-            }
-            CommitmentContext::UntrustedAdvice { len } => {
-                DoryGlobals::initialize_context(1, len, DoryContext::UntrustedAdvice, None);
-            }
-        }
-    }
-
-    fn with_context<R, Op: FnOnce() -> R>(
-        config: &Self::Config,
-        context: CommitmentContext,
-        op: Op,
-    ) -> R {
-        Self::initialize_context(config, context);
-        match context {
-            CommitmentContext::TrustedAdvice { .. } => {
-                let _ctx = DoryGlobals::with_context(DoryContext::TrustedAdvice);
-                op()
-            }
-            CommitmentContext::UntrustedAdvice { .. } => {
-                let _ctx = DoryGlobals::with_context(DoryContext::UntrustedAdvice);
-                op()
-            }
-            CommitmentContext::MainTrace { .. } => op(),
-        }
     }
 
     fn main_trace_commitment_len(
@@ -292,20 +240,11 @@ impl CommitmentScheme for DoryCommitmentScheme {
 
     fn commit(
         &self,
-        poly: &MultilinearPolynomial<ark_bn254::Fr>,
-        setup: &Self::ProverSetup,
-    ) -> (Self::Commitment, Self::OpeningProofHint) {
-        let layout = self.compatibility_layout_for_poly(poly);
-        self.commit_with_layout(&layout, poly, setup)
-    }
-
-    fn commit_with_layout(
-        &self,
         layout: &Self::CommitmentLayout,
         poly: &MultilinearPolynomial<ark_bn254::Fr>,
         setup: &Self::ProverSetup,
     ) -> (Self::Commitment, Self::OpeningProofHint) {
-        let _span = trace_span!("DoryCommitmentScheme::commit_with_layout").entered();
+        let _span = trace_span!("DoryCommitmentScheme::commit").entered();
 
         let (sigma, nu) = layout.sigma_nu();
         let bound_poly = DoryLayoutBoundPolynomial::new(poly, *layout);
@@ -331,6 +270,7 @@ impl CommitmentScheme for DoryCommitmentScheme {
 
     fn batch_commit<S: PolynomialBatchSource<ark_bn254::Fr>>(
         &self,
+        layout: &Self::CommitmentLayout,
         source: &S,
         gens: &Self::ProverSetup,
     ) -> (Vec<Self::Commitment>, Self::BatchOpeningHint) {
@@ -338,54 +278,13 @@ impl CommitmentScheme for DoryCommitmentScheme {
 
         let results: Vec<(Self::Commitment, Self::OpeningProofHint)> = (0..source.num_polys())
             .into_par_iter()
-            .map(|i| {
-                let poly = source.get_poly(i).unwrap();
-                let layout = self.compatibility_layout_for_poly(poly);
-                self.commit_with_layout(&layout, poly, gens)
-            })
-            .collect();
-        let (commitments, hints): (Vec<_>, Vec<_>) = results.into_iter().unzip();
-        (commitments, hints)
-    }
-
-    fn batch_commit_with_layout<S: PolynomialBatchSource<ark_bn254::Fr>>(
-        &self,
-        layout: &Self::CommitmentLayout,
-        source: &S,
-        gens: &Self::ProverSetup,
-    ) -> (Vec<Self::Commitment>, Self::BatchOpeningHint) {
-        let _span = trace_span!("DoryCommitmentScheme::batch_commit_with_layout").entered();
-
-        let results: Vec<(Self::Commitment, Self::OpeningProofHint)> = (0..source.num_polys())
-            .into_par_iter()
-            .map(|i| self.commit_with_layout(layout, source.get_poly(i).unwrap(), gens))
+            .map(|i| self.commit(layout, source.get_poly(i).unwrap(), gens))
             .collect();
         let (commitments, hints): (Vec<_>, Vec<_>) = results.into_iter().unzip();
         (commitments, hints)
     }
 
     fn prove<ProofTranscript: Transcript>(
-        &self,
-        setup: &Self::ProverSetup,
-        poly: &MultilinearPolynomial<ark_bn254::Fr>,
-        opening_point: &[<ark_bn254::Fr as JoltField>::Challenge],
-        hint: Option<Self::OpeningProofHint>,
-        transcript: &mut ProofTranscript,
-        commitment: &Self::Commitment,
-    ) -> (Self::Proof, Option<Self::Field>) {
-        let layout = self.compatibility_layout_for_poly(poly);
-        self.prove_with_layout(
-            &layout,
-            setup,
-            poly,
-            opening_point,
-            hint,
-            transcript,
-            commitment,
-        )
-    }
-
-    fn prove_with_layout<ProofTranscript: Transcript>(
         &self,
         layout: &Self::CommitmentLayout,
         setup: &Self::ProverSetup,
@@ -395,12 +294,12 @@ impl CommitmentScheme for DoryCommitmentScheme {
         transcript: &mut ProofTranscript,
         _commitment: &Self::Commitment,
     ) -> (Self::Proof, Option<Self::Field>) {
-        let _span = trace_span!("DoryCommitmentScheme::prove_with_layout").entered();
+        let _span = trace_span!("DoryCommitmentScheme::prove").entered();
 
         let (row_commitments, commit_blind) = hint
             .map(DoryOpeningProofHint::into_parts)
             .unwrap_or_else(|| {
-                let (_commitment, hint) = self.commit_with_layout(layout, poly, setup);
+                let (_commitment, hint) = self.commit(layout, poly, setup);
                 hint.into_parts()
             });
 
@@ -487,37 +386,6 @@ impl CommitmentScheme for DoryCommitmentScheme {
 
     fn batch_prove<ProofTranscript: Transcript, S: BatchPolynomialSource<Self::Field>>(
         &self,
-        setup: &Self::ProverSetup,
-        poly_source: &S,
-        batch_hint: Self::BatchOpeningHint,
-        individual_hints: Vec<Self::OpeningProofHint>,
-        commitments: &[&Self::Commitment],
-        opening_point: &[<Self::Field as JoltField>::Challenge],
-        claims: &[Self::Field],
-        coeffs: &[Self::Field],
-        transcript: &mut ProofTranscript,
-    ) -> Self::BatchedProof {
-        let joint_poly = poly_source.build_joint_polynomial(coeffs);
-        let layout = self.compatibility_layout_for_poly(&joint_poly);
-        self.batch_prove_with_layout(
-            &layout,
-            setup,
-            poly_source,
-            batch_hint,
-            individual_hints,
-            commitments,
-            opening_point,
-            claims,
-            coeffs,
-            transcript,
-        )
-    }
-
-    fn batch_prove_with_layout<
-        ProofTranscript: Transcript,
-        S: BatchPolynomialSource<Self::Field>,
-    >(
-        &self,
         layout: &Self::CommitmentLayout,
         setup: &Self::ProverSetup,
         poly_source: &S,
@@ -533,7 +401,7 @@ impl CommitmentScheme for DoryCommitmentScheme {
         let combined_hint =
             Self::combine_hints_for_rows(layout.num_rows(), individual_hints, coeffs);
         let joint_commitment = Self::combine_commitments_internal(commitments, coeffs);
-        let (proof, y_blinding) = self.prove_with_layout(
+        let (proof, y_blinding) = self.prove(
             layout,
             setup,
             &joint_poly,
@@ -596,24 +464,6 @@ impl CommitmentScheme for DoryCommitmentScheme {
 }
 
 impl DoryCommitmentScheme {
-    fn compatibility_layout_for_poly(
-        &self,
-        poly: &MultilinearPolynomial<ark_bn254::Fr>,
-    ) -> DoryCommitmentLayout {
-        match poly {
-            MultilinearPolynomial::OneHot(poly) => DoryCommitmentLayout::main(
-                poly.K,
-                poly.nonzero_indices.len(),
-                poly.get_num_vars(),
-                self.layout,
-            ),
-            _ => {
-                let len = poly.original_len().next_power_of_two().max(1);
-                DoryCommitmentLayout::main(1, len, len.log_2(), self.layout)
-            }
-        }
-    }
-
     fn combine_hints_for_rows(
         num_rows: usize,
         hints: Vec<DoryOpeningProofHint>,
@@ -676,17 +526,7 @@ impl StreamingCommitmentScheme for DoryCommitmentScheme {
     type ChunkState = Vec<ArkG1>;
 
     #[allow(non_snake_case)]
-    fn streaming_chunk_size(&self, K: usize, T: usize) -> Option<usize> {
-        if self.layout == DoryLayout::AddressMajor {
-            None
-        } else {
-            let layout = DoryCommitmentLayout::main(K, T, K.log_2() + T.log_2(), self.layout);
-            Some(layout.num_columns())
-        }
-    }
-
-    #[allow(non_snake_case)]
-    fn streaming_chunk_size_with_layout(
+    fn streaming_chunk_size(
         &self,
         layout: &Self::CommitmentLayout,
         _K: usize,

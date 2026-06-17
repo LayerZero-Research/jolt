@@ -152,33 +152,6 @@ pub trait CommitmentScheme: Clone + Sync + Send + Default + 'static {
 
     fn config(&self) -> &Self::Config;
 
-    /// The PCS instance reflecting the orientation/config currently selected for proving.
-    ///
-    /// Defaults to the scheme default. Schemes whose layout is selected externally (e.g. Dory's
-    /// cycle-major vs address-major orientation) override this to report the active selection, so
-    /// the prover threads one consistent config into commit, opening, the Fiat-Shamir preamble,
-    /// and the serialized proof.
-    fn active() -> Self {
-        Self::default()
-    }
-
-    /// Absorb the PCS's selected `Config` into the Fiat-Shamir transcript for domain separation.
-    ///
-    /// When the prover sources `config` from [`CommitmentScheme::active`], this binds the
-    /// orientation actually used to commit and open (for Dory, cycle-major vs address-major).
-    fn append_pcs_config_to_transcript<T: Transcript>(config: &Self::Config, transcript: &mut T);
-
-    fn initialize_context(_config: &Self::Config, _context: CommitmentContext) {}
-
-    fn with_context<R, Op: FnOnce() -> R>(
-        config: &Self::Config,
-        context: CommitmentContext,
-        op: Op,
-    ) -> R {
-        Self::initialize_context(config, context);
-        op()
-    }
-
     fn main_trace_commitment_len(
         _config: &Self::Config,
         _context: CommitmentContext,
@@ -208,33 +181,17 @@ pub trait CommitmentScheme: Clone + Sync + Send + Default + 'static {
 
     fn commit(
         &self,
+        layout: &Self::CommitmentLayout,
         poly: &MultilinearPolynomial<Self::Field>,
         setup: &Self::ProverSetup,
     ) -> (Self::Commitment, Self::OpeningProofHint);
 
-    fn commit_with_layout(
-        &self,
-        _layout: &Self::CommitmentLayout,
-        poly: &MultilinearPolynomial<Self::Field>,
-        setup: &Self::ProverSetup,
-    ) -> (Self::Commitment, Self::OpeningProofHint) {
-        self.commit(poly, setup)
-    }
-
     fn batch_commit<S: PolynomialBatchSource<Self::Field>>(
         &self,
+        layout: &Self::CommitmentLayout,
         source: &S,
         gens: &Self::ProverSetup,
     ) -> (Vec<Self::Commitment>, Self::BatchOpeningHint);
-
-    fn batch_commit_with_layout<S: PolynomialBatchSource<Self::Field>>(
-        &self,
-        _layout: &Self::CommitmentLayout,
-        source: &S,
-        gens: &Self::ProverSetup,
-    ) -> (Vec<Self::Commitment>, Self::BatchOpeningHint) {
-        self.batch_commit(source, gens)
-    }
 
     /// Homomorphically combines multiple commitments into a single commitment, computed as a
     /// linear combination with the given coefficients.
@@ -268,8 +225,10 @@ pub trait CommitmentScheme: Clone + Sync + Send + Default + 'static {
     /// A tuple containing:
     /// - The proof of the polynomial evaluation at the specified point
     /// - An optional ZK blinding factor (y_blinding) for use in BlindFold; None for non-ZK schemes
+    #[allow(clippy::too_many_arguments)]
     fn prove<ProofTranscript: Transcript>(
         &self,
+        layout: &Self::CommitmentLayout,
         setup: &Self::ProverSetup,
         poly: &MultilinearPolynomial<Self::Field>,
         opening_point: &[<Self::Field as JoltField>::Challenge],
@@ -277,20 +236,6 @@ pub trait CommitmentScheme: Clone + Sync + Send + Default + 'static {
         transcript: &mut ProofTranscript,
         commitment: &Self::Commitment,
     ) -> (Self::Proof, Option<Self::Field>);
-
-    #[allow(clippy::too_many_arguments)]
-    fn prove_with_layout<ProofTranscript: Transcript>(
-        &self,
-        _layout: &Self::CommitmentLayout,
-        setup: &Self::ProverSetup,
-        poly: &MultilinearPolynomial<Self::Field>,
-        opening_point: &[<Self::Field as JoltField>::Challenge],
-        hint: Option<Self::OpeningProofHint>,
-        transcript: &mut ProofTranscript,
-        commitment: &Self::Commitment,
-    ) -> (Self::Proof, Option<Self::Field>) {
-        self.prove(setup, poly, opening_point, hint, transcript, commitment)
-    }
 
     fn verify<ProofTranscript: Transcript>(
         &self,
@@ -305,6 +250,7 @@ pub trait CommitmentScheme: Clone + Sync + Send + Default + 'static {
     #[allow(clippy::too_many_arguments)]
     fn batch_prove<ProofTranscript: Transcript, S: BatchPolynomialSource<Self::Field>>(
         &self,
+        layout: &Self::CommitmentLayout,
         setup: &Self::ProverSetup,
         poly_source: &S,
         batch_hint: Self::BatchOpeningHint,
@@ -315,36 +261,6 @@ pub trait CommitmentScheme: Clone + Sync + Send + Default + 'static {
         coeffs: &[Self::Field],
         transcript: &mut ProofTranscript,
     ) -> Self::BatchedProof;
-
-    #[allow(clippy::too_many_arguments)]
-    fn batch_prove_with_layout<
-        ProofTranscript: Transcript,
-        S: BatchPolynomialSource<Self::Field>,
-    >(
-        &self,
-        _layout: &Self::CommitmentLayout,
-        setup: &Self::ProverSetup,
-        poly_source: &S,
-        batch_hint: Self::BatchOpeningHint,
-        individual_hints: Vec<Self::OpeningProofHint>,
-        commitments: &[&Self::Commitment],
-        opening_point: &[<Self::Field as JoltField>::Challenge],
-        claims: &[Self::Field],
-        coeffs: &[Self::Field],
-        transcript: &mut ProofTranscript,
-    ) -> Self::BatchedProof {
-        self.batch_prove(
-            setup,
-            poly_source,
-            batch_hint,
-            individual_hints,
-            commitments,
-            opening_point,
-            claims,
-            coeffs,
-            transcript,
-        )
-    }
 
     #[allow(clippy::too_many_arguments)]
     fn batch_verify<ProofTranscript: Transcript>(
@@ -448,17 +364,12 @@ pub trait StreamingCommitmentScheme: CommitmentScheme {
     /// split into chunks of `size` cycles, or `None` to use the non-streaming
     /// path (materialize full polynomial, then commit).
     #[allow(non_snake_case)]
-    fn streaming_chunk_size(&self, K: usize, T: usize) -> Option<usize>;
-
-    #[allow(non_snake_case)]
-    fn streaming_chunk_size_with_layout(
+    fn streaming_chunk_size(
         &self,
-        _layout: &Self::CommitmentLayout,
+        layout: &Self::CommitmentLayout,
         K: usize,
         T: usize,
-    ) -> Option<usize> {
-        self.streaming_chunk_size(K, T)
-    }
+    ) -> Option<usize>;
 
     fn process_chunk<T: SmallScalar>(
         &self,

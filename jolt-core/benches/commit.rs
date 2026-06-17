@@ -1,6 +1,8 @@
 use criterion::Criterion;
 use jolt_core::poly::commitment::commitment_scheme::CommitmentScheme;
-use jolt_core::poly::commitment::dory::{DoryCommitmentScheme, DoryContext, DoryGlobals};
+use jolt_core::poly::commitment::dory::{
+    DoryCommitmentLayout, DoryCommitmentScheme, DoryContext, DoryGlobals, DoryLayout,
+};
 use jolt_core::poly::multilinear_polynomial::MultilinearPolynomial;
 use jolt_core::utils::math::Math;
 use rand::Rng;
@@ -16,10 +18,11 @@ fn benchmark_dory_dense(c: &mut Criterion, name: &str, k: usize, t: usize) {
     let coeffs: Vec<u64> = (0..t).map(|_| rng.next_u64()).collect();
     let poly = MultilinearPolynomial::from(coeffs);
 
+    let layout = DoryCommitmentLayout::for_polynomial(&poly, DoryLayout::CycleMajor);
     c.bench_function(&format!("{name} Dory commit_rows"), |b| {
         b.iter(|| {
             let _ = globals;
-            DoryCommitmentScheme::default().commit(&poly, &setup);
+            DoryCommitmentScheme::default().commit(&layout, &poly, &setup);
         });
     });
 }
@@ -39,10 +42,11 @@ fn benchmark_dory_one_hot_batch(c: &mut Criterion, name: &str, k: usize, t: usiz
         })
         .collect::<Vec<_>>();
 
+    let layout = DoryCommitmentLayout::for_polynomial(&polys[0], DoryLayout::CycleMajor);
     c.bench_function(&format!("{name} Dory one-hot commit"), |b| {
         b.iter(|| {
             let _ = globals;
-            DoryCommitmentScheme::default().batch_commit(&polys, &setup);
+            DoryCommitmentScheme::default().batch_commit(&layout, &polys, &setup);
         });
     });
 }
@@ -68,10 +72,11 @@ fn benchmark_dory_mixed_batch(c: &mut Criterion, name: &str, k: usize, t: usize)
         })
         .collect::<Vec<_>>();
 
+    let layout = DoryCommitmentLayout::for_polynomial(&polys[0], DoryLayout::CycleMajor);
     c.bench_function(&format!("{name} Dory mixed batch commit"), |b| {
         b.iter(|| {
             let _ = globals;
-            DoryCommitmentScheme::default().batch_commit(&polys, &setup);
+            DoryCommitmentScheme::default().batch_commit(&layout, &polys, &setup);
         });
     });
 }

@@ -9,6 +9,7 @@ use super::wrappers::{jolt_to_akita, AkitaProof, ArkBridge, Fp128};
 use crate::field::fp128::JoltFp128;
 use crate::field::JoltField;
 use crate::poly::commitment::commitment_scheme::{CommitmentScheme, PolynomialBatchSource};
+use crate::poly::commitment::layout::NoCommitmentLayout;
 use crate::poly::compact_polynomial::CompactPolynomial;
 use crate::poly::dense_mlpoly::DensePolynomial;
 use crate::poly::multilinear_polynomial::MultilinearPolynomial;
@@ -302,8 +303,8 @@ fn commit_roundtrip() {
     let setup = Scheme::setup_prover(num_vars.max(10));
     let pcs = Scheme::default();
 
-    let (commitment1, _hint1) = pcs.commit(&poly, &setup);
-    let (commitment2, _hint2) = pcs.commit(&poly, &setup);
+    let (commitment1, _hint1) = pcs.commit(&NoCommitmentLayout, &poly, &setup);
+    let (commitment2, _hint2) = pcs.commit(&NoCommitmentLayout, &poly, &setup);
 
     assert_eq!(commitment1, commitment2, "deterministic commitment");
 }
@@ -1525,7 +1526,7 @@ fn akita_batch_roundtrip_with_packed_layout() {
     let verifier_setup = Scheme::setup_verifier(&setup);
     let pcs = Scheme::default();
 
-    let (commitments, batch_hint) = pcs.batch_commit(&source, &setup);
+    let (commitments, batch_hint) = pcs.batch_commit(&NoCommitmentLayout, &source, &setup);
     assert_eq!(
         commitments.len(),
         1,
@@ -1548,6 +1549,7 @@ fn akita_batch_roundtrip_with_packed_layout() {
 
     let mut prove_transcript = Blake2bTranscript::new(b"akita_batch_roundtrip");
     let proof = pcs.batch_prove(
+        &NoCommitmentLayout,
         &setup,
         &source,
         batch_hint,
@@ -1617,7 +1619,7 @@ fn akita_batch_roundtrip_with_packed_layout_k16() {
     let verifier_setup = FastScheme::setup_verifier(&setup);
     let pcs = FastScheme::default();
 
-    let (commitments, batch_hint) = pcs.batch_commit(&source, &setup);
+    let (commitments, batch_hint) = pcs.batch_commit(&NoCommitmentLayout, &source, &setup);
     assert_eq!(
         commitments.len(),
         1,
@@ -1640,6 +1642,7 @@ fn akita_batch_roundtrip_with_packed_layout_k16() {
 
     let mut prove_transcript = Blake2bTranscript::new(b"akita_batch_roundtrip_k16");
     let proof = pcs.batch_prove(
+        &NoCommitmentLayout,
         &setup,
         &source,
         batch_hint,
@@ -1708,7 +1711,7 @@ fn akita_k256_setup_envelope_supports_k16_roundtrip() {
     let verifier_setup = FastScheme::setup_verifier(&setup);
     let pcs = FastScheme::default();
 
-    let (commitments, batch_hint) = pcs.batch_commit(&source, &setup);
+    let (commitments, batch_hint) = pcs.batch_commit(&NoCommitmentLayout, &source, &setup);
     let opening_point: Vec<JoltFp128> = (0..(4 + num_cycles.trailing_zeros() as usize))
         .map(|i| JoltFp128::from_u64((i + 7) as u64))
         .collect();
@@ -1724,6 +1727,7 @@ fn akita_k256_setup_envelope_supports_k16_roundtrip() {
 
     let mut prove_transcript = Blake2bTranscript::new(b"akita_setup_envelope_k16");
     let proof = pcs.batch_prove(
+        &NoCommitmentLayout,
         &setup,
         &source,
         batch_hint,

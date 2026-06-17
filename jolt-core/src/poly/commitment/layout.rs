@@ -28,8 +28,6 @@ pub trait CommitmentLayout: Clone + Send + Sync + 'static {
     ) -> Result<Self, LayoutError>
     where
         Self: Sized;
-
-    fn max_setup_vars(&self) -> usize;
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -52,23 +50,4 @@ impl CommitmentLayout for NoCommitmentLayout {
         }
         Ok(Self)
     }
-
-    fn max_setup_vars(&self) -> usize {
-        0
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PolynomialFamily {
-    MainTraceOneHot,
-    MainTraceDense,
-    TrustedAdvice,
-    UntrustedAdvice,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LogicalDimensions {
-    pub log_k: usize,
-    pub log_t: usize,
-    pub main_log_embedding: Option<usize>,
 }

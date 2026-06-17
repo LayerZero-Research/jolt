@@ -15,6 +15,11 @@ mod tests {
     use serial_test::serial;
     type Fr = ark_bn254::Fr;
 
+    /// Cycle-major balanced layout for committing a single standalone polynomial in tests.
+    fn cm_layout(poly: &MultilinearPolynomial<Fr>) -> DoryCommitmentLayout {
+        DoryCommitmentLayout::for_polynomial(poly, DoryLayout::CycleMajor)
+    }
+
     fn test_commitment_scheme_with_poly(
         poly: MultilinearPolynomial<Fr>,
         poly_type_name: &str,
@@ -29,7 +34,7 @@ mod tests {
             .collect();
 
         let (commitment, row_commitments) =
-            DoryCommitmentScheme::default().commit(&poly, prover_setup);
+            DoryCommitmentScheme::default().commit(&cm_layout(&poly), &poly, prover_setup);
 
         let evaluation = <MultilinearPolynomial<Fr> as PolynomialEvaluation<Fr>>::evaluate(
             &poly,
@@ -39,6 +44,7 @@ mod tests {
         let mut prove_transcript = Blake2bTranscript::new(b"dory_test");
         bind_opening_inputs::<Fr, _>(&mut prove_transcript, &opening_point, &evaluation);
         let (proof, _y_blinding) = DoryCommitmentScheme::default().prove(
+            &cm_layout(&poly),
             prover_setup,
             &poly,
             &opening_point,
@@ -89,8 +95,10 @@ mod tests {
         let coeffs: Vec<Fr> = (0..(1 << num_vars)).map(|_| Fr::rand(&mut rng)).collect();
         let poly = MultilinearPolynomial::LargeScalars(DensePolynomial::new(coeffs));
 
-        let (commitment_a, _) = DoryCommitmentScheme::default().commit(&poly, &prover_setup);
-        let (commitment_b, _) = DoryCommitmentScheme::default().commit(&poly, &prover_setup);
+        let (commitment_a, _) =
+            DoryCommitmentScheme::default().commit(&cm_layout(&poly), &poly, &prover_setup);
+        let (commitment_b, _) =
+            DoryCommitmentScheme::default().commit(&cm_layout(&poly), &poly, &prover_setup);
 
         assert_ne!(
             commitment_a, commitment_b,
@@ -281,7 +289,7 @@ mod tests {
         let verifier_setup = DoryCommitmentScheme::setup_verifier(&prover_setup);
 
         let (commitment, row_commitments) =
-            DoryCommitmentScheme::default().commit(&poly, &prover_setup);
+            DoryCommitmentScheme::default().commit(&cm_layout(&poly), &poly, &prover_setup);
 
         let mut prove_transcript = Blake2bTranscript::new(DoryCommitmentScheme::protocol_name());
 
@@ -289,6 +297,7 @@ mod tests {
 
         bind_opening_inputs::<Fr, _>(&mut prove_transcript, &opening_point, &correct_evaluation);
         let (proof, _y_blinding) = DoryCommitmentScheme::default().prove(
+            &cm_layout(&poly),
             &prover_setup,
             &poly,
             &opening_point,
@@ -391,8 +400,11 @@ mod tests {
             let wrong_coeffs: Vec<Fr> = (0..num_coeffs).map(|_| Fr::rand(&mut rng)).collect();
             let wrong_poly =
                 MultilinearPolynomial::LargeScalars(DensePolynomial::new(wrong_coeffs));
-            let (wrong_commitment, _) =
-                DoryCommitmentScheme::default().commit(&wrong_poly, &prover_setup);
+            let (wrong_commitment, _) = DoryCommitmentScheme::default().commit(
+                &cm_layout(&wrong_poly),
+                &wrong_poly,
+                &prover_setup,
+            );
 
             let mut verify_transcript =
                 Blake2bTranscript::new(DoryCommitmentScheme::protocol_name());
@@ -501,7 +513,7 @@ mod tests {
         let verifier_setup = DoryCommitmentScheme::setup_verifier(&prover_setup);
 
         let (commitment, row_commitments) =
-            DoryCommitmentScheme::default().commit(&poly, &prover_setup);
+            DoryCommitmentScheme::default().commit(&cm_layout(&poly), &poly, &prover_setup);
 
         let evaluation = <MultilinearPolynomial<Fr> as PolynomialEvaluation<Fr>>::evaluate(
             &poly,
@@ -511,6 +523,7 @@ mod tests {
         let mut prove_transcript = Blake2bTranscript::new(b"dory_test");
         bind_opening_inputs::<Fr, _>(&mut prove_transcript, &opening_point, &evaluation);
         let (proof, _y_blinding) = DoryCommitmentScheme::default().prove(
+            &cm_layout(&poly),
             &prover_setup,
             &poly,
             &opening_point,
@@ -563,7 +576,9 @@ mod tests {
         // Step 2: Commit to each polynomial
         let commitments_and_hints: Vec<_> = polys
             .iter()
-            .map(|poly| DoryCommitmentScheme::default().commit(poly, &prover_setup))
+            .map(|poly| {
+                DoryCommitmentScheme::default().commit(&cm_layout(poly), poly, &prover_setup)
+            })
             .collect();
 
         let commitments: Vec<_> = commitments_and_hints.iter().map(|(c, _)| *c).collect();
@@ -594,6 +609,7 @@ mod tests {
         let mut prove_transcript = Blake2bTranscript::new(b"dory_homomorphic_test");
         bind_opening_inputs::<Fr, _>(&mut prove_transcript, &opening_point, &evaluation);
         let (proof, _y_blinding) = DoryCommitmentScheme::default().prove(
+            &cm_layout(&combined_poly),
             &prover_setup,
             &combined_poly,
             &opening_point,
@@ -642,8 +658,11 @@ mod tests {
         let prover_setup = DoryCommitmentScheme::setup_prover(num_vars);
         let verifier_setup = DoryCommitmentScheme::setup_verifier(&prover_setup);
 
-        let (commitments, batch_hint) =
-            DoryCommitmentScheme::default().batch_commit(&polys, &prover_setup);
+        let (commitments, batch_hint) = DoryCommitmentScheme::default().batch_commit(
+            &cm_layout(&polys[0]),
+            &polys,
+            &prover_setup,
+        );
         let hints = batch_hint;
 
         let coeffs: Vec<Fr> = (0..num_polys).map(|_| Fr::rand(&mut rng)).collect();
@@ -667,8 +686,11 @@ mod tests {
         let combined_poly = DensePolynomial::linear_combination(&poly_refs, &coeffs);
         let combined_poly = MultilinearPolynomial::from(combined_poly.Z);
 
-        let (direct_commitment, direct_hint) =
-            DoryCommitmentScheme::default().commit(&combined_poly, &prover_setup);
+        let (direct_commitment, direct_hint) = DoryCommitmentScheme::default().commit(
+            &cm_layout(&combined_poly),
+            &combined_poly,
+            &prover_setup,
+        );
 
         // In transparent mode the RLC commitment is deterministic. In ZK mode, direct_commitment
         // has a fresh Dory blind, so equality with the homomorphic RLC is not expected.
@@ -681,6 +703,7 @@ mod tests {
         let mut prove_transcript = Blake2bTranscript::new(b"dory_batch_commit_e2e_test");
         bind_opening_inputs::<Fr, _>(&mut prove_transcript, &opening_point, &evaluation);
         let (proof, _y_blinding) = DoryCommitmentScheme::default().prove(
+            &cm_layout(&combined_poly),
             &prover_setup,
             &combined_poly,
             &opening_point,
@@ -708,6 +731,7 @@ mod tests {
         let mut prove_transcript2 = Blake2bTranscript::new(b"dory_batch_commit_e2e_test");
         bind_opening_inputs::<Fr, _>(&mut prove_transcript2, &opening_point, &evaluation);
         let (proof2, _y_blinding2) = DoryCommitmentScheme::default().prove(
+            &cm_layout(&combined_poly),
             &prover_setup,
             &combined_poly,
             &opening_point,
@@ -786,23 +810,6 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_dory_layout_global_state() {
-        DoryGlobals::reset();
-
-        // Default should be CycleMajor
-        assert_eq!(DoryGlobals::get_layout(), DoryLayout::CycleMajor);
-
-        // Set to AddressMajor
-        DoryGlobals::set_layout(DoryLayout::AddressMajor);
-        assert_eq!(DoryGlobals::get_layout(), DoryLayout::AddressMajor);
-
-        // Set back to CycleMajor
-        DoryGlobals::set_layout(DoryLayout::CycleMajor);
-        assert_eq!(DoryGlobals::get_layout(), DoryLayout::CycleMajor);
-    }
-
-    #[test]
-    #[serial]
     fn test_dory_commitment_layout_matches_main_globals() {
         for layout in [DoryLayout::CycleMajor, DoryLayout::AddressMajor] {
             DoryGlobals::reset();
@@ -873,15 +880,25 @@ mod tests {
 
         let prover_setup = DoryCommitmentScheme::setup_prover(num_vars);
 
-        DoryGlobals::set_layout(DoryLayout::CycleMajor);
         let poly1 = MultilinearPolynomial::LargeScalars(DensePolynomial::new(coeffs.clone()));
-        let (commitment_cycle_major, _) =
-            DoryCommitmentScheme::default().commit(&poly1, &prover_setup);
+        let (commitment_cycle_major, _) = (DoryCommitmentScheme {
+            layout: DoryLayout::CycleMajor,
+        })
+        .commit(
+            &DoryCommitmentLayout::for_polynomial(&poly1, DoryLayout::CycleMajor),
+            &poly1,
+            &prover_setup,
+        );
 
-        DoryGlobals::set_layout(DoryLayout::AddressMajor);
         let poly2 = MultilinearPolynomial::LargeScalars(DensePolynomial::new(coeffs));
-        let (commitment_addr_major, _) =
-            DoryCommitmentScheme::default().commit(&poly2, &prover_setup);
+        let (commitment_addr_major, _) = (DoryCommitmentScheme {
+            layout: DoryLayout::AddressMajor,
+        })
+        .commit(
+            &DoryCommitmentLayout::for_polynomial(&poly2, DoryLayout::AddressMajor),
+            &poly2,
+            &prover_setup,
+        );
 
         #[cfg(not(feature = "zk"))]
         assert_eq!(
@@ -892,7 +909,6 @@ mod tests {
         {
             let _ = (commitment_cycle_major, commitment_addr_major);
         }
-        DoryGlobals::set_layout(DoryLayout::CycleMajor);
     }
 
     #[test]
@@ -978,7 +994,8 @@ mod tests {
         let prover_setup = DoryCommitmentScheme::setup_prover(num_vars);
         let verifier_setup = DoryCommitmentScheme::setup_verifier(&prover_setup);
 
-        let (commitment, row_commitments) = pcs.commit(&poly, &prover_setup);
+        let one_hot_layout = DoryCommitmentLayout::for_polynomial(&poly, *pcs.config());
+        let (commitment, row_commitments) = pcs.commit(&one_hot_layout, &poly, &prover_setup);
 
         let evaluation =
             <MultilinearPolynomial<Fr> as PolynomialEvaluation<Fr>>::evaluate(&poly, &eval_point);
@@ -986,6 +1003,7 @@ mod tests {
         let mut prove_transcript = Blake2bTranscript::new(b"dory_test");
         bind_opening_inputs::<Fr, _>(&mut prove_transcript, &opening_point, &evaluation);
         let (proof, _y_blinding) = pcs.prove(
+            &one_hot_layout,
             &prover_setup,
             &poly,
             &opening_point,

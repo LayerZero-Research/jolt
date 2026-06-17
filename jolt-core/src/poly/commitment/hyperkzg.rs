@@ -494,10 +494,6 @@ where
         &()
     }
 
-    fn append_pcs_config_to_transcript<T: Transcript>(_: &Self::Config, transcript: &mut T) {
-        transcript.append_u64(b"hyperkzg_layout", 0);
-    }
-
     fn coefficient_layout(_config: &Self::Config, context: CommitmentContext) -> CoefficientLayout {
         canonical_coefficient_layout(context)
     }
@@ -512,6 +508,7 @@ where
     #[tracing::instrument(skip_all, name = "HyperKZG::commit")]
     fn commit(
         &self,
+        _layout: &Self::CommitmentLayout,
         poly: &MultilinearPolynomial<Self::Field>,
         setup: &Self::ProverSetup,
     ) -> (Self::Commitment, Self::OpeningProofHint) {
@@ -529,6 +526,7 @@ where
     #[tracing::instrument(skip_all, name = "HyperKZG::batch_commit")]
     fn batch_commit<S: PolynomialBatchSource<Self::Field>>(
         &self,
+        _layout: &Self::CommitmentLayout,
         source: &S,
         gens: &Self::ProverSetup,
     ) -> (Vec<Self::Commitment>, Self::BatchOpeningHint) {
@@ -545,6 +543,7 @@ where
 
     fn prove<ProofTranscript: Transcript>(
         &self,
+        _layout: &Self::CommitmentLayout,
         setup: &Self::ProverSetup,
         poly: &MultilinearPolynomial<Self::Field>,
         opening_point: &[<Self::Field as JoltField>::Challenge],
@@ -571,6 +570,7 @@ where
 
     fn batch_prove<ProofTranscript: Transcript, S: BatchPolynomialSource<Self::Field>>(
         &self,
+        layout: &Self::CommitmentLayout,
         setup: &Self::ProverSetup,
         poly_source: &S,
         _batch_hint: Self::BatchOpeningHint,
@@ -584,6 +584,7 @@ where
         let joint_poly = poly_source.build_joint_polynomial(coeffs);
         let joint_commitment = Self::combine_commitments_internal(commitments, coeffs);
         self.prove(
+            layout,
             setup,
             &joint_poly,
             opening_point,
@@ -649,7 +650,12 @@ where
     type ChunkState = ();
 
     #[allow(non_snake_case)]
-    fn streaming_chunk_size(&self, _K: usize, _T: usize) -> Option<usize> {
+    fn streaming_chunk_size(
+        &self,
+        _layout: &Self::CommitmentLayout,
+        _K: usize,
+        _T: usize,
+    ) -> Option<usize> {
         None
     }
 

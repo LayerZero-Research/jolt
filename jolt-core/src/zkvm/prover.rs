@@ -333,6 +333,10 @@ pub struct JoltCpuProver<
 > {
     pub preprocessing: &'a JoltProverPreprocessing<F, C, PCS>,
     pub program_io: JoltDevice,
+    /// PCS instance carrying the selected config (e.g. Dory orientation). Threaded explicitly
+    /// into commit, opening, the Fiat-Shamir preamble, and the serialized proof so the layout is
+    /// never sourced from global state.
+    pub pcs: PCS,
     pub lazy_trace: LazyTraceIterator,
     pub trace: Arc<Vec<Cycle>>,
     pub advice: JoltAdvice<F, PCS>,
@@ -539,6 +543,7 @@ impl<
         Self {
             preprocessing,
             program_io,
+            pcs: PCS::default(),
             lazy_trace,
             trace: trace.into(),
             advice: JoltAdvice {
@@ -568,6 +573,14 @@ impl<
         }
     }
 
+    /// Override the PCS instance (and thus its selected config, e.g. Dory orientation).
+    /// Production proving uses `PCS::default()`; callers that need a non-default layout
+    /// (e.g. address-major Dory) select it explicitly here.
+    pub fn with_pcs(mut self, pcs: PCS) -> Self {
+        self.pcs = pcs;
+        self
+    }
+
     #[allow(clippy::type_complexity)]
     #[tracing::instrument(skip_all)]
     pub fn prove(
@@ -582,14 +595,13 @@ impl<
         let start = Instant::now();
         let preprocessing_digest = self.preprocessing.shared.digest();
         let one_hot_config = self.one_hot_params.to_config();
-        let pcs = PCS::active();
         let preamble_main_context = CommitmentContext::MainTrace {
             k: self.one_hot_params.k_chunk,
             trace_len: self.trace.len(),
             commitment_total_vars: self.main_total_vars(),
         };
         let layout_descriptor =
-            PCS::commitment_layout(pcs.config(), preamble_main_context).descriptor();
+            PCS::commitment_layout(self.pcs.config(), preamble_main_context).descriptor();
         fiat_shamir_preamble(
             FiatShamirPreamble {
                 program_io: &self.program_io,
@@ -761,7 +773,7 @@ impl<
             rw_config: self.rw_config.clone(),
             one_hot_config: self.one_hot_params.to_config(),
             layout_descriptor,
-            pcs_config: PCS::active().config().clone(),
+            pcs_config: self.pcs.config().clone(),
         };
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -841,7 +853,7 @@ impl<
     fn generate_and_commit_witness_polynomials(
         &mut self,
     ) -> (Vec<PCS::Commitment>, PCS::BatchOpeningHint) {
-        let pcs = PCS::active();
+        let pcs = self.pcs.clone();
         let main_context = CommitmentContext::MainTrace {
             k: 1 << self.one_hot_params.log_k_chunk,
             trace_len: self.trace.len(),
@@ -853,7 +865,7 @@ impl<
         let K = 1usize << self.one_hot_params.log_k_chunk;
 
         let (commitments, hint_map) =
-            if let Some(chunk_size) = pcs.streaming_chunk_size_with_layout(&main_layout, K, T) {
+            if let Some(chunk_size) = pcs.streaming_chunk_size(&main_layout, K, T) {
                 let num_chunks = T / chunk_size;
 
                 tracing::debug!(
@@ -938,11 +950,8 @@ impl<
                         preprocessing: &self.preprocessing.shared,
                         one_hot_params: &self.one_hot_params,
                     };
-                    let (commitments, batch_hint) = pcs.batch_commit_with_layout(
-                        &main_layout,
-                        &source,
-                        &self.preprocessing.generators,
-                    );
+                    let (commitments, batch_hint) =
+                        pcs.batch_commit(&main_layout, &source, &self.preprocessing.generators);
                     (commitments, batch_hint)
                 } else {
                     let trace: Vec<Cycle> = self
@@ -962,11 +971,8 @@ impl<
                         })
                         .collect();
 
-                    let (commitments, batch_hint) = pcs.batch_commit_with_layout(
-                        &main_layout,
-                        &witnesses,
-                        &self.preprocessing.generators,
-                    );
+                    let (commitments, batch_hint) =
+                        pcs.batch_commit(&main_layout, &witnesses, &self.preprocessing.generators);
                     (commitments, batch_hint)
                 }
             };
@@ -1002,12 +1008,11 @@ impl<
         let advice_context = AdviceKind::Untrusted
             .commitment_context(self.program_io.memory_layout.max_untrusted_advice_size as usize);
 
-        // `PCS::default()` (not `active()`) is intentional here: plain `commit` does not stamp
-        // PCS-specific config into the proof. Advice context, if any, is supplied explicitly below.
+        // Advice always commits in a balanced cycle-major layout (independent of the prover's
+        // selected orientation), so a default PCS instance suffices.
         let pcs = PCS::default();
         let advice_layout = PCS::commitment_layout(pcs.config(), advice_context);
-        let (commitment, hint) =
-            pcs.commit_with_layout(&advice_layout, &poly, &self.preprocessing.generators);
+        let (commitment, hint) = pcs.commit(&advice_layout, &poly, &self.preprocessing.generators);
         self.transcript
             .append_serializable(b"untrusted_advice", &commitment);
 
@@ -1518,7 +1523,7 @@ impl<
             PCS::uses_onehot_inc(),
         );
 
-        let pcs = PCS::active();
+        let pcs = self.pcs.clone();
         let pcs_config = pcs.config();
         let main_context = CommitmentContext::MainTrace {
             k: self.one_hot_params.k_chunk,
@@ -2196,7 +2201,7 @@ impl<
     ) -> PCS::BatchedProof {
         tracing::info!("Stage 8 proving (batch opening)");
 
-        let pcs = PCS::active();
+        let pcs = self.pcs.clone();
         let pcs_config = pcs.config().clone();
         let main_context = CommitmentContext::MainTrace {
             k: self.one_hot_params.k_chunk,
@@ -2404,7 +2409,7 @@ impl<
                 one_hot_params: &self.one_hot_params,
             };
 
-            return pcs.batch_prove_with_layout(
+            return pcs.batch_prove(
                 &commitment_layout,
                 &self.preprocessing.generators,
                 &lazy_source,
@@ -2512,7 +2517,7 @@ impl<
             poly_ids,
             layout: PCS::coefficient_layout(&pcs_config, main_context),
         };
-        let proof = pcs.batch_prove_with_layout(
+        let proof = pcs.batch_prove(
             &commitment_layout,
             &self.preprocessing.generators,
             &poly_source,
@@ -2839,8 +2844,7 @@ mod tests {
             AdviceKind::Trusted.commitment_context(max_trusted_advice_size as usize);
         let pcs = DoryCommitmentScheme::default();
         let advice_layout = DoryCommitmentScheme::commitment_layout(pcs.config(), advice_context);
-        let (commitment, hint) =
-            pcs.commit_with_layout(&advice_layout, &poly, &preprocessing.generators);
+        let (commitment, hint) = pcs.commit(&advice_layout, &poly, &preprocessing.generators);
         (commitment, hint)
     }
 
@@ -4112,7 +4116,6 @@ mod tests {
     #[serial]
     fn fib_e2e_dory_address_major() {
         DoryGlobals::reset();
-        DoryGlobals::set_layout(DoryLayout::AddressMajor);
 
         let mut program = host::Program::new("fibonacci-guest");
         let inputs = postcard::to_stdvec(&50u32).unwrap();
@@ -4140,7 +4143,11 @@ mod tests {
             None,
         );
         let io_device = prover.program_io.clone();
-        let (proof, debug_info) = prover.prove();
+        let (proof, debug_info) = prover
+            .with_pcs(DoryCommitmentScheme {
+                layout: DoryLayout::AddressMajor,
+            })
+            .prove();
 
         // Guard against vacuous coverage: the proof must actually carry the address-major
         // orientation, proving the commit/open path genuinely ran address-major.
@@ -4148,7 +4155,8 @@ mod tests {
 
         let verifier_preprocessing = JoltVerifierPreprocessing::from(&prover_preprocessing);
 
-        // DoryGlobals is now initialized inside the verifier's verify_stage8
+        // The verifier reconstructs the address-major orientation from the serialized layout,
+        // not from any global state.
         RV64IMACVerifier::new(&verifier_preprocessing, proof, io_device, None, debug_info)
             .expect("verifier creation failed")
             .verify()
@@ -4159,7 +4167,6 @@ mod tests {
     #[serial]
     fn advice_e2e_dory_address_major() {
         DoryGlobals::reset();
-        DoryGlobals::set_layout(DoryLayout::AddressMajor);
 
         // Tests a guest (merkle-tree) that actually consumes both trusted and untrusted advice.
         let mut program = host::Program::new("merkle-tree-guest");
@@ -4197,7 +4204,11 @@ mod tests {
             None,
         );
         let io_device = prover.program_io.clone();
-        let (jolt_proof, debug_info) = prover.prove();
+        let (jolt_proof, debug_info) = prover
+            .with_pcs(DoryCommitmentScheme {
+                layout: DoryLayout::AddressMajor,
+            })
+            .prove();
 
         // Guard against vacuous coverage: the proof must actually carry the address-major
         // orientation, proving the commit/open path genuinely ran address-major.

@@ -19,7 +19,7 @@
 //!
 //! ## Dummy-gap scaling (within Stage 6)
 //! With cycle-major order, there may be a gap during the cycle phase where the cycle variables
-//! being bound in the batched sumcheck do not appear in the advice polynommial.
+//! being bound in the batched sumcheck do not appear in the advice polynomial.
 //!
 //! We handle this without modifying the generic batched sumcheck by treating those intervening
 //! rounds as **dummy internal rounds** (constant univariates), and maintaining a running scaling
