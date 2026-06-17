@@ -10,7 +10,7 @@ use akita_field::CanonicalField;
 use akita_pcs::AkitaCommitmentScheme;
 use akita_prover::{
     AkitaPolyOps, CommitmentProver as AkitaCommitmentProver, CommittedPolynomials,
-    ComputeBackendSetup, CpuBackend, DensePoly,
+    ComputeBackendSetup, CpuBackend, DensePoly, OneHotPoly,
 };
 use akita_types::{
     CommitmentVerifier as AkitaCommitmentVerifier, CommittedOpenings, RingCommitment,
@@ -59,6 +59,8 @@ pub struct JoltAkitaOpeningHint<const D: usize> {
     commitment: ArkBridge<RingCommitment<Fp128, D>>,
     akita_hint: ArkBridge<akita_types::AkitaCommitmentHint<Fp128, D>>,
     ring_coeffs: Vec<CyclotomicRing<Fp128, D>>,
+    onehot_k: Option<usize>,
+    onehot_indices: Vec<Option<u8>>,
 }
 
 impl<const D: usize> Valid for JoltAkitaOpeningHint<D> {
@@ -177,6 +179,27 @@ fn to_akita_opening_point(point: &[JoltFp128]) -> Vec<Fp128> {
     point.iter().rev().map(jolt_to_akita).collect()
 }
 
+// Akita stores one-hot chunks as cycle-major `cycle * K + address`, while Jolt
+// sumcheck openings are ordered as `[address, cycle]`.
+fn to_akita_onehot_opening_point(point: &[JoltFp128], log_k: usize) -> Vec<Fp128> {
+    let (r_address, r_cycle) = point.split_at(log_k);
+    r_address
+        .iter()
+        .rev()
+        .chain(r_cycle.iter().rev())
+        .map(jolt_to_akita)
+        .collect()
+}
+
+fn is_onehot_polynomial(polynomial: CommittedPolynomial) -> bool {
+    matches!(
+        polynomial,
+        CommittedPolynomial::InstructionRa(_)
+            | CommittedPolynomial::BytecodeRa(_)
+            | CommittedPolynomial::RamRa(_)
+    )
+}
+
 impl<const D: usize> JoltAkitaOpeningHint<D> {
     fn prove<ProofTranscript, Cfg>(
         self,
@@ -188,16 +211,32 @@ impl<const D: usize> JoltAkitaOpeningHint<D> {
         ProofTranscript: akita_transcript::Transcript<Fp128>,
         Cfg: CommitmentConfig<Field = Fp128, ExtField = Fp128>,
     {
-        let akita_point = to_akita_opening_point(opening_point);
-        let poly = DensePoly::from_ring_coeffs(self.ring_coeffs);
-        akita_prove_one::<D, Cfg, _, _>(
-            setup,
-            &poly,
-            &akita_point,
-            self.akita_hint.0,
-            transcript,
-            &self.commitment.0,
-        )
+        if let Some(onehot_k) = self.onehot_k {
+            debug_assert!(onehot_k.is_power_of_two());
+            let akita_point =
+                to_akita_onehot_opening_point(opening_point, onehot_k.trailing_zeros() as usize);
+            let poly = OneHotPoly::<Fp128, D, u8>::new(onehot_k, self.onehot_indices)
+                .expect("OneHotPoly construction failed");
+            akita_prove_one::<D, Cfg, _, _>(
+                setup,
+                &poly,
+                &akita_point,
+                self.akita_hint.0,
+                transcript,
+                &self.commitment.0,
+            )
+        } else {
+            let akita_point = to_akita_opening_point(opening_point);
+            let poly = DensePoly::from_ring_coeffs(self.ring_coeffs);
+            akita_prove_one::<D, Cfg, _, _>(
+                setup,
+                &poly,
+                &akita_point,
+                self.akita_hint.0,
+                transcript,
+                &self.commitment.0,
+            )
+        }
     }
 }
 
@@ -242,15 +281,27 @@ where
         poly: &MultilinearPolynomial<JoltFp128>,
         setup: &Self::ProverSetup,
     ) -> (Self::Commitment, Self::OpeningProofHint) {
-        let ring_coeffs = poly_to_ring_coeffs::<D>(poly);
-        let poly = DensePoly::from_ring_coeffs(ring_coeffs.clone());
-        let (commitment, akita_hint) = commit_akita_poly::<D, Cfg, _>(&setup.0, &poly);
+        let (commitment, akita_hint, ring_coeffs, onehot_k, onehot_indices) =
+            if let MultilinearPolynomial::OneHot(onehot) = poly {
+                let indices = onehot.nonzero_indices.as_ref().clone();
+                let poly = OneHotPoly::<Fp128, D, u8>::new(onehot.K, indices.clone())
+                    .expect("OneHotPoly construction failed");
+                let (commitment, hint) = commit_akita_poly::<D, Cfg, _>(&setup.0, &poly);
+                (commitment, hint, Vec::new(), Some(onehot.K), indices)
+            } else {
+                let ring_coeffs = poly_to_ring_coeffs::<D>(poly);
+                let poly = DensePoly::from_ring_coeffs(ring_coeffs.clone());
+                let (commitment, hint) = commit_akita_poly::<D, Cfg, _>(&setup.0, &poly);
+                (commitment, hint, ring_coeffs, None, Vec::new())
+            };
 
         let commitment = ArkBridge(commitment);
         let hint = JoltAkitaOpeningHint {
             commitment: commitment.clone(),
             akita_hint: ArkBridge(akita_hint),
             ring_coeffs,
+            onehot_k,
+            onehot_indices,
         };
         (commitment, hint)
     }
@@ -375,6 +426,16 @@ where
             ));
         }
 
+        let log_T = state
+            .individual_openings
+            .iter()
+            .find_map(|opening| match opening.polynomial {
+                CommittedPolynomial::RamInc | CommittedPolynomial::RdInc => {
+                    Some(opening.opening_point.r.len())
+                }
+                _ => None,
+            });
+
         for (index, (opening, proof)) in state
             .individual_openings
             .iter()
@@ -384,7 +445,15 @@ where
             let commitment = commitment_map
                 .remove(&opening.polynomial)
                 .ok_or(ProofVerifyError::InvalidOpeningProof)?;
-            let akita_point = to_akita_opening_point(&opening.opening_point.r);
+            let akita_point = if is_onehot_polynomial(opening.polynomial) {
+                let log_T = log_T.ok_or(ProofVerifyError::InvalidOpeningProof)?;
+                let log_k = opening.opening_point.r.len().checked_sub(log_T).ok_or(
+                    ProofVerifyError::InvalidInputLength(log_T, opening.opening_point.r.len()),
+                )?;
+                to_akita_onehot_opening_point(&opening.opening_point.r, log_k)
+            } else {
+                to_akita_opening_point(&opening.opening_point.r)
+            };
             let akita_claim = jolt_to_akita(&opening.claim);
             transcript.append_bytes(b"akita_individual_item", &(index as u64).to_le_bytes());
             let mut adapter = JoltToAkitaTranscript::new(transcript);
@@ -439,7 +508,7 @@ where
         onehot_k: Option<usize>,
         tier1_commitments: &[Self::ChunkState],
     ) -> (Self::Commitment, Self::OpeningProofHint) {
-        let ring_coeffs = match onehot_k {
+        match onehot_k {
             Some(onehot_k) => {
                 let indices = tier1_commitments
                     .iter()
@@ -448,7 +517,18 @@ where
                         AkitaChunkState::Dense(_) => Vec::new(),
                     })
                     .collect::<Vec<_>>();
-                pack_field_to_ring::<D>(&materialize_onehot_coeffs(onehot_k, &indices))
+                let poly = OneHotPoly::<Fp128, D, u8>::new(onehot_k, indices.clone())
+                    .expect("OneHotPoly construction failed");
+                let (commitment, akita_hint) = commit_akita_poly::<D, Cfg, _>(&setup.0, &poly);
+                let commitment = ArkBridge(commitment);
+                let hint = JoltAkitaOpeningHint {
+                    commitment: commitment.clone(),
+                    akita_hint: ArkBridge(akita_hint),
+                    ring_coeffs: Vec::new(),
+                    onehot_k: Some(onehot_k),
+                    onehot_indices: indices,
+                };
+                (commitment, hint)
             }
             None => {
                 let coeffs = tier1_commitments
@@ -458,19 +538,20 @@ where
                         AkitaChunkState::OneHot { .. } => Vec::new(),
                     })
                     .collect::<Vec<_>>();
-                pack_field_to_ring::<D>(&coeffs)
+                let ring_coeffs = pack_field_to_ring::<D>(&coeffs);
+                let poly = DensePoly::from_ring_coeffs(ring_coeffs.clone());
+                let (commitment, akita_hint) = commit_akita_poly::<D, Cfg, _>(&setup.0, &poly);
+                let commitment = ArkBridge(commitment);
+                let hint = JoltAkitaOpeningHint {
+                    commitment: commitment.clone(),
+                    akita_hint: ArkBridge(akita_hint),
+                    ring_coeffs,
+                    onehot_k: None,
+                    onehot_indices: Vec::new(),
+                };
+                (commitment, hint)
             }
-        };
-
-        let poly = DensePoly::from_ring_coeffs(ring_coeffs.clone());
-        let (commitment, akita_hint) = commit_akita_poly::<D, Cfg, _>(&setup.0, &poly);
-        let commitment = ArkBridge(commitment);
-        let hint = JoltAkitaOpeningHint {
-            commitment: commitment.clone(),
-            akita_hint: ArkBridge(akita_hint),
-            ring_coeffs,
-        };
-        (commitment, hint)
+        }
     }
 }
 
@@ -550,22 +631,9 @@ fn poly_to_ring_coeffs<const D: usize>(
             pack_scalars::<D, _, _>(&p.coeffs, |&v| jolt_to_akita(&JoltFp128::from_i128(v)))
         }
         MultilinearPolynomial::S128Scalars(p) => pack_scalars::<D, _, _>(&p.coeffs, s128_to_akita),
-        MultilinearPolynomial::OneHot(onehot) => pack_field_to_ring::<D>(
-            &materialize_onehot_coeffs(onehot.K, onehot.nonzero_indices.as_ref()),
-        ),
+        MultilinearPolynomial::OneHot(_) => Vec::new(),
         MultilinearPolynomial::RLC(_) => Vec::new(),
     }
-}
-
-fn materialize_onehot_coeffs(onehot_k: usize, indices: &[Option<u8>]) -> Vec<Fp128> {
-    let T = indices.len();
-    let mut coeffs = vec![Fp128::zero(); onehot_k * T];
-    for (t, k) in indices.iter().enumerate() {
-        if let Some(k) = k {
-            coeffs[*k as usize * T + t] = Fp128::one();
-        }
-    }
-    coeffs
 }
 
 fn pack_scalars<const D: usize, T: Sync, F: Fn(&T) -> Fp128 + Sync + Send>(
