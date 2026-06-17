@@ -8,9 +8,12 @@ use ark_serialize::{
 };
 
 use crate::poly::commitment::commitment_scheme::CommitmentScheme;
+use crate::poly::commitment::dory::{DoryContext, DoryGlobals};
+use crate::poly::multilinear_polynomial::MultilinearPolynomial;
 use crate::utils::errors::ProofVerifyError;
+use crate::utils::math::Math;
 use crate::zkvm::bytecode::{
-    BytecodePreprocessing, PreprocessingError, TrustedBytecodeCommitments,
+    BytecodePreprocessing, PreprocessingError, TrustedBytecodeCommitments, TrustedBytecodeHints,
 };
 use crate::zkvm::ram::RAMPreprocessing;
 use common::jolt_device::MemoryLayout;
@@ -89,11 +92,81 @@ impl FullProgramPreprocessing {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, CanonicalSerialize, CanonicalDeserialize)]
 pub struct CommittedProgramPreprocessing<PCS: CommitmentScheme> {
     pub meta: ProgramMetadata,
     pub bytecode_commitments: TrustedBytecodeCommitments<PCS>,
     pub program_commitments: TrustedProgramCommitments<PCS>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CommittedProgramProverData<PCS: CommitmentScheme> {
+    pub full: FullProgramPreprocessing,
+    pub bytecode_hints: TrustedBytecodeHints<PCS>,
+    pub program_hints: TrustedProgramHints<PCS>,
+}
+
+// Manual (conditionally-bounded) serialization: contains `OpeningProofHint`s,
+// which are not `CanonicalSerialize`-bounded on the trait. Dory committed mode only.
+impl<PCS: CommitmentScheme> CanonicalSerialize for CommittedProgramProverData<PCS>
+where
+    PCS::OpeningProofHint: CanonicalSerialize,
+{
+    fn serialize_with_mode<W: Write>(
+        &self,
+        mut writer: W,
+        compress: Compress,
+    ) -> Result<(), SerializationError> {
+        self.full.serialize_with_mode(&mut writer, compress)?;
+        self.bytecode_hints
+            .serialize_with_mode(&mut writer, compress)?;
+        self.program_hints
+            .serialize_with_mode(&mut writer, compress)?;
+        Ok(())
+    }
+
+    fn serialized_size(&self, compress: Compress) -> usize {
+        self.full.serialized_size(compress)
+            + self.bytecode_hints.serialized_size(compress)
+            + self.program_hints.serialized_size(compress)
+    }
+}
+
+impl<PCS: CommitmentScheme> Valid for CommittedProgramProverData<PCS>
+where
+    PCS::OpeningProofHint: Valid,
+{
+    fn check(&self) -> Result<(), SerializationError> {
+        self.full.check()?;
+        self.bytecode_hints.check()?;
+        self.program_hints.check()?;
+        Ok(())
+    }
+}
+
+impl<PCS: CommitmentScheme> CanonicalDeserialize for CommittedProgramProverData<PCS>
+where
+    PCS::OpeningProofHint: CanonicalDeserialize,
+{
+    fn deserialize_with_mode<R: Read>(
+        mut reader: R,
+        compress: Compress,
+        validate: Validate,
+    ) -> Result<Self, SerializationError> {
+        Ok(Self {
+            full: FullProgramPreprocessing::deserialize_with_mode(&mut reader, compress, validate)?,
+            bytecode_hints: TrustedBytecodeHints::<PCS>::deserialize_with_mode(
+                &mut reader,
+                compress,
+                validate,
+            )?,
+            program_hints: TrustedProgramHints::<PCS>::deserialize_with_mode(
+                &mut reader,
+                compress,
+                validate,
+            )?,
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -215,6 +288,40 @@ impl<PCS: CommitmentScheme> ProgramPreprocessing<PCS> {
         )?))
     }
 
+    pub fn commit(
+        self,
+        memory_layout: &MemoryLayout,
+        generators: &PCS::ProverSetup,
+        bytecode_chunk_count: usize,
+        max_log_k_chunk: usize,
+    ) -> (Self, CommittedProgramProverData<PCS>) {
+        let Self::Full(full) = self else {
+            panic!("cannot commit already-committed program preprocessing");
+        };
+        let meta = full.meta();
+        let (bytecode_commitments, bytecode_hints) = TrustedBytecodeCommitments::derive(
+            &full.bytecode,
+            generators,
+            max_log_k_chunk,
+            bytecode_chunk_count,
+        );
+        let (program_commitments, program_hints) =
+            TrustedProgramCommitments::derive(&full, memory_layout, generators);
+
+        (
+            Self::Committed(CommittedProgramPreprocessing {
+                meta,
+                bytecode_commitments,
+                program_commitments,
+            }),
+            CommittedProgramProverData {
+                full,
+                bytecode_hints,
+                program_hints,
+            },
+        )
+    }
+
     pub fn as_full(&self) -> Result<&FullProgramPreprocessing, ProofVerifyError> {
         match self {
             Self::Full(full) => Ok(full),
@@ -333,4 +440,105 @@ pub struct TrustedProgramCommitments<PCS: CommitmentScheme> {
     pub program_image_commitment: PCS::Commitment,
     pub program_image_num_columns: usize,
     pub program_image_num_words: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct TrustedProgramHints<PCS: CommitmentScheme> {
+    pub program_image_hint: PCS::OpeningProofHint,
+}
+
+// Manual (conditionally-bounded) serialization: `OpeningProofHint` is not
+// `CanonicalSerialize`-bounded on the trait. Only used for Dory committed mode.
+impl<PCS: CommitmentScheme> CanonicalSerialize for TrustedProgramHints<PCS>
+where
+    PCS::OpeningProofHint: CanonicalSerialize,
+{
+    fn serialize_with_mode<W: Write>(
+        &self,
+        writer: W,
+        compress: Compress,
+    ) -> Result<(), SerializationError> {
+        self.program_image_hint
+            .serialize_with_mode(writer, compress)
+    }
+
+    fn serialized_size(&self, compress: Compress) -> usize {
+        self.program_image_hint.serialized_size(compress)
+    }
+}
+
+impl<PCS: CommitmentScheme> Valid for TrustedProgramHints<PCS>
+where
+    PCS::OpeningProofHint: Valid,
+{
+    fn check(&self) -> Result<(), SerializationError> {
+        self.program_image_hint.check()
+    }
+}
+
+impl<PCS: CommitmentScheme> CanonicalDeserialize for TrustedProgramHints<PCS>
+where
+    PCS::OpeningProofHint: CanonicalDeserialize,
+{
+    fn deserialize_with_mode<R: Read>(
+        reader: R,
+        compress: Compress,
+        validate: Validate,
+    ) -> Result<Self, SerializationError> {
+        Ok(Self {
+            program_image_hint: PCS::OpeningProofHint::deserialize_with_mode(
+                reader, compress, validate,
+            )?,
+        })
+    }
+}
+
+impl<PCS: CommitmentScheme> TrustedProgramCommitments<PCS> {
+    #[tracing::instrument(skip_all, name = "TrustedProgramCommitments::derive")]
+    pub fn derive(
+        program: &FullProgramPreprocessing,
+        memory_layout: &MemoryLayout,
+        generators: &PCS::ProverSetup,
+    ) -> (Self, TrustedProgramHints<PCS>) {
+        let program_image_num_words = program.committed_program_image_num_words(memory_layout);
+        let (program_image_sigma, _) =
+            crate::poly::commitment::dory::DoryGlobals::balanced_sigma_nu(
+                program_image_num_words.log_2(),
+            );
+        let program_image_num_columns = 1usize << program_image_sigma;
+        let program_image_poly = MultilinearPolynomial::from(build_program_image_words_padded(
+            program,
+            program_image_num_words,
+        ));
+        let _program_image_guard = DoryGlobals::initialize_context(
+            1,
+            program_image_num_words,
+            DoryContext::UntrustedAdvice,
+            None,
+        );
+        let (program_image_commitment, program_image_hint) = {
+            let _ctx = DoryGlobals::with_context(DoryContext::UntrustedAdvice);
+            PCS::default().commit(&program_image_poly, generators)
+        };
+
+        (
+            Self {
+                program_image_commitment,
+                program_image_num_columns,
+                program_image_num_words,
+            },
+            TrustedProgramHints { program_image_hint },
+        )
+    }
+}
+
+pub(crate) fn build_program_image_words_padded(
+    program: &FullProgramPreprocessing,
+    padded_len: usize,
+) -> Vec<u64> {
+    debug_assert!(padded_len.is_power_of_two());
+    debug_assert!(padded_len >= program.ram.bytecode_words.len().max(1));
+    let mut coeffs = vec![0u64; padded_len];
+    coeffs[..program.ram.bytecode_words.len()].copy_from_slice(&program.ram.bytecode_words);
+    coeffs
 }

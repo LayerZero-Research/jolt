@@ -1,10 +1,12 @@
 use crate::field::{BarrettReduce, FMAdd, JoltField};
-use crate::poly::commitment::dory::balanced_sigma_nu;
+use crate::poly::commitment::dory::{balanced_sigma_nu, DoryGlobals};
 use crate::poly::matrix_layout::MatrixLayout;
 use crate::poly::multilinear_polynomial::MultilinearPolynomial;
 use crate::utils::accumulation::MedAccumS;
 use crate::utils::math::{s64_from_diff_u64s, Math};
 use crate::utils::thread::unsafe_allocate_zero_vec;
+use crate::zkvm::bytecode::chunks::{committed_lanes, for_each_active_lane_value, ActiveLaneValue};
+use crate::zkvm::claim_reductions::PrecommittedPolynomial;
 use crate::zkvm::config::OneHotParams;
 use crate::zkvm::instruction::LookupQuery;
 use crate::zkvm::ram::remap_address;
@@ -57,9 +59,10 @@ impl TraceSource {
 pub struct StreamingRLCContext<F: JoltField> {
     pub dense_polys: Vec<(CommittedPolynomial, F)>,
     pub onehot_polys: Vec<(CommittedPolynomial, F)>,
-    /// Advice polynomials with their RLC coefficients.
-    /// These are NOT streamed from trace - they're passed in directly.
-    pub advice_polys: Vec<(F, MultilinearPolynomial<F>)>,
+    /// Precommitted polynomials (advice and, in committed program mode, committed bytecode
+    /// chunks + program image) with their RLC coefficients. These are NOT streamed from
+    /// trace; each variant is embedded into the joint matrix exactly as it was committed.
+    pub precommitted_polys: Vec<(F, PrecommittedPolynomial<F>)>,
     pub trace_source: TraceSource,
     pub preprocessing: Arc<RLCStreamingData>,
     pub one_hot_params: OneHotParams,
@@ -188,14 +191,14 @@ impl<F: JoltField> RLCPolynomial<F> {
         trace_source: TraceSource,
         poly_ids: Vec<CommittedPolynomial>,
         coefficients: &[F],
-        mut advice_poly_map: HashMap<CommittedPolynomial, MultilinearPolynomial<F>>,
+        mut precommitted_poly_map: HashMap<CommittedPolynomial, PrecommittedPolynomial<F>>,
         layout: MatrixLayout,
     ) -> Self {
         debug_assert_eq!(poly_ids.len(), coefficients.len());
 
         let mut dense_polys = Vec::new();
         let mut onehot_polys = Vec::new();
-        let mut advice_polys = Vec::new();
+        let mut precommitted_polys = Vec::new();
 
         for (poly_id, coeff) in poly_ids.iter().zip(coefficients.iter()) {
             match poly_id {
@@ -211,14 +214,15 @@ impl<F: JoltField> RLCPolynomial<F> {
                 | CommittedPolynomial::RamIncMsb => {
                     onehot_polys.push((*poly_id, *coeff));
                 }
-                CommittedPolynomial::TrustedAdvice | CommittedPolynomial::UntrustedAdvice => {
-                    // Advice polynomials are passed in directly (not streamed from trace)
-                    if advice_poly_map.contains_key(poly_id) {
-                        advice_polys.push((*coeff, advice_poly_map.remove(poly_id).unwrap()));
+                CommittedPolynomial::TrustedAdvice
+                | CommittedPolynomial::UntrustedAdvice
+                | CommittedPolynomial::BytecodeChunk(_)
+                | CommittedPolynomial::ProgramImageInit => {
+                    // Precommitted polynomials are passed in directly (not streamed from trace).
+                    if precommitted_poly_map.contains_key(poly_id) {
+                        precommitted_polys
+                            .push((*coeff, precommitted_poly_map.remove(poly_id).unwrap()));
                     }
-                }
-                CommittedPolynomial::BytecodeChunk(_) | CommittedPolynomial::ProgramImageInit => {
-                    unreachable!("committed-bytecode polynomials are not used in Full mode")
                 }
             }
         }
@@ -229,7 +233,7 @@ impl<F: JoltField> RLCPolynomial<F> {
             streaming_context: Some(Arc::new(StreamingRLCContext {
                 dense_polys,
                 onehot_polys,
-                advice_polys,
+                precommitted_polys,
                 trace_source,
                 preprocessing,
                 one_hot_params,
@@ -365,58 +369,161 @@ impl<F: JoltField> RLCPolynomial<F> {
     /// # Complexity
     /// It uses O(m + a) space where m is the number of rows
     /// and a is the advice size, so even though it is linear it is negl space overall.
-    fn vmp_advice_contribution(
+    fn vmp_precommitted_contribution(
         result: &mut [F],
         left_vec: &[F],
         num_columns: usize,
         ctx: &StreamingRLCContext<F>,
     ) {
-        // For each advice polynomial, compute its contribution to the result
-        ctx.advice_polys
+        // Each precommitted polynomial is embedded into the joint matrix exactly as it was
+        // committed. Advice (`Dense`) is a balanced top-left block (row-major); committed
+        // bytecode chunks use the lane/cycle `address_cycle_to_index` mapping (matching
+        // `build_committed_bytecode_chunk_coeffs`); the program image uses direct word offsets.
+        ctx.precommitted_polys
             .iter()
-            .filter(|(_, advice_poly)| advice_poly.original_len() > 0)
-            .for_each(|(coeff, advice_poly)| {
-                let advice_len = advice_poly.original_len();
-                let advice_vars = advice_len.log_2();
-                let (sigma_a, nu_a) = balanced_sigma_nu(advice_vars);
-                let advice_cols = 1usize << sigma_a;
-                let advice_rows = 1usize << nu_a;
+            .filter(|(_, precommitted_poly)| precommitted_poly.original_len() > 0)
+            .for_each(|(coeff, precommitted_poly)| {
+                match precommitted_poly {
+                    PrecommittedPolynomial::Dense(poly) => {
+                        let precommitted_len = poly.original_len();
+                        let precommitted_vars = precommitted_len.log_2();
+                        let (sigma_a, nu_a) = balanced_sigma_nu(precommitted_vars);
+                        let precommitted_cols = 1usize << sigma_a;
+                        let precommitted_rows = 1usize << nu_a;
 
-                debug_assert!(
-                    advice_cols <= num_columns,
-                    "Advice columns (2^{{sigma_a}}={advice_cols}) must fit in main num_columns={num_columns}; \
+                        debug_assert!(
+                            precommitted_cols <= num_columns,
+                            "Precommitted columns (2^{{sigma_a}}={precommitted_cols}) must fit in main num_columns={num_columns}; \
 guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
-                );
+                        );
 
-                // Only the top-left block contributes: rows [0..advice_rows), cols [0..advice_cols)
-                let effective_rows = advice_rows.min(left_vec.len());
-
-                // Compute column contributions: for each column, sum contributions from all rows
-                // Note: advice_len is always advice_cols * advice_rows (advice size must be power of 2)
-                let column_contributions: Vec<F> = (0..advice_cols)
-                    .into_par_iter()
-                    .map(|col_idx| {
-                        // For this column, sum contributions from all non-zero rows
-                        left_vec[..effective_rows]
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, &left)| !left.is_zero())
-                            .map(|(row_idx, &left)| {
-                                let coeff_idx = row_idx * advice_cols + col_idx;
-                                let advice_val = advice_poly.get_coeff(coeff_idx);
-                                left * *coeff * advice_val
+                        let effective_rows = precommitted_rows.min(left_vec.len());
+                        let column_contributions: Vec<F> = (0..precommitted_cols)
+                            .into_par_iter()
+                            .map(|col_idx| {
+                                left_vec[..effective_rows]
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(_, &left)| !left.is_zero())
+                                    .map(|(row_idx, &left)| {
+                                        let coeff_idx = row_idx * precommitted_cols + col_idx;
+                                        let precommitted_val = poly.get_coeff(coeff_idx);
+                                        left * *coeff * precommitted_val
+                                    })
+                                    .sum()
                             })
-                            .sum()
-                    })
-                    .collect();
+                            .collect();
 
-                // Add column contributions to result in parallel
-                result[..advice_cols]
-                    .par_iter_mut()
-                    .zip(column_contributions.par_iter())
-                    .for_each(|(res, &contrib)| {
-                        *res += contrib;
-                    });
+                        result[..precommitted_cols]
+                            .par_iter_mut()
+                            .zip(column_contributions.par_iter())
+                            .for_each(|(res, &contrib)| {
+                                *res += contrib;
+                            });
+                    }
+                    PrecommittedPolynomial::BytecodeChunk {
+                        chunk_index,
+                        chunk_cycle_len,
+                    } => {
+                        let precommitted_len = committed_lanes() * *chunk_cycle_len;
+                        let precommitted_vars = precommitted_len.log_2();
+                        let (sigma_a, nu_a) = balanced_sigma_nu(precommitted_vars);
+                        let precommitted_cols = 1usize << sigma_a;
+                        let effective_rows = (1usize << nu_a).min(left_vec.len());
+                        let chunk_start = chunk_index * chunk_cycle_len;
+                        let chunk_end = chunk_start + chunk_cycle_len;
+                        let layout = DoryGlobals::get_layout();
+                        let column_contributions = ctx.preprocessing.bytecode.bytecode
+                            [chunk_start..chunk_end]
+                            .par_iter()
+                            .enumerate()
+                            .fold(
+                                || unsafe_allocate_zero_vec(precommitted_cols),
+                                |mut acc, (chunk_cycle, instr)| {
+                                    for_each_active_lane_value::<F>(instr, |global_lane, lane_val| {
+                                        let coeff_idx = layout.address_cycle_to_index(
+                                            global_lane,
+                                            chunk_cycle,
+                                            committed_lanes(),
+                                            *chunk_cycle_len,
+                                        );
+                                        let row_idx = coeff_idx / precommitted_cols;
+                                        if row_idx >= effective_rows {
+                                            return;
+                                        }
+                                        let left = left_vec[row_idx];
+                                        if left.is_zero() {
+                                            return;
+                                        }
+                                        let lane_value = match lane_val {
+                                            ActiveLaneValue::One => F::one(),
+                                            ActiveLaneValue::Scalar(v) => v,
+                                        };
+                                        let col_idx = coeff_idx % precommitted_cols;
+                                        acc[col_idx] += left * *coeff * lane_value;
+                                    });
+                                    acc
+                                },
+                            )
+                            .reduce(
+                                || unsafe_allocate_zero_vec(precommitted_cols),
+                                |mut a, b| {
+                                    a.iter_mut().zip(b.iter()).for_each(|(x, y)| *x += *y);
+                                    a
+                                },
+                            );
+
+                        result[..precommitted_cols]
+                            .par_iter_mut()
+                            .zip(column_contributions.par_iter())
+                            .for_each(|(res, &contrib)| {
+                                *res += contrib;
+                            });
+                    }
+                    PrecommittedPolynomial::ProgramImage { words, padded_len } => {
+                        let precommitted_vars = padded_len.log_2();
+                        let (sigma_a, nu_a) = balanced_sigma_nu(precommitted_vars);
+                        let precommitted_cols = 1usize << sigma_a;
+                        let effective_rows = (1usize << nu_a).min(left_vec.len());
+                        let column_contributions = words
+                            .par_iter()
+                            .enumerate()
+                            .fold(
+                                || unsafe_allocate_zero_vec(precommitted_cols),
+                                |mut acc, (offset, &word)| {
+                                    if word == 0 {
+                                        return acc;
+                                    }
+                                    let coeff_idx = offset;
+                                    let row_idx = coeff_idx / precommitted_cols;
+                                    if row_idx >= effective_rows {
+                                        return acc;
+                                    }
+                                    let left = left_vec[row_idx];
+                                    if left.is_zero() {
+                                        return acc;
+                                    }
+                                    let col_idx = coeff_idx % precommitted_cols;
+                                    acc[col_idx] += left * coeff.mul_u64(word);
+                                    acc
+                                },
+                            )
+                            .reduce(
+                                || unsafe_allocate_zero_vec(precommitted_cols),
+                                |mut a, b| {
+                                    a.iter_mut().zip(b.iter()).for_each(|(x, y)| *x += *y);
+                                    a
+                                },
+                            );
+
+                        result[..precommitted_cols]
+                            .par_iter_mut()
+                            .zip(column_contributions.par_iter())
+                            .for_each(|(res, &contrib)| {
+                                *res += contrib;
+                            });
+                    }
+                }
             });
     }
 
@@ -437,7 +544,11 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
             return self.address_major_vector_matrix_product(left_vec, num_columns, &ctx);
         }
 
-        let T = layout.T;
+        // Use the embedded cycle count (matrix T = matrix_size / k), which matches what the
+        // commitment used (`DoryGlobals::get_embedded_t()`). In full mode this equals the raw
+        // trace length; under committed dominance the matrix is widened, so the raw trace
+        // length would disagree with the commit-time embedding and break the opening.
+        let T = crate::poly::commitment::dory::DoryGlobals::get_embedded_t();
         match &ctx.trace_source {
             TraceSource::Materialized(trace) => {
                 self.materialized_vector_matrix_product(left_vec, num_columns, trace, &ctx, T)
@@ -471,7 +582,7 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
         // Use the regular vector_matrix_product on the materialized polynomial
         let mut result = materialized.vector_matrix_product(left_vec);
 
-        Self::vmp_advice_contribution(&mut result, left_vec, num_columns, ctx);
+        Self::vmp_precommitted_contribution(&mut result, left_vec, num_columns, ctx);
 
         result
     }
@@ -539,7 +650,12 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
         ctx: &StreamingRLCContext<F>,
         T: usize,
     ) -> Vec<F> {
-        let num_rows = T / num_columns;
+        // Number of cycle-rows the main trace occupies (each row holds `num_columns`
+        // cycles). When a precommitted polynomial dominates the layout, `num_columns` is
+        // widened beyond `T`, so the trace fits in a single partial row; use `div_ceil` so
+        // that row is still processed (it would otherwise underflow to zero). The dominating
+        // precommitted polynomial fills the remaining rows via `vmp_precommitted_contribution`.
+        let num_rows = T.div_ceil(num_columns);
         let trace_len = trace.len();
 
         // Setup: precompute coefficients, row factors, and folded one-hot tables.
@@ -597,7 +713,7 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
         let mut result = VmvSetup::<F>::finalize(dense_accs, onehot_accs, num_columns);
 
         // Advice contribution is small and independent of the trace; add it after the streamed pass.
-        Self::vmp_advice_contribution(&mut result, left_vec, num_columns, ctx);
+        Self::vmp_precommitted_contribution(&mut result, left_vec, num_columns, ctx);
         result
     }
 
@@ -611,7 +727,7 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
         ctx: &StreamingRLCContext<F>,
         T: usize,
     ) -> Vec<F> {
-        let num_rows = T / num_columns;
+        let num_rows = T.div_ceil(num_columns);
 
         // Setup: precompute coefficients, row factors, and folded one-hot tables.
         let setup = VmvSetup::new(ctx, left_vec, num_rows);
@@ -651,7 +767,7 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
         let mut result = VmvSetup::<F>::finalize(dense_accs, onehot_accs, num_columns);
 
         // Advice contribution is small and independent of the trace; add it after the streamed pass.
-        Self::vmp_advice_contribution(&mut result, left_vec, num_columns, ctx);
+        Self::vmp_precommitted_contribution(&mut result, left_vec, num_columns, ctx);
         result
     }
 }

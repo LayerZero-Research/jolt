@@ -49,8 +49,10 @@ use crate::poly::opening_proof::{OpeningPoint, BIG_ENDIAN};
 use crate::subprotocols::sumcheck::{BatchedSumcheck, ClearSumcheckProof, SumcheckInstanceProof};
 use crate::zkvm::claim_reductions::advice::ReductionPhase;
 use crate::zkvm::claim_reductions::{
-    AdviceClaimReductionVerifier, AdviceKind, HammingWeightClaimReductionVerifier,
-    RegistersClaimReductionSumcheckVerifier,
+    AdviceClaimReductionVerifier, AdviceKind, BytecodeClaimReductionParams,
+    BytecodeClaimReductionVerifier, HammingWeightClaimReductionVerifier,
+    PrecommittedClaimReduction, PrecommittedParams, ProgramImageClaimReductionParams,
+    ProgramImageClaimReductionVerifier, RegistersClaimReductionSumcheckVerifier,
 };
 use crate::zkvm::config::OneHotParams;
 use crate::zkvm::{
@@ -141,6 +143,8 @@ pub struct TranspilableVerifier<
     pub one_hot_params: OneHotParams,
     advice_reduction_verifier_trusted: Option<AdviceClaimReductionVerifier<F>>,
     advice_reduction_verifier_untrusted: Option<AdviceClaimReductionVerifier<F>>,
+    bytecode_reduction_verifier: Option<BytecodeClaimReductionVerifier<F>>,
+    program_image_reduction_verifier: Option<ProgramImageClaimReductionVerifier<F>>,
 }
 
 impl<
@@ -267,6 +271,8 @@ impl<
             one_hot_params,
             advice_reduction_verifier_trusted: None,
             advice_reduction_verifier_untrusted: None,
+            bytecode_reduction_verifier: None,
+            program_image_reduction_verifier: None,
         })
     }
 
@@ -298,6 +304,8 @@ impl<
             one_hot_params,
             advice_reduction_verifier_trusted: None,
             advice_reduction_verifier_untrusted: None,
+            bytecode_reduction_verifier: None,
+            program_image_reduction_verifier: None,
         }
     }
 
@@ -307,11 +315,33 @@ impl<
         let log_k_chunk = self.one_hot_params.log_k_chunk;
         JoltSharedPreprocessing::max_total_vars_from_candidates(
             trace_log_t + log_k_chunk,
-            self.preprocessing.shared.precommitted_candidate_total_vars(
-                self.trusted_advice_commitment.is_some(),
-                self.proof.untrusted_advice_commitment.is_some(),
-            ),
+            self.precommitted_candidate_total_vars(),
         )
+    }
+
+    /// Total-variable counts for every precommitted polynomial that may dominate the
+    /// main-trace layout (advice plus, in committed mode, committed bytecode chunks
+    /// and the program image). Mirrors the verifier helper.
+    fn precommitted_candidate_total_vars(&self) -> Vec<usize> {
+        let mut candidates = self.preprocessing.shared.precommitted_candidate_total_vars(
+            self.trusted_advice_commitment.is_some(),
+            self.proof.untrusted_advice_commitment.is_some(),
+        );
+        if let Some(committed) = self.preprocessing.committed_program.as_ref() {
+            let bytecode_chunk_count = committed.bytecode_commitments.bytecode_chunk_count;
+            let chunk_cycle_log_t = (committed.meta.bytecode_len / bytecode_chunk_count)
+                .next_power_of_two()
+                .log_2();
+            candidates
+                .push(crate::zkvm::bytecode::chunks::committed_lanes().log_2() + chunk_cycle_log_t);
+            candidates.push(
+                committed
+                    .meta
+                    .committed_program_image_num_words(&self.program_io.memory_layout)
+                    .log_2(),
+            );
+        }
+        candidates
     }
 
     /// Verify the Jolt proof (stages 1-7).
@@ -597,7 +627,7 @@ impl<
         ProofVerifyError,
     > {
         let n_cycle_vars = self.proof.trace_length.log_2();
-        let program = self.preprocessing.shared.program::<PCS>();
+        let program = self.preprocessing.program();
         let bytecode_read_raf = BytecodeReadRafAddressSumcheckVerifier::new::<PCS>(
             &program,
             n_cycle_vars,
@@ -672,6 +702,49 @@ impl<
                 &self.opening_accumulator,
             ));
         }
+        // Committed-program claim reductions (Dory-only): shared scheduler reads
+        // `DoryGlobals`, so this block is gated by committed mode.
+        if self.preprocessing.is_committed_mode() {
+            let main_total_vars = self.proof.trace_length.log_2() + self.one_hot_params.log_k_chunk;
+            let precommitted_candidates = self.precommitted_candidate_total_vars();
+            let precommitted_scheduling_reference =
+                PrecommittedClaimReduction::<F>::scheduling_reference(
+                    main_total_vars,
+                    &precommitted_candidates,
+                );
+            let committed_program = self
+                .preprocessing
+                .committed_program
+                .as_ref()
+                .expect("committed mode requires committed program preprocessing");
+            let bytecode_chunk_count = committed_program.bytecode_commitments.bytecode_chunk_count;
+            let bytecode_reduction_params = BytecodeClaimReductionParams::new(
+                bytecode_read_raf_params.stage_gammas(),
+                committed_program.meta.bytecode_len,
+                bytecode_chunk_count,
+                precommitted_scheduling_reference,
+                &self.opening_accumulator,
+                &mut self.transcript,
+            );
+            self.bytecode_reduction_verifier = Some(BytecodeClaimReductionVerifier::new(
+                bytecode_reduction_params,
+            ));
+
+            let padded_len_words = committed_program
+                .meta
+                .committed_program_image_num_words(&self.program_io.memory_layout);
+            let program_image_reduction_params = ProgramImageClaimReductionParams::new(
+                &self.program_io,
+                committed_program.meta.min_bytecode_address,
+                padded_len_words,
+                self.proof.ram_K,
+                precommitted_scheduling_reference,
+                &self.opening_accumulator,
+            );
+            self.program_image_reduction_verifier = Some(ProgramImageClaimReductionVerifier::new(
+                program_image_reduction_params,
+            ));
+        }
 
         let bytecode_read_raf = BytecodeReadRafCycleSumcheckVerifier::new(
             bytecode_read_raf_params,
@@ -691,6 +764,12 @@ impl<
         }
         if let Some(ref advice) = self.advice_reduction_verifier_untrusted {
             instances.push(advice);
+        }
+        if let Some(ref reduction) = self.bytecode_reduction_verifier {
+            instances.push(reduction);
+        }
+        if let Some(ref reduction) = self.program_image_reduction_verifier {
+            instances.push(reduction);
         }
 
         let _r_stage6b = BatchedSumcheck::verify_standard::<F, ProofTranscript, A>(
@@ -717,9 +796,9 @@ impl<
         let mut instances: Vec<&dyn SumcheckInstanceVerifier<F, ProofTranscript, A>> =
             vec![&hw_verifier];
 
-        // Phase transition: CycleVariables -> AddressVariables for advice verifiers.
-        // The advice verifiers were created in stage 6 with phase = CycleVariables.
-        // Now transition to AddressVariables phase for the address-binding rounds.
+        // Phase transition: CycleVariables -> AddressVariables for the precommitted
+        // reduction verifiers (advice and, in committed mode, committed bytecode chunks
+        // and program image). They were created in Stage 6 with phase = CycleVariables.
         if let Some(advice_reduction_verifier_trusted) =
             self.advice_reduction_verifier_trusted.as_mut()
         {
@@ -738,6 +817,34 @@ impl<
                 params.phase = ReductionPhase::AddressVariables;
                 drop(params);
                 instances.push(advice_reduction_verifier_untrusted);
+            }
+        }
+        if let Some(bytecode_reduction_verifier) = self.bytecode_reduction_verifier.as_mut() {
+            if bytecode_reduction_verifier
+                .params
+                .precommitted
+                .num_address_phase_rounds()
+                > 0
+            {
+                bytecode_reduction_verifier
+                    .params
+                    .transition_to_address_phase(&self.opening_accumulator);
+                instances.push(bytecode_reduction_verifier);
+            }
+        }
+        if let Some(program_image_reduction_verifier) =
+            self.program_image_reduction_verifier.as_mut()
+        {
+            if program_image_reduction_verifier
+                .params
+                .precommitted
+                .num_address_phase_rounds()
+                > 0
+            {
+                program_image_reduction_verifier
+                    .params
+                    .transition_to_address_phase(&self.opening_accumulator);
+                instances.push(program_image_reduction_verifier);
             }
         }
 

@@ -8,7 +8,10 @@
 use crate::{
     poly::matrix_layout::MatrixLayout,
     poly::rlc_polynomial::{RLCPolynomial, RLCStreamingData, TraceSource},
-    zkvm::{claim_reductions::AdviceKind, config::OneHotParams},
+    zkvm::{
+        claim_reductions::{AdviceKind, PrecommittedPolynomial},
+        config::OneHotParams,
+    },
 };
 use allocative::Allocative;
 use num_derive::FromPrimitive;
@@ -66,7 +69,7 @@ pub struct StreamingBatchSource<F: JoltField> {
     pub one_hot_params: OneHotParams,
     pub trace_source: TraceSource,
     pub streaming_data: Arc<RLCStreamingData>,
-    pub advice_polys: HashMap<CommittedPolynomial, MultilinearPolynomial<F>>,
+    pub precommitted_polys: HashMap<CommittedPolynomial, PrecommittedPolynomial<F>>,
     pub poly_ids: Vec<CommittedPolynomial>,
     pub layout: MatrixLayout,
 }
@@ -79,7 +82,7 @@ impl<F: JoltField> BatchPolynomialSource<F> for StreamingBatchSource<F> {
             self.trace_source.clone(),
             self.poly_ids.clone(),
             coeffs,
-            self.advice_polys.clone(),
+            self.precommitted_polys.clone(),
             self.layout,
         ))
     }
@@ -401,7 +404,7 @@ impl<F: JoltField> DoryOpeningState<F> {
         trace_source: TraceSource,
         rlc_streaming_data: Arc<RLCStreamingData>,
         mut opening_hints: HashMap<CommittedPolynomial, PCS::OpeningProofHint>,
-        advice_polys: HashMap<CommittedPolynomial, MultilinearPolynomial<F>>,
+        precommitted_polys: HashMap<CommittedPolynomial, PrecommittedPolynomial<F>>,
     ) -> (MultilinearPolynomial<F>, PCS::OpeningProofHint) {
         // Accumulate gamma coefficients per polynomial
         let mut rlc_map = BTreeMap::new();
@@ -418,7 +421,7 @@ impl<F: JoltField> DoryOpeningState<F> {
             trace_source,
             poly_ids.clone(),
             &coeffs,
-            advice_polys,
+            precommitted_polys,
             crate::poly::commitment::dory::DoryGlobals::matrix_layout(),
         ));
 

@@ -80,6 +80,13 @@ pub trait CommitmentScheme: Clone + Sync + Send + Default + 'static {
     /// Hint produced by `batch_commit()` for the entire batch (e.g. Akita packed commitment witness).
     type BatchOpeningHint: Sync + Send + Clone + Debug;
 
+    /// Whether this PCS supports committed program mode (committed bytecode
+    /// chunks + program image). Currently Dory-only; all other schemes run
+    /// `ProgramMode::Full`.
+    fn supports_committed_program() -> bool {
+        false
+    }
+
     fn setup_prover(max_num_vars: usize) -> Self::ProverSetup;
 
     /// Build prover setup using the main-trace shape information when the PCS
