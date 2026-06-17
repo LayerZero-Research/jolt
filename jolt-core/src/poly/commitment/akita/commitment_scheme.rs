@@ -708,10 +708,18 @@ where
             return None;
         }
 
-        let ring_coeffs = polys
+        let mut ring_coeffs = polys
             .iter()
             .map(poly_to_ring_coeffs::<D>)
             .collect::<Vec<_>>();
+        let max_ring_count = ring_coeffs
+            .iter()
+            .map(Vec::len)
+            .max()
+            .expect("non-empty dense batch");
+        for coeffs in ring_coeffs.iter_mut() {
+            coeffs.resize_with(max_ring_count, CyclotomicRing::<Fp128, D>::zero);
+        }
         let dense_polys = ring_coeffs
             .iter()
             .cloned()

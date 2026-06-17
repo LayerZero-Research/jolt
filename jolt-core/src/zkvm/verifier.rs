@@ -1946,11 +1946,29 @@ impl<
             include_untrusted_advice = true;
         }
 
+        let committed_program_dense_num_vars = self
+            .preprocessing
+            .shared
+            .program
+            .bytecode_commitments()
+            .map(|bytecode_commitments| {
+                let bytecode_num_vars =
+                    PCS::dense_num_vars(committed_lanes() * bytecode_commitments.bytecode_T);
+                let program_num_vars = PCS::dense_num_vars(
+                    self.preprocessing
+                        .shared
+                        .program
+                        .committed_program_image_num_words(&self.program_io.memory_layout),
+                );
+                bytecode_num_vars.max(program_num_vars)
+            });
+
         if let Some(bytecode_commitments) = self.preprocessing.shared.program.bytecode_commitments()
         {
             let chunk_count = bytecode_commitments.bytecode_chunk_count;
-            let bytecode_chunk_num_vars =
-                PCS::dense_num_vars(committed_lanes() * bytecode_commitments.bytecode_T);
+            let bytecode_chunk_num_vars = committed_program_dense_num_vars.unwrap_or_else(|| {
+                PCS::dense_num_vars(committed_lanes() * bytecode_commitments.bytecode_T)
+            });
             for chunk_idx in 0..chunk_count {
                 let (chunk_point, chunk_claim) =
                     self.opening_accumulator.get_committed_polynomial_opening(
@@ -1973,7 +1991,8 @@ impl<
                 .shared
                 .program
                 .committed_program_image_num_words(&self.program_io.memory_layout);
-            let program_image_num_vars = PCS::dense_num_vars(program_image_num_words);
+            let program_image_num_vars = committed_program_dense_num_vars
+                .unwrap_or_else(|| PCS::dense_num_vars(program_image_num_words));
             let (program_point, program_claim) =
                 self.opening_accumulator.get_committed_polynomial_opening(
                     CommittedPolynomial::ProgramImageInit,
