@@ -27,28 +27,18 @@ pub fn jolt_to_akita(f: &JoltFp128) -> Fp128 {
     unsafe { std::mem::transmute_copy(f) }
 }
 
-#[inline]
-#[allow(dead_code)]
-pub fn akita_to_jolt(f: &Fp128) -> JoltFp128 {
-    // SAFETY: JoltFp128 is repr(transparent) over Prime128OffsetA7F7.
-    unsafe { std::mem::transmute_copy(f) }
-}
-
 pub type AkitaProof<F> = AkitaBatchedProof<F, F>;
 pub type AkitaVerifierSetup<F> = UpstreamAkitaVerifierSetup<F>;
 pub type AkitaProverSetup<F, const D: usize> = UpstreamAkitaProverSetup<F, D>;
 
 /// Bridge adapter: wraps a Jolt transcript pointer and implements Akita's Transcript trait.
 ///
-/// Uses a raw pointer internally because Akita's `Transcript` trait requires `'static`,
-/// but we need to borrow a Jolt transcript that has a limited lifetime. The adapter is
-/// always used in a strictly scoped manner within a single prove/verify call.
+/// The adapter is used only for the dynamic extent of a single Akita prove/verify call.
 pub struct JoltToAkitaTranscript<T: JoltTranscript> {
     ptr: *mut T,
 }
 
 unsafe impl<T: JoltTranscript> Send for JoltToAkitaTranscript<T> {}
-unsafe impl<T: JoltTranscript> Sync for JoltToAkitaTranscript<T> {}
 
 impl<T: JoltTranscript> JoltToAkitaTranscript<T> {
     pub fn new(transcript: &mut T) -> Self {

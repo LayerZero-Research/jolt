@@ -77,8 +77,8 @@ pub type PCS = crate::poly::commitment::dory::DoryCommitmentScheme;
 pub type F = crate::field::fp128::JoltFp128;
 #[cfg(feature = "akita-pcs")]
 pub type PCS = crate::poly::commitment::akita::JoltAkitaCommitmentScheme<
-    32,
-    crate::poly::commitment::akita::Fp128OneHot32Config,
+    128,
+    crate::poly::commitment::akita::Fp128Dense128Config,
 >;
 
 pub(crate) fn stage8_opening_ids(

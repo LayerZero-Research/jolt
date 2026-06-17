@@ -219,6 +219,9 @@ pub struct JoltCpuProver<
 
 #[cfg(all(test, feature = "akita-pcs"))]
 mod akita_tests {
+    extern crate jolt_inlines_keccak256;
+    extern crate jolt_inlines_sha2;
+
     use serial_test::serial;
 
     use crate::host;
@@ -227,12 +230,9 @@ mod akita_tests {
     use crate::zkvm::verifier::{JoltSharedPreprocessing, JoltVerifierPreprocessing};
     use crate::zkvm::{RV64IMACProver, RV64IMACVerifier};
 
-    #[test]
-    #[serial]
-    fn muldiv_e2e_akita() {
-        let mut program = host::Program::new("muldiv-guest");
+    fn prove_and_verify_full(program_name: &str, inputs: Vec<u8>) {
+        let mut program = host::Program::new(program_name);
         let (bytecode, init_memory_state, _, e_entry) = program.decode();
-        let inputs = postcard::to_stdvec(&[9u32, 5u32, 3u32]).unwrap();
         let (_, _, _, io_device) = program.trace(&inputs, &[], &[]);
 
         let program_preprocessing =
@@ -266,6 +266,33 @@ mod akita_tests {
         .expect("Failed to create verifier")
         .verify()
         .expect("Verification failed");
+    }
+
+    #[test]
+    #[serial]
+    fn muldiv_e2e_akita() {
+        prove_and_verify_full(
+            "muldiv-guest",
+            postcard::to_stdvec(&[9u32, 5u32, 3u32]).unwrap(),
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn fib_e2e_akita() {
+        prove_and_verify_full("fibonacci-guest", postcard::to_stdvec(&50u32).unwrap());
+    }
+
+    #[test]
+    #[serial]
+    fn sha2_e2e_akita() {
+        prove_and_verify_full("sha2-guest", postcard::to_stdvec(&[5u8; 32]).unwrap());
+    }
+
+    #[test]
+    #[serial]
+    fn sha3_e2e_akita() {
+        prove_and_verify_full("sha3-guest", postcard::to_stdvec(&[5u8; 32]).unwrap());
     }
 }
 
@@ -1368,8 +1395,7 @@ impl<
                 precommitted_scheduling_reference,
                 &self.opening_accumulator,
             );
-            // Note: We clone the advice polynomial here because Stage 8 needs the original polynomial
-            // A future optimization could use Arc<MultilinearPolynomial> with copy-on-write.
+            // Stage 8 still needs the original advice polynomial.
             self.advice_reduction_prover_trusted = {
                 let poly = self
                     .advice
@@ -1390,8 +1416,7 @@ impl<
                 precommitted_scheduling_reference,
                 &self.opening_accumulator,
             );
-            // Note: We clone the advice polynomial here because Stage 8 needs the original polynomial
-            // A future optimization could use Arc<MultilinearPolynomial> with copy-on-write.
+            // Stage 8 still needs the original advice polynomial.
             self.advice_reduction_prover_untrusted = {
                 let poly = self
                     .advice
