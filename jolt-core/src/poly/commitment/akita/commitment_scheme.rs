@@ -1102,11 +1102,12 @@ where
             let commitment = commitment_map
                 .remove(&opening.polynomial)
                 .ok_or(ProofVerifyError::InvalidOpeningProof)?;
-            let akita_point = to_akita_dense_opening_point::<D>(&opening.opening_point.r);
-            let natural_num_vars = akita_point.len();
+            let natural_num_vars = opening.num_vars.unwrap_or(opening.opening_point.r.len());
+            let akita_point =
+                to_akita_order_opening_point::<D>(&opening.opening_point.r, natural_num_vars);
             dense_items.push(DenseBatchVerifierItem {
                 field_evals_len: 1usize << natural_num_vars,
-                opening_point: to_jolt_akita_order_point(&akita_point),
+                opening_point: akita_point,
                 claim: opening.claim,
                 commitment: commitment.0,
             });

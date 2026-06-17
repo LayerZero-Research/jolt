@@ -2314,6 +2314,7 @@ impl<
                 polynomial,
                 opening_point: point,
                 claim,
+                num_vars: None,
             });
             polynomial_claims.push((polynomial, claim * lagrange));
             scaling_factors.push(lagrange);

@@ -334,6 +334,7 @@ pub struct BatchOpening<F: JoltField> {
     pub polynomial: CommittedPolynomial,
     pub opening_point: OpeningPoint<BIG_ENDIAN, F>,
     pub claim: F,
+    pub num_vars: Option<usize>,
 }
 
 impl<F: JoltField> BatchOpeningState<F> {

@@ -1783,11 +1783,13 @@ impl<
         let mut record_opening = |polynomial: CommittedPolynomial,
                                   point: OpeningPoint<BIG_ENDIAN, F>,
                                   claim: F,
-                                  lagrange: F| {
+                                  lagrange: F,
+                                  num_vars: Option<usize>| {
             individual_openings.push(BatchOpening {
                 polynomial,
                 opening_point: point,
                 claim,
+                num_vars,
             });
             polynomial_claims.push((polynomial, claim * lagrange));
             scaling_factors.push(lagrange);
@@ -1799,25 +1801,37 @@ impl<
                     CommittedPolynomial::RdIncRa(i),
                     SumcheckId::HammingWeightClaimReduction,
                 );
-                record_opening(CommittedPolynomial::RdIncRa(i), point, claim, F::one());
+                record_opening(
+                    CommittedPolynomial::RdIncRa(i),
+                    point,
+                    claim,
+                    F::one(),
+                    None,
+                );
             }
             let (point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
                 CommittedPolynomial::RdIncMsb,
                 SumcheckId::HammingWeightClaimReduction,
             );
-            record_opening(CommittedPolynomial::RdIncMsb, point, claim, F::one());
+            record_opening(CommittedPolynomial::RdIncMsb, point, claim, F::one(), None);
             for i in 0..self.one_hot_params.inc_onehot_d() {
                 let (point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
                     CommittedPolynomial::RamIncRa(i),
                     SumcheckId::HammingWeightClaimReduction,
                 );
-                record_opening(CommittedPolynomial::RamIncRa(i), point, claim, F::one());
+                record_opening(
+                    CommittedPolynomial::RamIncRa(i),
+                    point,
+                    claim,
+                    F::one(),
+                    None,
+                );
             }
             let (point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
                 CommittedPolynomial::RamIncMsb,
                 SumcheckId::HammingWeightClaimReduction,
             );
-            record_opening(CommittedPolynomial::RamIncMsb, point, claim, F::one());
+            record_opening(CommittedPolynomial::RamIncMsb, point, claim, F::one(), None);
         } else {
             // Dense polynomials: RamInc and RdInc (from IncClaimReduction in Stage 6)
             let (ram_inc_point, ram_inc_claim) =
@@ -1837,12 +1851,14 @@ impl<
                 ram_inc_point,
                 ram_inc_claim,
                 ram_inc_lagrange,
+                None,
             );
             record_opening(
                 CommittedPolynomial::RdInc,
                 rd_inc_point,
                 rd_inc_claim,
                 rd_inc_lagrange,
+                None,
             );
         }
 
@@ -1858,6 +1874,7 @@ impl<
                 ra_point,
                 claim,
                 lagrange,
+                None,
             );
         }
         for i in 0..self.one_hot_params.bytecode_d {
@@ -1871,6 +1888,7 @@ impl<
                 ra_point,
                 claim,
                 lagrange,
+                None,
             );
         }
         for i in 0..self.one_hot_params.ram_d {
@@ -1879,7 +1897,13 @@ impl<
                 SumcheckId::HammingWeightClaimReduction,
             );
             let lagrange = lagrange_factor_for(&ra_point);
-            record_opening(CommittedPolynomial::RamRa(i), ra_point, claim, lagrange);
+            record_opening(
+                CommittedPolynomial::RamRa(i),
+                ra_point,
+                claim,
+                lagrange,
+                None,
+            );
         }
 
         // Advice polynomials: TrustedAdvice and UntrustedAdvice (from AdviceClaimReduction in Stage 6)
@@ -1898,6 +1922,7 @@ impl<
                 advice_point,
                 advice_claim,
                 lagrange_factor,
+                Some((self.program_io.memory_layout.max_trusted_advice_size as usize / 8).log_2()),
             );
             include_trusted_advice = true;
         }
@@ -1912,12 +1937,18 @@ impl<
                 advice_point,
                 advice_claim,
                 lagrange_factor,
+                Some(
+                    (self.program_io.memory_layout.max_untrusted_advice_size as usize / 8).log_2(),
+                ),
             );
             include_untrusted_advice = true;
         }
 
-        if self.preprocessing.shared.program.is_committed() {
-            let chunk_count = self.preprocessing.shared.bytecode_chunk_count;
+        if let Some(bytecode_commitments) = self.preprocessing.shared.program.bytecode_commitments()
+        {
+            let chunk_count = bytecode_commitments.bytecode_chunk_count;
+            let bytecode_chunk_num_vars =
+                (committed_lanes() * bytecode_commitments.bytecode_T).log_2();
             for chunk_idx in 0..chunk_count {
                 let (chunk_point, chunk_claim) =
                     self.opening_accumulator.get_committed_polynomial_opening(
@@ -1930,10 +1961,17 @@ impl<
                     chunk_point,
                     chunk_claim,
                     lagrange_factor,
+                    Some(bytecode_chunk_num_vars),
                 );
             }
         }
         if self.preprocessing.shared.program.is_committed() {
+            let program_image_num_vars = self
+                .preprocessing
+                .shared
+                .program
+                .committed_program_image_num_words(&self.program_io.memory_layout)
+                .log_2();
             let (program_point, program_claim) =
                 self.opening_accumulator.get_committed_polynomial_opening(
                     CommittedPolynomial::ProgramImageInit,
@@ -1945,6 +1983,7 @@ impl<
                 program_point,
                 program_claim,
                 lagrange_factor,
+                Some(program_image_num_vars),
             );
         }
 
