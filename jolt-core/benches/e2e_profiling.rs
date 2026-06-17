@@ -1,18 +1,11 @@
-#[cfg(not(feature = "akita-pcs"))]
 use ark_serialize::CanonicalSerialize;
-#[cfg(not(feature = "akita-pcs"))]
 use jolt_core::host;
-#[cfg(not(feature = "akita-pcs"))]
 use jolt_core::zkvm::program::ProgramPreprocessing;
-#[cfg(not(feature = "akita-pcs"))]
 use jolt_core::zkvm::prover::JoltProverPreprocessing;
-#[cfg(not(feature = "akita-pcs"))]
 use jolt_core::zkvm::verifier::{JoltSharedPreprocessing, JoltVerifierPreprocessing};
-#[cfg(not(feature = "akita-pcs"))]
 use jolt_core::zkvm::{RV64IMACProver, RV64IMACVerifier};
 use std::fs;
 use std::io::Write;
-#[cfg(not(feature = "akita-pcs"))]
 use std::time::Instant;
 
 // Empirically measured cycles per operation for RV64IMAC
@@ -203,15 +196,6 @@ pub fn master_benchmark(
     )]
 }
 
-#[cfg(feature = "akita-pcs")]
-fn prove_example(
-    _guest_name: &'static str,
-    _input: Vec<u8>,
-) -> Vec<(tracing::Span, Box<dyn FnOnce()>)> {
-    Vec::new()
-}
-
-#[cfg(not(feature = "akita-pcs"))]
 fn prove_example(
     example_name: &str,
     serialized_input: Vec<u8>,
@@ -263,18 +247,6 @@ fn prove_example(
     tasks
 }
 
-#[cfg(feature = "akita-pcs")]
-fn prove_example_with_trace(
-    _guest_name: &str,
-    _input: Vec<u8>,
-    _max_trace_length: usize,
-    _bench_name: &str,
-    _bench_scale: usize,
-) -> (std::time::Duration, usize, usize, usize) {
-    (std::time::Duration::ZERO, 0, 0, 0)
-}
-
-#[cfg(not(feature = "akita-pcs"))]
 fn prove_example_with_trace(
     example_name: &str,
     serialized_input: Vec<u8>,
