@@ -322,21 +322,14 @@ fn field_evals_from_ring_coeffs<const D: usize>(
         .collect()
 }
 
-fn to_jolt_akita_order_point(point: &[Fp128]) -> Vec<JoltFp128> {
-    point.iter().map(akita_to_jolt).collect()
-}
-
-fn to_akita_order_opening_point<const D: usize>(
-    opening_point: &[JoltFp128],
-    num_vars: usize,
-) -> Vec<JoltFp128> {
-    let mut akita_point = to_akita_opening_point(opening_point);
+fn to_jolt_dense_opening_point(opening_point: &[JoltFp128], num_vars: usize) -> Vec<JoltFp128> {
     assert!(
-        akita_point.len() <= num_vars,
-        "dense Akita opening point has more variables than its polynomial"
+        opening_point.len() <= num_vars,
+        "dense opening point has more variables than its polynomial"
     );
-    akita_point.resize(num_vars, Fp128::zero());
-    to_jolt_akita_order_point(&akita_point)
+    let mut point = vec![JoltFp128::zero(); num_vars - opening_point.len()];
+    point.extend_from_slice(opening_point);
+    point
 }
 
 fn evaluate_dense_evals_at_point(evals: &[JoltFp128], point: &[JoltFp128]) -> JoltFp128 {
@@ -934,8 +927,7 @@ where
             );
             let field_evals = field_evals_from_ring_coeffs(&hint.ring_coeffs);
             let num_vars = field_evals.len().log_2();
-            let opening_point =
-                to_akita_order_opening_point::<D>(&opening.opening_point.r, num_vars);
+            let opening_point = to_jolt_dense_opening_point(&opening.opening_point.r, num_vars);
             let computed_claim = evaluate_dense_evals_at_point(&field_evals, &opening_point);
             assert_eq!(
                 computed_claim,
@@ -985,7 +977,7 @@ where
                     })
                     .collect::<Vec<_>>();
                 transcript.append_scalars(b"akita_dense_openings", &dense_openings);
-                let common_akita_point = common_point.iter().map(jolt_to_akita).collect::<Vec<_>>();
+                let common_akita_point = to_akita_dense_opening_point::<D>(&common_point);
                 for item in dense_items.iter_mut() {
                     item.poly = dense_poly_from_jolt_evals_padded(&item.field_evals, max_vars);
                 }
@@ -1121,11 +1113,11 @@ where
                 .remove(&opening.polynomial)
                 .ok_or(ProofVerifyError::InvalidOpeningProof)?;
             let natural_num_vars = opening.num_vars.unwrap_or(opening.opening_point.r.len());
-            let akita_point =
-                to_akita_order_opening_point::<D>(&opening.opening_point.r, natural_num_vars);
+            let jolt_point =
+                to_jolt_dense_opening_point(&opening.opening_point.r, natural_num_vars);
             dense_items.push(DenseBatchVerifierItem {
                 field_evals_len: 1usize << natural_num_vars,
-                opening_point: akita_point,
+                opening_point: jolt_point,
                 claim: opening.claim,
                 commitment: commitment.0,
             });
@@ -1208,7 +1200,7 @@ where
                     ),
                 ));
             }
-            let akita_opening_point = common_point.iter().map(jolt_to_akita).collect::<Vec<_>>();
+            let akita_opening_point = to_akita_dense_opening_point::<D>(&common_point);
             let akita_openings = proof
                 .dense_batch_openings
                 .iter()
