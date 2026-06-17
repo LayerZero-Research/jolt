@@ -3229,7 +3229,6 @@ mod tests {
     /// Build committed-program (Dory-only) prover preprocessing for tests: derives the
     /// committed bytecode-chunk and program-image commitments/hints, sizes the Dory
     /// generators to cover the committed candidates, and wires them via `new_committed`.
-    #[cfg(not(feature = "zk"))]
     fn test_prover_preprocessing_committed(
         bytecode: Vec<JoltInstructionRow>,
         init_memory_state: Vec<(u64, u8)>,
@@ -3290,7 +3289,6 @@ mod tests {
     // (no reference-domain "dominance"). The dominated case (a committed polynomial larger than
     // the trace matrix, e.g. `chunk_count = 1` on a tiny trace) is a separate, documented
     // limitation of Akita's Dory commit/open under matrix widening.
-    #[cfg(not(feature = "zk"))]
     #[test]
     #[serial]
     fn muldiv_e2e_dory_committed_program_commitments() {
@@ -3307,6 +3305,61 @@ mod tests {
             1 << 16,
             256,
         );
+        let elf_contents_opt = program.get_elf_contents();
+        let elf_contents = elf_contents_opt.as_deref().expect("elf contents is None");
+        let prover = RV64IMACProver::gen_from_elf(
+            &prover_preprocessing,
+            elf_contents,
+            &inputs,
+            &[],
+            &[],
+            None,
+            None,
+            None,
+        );
+        let io_device = prover.program_io.clone();
+        let (jolt_proof, debug_info) = prover.prove();
+
+        let verifier_preprocessing = JoltVerifierPreprocessing::from(&prover_preprocessing);
+        let verifier = RV64IMACVerifier::new(
+            &verifier_preprocessing,
+            jolt_proof,
+            io_device,
+            None,
+            debug_info,
+        )
+        .expect("Failed to create verifier");
+        verifier.verify().expect("Failed to verify proof");
+    }
+
+    // Committed-program prover preprocessing serializes and deserializes round-trip, and the
+    // restored preprocessing still proves + verifies (committed bytecode-chunk + program-image
+    // commitments and opening hints survive the round-trip).
+    #[test]
+    #[serial]
+    fn muldiv_e2e_dory_committed_program_preprocessing_roundtrip() {
+        use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+        DoryGlobals::reset();
+        let mut program = host::Program::new("muldiv-guest");
+        let (bytecode, init_memory_state, _, e_entry) = program.decode();
+        let inputs = postcard::to_stdvec(&[9u32, 5u32, 3u32]).unwrap();
+        let (_, _, _, io_device) = program.trace(&inputs, &[], &[]);
+        let prover_preprocessing = test_prover_preprocessing_committed(
+            bytecode,
+            init_memory_state,
+            e_entry,
+            io_device.memory_layout.clone(),
+            1 << 16,
+            256,
+        );
+
+        let mut encoded = Vec::new();
+        prover_preprocessing
+            .serialize_compressed(&mut encoded)
+            .unwrap();
+        let prover_preprocessing: JoltProverPreprocessing<Fr, Bn254Curve, DoryCommitmentScheme> =
+            JoltProverPreprocessing::deserialize_compressed(encoded.as_slice()).unwrap();
+
         let elf_contents_opt = program.get_elf_contents();
         let elf_contents = elf_contents_opt.as_deref().expect("elf contents is None");
         let prover = RV64IMACProver::gen_from_elf(
