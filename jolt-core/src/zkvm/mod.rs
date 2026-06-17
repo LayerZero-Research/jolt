@@ -29,9 +29,12 @@ use crate::{
 ))]
 compile_error!("Cannot enable multiple transcript features simultaneously. Please choose exactly one of: 'transcript-poseidon', 'transcript-keccak', or 'transcript-blake2b'.");
 
-#[cfg(any(
-    feature = "transcript-blake2b",
-    not(any(feature = "transcript-poseidon", feature = "transcript-keccak"))
+#[cfg(all(
+    not(feature = "akita-pcs"),
+    any(
+        feature = "transcript-blake2b",
+        not(any(feature = "transcript-poseidon", feature = "transcript-keccak"))
+    )
 ))]
 use crate::transcripts::Blake2bTranscript;
 #[cfg(feature = "transcript-keccak")]
@@ -40,12 +43,14 @@ use crate::transcripts::KeccakTranscript;
 use crate::transcripts::PoseidonTranscript;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use eyre::Result;
+#[cfg(not(feature = "akita-pcs"))]
 use proof_serialization::JoltProof;
-#[cfg(feature = "prover")]
+#[cfg(all(feature = "prover", not(feature = "akita-pcs")))]
 use prover::JoltCpuProver;
 use std::io::Cursor;
 use std::path::PathBuf;
 use tracer::JoltDevice;
+#[cfg(not(feature = "akita-pcs"))]
 use verifier::JoltVerifier;
 
 pub mod bytecode;
@@ -74,6 +79,13 @@ pub type F = ark_bn254::Fr;
 pub type Curve = crate::curve::Bn254Curve;
 #[cfg(not(feature = "akita-pcs"))]
 pub type PCS = crate::poly::commitment::dory::DoryCommitmentScheme;
+#[cfg(feature = "akita-pcs")]
+pub type F = crate::field::fp128::JoltFp128;
+#[cfg(feature = "akita-pcs")]
+pub type PCS = crate::poly::commitment::akita::JoltAkitaCommitmentScheme<
+    32,
+    crate::poly::commitment::akita::Fp128OneHot32Config,
+>;
 
 pub(crate) fn stage8_opening_ids(
     one_hot_params: &OneHotParams,
@@ -361,22 +373,31 @@ pub fn fiat_shamir_preamble<PCS: CommitmentScheme>(
     PCS::append_pcs_config_to_transcript(pcs_config, transcript);
 }
 
-#[cfg(all(feature = "prover", feature = "transcript-poseidon"))]
+#[cfg(all(
+    feature = "prover",
+    feature = "transcript-poseidon",
+    not(feature = "akita-pcs")
+))]
 pub type RV64IMACProver<'a> = JoltCpuProver<'a, F, Curve, PCS, PoseidonTranscript>;
-#[cfg(feature = "transcript-poseidon")]
+#[cfg(all(feature = "transcript-poseidon", not(feature = "akita-pcs")))]
 pub type RV64IMACVerifier<'a> = JoltVerifier<'a, F, Curve, PCS, PoseidonTranscript>;
-#[cfg(feature = "transcript-poseidon")]
+#[cfg(all(feature = "transcript-poseidon", not(feature = "akita-pcs")))]
 pub type RV64IMACProof = JoltProof<F, Curve, PCS, PoseidonTranscript>;
 
-#[cfg(all(feature = "prover", feature = "transcript-keccak"))]
+#[cfg(all(
+    feature = "prover",
+    feature = "transcript-keccak",
+    not(feature = "akita-pcs")
+))]
 pub type RV64IMACProver<'a> = JoltCpuProver<'a, F, Curve, PCS, KeccakTranscript>;
-#[cfg(feature = "transcript-keccak")]
+#[cfg(all(feature = "transcript-keccak", not(feature = "akita-pcs")))]
 pub type RV64IMACVerifier<'a> = JoltVerifier<'a, F, Curve, PCS, KeccakTranscript>;
-#[cfg(feature = "transcript-keccak")]
+#[cfg(all(feature = "transcript-keccak", not(feature = "akita-pcs")))]
 pub type RV64IMACProof = JoltProof<F, Curve, PCS, KeccakTranscript>;
 
 #[cfg(all(
     feature = "prover",
+    not(feature = "akita-pcs"),
     not(any(
         feature = "transcript-poseidon",
         feature = "transcript-keccak",
@@ -384,24 +405,34 @@ pub type RV64IMACProof = JoltProof<F, Curve, PCS, KeccakTranscript>;
     ))
 ))]
 pub type RV64IMACProver<'a> = JoltCpuProver<'a, F, Curve, PCS, Blake2bTranscript>;
-#[cfg(not(any(
-    feature = "transcript-poseidon",
-    feature = "transcript-keccak",
-    feature = "transcript-blake2b"
-)))]
+#[cfg(all(
+    not(feature = "akita-pcs"),
+    not(any(
+        feature = "transcript-poseidon",
+        feature = "transcript-keccak",
+        feature = "transcript-blake2b"
+    ))
+))]
 pub type RV64IMACVerifier<'a> = JoltVerifier<'a, F, Curve, PCS, Blake2bTranscript>;
-#[cfg(not(any(
-    feature = "transcript-poseidon",
-    feature = "transcript-keccak",
-    feature = "transcript-blake2b"
-)))]
+#[cfg(all(
+    not(feature = "akita-pcs"),
+    not(any(
+        feature = "transcript-poseidon",
+        feature = "transcript-keccak",
+        feature = "transcript-blake2b"
+    ))
+))]
 pub type RV64IMACProof = JoltProof<F, Curve, PCS, Blake2bTranscript>;
 
-#[cfg(all(feature = "prover", feature = "transcript-blake2b"))]
+#[cfg(all(
+    feature = "prover",
+    feature = "transcript-blake2b",
+    not(feature = "akita-pcs")
+))]
 pub type RV64IMACProver<'a> = JoltCpuProver<'a, F, Curve, PCS, Blake2bTranscript>;
-#[cfg(feature = "transcript-blake2b")]
+#[cfg(all(feature = "transcript-blake2b", not(feature = "akita-pcs")))]
 pub type RV64IMACVerifier<'a> = JoltVerifier<'a, F, Curve, PCS, Blake2bTranscript>;
-#[cfg(feature = "transcript-blake2b")]
+#[cfg(all(feature = "transcript-blake2b", not(feature = "akita-pcs")))]
 pub type RV64IMACProof = JoltProof<F, Curve, PCS, Blake2bTranscript>;
 
 pub trait Serializable: CanonicalSerialize + CanonicalDeserialize + Sized {
@@ -439,5 +470,6 @@ pub trait Serializable: CanonicalSerialize + CanonicalDeserialize + Sized {
     }
 }
 
+#[cfg(not(feature = "akita-pcs"))]
 impl Serializable for RV64IMACProof {}
 impl Serializable for JoltDevice {}

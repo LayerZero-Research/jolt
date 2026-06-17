@@ -131,6 +131,25 @@ pub trait CommitmentScheme: Clone + Sync + Send + 'static {
         Ok(Self::combine_commitments(&commitments, &coeffs))
     }
 
+    fn verify_batch_opening<ProofTranscript: Transcript>(
+        proof: &Self::Proof,
+        setup: &Self::VerifierSetup,
+        transcript: &mut ProofTranscript,
+        state: &BatchOpeningState<Self::Field>,
+        commitment_map: &mut HashMap<CommittedPolynomial, Self::Commitment>,
+        joint_claim: &Self::Field,
+    ) -> Result<(), ProofVerifyError> {
+        let joint_commitment = Self::combine_batch_commitments(state, commitment_map)?;
+        Self::verify(
+            proof,
+            setup,
+            transcript,
+            &state.opening_point,
+            joint_claim,
+            &joint_commitment,
+        )
+    }
+
     /// Commits to a multilinear polynomial using the provided setup.
     ///
     /// # Arguments

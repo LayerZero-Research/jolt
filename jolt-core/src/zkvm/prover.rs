@@ -44,8 +44,8 @@ use crate::{
         },
         multilinear_polynomial::MultilinearPolynomial,
         opening_proof::{
-            compute_lagrange_factor, BatchOpeningState, OpeningAccumulator,
-            ProverOpeningAccumulator, SumcheckId,
+            compute_lagrange_factor, BatchOpening, BatchOpeningState, OpeningAccumulator,
+            OpeningPoint, ProverOpeningAccumulator, SumcheckId, BIG_ENDIAN,
         },
         rlc_polynomial::{RLCStreamingData, TraceSource},
     },
@@ -2055,8 +2055,21 @@ impl<
 
         let mut polynomial_claims = Vec::new();
         let mut scaling_factors = Vec::new();
+        let mut individual_openings = Vec::new();
         let mut precommitted_polys: HashMap<CommittedPolynomial, PrecommittedPolynomial<F>> =
             HashMap::new();
+        let mut record_opening = |polynomial: CommittedPolynomial,
+                                  point: OpeningPoint<BIG_ENDIAN, F>,
+                                  claim: F,
+                                  lagrange: F| {
+            individual_openings.push(BatchOpening {
+                polynomial,
+                opening_point: point,
+                claim,
+            });
+            polynomial_claims.push((polynomial, claim * lagrange));
+            scaling_factors.push(lagrange);
+        };
 
         let (ram_inc_point, ram_inc_claim) =
             self.opening_accumulator.get_committed_polynomial_opening(
@@ -2071,13 +2084,18 @@ impl<
 
         let ram_inc_lagrange = compute_lagrange_factor::<F>(&opening_point.r, &ram_inc_point.r);
         let rd_inc_lagrange = compute_lagrange_factor::<F>(&opening_point.r, &rd_inc_point.r);
-        polynomial_claims.push((
+        record_opening(
             CommittedPolynomial::RamInc,
-            ram_inc_claim * ram_inc_lagrange,
-        ));
-        scaling_factors.push(ram_inc_lagrange);
-        polynomial_claims.push((CommittedPolynomial::RdInc, rd_inc_claim * rd_inc_lagrange));
-        scaling_factors.push(rd_inc_lagrange);
+            ram_inc_point,
+            ram_inc_claim,
+            ram_inc_lagrange,
+        );
+        record_opening(
+            CommittedPolynomial::RdInc,
+            rd_inc_point,
+            rd_inc_claim,
+            rd_inc_lagrange,
+        );
 
         // Sparse polynomials: all RA polys (from HammingWeightClaimReduction)
         // These are at (r_address_stage7, r_cycle_stage6)
@@ -2087,8 +2105,12 @@ impl<
                 SumcheckId::HammingWeightClaimReduction,
             );
             let lagrange = compute_lagrange_factor::<F>(&opening_point.r, &ra_point.r);
-            polynomial_claims.push((CommittedPolynomial::InstructionRa(i), claim * lagrange));
-            scaling_factors.push(lagrange);
+            record_opening(
+                CommittedPolynomial::InstructionRa(i),
+                ra_point,
+                claim,
+                lagrange,
+            );
         }
         for i in 0..self.one_hot_params.bytecode_d {
             let (ra_point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
@@ -2096,8 +2118,12 @@ impl<
                 SumcheckId::HammingWeightClaimReduction,
             );
             let lagrange = compute_lagrange_factor::<F>(&opening_point.r, &ra_point.r);
-            polynomial_claims.push((CommittedPolynomial::BytecodeRa(i), claim * lagrange));
-            scaling_factors.push(lagrange);
+            record_opening(
+                CommittedPolynomial::BytecodeRa(i),
+                ra_point,
+                claim,
+                lagrange,
+            );
         }
         for i in 0..self.one_hot_params.ram_d {
             let (ra_point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
@@ -2105,8 +2131,7 @@ impl<
                 SumcheckId::HammingWeightClaimReduction,
             );
             let lagrange = compute_lagrange_factor::<F>(&opening_point.r, &ra_point.r);
-            polynomial_claims.push((CommittedPolynomial::RamRa(i), claim * lagrange));
-            scaling_factors.push(lagrange);
+            record_opening(CommittedPolynomial::RamRa(i), ra_point, claim, lagrange);
         }
 
         // Advice polynomials: TrustedAdvice and UntrustedAdvice (from AdviceClaimReduction in Stage 6)
@@ -2122,11 +2147,12 @@ impl<
             .get_advice_opening(AdviceKind::Trusted, SumcheckId::AdviceClaimReduction)
         {
             let lagrange_factor = compute_lagrange_factor::<F>(&opening_point.r, &advice_point.r);
-            polynomial_claims.push((
+            record_opening(
                 CommittedPolynomial::TrustedAdvice,
-                advice_claim * lagrange_factor,
-            ));
-            scaling_factors.push(lagrange_factor);
+                advice_point,
+                advice_claim,
+                lagrange_factor,
+            );
             #[cfg(feature = "zk")]
             {
                 include_trusted_advice = true;
@@ -2138,11 +2164,12 @@ impl<
             .get_advice_opening(AdviceKind::Untrusted, SumcheckId::AdviceClaimReduction)
         {
             let lagrange_factor = compute_lagrange_factor::<F>(&opening_point.r, &advice_point.r);
-            polynomial_claims.push((
+            record_opening(
                 CommittedPolynomial::UntrustedAdvice,
-                advice_claim * lagrange_factor,
-            ));
-            scaling_factors.push(lagrange_factor);
+                advice_point,
+                advice_claim,
+                lagrange_factor,
+            );
             #[cfg(feature = "zk")]
             {
                 include_untrusted_advice = true;
@@ -2167,11 +2194,12 @@ impl<
                     );
                 let lagrange_factor =
                     compute_lagrange_factor::<F>(&opening_point.r, &chunk_point.r);
-                polynomial_claims.push((
+                record_opening(
                     CommittedPolynomial::BytecodeChunk(chunk_idx),
-                    chunk_claim * lagrange_factor,
-                ));
-                scaling_factors.push(lagrange_factor);
+                    chunk_point,
+                    chunk_claim,
+                    lagrange_factor,
+                );
                 precommitted_polys.insert(
                     CommittedPolynomial::BytecodeChunk(chunk_idx),
                     PrecommittedPolynomial::BytecodeChunk {
@@ -2194,11 +2222,12 @@ impl<
                     SumcheckId::ProgramImageClaimReduction,
                 );
             let lagrange_factor = compute_lagrange_factor::<F>(&opening_point.r, &program_point.r);
-            polynomial_claims.push((
+            record_opening(
                 CommittedPolynomial::ProgramImageInit,
-                program_claim * lagrange_factor,
-            ));
-            scaling_factors.push(lagrange_factor);
+                program_point,
+                program_claim,
+                lagrange_factor,
+            );
             precommitted_polys.insert(
                 CommittedPolynomial::ProgramImageInit,
                 PrecommittedPolynomial::ProgramImage {
@@ -2250,6 +2279,7 @@ impl<
             opening_point: opening_point.r.clone(),
             gamma_powers,
             polynomial_claims,
+            individual_openings,
         };
 
         let streaming_data = Arc::new(RLCStreamingData {
@@ -2562,7 +2592,7 @@ impl<F: JoltField, C: JoltCurve<F = F>, PCS: CommitmentScheme<Field = F>> Serial
 {
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "akita-pcs")))]
 mod tests {
     // Force-link inline crates so their `inventory::submit!` entries are retained by the linker.
     extern crate jolt_inlines_keccak256;

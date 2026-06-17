@@ -325,6 +325,14 @@ pub struct BatchOpeningState<F: JoltField> {
     pub opening_point: Vec<F::Challenge>,
     pub gamma_powers: Vec<F>,
     pub polynomial_claims: Vec<(CommittedPolynomial, F)>,
+    pub individual_openings: Vec<BatchOpening<F>>,
+}
+
+#[derive(Clone, Allocative)]
+pub struct BatchOpening<F: JoltField> {
+    pub polynomial: CommittedPolynomial,
+    pub opening_point: OpeningPoint<BIG_ENDIAN, F>,
+    pub claim: F,
 }
 
 impl<F: JoltField> BatchOpeningState<F> {
