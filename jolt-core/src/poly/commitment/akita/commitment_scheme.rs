@@ -344,6 +344,20 @@ fn evaluate_dense_evals_at_point(evals: &[JoltFp128], point: &[JoltFp128]) -> Jo
         .sum()
 }
 
+fn dense_poly_from_jolt_evals_padded<const D: usize>(
+    evals: &[JoltFp128],
+    num_vars: usize,
+) -> DensePoly<Fp128, D> {
+    let padded_len = 1usize << num_vars;
+    debug_assert!(evals.len() <= padded_len);
+    let mut padded_evals = vec![Fp128::zero(); padded_len];
+    for (dst, src) in padded_evals.iter_mut().zip(evals.iter()) {
+        *dst = jolt_to_akita(src);
+    }
+    DensePoly::from_field_evals(num_vars, &padded_evals)
+        .expect("Akita padded DensePoly construction failed")
+}
+
 struct DenseBatchProverItem<const D: usize> {
     poly: DensePoly<Fp128, D>,
     field_evals: Vec<JoltFp128>,
@@ -949,6 +963,9 @@ where
                     .collect::<Vec<_>>();
                 transcript.append_scalars(b"akita_dense_openings", &dense_openings);
                 let common_akita_point = common_point.iter().map(jolt_to_akita).collect::<Vec<_>>();
+                for item in dense_items.iter_mut() {
+                    item.poly = dense_poly_from_jolt_evals_padded(&item.field_evals, max_vars);
+                }
                 let mut adapter = JoltToAkitaTranscript::new(transcript);
                 let proof = akita_prove_dense_batch::<D, _>(
                     &context.setup.dense.0,
@@ -1160,10 +1177,7 @@ where
                 .iter()
                 .map(jolt_to_akita)
                 .collect::<Vec<_>>();
-            let natural_num_vars = dense_items
-                .iter()
-                .map(|item| item.field_evals_len.log_2())
-                .collect::<Vec<_>>();
+            let natural_num_vars = dense_items.iter().map(|_| max_vars).collect::<Vec<_>>();
             let commitments = dense_items
                 .into_iter()
                 .map(|item| item.commitment)
