@@ -679,6 +679,57 @@ where
         (commitment, hint)
     }
 
+    fn commit_dense_batch(
+        polys: &[MultilinearPolynomial<JoltFp128>],
+        setup: &Self::ProverSetup,
+    ) -> Option<Vec<(Self::Commitment, Self::OpeningProofHint)>> {
+        if polys.is_empty()
+            || polys
+                .iter()
+                .any(|poly| matches!(poly, MultilinearPolynomial::OneHot(_)))
+        {
+            return None;
+        }
+
+        let ring_coeffs = polys
+            .iter()
+            .map(poly_to_ring_coeffs::<D>)
+            .collect::<Vec<_>>();
+        let dense_polys = ring_coeffs
+            .iter()
+            .cloned()
+            .map(dense_poly_from_ring_coeffs::<D>)
+            .collect::<Vec<_>>();
+        let groups = dense_polys
+            .iter()
+            .map(from_ref)
+            .collect::<Vec<&[DensePoly<Fp128, D>]>>();
+        let prepared = prepare_cpu(&setup.dense.0);
+        let committed = <AkitaCommitmentScheme<D, Fp128DenseConfig> as AkitaCommitmentProver<
+            Fp128,
+            D,
+        >>::batched_commit(&setup.dense.0, &CpuBackend, &prepared, &groups)
+        .expect("Akita dense batched commit failed");
+
+        Some(
+            committed
+                .into_iter()
+                .zip(ring_coeffs)
+                .map(|((commitment, akita_hint), ring_coeffs)| {
+                    let commitment = ArkBridge(commitment);
+                    let hint = JoltAkitaOpeningHint {
+                        commitment: commitment.clone(),
+                        akita_hint: ArkBridge(akita_hint),
+                        ring_coeffs,
+                        onehot_k: None,
+                        onehot_indices: Vec::new(),
+                    };
+                    (commitment, hint)
+                })
+                .collect(),
+        )
+    }
+
     fn batch_commit<S>(
         source: &S,
         setup: &Self::ProverSetup,

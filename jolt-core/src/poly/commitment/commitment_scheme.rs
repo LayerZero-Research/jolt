@@ -237,6 +237,13 @@ pub trait CommitmentScheme: Clone + Sync + Send + 'static {
         setup: &Self::ProverSetup,
     ) -> (Self::Commitment, Self::OpeningProofHint);
 
+    fn commit_dense_batch(
+        _polys: &[MultilinearPolynomial<Self::Field>],
+        _setup: &Self::ProverSetup,
+    ) -> Option<Vec<(Self::Commitment, Self::OpeningProofHint)>> {
+        None
+    }
+
     /// Commits to multiple multilinear polynomials in batch.
     ///
     /// # Arguments
