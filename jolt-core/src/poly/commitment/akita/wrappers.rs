@@ -27,6 +27,12 @@ pub fn jolt_to_akita(f: &JoltFp128) -> Fp128 {
     unsafe { std::mem::transmute_copy(f) }
 }
 
+#[inline]
+pub fn akita_to_jolt(f: &Fp128) -> JoltFp128 {
+    // SAFETY: JoltFp128 is repr(transparent) over Prime128OffsetA7F7.
+    unsafe { std::mem::transmute_copy(f) }
+}
+
 pub type AkitaProof<F> = AkitaBatchedProof<F, F>;
 pub type AkitaVerifierSetup<F> = UpstreamAkitaVerifierSetup<F>;
 pub type AkitaProverSetup<F, const D: usize> = UpstreamAkitaProverSetup<F, D>;

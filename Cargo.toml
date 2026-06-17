@@ -276,15 +276,15 @@ dory = { package = "dory-pcs", version = "0.3.0", features = [
   "disk-persistence",
   "zk",
 ] }
-akita-pcs = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "71b4765725aeed940ea1e0ddf233128df6410048" }
-akita-prover = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "71b4765725aeed940ea1e0ddf233128df6410048" }
-akita-algebra = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "71b4765725aeed940ea1e0ddf233128df6410048" }
-akita-challenges = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "71b4765725aeed940ea1e0ddf233128df6410048" }
-akita-config = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "71b4765725aeed940ea1e0ddf233128df6410048" }
-akita-types = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "71b4765725aeed940ea1e0ddf233128df6410048" }
-akita-field = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "71b4765725aeed940ea1e0ddf233128df6410048" }
-akita-serialization = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "71b4765725aeed940ea1e0ddf233128df6410048" }
-akita-transcript = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "71b4765725aeed940ea1e0ddf233128df6410048" }
+akita-pcs = { git = "https://github.com/LayerZero-Labs/akita.git", branch = "lz/jolt-dense-batch-openings" }
+akita-prover = { git = "https://github.com/LayerZero-Labs/akita.git", branch = "lz/jolt-dense-batch-openings" }
+akita-algebra = { git = "https://github.com/LayerZero-Labs/akita.git", branch = "lz/jolt-dense-batch-openings" }
+akita-challenges = { git = "https://github.com/LayerZero-Labs/akita.git", branch = "lz/jolt-dense-batch-openings" }
+akita-config = { git = "https://github.com/LayerZero-Labs/akita.git", branch = "lz/jolt-dense-batch-openings" }
+akita-types = { git = "https://github.com/LayerZero-Labs/akita.git", branch = "lz/jolt-dense-batch-openings" }
+akita-field = { git = "https://github.com/LayerZero-Labs/akita.git", branch = "lz/jolt-dense-batch-openings" }
+akita-serialization = { git = "https://github.com/LayerZero-Labs/akita.git", branch = "lz/jolt-dense-batch-openings" }
+akita-transcript = { git = "https://github.com/LayerZero-Labs/akita.git", branch = "lz/jolt-dense-batch-openings" }
 
 # Core Utilities
 clap = { version = "4.6.1", features = ["derive"] }

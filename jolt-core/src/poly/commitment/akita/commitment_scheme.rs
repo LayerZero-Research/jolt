@@ -16,17 +16,18 @@ use akita_prover::{
 };
 use akita_types::{
     CommitmentVerifier as AkitaCommitmentVerifier, CommittedOpenings, RingCommitment,
-    SetupContributionMode,
+    SetupContributionMode, ShapedCommittedOpenings,
 };
 use ark_ff::biginteger::S128;
 use ark_serialize::{
     CanonicalDeserialize, CanonicalSerialize, Compress, SerializationError, Valid, Validate,
 };
+use ark_std::Zero;
 use rayon::prelude::*;
 
 use super::wrappers::{
-    jolt_to_akita, AkitaProof, AkitaProverSetup, AkitaVerifierSetup, ArkBridge, Fp128,
-    JoltToAkitaTranscript,
+    akita_to_jolt, jolt_to_akita, AkitaProof, AkitaProverSetup, AkitaVerifierSetup, ArkBridge,
+    Fp128, JoltToAkitaTranscript,
 };
 use crate::curve::JoltCurve;
 use crate::field::fp128::JoltFp128;
@@ -39,6 +40,7 @@ use crate::poly::eq_poly::EqPolynomial;
 use crate::poly::multilinear_polynomial::MultilinearPolynomial;
 use crate::poly::opening_proof::BatchOpeningState;
 use crate::poly::rlc_polynomial::TraceSource;
+use crate::poly::unipoly::{CompressedUniPoly, UniPoly};
 use crate::transcripts::Transcript;
 use crate::utils::errors::ProofVerifyError;
 use crate::utils::math::Math;
@@ -48,6 +50,7 @@ use crate::zkvm::witness::{all_committed_polynomials, CommittedPolynomial};
 pub type Fp128OneHot32Config = D32OneHot;
 
 type Fp128DenseConfig = D32Full;
+const AKITA_DENSE_MAX_BATCH_POLYS: usize = 64;
 
 #[derive(Clone, Default)]
 pub struct JoltAkitaCommitmentScheme<
@@ -62,7 +65,10 @@ pub struct JoltAkitaProof {
     packed_poly_proof: ArkBridge<AkitaProof<Fp128>>,
     num_packed_polys: u32,
     log_k: u32,
-    individual_proofs: Vec<ArkBridge<AkitaProof<Fp128>>>,
+    dense_batch_proof: Option<ArkBridge<AkitaProof<Fp128>>>,
+    dense_batch_item_count: u32,
+    dense_batch_openings: Vec<JoltFp128>,
+    dense_batch_sumcheck: Vec<CompressedUniPoly<JoltFp128>>,
 }
 
 #[derive(Clone, Debug, CanonicalSerialize, CanonicalDeserialize)]
@@ -207,6 +213,75 @@ fn akita_verify_one<
     .map_err(|_| ProofVerifyError::InvalidOpeningProof)
 }
 
+fn akita_prove_dense_batch<const D: usize, ProofTranscript: akita_transcript::Transcript<Fp128>>(
+    setup: &AkitaProverSetup<Fp128, D>,
+    items: Vec<DenseBatchProverItem<D>>,
+    opening_point: &[Fp128],
+    transcript: &mut ProofTranscript,
+) -> AkitaProof<Fp128> {
+    let prepared = prepare_cpu(setup);
+    let claims = items
+        .iter()
+        .map(|item| CommittedPolynomials {
+            polynomials: from_ref(&item.poly),
+            commitment: &item.commitment,
+            hint: item.hint.clone(),
+        })
+        .collect::<Vec<_>>();
+    <AkitaCommitmentScheme<D, Fp128DenseConfig> as AkitaCommitmentProver<Fp128, D>>::batched_prove(
+        setup,
+        &CpuBackend,
+        &prepared,
+        (opening_point, claims),
+        transcript,
+        akita_types::BasisMode::Lagrange,
+        SetupContributionMode::Direct,
+    )
+    .expect("Akita dense batched prove failed")
+}
+
+fn akita_verify_dense_batch<
+    const D: usize,
+    ProofTranscript: akita_transcript::Transcript<Fp128>,
+>(
+    proof: &AkitaProof<Fp128>,
+    setup: &AkitaVerifierSetup<Fp128>,
+    transcript: &mut ProofTranscript,
+    opening_point: &[Fp128],
+    openings: &[Fp128],
+    natural_num_vars: &[usize],
+    commitments: &[RingCommitment<Fp128, D>],
+) -> Result<(), ProofVerifyError> {
+    let opening_slices = openings
+        .iter()
+        .copied()
+        .map(|opening| [opening])
+        .collect::<Vec<_>>();
+    let natural_num_vars_slices = natural_num_vars
+        .iter()
+        .copied()
+        .map(|num_vars| [num_vars])
+        .collect::<Vec<_>>();
+    let claims = commitments
+        .iter()
+        .enumerate()
+        .map(|(index, commitment)| ShapedCommittedOpenings {
+            openings: &opening_slices[index],
+            natural_num_vars: &natural_num_vars_slices[index],
+            commitment,
+        })
+        .collect::<Vec<_>>();
+    <AkitaCommitmentScheme<D, Fp128DenseConfig> as AkitaCommitmentVerifier<Fp128, D>>::batched_verify_shaped(
+        proof,
+        setup,
+        transcript,
+        (opening_point, claims),
+        akita_types::BasisMode::Lagrange,
+        SetupContributionMode::Direct,
+    )
+    .map_err(|_| ProofVerifyError::InvalidOpeningProof)
+}
+
 fn to_akita_opening_point(point: &[JoltFp128]) -> Vec<Fp128> {
     point.iter().rev().map(jolt_to_akita).collect()
 }
@@ -231,6 +306,170 @@ fn dense_poly_from_ring_coeffs<const D: usize>(
     }
     DensePoly::from_field_evals(num_vars, &field_evals)
         .expect("Akita DensePoly construction failed")
+}
+
+fn field_evals_from_ring_coeffs<const D: usize>(
+    ring_coeffs: &[CyclotomicRing<Fp128, D>],
+) -> Vec<JoltFp128> {
+    ring_coeffs
+        .iter()
+        .flat_map(|ring| ring.coefficients().iter().map(akita_to_jolt))
+        .collect()
+}
+
+fn to_jolt_akita_order_point(point: &[Fp128]) -> Vec<JoltFp128> {
+    point.iter().map(akita_to_jolt).collect()
+}
+
+fn to_akita_order_opening_point<const D: usize>(
+    opening_point: &[JoltFp128],
+    num_vars: usize,
+) -> Vec<JoltFp128> {
+    let mut akita_point = to_akita_opening_point(opening_point);
+    assert!(
+        akita_point.len() <= num_vars,
+        "dense Akita opening point has more variables than its polynomial"
+    );
+    akita_point.resize(num_vars, Fp128::zero());
+    to_jolt_akita_order_point(&akita_point)
+}
+
+fn evaluate_dense_evals_at_point(evals: &[JoltFp128], point: &[JoltFp128]) -> JoltFp128 {
+    debug_assert_eq!(evals.len(), 1usize << point.len());
+    let eq = EqPolynomial::<JoltFp128>::evals(point);
+    evals
+        .par_iter()
+        .zip(eq.par_iter())
+        .map(|(&eval, &weight)| eval * weight)
+        .sum()
+}
+
+struct DenseBatchProverItem<const D: usize> {
+    poly: DensePoly<Fp128, D>,
+    field_evals: Vec<JoltFp128>,
+    opening_point: Vec<JoltFp128>,
+    claim: JoltFp128,
+    commitment: RingCommitment<Fp128, D>,
+    hint: akita_types::AkitaCommitmentHint<Fp128, D>,
+}
+
+struct DenseBatchVerifierItem<const D: usize> {
+    field_evals_len: usize,
+    opening_point: Vec<JoltFp128>,
+    claim: JoltFp128,
+    commitment: RingCommitment<Fp128, D>,
+}
+
+fn bind_dense_round(values: &mut Vec<JoltFp128>, r: JoltFp128) {
+    let half = values.len() / 2;
+    for index in 0..half {
+        let low = values[index];
+        let high = values[index + half];
+        values[index] = low + r * (high - low);
+    }
+    values.truncate(half);
+}
+
+fn dense_multipoint_initial_claim<const D: usize>(
+    items: &[DenseBatchProverItem<D>],
+    coeffs: &[JoltFp128],
+) -> JoltFp128 {
+    items
+        .iter()
+        .zip(coeffs.iter())
+        .map(|(item, &coeff)| coeff * item.claim)
+        .sum()
+}
+
+fn prove_dense_multipoint_sumcheck<const D: usize, ProofTranscript: Transcript>(
+    items: &[DenseBatchProverItem<D>],
+    coeffs: &[JoltFp128],
+    max_vars: usize,
+    transcript: &mut ProofTranscript,
+) -> (Vec<CompressedUniPoly<JoltFp128>>, Vec<JoltFp128>, JoltFp128) {
+    let mut polys = Vec::with_capacity(items.len());
+    let mut eqs = Vec::with_capacity(items.len());
+    let padded_len = 1usize << max_vars;
+    for item in items {
+        let item_vars = item.field_evals.len().log_2();
+        let head_vars = max_vars - item_vars;
+        let mut poly = vec![JoltFp128::zero(); padded_len];
+        poly[..item.field_evals.len()].copy_from_slice(&item.field_evals);
+        let mut padded_point = vec![JoltFp128::zero(); head_vars];
+        padded_point.extend_from_slice(&item.opening_point);
+        polys.push(poly);
+        eqs.push(EqPolynomial::<JoltFp128>::evals(&padded_point));
+    }
+
+    let mut claim = dense_multipoint_initial_claim(items, coeffs);
+    let mut proof = Vec::with_capacity(max_vars);
+    let mut challenges = Vec::with_capacity(max_vars);
+    for _round in 0..max_vars {
+        let half = polys[0].len() / 2;
+        let evals = (0..half)
+            .into_par_iter()
+            .fold(
+                || [JoltFp128::zero(); 3],
+                |mut acc, index| {
+                    for ((poly, eq), &coeff) in polys.iter().zip(eqs.iter()).zip(coeffs.iter()) {
+                        let p0 = poly[index];
+                        let p1 = poly[index + half];
+                        let e0 = eq[index];
+                        let e1 = eq[index + half];
+                        let p_step = p1 - p0;
+                        let e_step = e1 - e0;
+                        acc[0] += coeff * p0 * e0;
+                        acc[1] += coeff * p1 * e1;
+                        acc[2] += coeff
+                            * (p0 + JoltFp128::from_u64(2) * p_step)
+                            * (e0 + JoltFp128::from_u64(2) * e_step);
+                    }
+                    acc
+                },
+            )
+            .reduce(
+                || [JoltFp128::zero(); 3],
+                |mut lhs, rhs| {
+                    lhs[0] += rhs[0];
+                    lhs[1] += rhs[1];
+                    lhs[2] += rhs[2];
+                    lhs
+                },
+            );
+        debug_assert_eq!(evals[0] + evals[1], claim);
+        let compressed = UniPoly::from_evals(&evals).compress();
+        transcript.append_scalars(b"sumcheck_poly", &compressed.coeffs_except_linear_term);
+        let r = transcript.challenge_scalar_optimized::<JoltFp128>();
+        claim = compressed.eval_from_hint(&claim, &r);
+        proof.push(compressed);
+        challenges.push(r);
+        for values in polys.iter_mut().chain(eqs.iter_mut()) {
+            bind_dense_round(values, r);
+        }
+    }
+
+    (proof, challenges, claim)
+}
+
+fn dense_sumcheck_final_claim(
+    output_claims: &[JoltFp128],
+    original_points: &[Vec<JoltFp128>],
+    coeffs: &[JoltFp128],
+    common_point: &[JoltFp128],
+) -> JoltFp128 {
+    output_claims
+        .iter()
+        .zip(original_points.iter())
+        .zip(coeffs.iter())
+        .map(|((&opening, original_point), &coeff)| {
+            let head_vars = common_point.len() - original_point.len();
+            let head_selector =
+                EqPolynomial::<JoltFp128>::zero_selector(&common_point[..head_vars]);
+            let tail_eq =
+                EqPolynomial::<JoltFp128>::mle(original_point, &common_point[head_vars..]);
+            coeff * head_selector * tail_eq * opening
+        })
+        .sum()
 }
 
 fn to_akita_packed_opening_point(
@@ -352,7 +591,7 @@ where
         let dense = <AkitaCommitmentScheme<D, Fp128DenseConfig> as AkitaCommitmentProver<
             Fp128,
             D,
-        >>::setup_prover(max_num_vars, 1)
+        >>::setup_prover(max_num_vars, AKITA_DENSE_MAX_BATCH_POLYS)
         .expect("Akita dense setup_prover failed");
         JoltAkitaProverSetup {
             main: ArkBridge(main),
@@ -513,7 +752,10 @@ where
                 packed_poly_proof: ArkBridge(proof),
                 num_packed_polys: 1,
                 log_k: opening_point.len() as u32,
-                individual_proofs: Vec::new(),
+                dense_batch_proof: None,
+                dense_batch_item_count: 0,
+                dense_batch_openings: Vec::new(),
+                dense_batch_sumcheck: Vec::new(),
             },
             None,
         )
@@ -601,29 +843,76 @@ where
             &context.batch_hint.commitment.0,
         );
 
-        let individual_proofs = individual_openings
-            .iter()
-            .enumerate()
-            .map(|(index, opening)| {
-                let hint = context
-                    .opening_hints
-                    .remove(&opening.polynomial)
-                    .expect("missing Akita individual opening hint");
-                transcript.append_bytes(b"akita_individual_item", &(index as u64).to_le_bytes());
+        let mut dense_items = Vec::with_capacity(individual_openings.len());
+        for opening in individual_openings.iter() {
+            let hint = context
+                .opening_hints
+                .remove(&opening.polynomial)
+                .expect("missing Akita dense opening hint");
+            assert!(
+                hint.onehot_k.is_none(),
+                "Akita individual Stage 8 openings must be dense"
+            );
+            let field_evals = field_evals_from_ring_coeffs(&hint.ring_coeffs);
+            let num_vars = field_evals.len().log_2();
+            let opening_point =
+                to_akita_order_opening_point::<D>(&opening.opening_point.r, num_vars);
+            let poly = dense_poly_from_ring_coeffs(hint.ring_coeffs);
+            dense_items.push(DenseBatchProverItem {
+                poly,
+                field_evals,
+                opening_point,
+                claim: opening.claim,
+                commitment: hint.commitment.0,
+                hint: hint.akita_hint.0,
+            });
+        }
+
+        let (dense_batch_proof, dense_batch_openings, dense_batch_sumcheck) =
+            if dense_items.is_empty() {
+                (None, Vec::new(), Vec::new())
+            } else {
+                let dense_count = dense_items.len();
+                transcript.append_bytes(
+                    b"akita_dense_batch_num",
+                    &(dense_count as u64).to_le_bytes(),
+                );
+                let coeffs = transcript.challenge_scalar_powers(dense_count);
+                let max_vars = dense_items
+                    .iter()
+                    .map(|item| item.field_evals.len().log_2())
+                    .max()
+                    .expect("nonempty dense batch");
+                let (sumcheck_proof, common_point, _sumcheck_claim) =
+                    prove_dense_multipoint_sumcheck(&dense_items, &coeffs, max_vars, transcript);
+                let dense_openings = dense_items
+                    .iter()
+                    .map(|item| {
+                        let item_vars = item.field_evals.len().log_2();
+                        let item_point = &common_point[max_vars - item_vars..];
+                        evaluate_dense_evals_at_point(&item.field_evals, item_point)
+                    })
+                    .collect::<Vec<_>>();
+                transcript.append_scalars(b"akita_dense_openings", &dense_openings);
+                let common_akita_point = common_point.iter().map(jolt_to_akita).collect::<Vec<_>>();
                 let mut adapter = JoltToAkitaTranscript::new(transcript);
-                ArkBridge(hint.prove::<_, Cfg>(
-                    context.setup,
-                    &opening.opening_point.r,
+                let proof = akita_prove_dense_batch::<D, _>(
+                    &context.setup.dense.0,
+                    dense_items,
+                    &common_akita_point,
                     &mut adapter,
-                ))
-            })
-            .collect();
+                );
+                (Some(ArkBridge(proof)), dense_openings, sumcheck_proof)
+            };
 
         let proof = JoltAkitaProof {
             packed_poly_proof: ArkBridge(packed_proof),
             num_packed_polys: num_packed as u32,
             log_k: context.batch_hint.log_k as u32,
-            individual_proofs,
+            dense_batch_proof,
+            dense_batch_item_count: individual_openings.len() as u32,
+            dense_batch_openings,
+            dense_batch_sumcheck,
         };
 
         (proof, None)
@@ -725,31 +1014,115 @@ where
             &packed_commitment.0,
         )?;
 
-        if proof.individual_proofs.len() != individual_openings.len() {
+        let proof_dense_count = proof.dense_batch_item_count as usize;
+        if proof_dense_count != individual_openings.len() {
             return Err(ProofVerifyError::InvalidInputLength(
                 individual_openings.len(),
-                proof.individual_proofs.len(),
+                proof_dense_count,
             ));
         }
-        for (index, (opening, proof)) in individual_openings
-            .into_iter()
-            .zip(proof.individual_proofs.iter())
-            .enumerate()
-        {
+        let mut dense_items = Vec::with_capacity(individual_openings.len());
+        for opening in individual_openings {
             let commitment = commitment_map
                 .remove(&opening.polynomial)
                 .ok_or(ProofVerifyError::InvalidOpeningProof)?;
             let akita_point = to_akita_dense_opening_point::<D>(&opening.opening_point.r);
-            let akita_claim = jolt_to_akita(&opening.claim);
-            transcript.append_bytes(b"akita_individual_item", &(index as u64).to_le_bytes());
+            let natural_num_vars = akita_point.len();
+            dense_items.push(DenseBatchVerifierItem {
+                field_evals_len: 1usize << natural_num_vars,
+                opening_point: to_jolt_akita_order_point(&akita_point),
+                claim: opening.claim,
+                commitment: commitment.0,
+            });
+        }
+        if dense_items.is_empty() {
+            if proof.dense_batch_proof.is_some()
+                || !proof.dense_batch_sumcheck.is_empty()
+                || !proof.dense_batch_openings.is_empty()
+            {
+                return Err(ProofVerifyError::InvalidOpeningProof);
+            }
+        } else {
+            let Some(dense_batch_proof) = &proof.dense_batch_proof else {
+                return Err(ProofVerifyError::InvalidOpeningProof);
+            };
+            let dense_count = dense_items.len();
+            if proof.dense_batch_openings.len() != dense_count {
+                return Err(ProofVerifyError::InvalidInputLength(
+                    dense_count,
+                    proof.dense_batch_openings.len(),
+                ));
+            }
+            transcript.append_bytes(
+                b"akita_dense_batch_num",
+                &(dense_count as u64).to_le_bytes(),
+            );
+            let coeffs = transcript.challenge_scalar_powers(dense_count);
+            let initial_claim = dense_items
+                .iter()
+                .zip(coeffs.iter())
+                .map(|(item, &coeff)| coeff * item.claim)
+                .sum::<JoltFp128>();
+            let max_vars = dense_items
+                .iter()
+                .map(|item| item.field_evals_len.log_2())
+                .max()
+                .ok_or(ProofVerifyError::InvalidOpeningProof)?;
+            if proof.dense_batch_sumcheck.len() != max_vars {
+                return Err(ProofVerifyError::InvalidInputLength(
+                    max_vars,
+                    proof.dense_batch_sumcheck.len(),
+                ));
+            }
+            let mut sumcheck_claim = initial_claim;
+            let mut common_point = Vec::with_capacity(max_vars);
+            for compressed in &proof.dense_batch_sumcheck {
+                let degree = compressed.degree();
+                if degree == 0 || degree > 2 {
+                    return Err(ProofVerifyError::InvalidInputLength(2, degree));
+                }
+                transcript.append_scalars(b"sumcheck_poly", &compressed.coeffs_except_linear_term);
+                let r = transcript.challenge_scalar_optimized::<JoltFp128>();
+                sumcheck_claim = compressed.eval_from_hint(&sumcheck_claim, &r);
+                common_point.push(r);
+            }
+            transcript.append_scalars(b"akita_dense_openings", &proof.dense_batch_openings);
+            let original_points = dense_items
+                .iter()
+                .map(|item| item.opening_point.clone())
+                .collect::<Vec<_>>();
+            let expected_sumcheck_claim = dense_sumcheck_final_claim(
+                &proof.dense_batch_openings,
+                &original_points,
+                &coeffs,
+                &common_point,
+            );
+            if sumcheck_claim != expected_sumcheck_claim {
+                return Err(ProofVerifyError::InvalidOpeningProof);
+            }
+            let akita_opening_point = common_point.iter().map(jolt_to_akita).collect::<Vec<_>>();
+            let akita_openings = proof
+                .dense_batch_openings
+                .iter()
+                .map(jolt_to_akita)
+                .collect::<Vec<_>>();
+            let natural_num_vars = dense_items
+                .iter()
+                .map(|item| item.field_evals_len.log_2())
+                .collect::<Vec<_>>();
+            let commitments = dense_items
+                .into_iter()
+                .map(|item| item.commitment)
+                .collect::<Vec<_>>();
             let mut adapter = JoltToAkitaTranscript::new(transcript);
-            akita_verify_one::<D, Fp128DenseConfig, _>(
-                &proof.0,
+            akita_verify_dense_batch::<D, _>(
+                &dense_batch_proof.0,
                 &setup.dense.0,
                 &mut adapter,
-                &akita_point,
-                &akita_claim,
-                &commitment.0,
+                &akita_opening_point,
+                &akita_openings,
+                &natural_num_vars,
+                &commitments,
             )?;
         }
 
