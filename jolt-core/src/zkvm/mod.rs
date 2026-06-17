@@ -355,8 +355,8 @@ pub type RV64IMACVerifier<'a> =
 pub type RV64IMACProof = JoltProof<Fr, Bn254Curve, DoryCommitmentScheme, Blake2bTranscript>;
 
 pub type AkitaPcs = crate::poly::commitment::akita::JoltAkitaCommitmentScheme<
-    { <crate::poly::commitment::akita::Fp128OneHot32Config as akita_config::CommitmentConfig>::D },
-    crate::poly::commitment::akita::Fp128OneHot32Config,
+    { <crate::poly::commitment::akita::Fp128OneHot64Config as akita_config::CommitmentConfig>::D },
+    crate::poly::commitment::akita::Fp128OneHot64Config,
 >;
 #[cfg(feature = "prover")]
 pub type RV64IMACAkitaProver<'a> = JoltCpuProver<

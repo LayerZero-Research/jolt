@@ -1,6 +1,6 @@
 use akita_config::CommitmentConfig;
 use akita_types::{
-    sis::num_digits_for_bound, AkitaScheduleLookupKey, ClaimIncidenceSummary, LevelParams, Step,
+    sis::num_digits_for_bound, AkitaScheduleLookupKey, LevelParams, OpeningBatch, Step,
 };
 
 /// Avoid degenerate layouts that tile only across polynomials and barely any
@@ -14,9 +14,9 @@ const PACKED_MAX_POLY_TILE_BITS: usize = 4;
 const FIELD_BITS: u32 = 128;
 
 fn level0_level_params<Cfg: CommitmentConfig>(max_num_vars: usize) -> LevelParams {
-    let incidence = ClaimIncidenceSummary::same_point(max_num_vars, 1)
-        .expect("singleton packed layout incidence should be valid");
-    Cfg::get_params_for_batched_commitment(&incidence)
+    let opening_batch = OpeningBatch::same_point(max_num_vars, 1)
+        .expect("singleton packed layout opening batch should be valid");
+    Cfg::get_params_for_batched_commitment(&opening_batch)
         .or_else(|_| {
             Cfg::runtime_schedule(AkitaScheduleLookupKey::singleton(max_num_vars)).and_then(
                 |schedule| match schedule.steps.first() {

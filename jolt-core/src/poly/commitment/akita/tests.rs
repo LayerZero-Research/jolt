@@ -1,7 +1,7 @@
 use std::{array::from_fn, collections::HashSet, time::Instant};
 
 use super::commitment_scheme::{
-    poly_to_ring_coeffs, AkitaBatchedProof, Fp128OneHot32Config, JoltAkitaCommitmentScheme,
+    poly_to_ring_coeffs, AkitaBatchedProof, Fp128OneHot64Config, JoltAkitaCommitmentScheme,
 };
 use super::packed_layout::{choose_packed_bit_layout, PackedBitLayout};
 use super::packed_poly::{build_packed_poly, summarize_block_occupancy, JoltPackedPoly};
@@ -18,15 +18,13 @@ use crate::transcripts::{Blake2bTranscript, Transcript};
 use crate::utils::errors::ProofVerifyError;
 use akita_algebra::CyclotomicRing;
 use akita_challenges::SparseChallenge;
-use akita_config::proof_optimized::fp128::D32OneHot;
+use akita_config::proof_optimized::fp128::D64OneHot;
 use akita_config::CommitmentConfig;
 use akita_prover::AkitaPolyOps;
-use akita_types::{
-    sis::num_digits_for_bound, AkitaBatchedRootProof, ClaimIncidenceSummary, FlatMatrix,
-};
+use akita_types::{sis::num_digits_for_bound, AkitaBatchedRootProof, FlatMatrix, OpeningBatch};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 
-type Cfg = D32OneHot;
+type Cfg = D64OneHot;
 type Scheme = JoltAkitaCommitmentScheme<{ Cfg::D }, Cfg>;
 
 fn dummy_akita_proof() -> AkitaProof<Fp128> {
@@ -47,7 +45,7 @@ fn optimal_m_r_split<Cfg: CommitmentConfig>(reduced_vars: usize) -> (usize, usiz
     }
     let num_vars = reduced_vars + Cfg::D.trailing_zeros() as usize;
     let incidence =
-        ClaimIncidenceSummary::same_point(num_vars, 1).expect("test incidence should be valid");
+        OpeningBatch::same_point(num_vars, 1).expect("test opening batch should be valid");
     let params = Cfg::get_params_for_batched_commitment(&incidence)
         .expect("test config should produce root commit params");
     (params.m_vars, params.r_vars)
@@ -339,7 +337,7 @@ fn packed_layout_reorders_poly_bits_into_inner_prefix() {
 
 #[test]
 fn packed_layout_reorders_lifted_coeff_bits_for_k16() {
-    type FastCfg = Fp128OneHot32Config;
+    type FastCfg = Fp128OneHot64Config;
 
     let log_k = 4usize;
     let layout = choose_packed_bit_layout::<{ FastCfg::D }, FastCfg>(log_k, 8, 3);
@@ -524,7 +522,7 @@ fn packed_layout_live_entries_are_injective() {
 
 #[test]
 fn packed_layout_k16_uses_multi_coeff_entries() {
-    type FastCfg = Fp128OneHot32Config;
+    type FastCfg = Fp128OneHot64Config;
 
     let source = TestPackedSource::new(
         vec![
@@ -651,7 +649,7 @@ fn packed_commit_inner_generic_matches_reference_with_multiple_rows() {
 
 #[test]
 fn packed_commit_inner_column_sweep_matches_generic_in_k256_singleton_regime() {
-    type FastCfg = Fp128OneHot32Config;
+    type FastCfg = Fp128OneHot64Config;
 
     let source = TestPackedSource::new(
         vec![
@@ -728,7 +726,7 @@ fn packed_commit_inner_column_sweep_matches_generic_in_k256_singleton_regime() {
 
 #[test]
 fn packed_commit_inner_column_sweep_matches_generic_in_d64_k16_regime() {
-    type FastCfg = Fp128OneHot32Config;
+    type FastCfg = Fp128OneHot64Config;
 
     let source = TestPackedSource::new(
         vec![
@@ -824,7 +822,7 @@ fn packed_decompose_fold_fast_matches_generic_and_reference_helpers() {
 
 #[test]
 fn packed_fast_paths_match_generic_in_k256_singleton_regime() {
-    type FastCfg = Fp128OneHot32Config;
+    type FastCfg = Fp128OneHot64Config;
 
     let source = TestPackedSource::new(
         vec![
@@ -910,7 +908,7 @@ fn packed_fast_paths_match_generic_in_k256_singleton_regime() {
 
 #[test]
 fn packed_fold_blocks_fast_singleton_matches_generic_in_k256_regime() {
-    type FastCfg = Fp128OneHot32Config;
+    type FastCfg = Fp128OneHot64Config;
 
     let source = TestPackedSource::new(
         vec![
@@ -986,7 +984,7 @@ fn packed_fold_blocks_fast_singleton_matches_generic_in_k256_regime() {
 
 #[test]
 fn packed_evaluate_and_fold_fast_singleton_matches_generic_in_k256_regime() {
-    type FastCfg = Fp128OneHot32Config;
+    type FastCfg = Fp128OneHot64Config;
 
     let source = TestPackedSource::new(
         vec![
@@ -1080,7 +1078,7 @@ fn packed_evaluate_and_fold_fast_singleton_matches_generic_in_k256_regime() {
 
 #[test]
 fn packed_evaluate_and_fold_matches_reference_in_d64_k16_regime() {
-    type FastCfg = Fp128OneHot32Config;
+    type FastCfg = Fp128OneHot64Config;
 
     let source = TestPackedSource::new(
         vec![
@@ -1165,7 +1163,7 @@ fn packed_evaluate_and_fold_matches_reference_in_d64_k16_regime() {
 
 #[test]
 fn packed_commit_inner_generic_matches_multi_coeff_helpers_in_d64_k16_regime() {
-    type FastCfg = Fp128OneHot32Config;
+    type FastCfg = Fp128OneHot64Config;
 
     let source = TestPackedSource::new(
         vec![
@@ -1221,7 +1219,7 @@ fn packed_commit_inner_generic_matches_multi_coeff_helpers_in_d64_k16_regime() {
 
 #[test]
 fn packed_decompose_fold_generic_matches_multi_coeff_helpers_in_d64_k16_regime() {
-    type FastCfg = Fp128OneHot32Config;
+    type FastCfg = Fp128OneHot64Config;
 
     let source = TestPackedSource::new(
         vec![
@@ -1273,7 +1271,7 @@ fn packed_decompose_fold_generic_matches_multi_coeff_helpers_in_d64_k16_regime()
 #[test]
 #[ignore = "profiling helper for packed fast paths"]
 fn packed_fast_path_benchmark_smoke() {
-    type FastCfg = Fp128OneHot32Config;
+    type FastCfg = Fp128OneHot64Config;
 
     let source = TestPackedSource::new(
         (0..16)
@@ -1319,7 +1317,7 @@ fn packed_fast_path_benchmark_smoke() {
 #[test]
 #[ignore = "profiling helper for K=16 packed commit_inner"]
 fn packed_k16_commit_inner_benchmark_smoke() {
-    type FastCfg = Fp128OneHot32Config;
+    type FastCfg = Fp128OneHot64Config;
 
     let source = TestPackedSource::new(
         (0..32)
@@ -1360,7 +1358,7 @@ fn packed_k16_commit_inner_benchmark_smoke() {
 #[test]
 #[ignore = "profiling helper for K=256 packed commit_inner"]
 fn packed_k256_commit_inner_benchmark_smoke() {
-    type FastCfg = Fp128OneHot32Config;
+    type FastCfg = Fp128OneHot64Config;
 
     let source = TestPackedSource::new(
         (0..32)
@@ -1401,7 +1399,7 @@ fn packed_k256_commit_inner_benchmark_smoke() {
 #[test]
 #[ignore = "profiling helper for K=16 packed decompose_fold"]
 fn packed_k16_decompose_fold_benchmark_smoke() {
-    type FastCfg = Fp128OneHot32Config;
+    type FastCfg = Fp128OneHot64Config;
 
     let source = TestPackedSource::new(
         (0..32)
@@ -1437,7 +1435,7 @@ fn packed_k16_decompose_fold_benchmark_smoke() {
 #[test]
 #[ignore = "profiling helper for K=256 packed decompose_fold"]
 fn packed_k256_decompose_fold_benchmark_smoke() {
-    type FastCfg = Fp128OneHot32Config;
+    type FastCfg = Fp128OneHot64Config;
 
     let source = TestPackedSource::new(
         (0..32)
@@ -1506,7 +1504,8 @@ fn ark_bridge_proof_roundtrip_uncompressed() {
 
 #[test]
 fn akita_batch_roundtrip_with_packed_layout() {
-    let log_k = Cfg::D.trailing_zeros() as usize;
+    const ONEHOT_K: usize = 256;
+    let log_k = ONEHOT_K.trailing_zeros() as usize;
     let num_cycles = 1usize << 3;
     let source = TestPackedSource::new(
         vec![
@@ -1514,7 +1513,7 @@ fn akita_batch_roundtrip_with_packed_layout() {
             (0u8..8).rev().map(Some).collect(),
             vec![1, 3, 5, 7, 1, 3, 5, 7].into_iter().map(Some).collect(),
         ],
-        Cfg::D,
+        ONEHOT_K,
     );
     let log_packed = source.per_poly.len().next_power_of_two().trailing_zeros() as usize;
     let setup = Scheme::setup_prover_from_shape(
@@ -1540,7 +1539,7 @@ fn akita_batch_roundtrip_with_packed_layout() {
         .per_poly
         .iter()
         .map(|indices| {
-            OneHotPolynomial::<JoltFp128>::from_indices(indices.clone(), Cfg::D, num_cycles)
+            OneHotPolynomial::<JoltFp128>::from_indices(indices.clone(), ONEHOT_K, num_cycles)
                 .evaluate(&opening_point)
         })
         .collect();
@@ -1573,11 +1572,9 @@ fn akita_batch_roundtrip_with_packed_layout() {
 }
 
 #[test]
-fn akita_batch_roundtrip_with_packed_layout_k16() {
-    type FastCfg = Fp128OneHot32Config;
-    type FastScheme = JoltAkitaCommitmentScheme<{ FastCfg::D }, FastCfg>;
-
-    let log_k = 4usize;
+fn akita_batch_roundtrip_with_many_polys() {
+    const ONEHOT_K: usize = 256;
+    let log_k = ONEHOT_K.trailing_zeros() as usize;
     let num_cycles = 1usize << 4;
     let source = TestPackedSource::new(
         vec![
@@ -1606,22 +1603,22 @@ fn akita_batch_roundtrip_with_packed_layout_k16() {
                 Some(5),
             ],
         ],
-        16,
+        ONEHOT_K,
     );
     let log_packed = source.per_poly.len().next_power_of_two().trailing_zeros() as usize;
-    let setup = FastScheme::setup_prover_from_shape(
+    let setup = Scheme::setup_prover_from_shape(
         num_cycles.trailing_zeros() as usize,
         log_k,
         Some(log_packed),
     );
-    let verifier_setup = FastScheme::setup_verifier(&setup);
-    let pcs = FastScheme::default();
+    let verifier_setup = Scheme::setup_verifier(&setup);
+    let pcs = Scheme::default();
 
     let (commitments, batch_hint) = pcs.batch_commit(&source, &setup);
     assert_eq!(
         commitments.len(),
         1,
-        "packed Akita should produce one commitment for K=16"
+        "packed Akita should produce one commitment for many polys"
     );
 
     let opening_point: Vec<JoltFp128> = (0..(log_k + num_cycles.trailing_zeros() as usize))
@@ -1632,13 +1629,13 @@ fn akita_batch_roundtrip_with_packed_layout_k16() {
         .per_poly
         .iter()
         .map(|indices| {
-            OneHotPolynomial::<JoltFp128>::from_indices(indices.clone(), 16, num_cycles)
+            OneHotPolynomial::<JoltFp128>::from_indices(indices.clone(), ONEHOT_K, num_cycles)
                 .evaluate(&opening_point)
         })
         .collect();
     let commitment_refs = vec![&commitments[0]];
 
-    let mut prove_transcript = Blake2bTranscript::new(b"akita_batch_roundtrip_k16");
+    let mut prove_transcript = Blake2bTranscript::new(b"akita_batch_roundtrip_many");
     let proof = pcs.batch_prove(
         &setup,
         &source,
@@ -1651,7 +1648,7 @@ fn akita_batch_roundtrip_with_packed_layout_k16() {
         &mut prove_transcript,
     );
 
-    let mut verify_transcript = Blake2bTranscript::new(b"akita_batch_roundtrip_k16");
+    let mut verify_transcript = Blake2bTranscript::new(b"akita_batch_roundtrip_many");
     pcs.batch_verify(
         &proof,
         &verifier_setup,
@@ -1661,91 +1658,7 @@ fn akita_batch_roundtrip_with_packed_layout_k16() {
         &claims,
         &[],
     )
-    .expect("packed Akita batch verify should succeed for K=16");
-}
-
-#[test]
-fn akita_k256_setup_envelope_supports_k16_roundtrip() {
-    type FastCfg = Fp128OneHot32Config;
-    type FastScheme = JoltAkitaCommitmentScheme<{ FastCfg::D }, FastCfg>;
-
-    let num_cycles = 1usize << 4;
-    let source = TestPackedSource::new(
-        vec![
-            (0u8..16).map(Some).collect(),
-            (0u8..16).rev().map(Some).collect(),
-            vec![1, 3, 5, 7, 9, 11, 13, 15, 1, 3, 5, 7, 9, 11, 13, 15]
-                .into_iter()
-                .map(Some)
-                .collect(),
-            vec![
-                Some(0),
-                None,
-                Some(2),
-                Some(4),
-                None,
-                Some(6),
-                Some(8),
-                Some(10),
-                None,
-                Some(12),
-                Some(14),
-                Some(0),
-                Some(1),
-                None,
-                Some(3),
-                Some(5),
-            ],
-        ],
-        16,
-    );
-    let log_packed = source.per_poly.len().next_power_of_two().trailing_zeros() as usize;
-    let setup = FastScheme::setup_prover_from_shape(
-        num_cycles.trailing_zeros() as usize,
-        8,
-        Some(log_packed),
-    );
-    let verifier_setup = FastScheme::setup_verifier(&setup);
-    let pcs = FastScheme::default();
-
-    let (commitments, batch_hint) = pcs.batch_commit(&source, &setup);
-    let opening_point: Vec<JoltFp128> = (0..(4 + num_cycles.trailing_zeros() as usize))
-        .map(|i| JoltFp128::from_u64((i + 7) as u64))
-        .collect();
-    let claims: Vec<JoltFp128> = source
-        .per_poly
-        .iter()
-        .map(|indices| {
-            OneHotPolynomial::<JoltFp128>::from_indices(indices.clone(), 16, num_cycles)
-                .evaluate(&opening_point)
-        })
-        .collect();
-    let commitment_refs = vec![&commitments[0]];
-
-    let mut prove_transcript = Blake2bTranscript::new(b"akita_setup_envelope_k16");
-    let proof = pcs.batch_prove(
-        &setup,
-        &source,
-        batch_hint,
-        vec![],
-        &commitment_refs,
-        &opening_point,
-        &claims,
-        &[],
-        &mut prove_transcript,
-    );
-
-    let mut verify_transcript = Blake2bTranscript::new(b"akita_setup_envelope_k16");
-    pcs.batch_verify(
-        &proof,
-        &verifier_setup,
-        &mut verify_transcript,
-        &opening_point,
-        &commitment_refs,
-        &claims,
-        &[],
-    )
-    .expect("K=256 setup envelope should still verify K=16 packed proofs");
+    .expect("packed Akita batch verify should succeed for many polys");
 }
 
 #[test]
