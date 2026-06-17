@@ -79,6 +79,7 @@ pub use request::{
     SumcheckSlot, SumcheckSpartanOuterRemainderQuery, SumcheckSpartanOuterRemainderRequest,
     SumcheckSpartanOuterRemainderRowStateRequest, SumcheckSpartanOuterRemainderStateRequest,
     SumcheckSpartanOuterRow, SumcheckSpartanOuterUniskipQuery, SumcheckSpartanOuterUniskipRequest,
+    SumcheckStage2RegularBatchStateRequest, STAGE2_REGULAR_BATCH_TAIL_LABEL,
     SumcheckStage3ShiftRow, SumcheckStage3ShiftStateRequest, SumcheckStage6IncRow,
     SumcheckStage6RaRow, SumcheckStage7AdviceAddressStateRequest,
     SumcheckStage7HammingStateRequest, SumcheckViewEvaluationRequest,

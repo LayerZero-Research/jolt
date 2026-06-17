@@ -16,7 +16,7 @@ use jolt_witness::{
 
 use crate::{
     Backend, BackendError, BackendValueSlot, RamReadWriteSumcheckBackend, ResolvedSumcheckView,
-    Stage3SpartanSumcheckBackend, Stage4ReadWriteSumcheckBackend,
+    Stage2RegularBatchSumcheckBackend, Stage3SpartanSumcheckBackend, Stage4ReadWriteSumcheckBackend,
     Stage5ValueEvaluationSumcheckBackend, Stage6RegularBatchSumcheckBackend, SumcheckBackend,
     SumcheckBooleanityOutput, SumcheckBooleanityStateRequest, SumcheckBytecodeReadRafOutput,
     SumcheckBytecodeReadRafStateRequest, SumcheckEvaluationOutput, SumcheckEvaluationRequest,
@@ -37,7 +37,8 @@ use crate::{
     SumcheckSpartanOuterRemainderRequest, SumcheckSpartanOuterRemainderRound,
     SumcheckSpartanOuterRemainderRowStateRequest, SumcheckSpartanOuterRemainderState,
     SumcheckSpartanOuterRemainderStateRequest, SumcheckSpartanOuterUniskipRequest,
-    SumcheckStage3ShiftStateRequest, SumcheckStage7AdviceAddressState,
+    SumcheckStage2RegularBatchStateRequest, SumcheckStage3ShiftStateRequest,
+    STAGE2_REGULAR_BATCH_TAIL_LABEL, SumcheckStage7AdviceAddressState,
     SumcheckStage7AdviceAddressStateRequest, SumcheckStage7HammingState,
     SumcheckStage7HammingStateRequest, SumcheckViewResolution,
 };
@@ -1197,6 +1198,62 @@ where
     fn bind_sumcheck_regular_batch_state(
         &mut self,
         state: &mut SumcheckRegularBatchState<F>,
+        round: usize,
+        max_rounds: usize,
+        challenge: F,
+    ) -> Result<(), BackendError> {
+        kernels::regular_batch::bind_state(
+            kernels::regular_batch::RegularBatchKernelContext::new(
+                self.name(),
+                REGULAR_BATCH_STATE_BIND_TASK,
+            ),
+            state,
+            round,
+            max_rounds,
+            challenge,
+        )
+    }
+}
+
+impl<F> Stage2RegularBatchSumcheckBackend<F> for CpuBackend
+where
+    F: Field,
+    <F as WithAccumulator>::Accumulator: RingAccumulator<Element = F>,
+{
+    type Stage2RegularBatchState = SumcheckRegularBatchState<F>;
+
+    fn materialize_sumcheck_stage2_regular_batch_state(
+        &mut self,
+        request: &SumcheckStage2RegularBatchStateRequest<F>,
+    ) -> Result<Self::Stage2RegularBatchState, BackendError> {
+        Ok(SumcheckRegularBatchState::new(
+            STAGE2_REGULAR_BATCH_TAIL_LABEL,
+            request.instances.clone(),
+        ))
+    }
+
+    fn evaluate_sumcheck_stage2_regular_batch_round(
+        &mut self,
+        state: &mut Self::Stage2RegularBatchState,
+        round: usize,
+        max_rounds: usize,
+        previous_claims: &[F],
+    ) -> Result<Vec<SumcheckRegularBatchRound<F>>, BackendError> {
+        kernels::regular_batch::evaluate_round(
+            kernels::regular_batch::RegularBatchKernelContext::new(
+                self.name(),
+                REGULAR_BATCH_ROUND_EVALUATION_TASK,
+            ),
+            state,
+            round,
+            max_rounds,
+            previous_claims,
+        )
+    }
+
+    fn bind_sumcheck_stage2_regular_batch_state(
+        &mut self,
+        state: &mut Self::Stage2RegularBatchState,
         round: usize,
         max_rounds: usize,
         challenge: F,

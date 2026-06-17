@@ -3324,6 +3324,7 @@ dependencies = [
  "serde",
  "serde_json",
  "strum 0.28.0",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3421,7 +3422,6 @@ name = "jolt-witness"
 version = "0.1.0"
 dependencies = [
  "common",
- "criterion",
  "jolt-claims",
  "jolt-field",
  "jolt-lookup-tables",
@@ -6308,6 +6308,7 @@ dependencies = [
  "serde_json",
  "strum 0.28.0",
  "strum_macros 0.28.0",
+ "thiserror 2.0.18",
  "tracing",
  "tracing-subscriber",
 ]

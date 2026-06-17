@@ -129,7 +129,7 @@ pub struct Stage2ProductUniskipFirstRound<F: Field> {
     pub round_sum: F,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stage2RegularBatchInstanceRequest<'a, F: Field> {
     pub log_t: usize,
     pub rows: &'a [JoltVmStage2TraceRow],
@@ -544,7 +544,7 @@ pub fn stage2_product_uniskip_first_round<F: Field>(
 pub fn stage2_regular_batch_instances<F: Field>(
     request: &Stage2RegularBatchInstanceRequest<'_, F>,
 ) -> Result<Vec<SumcheckRegularBatchInstance<F>>, BackendError> {
-    stage2_regular_batch_instances_base(*request)
+    stage2_regular_batch_instances_base(request.clone())
 }
 
 #[cfg(feature = "field-inline")]

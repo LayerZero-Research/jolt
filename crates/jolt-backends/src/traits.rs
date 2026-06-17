@@ -25,7 +25,7 @@ use crate::{
     SumcheckSpartanOuterRemainderRequest, SumcheckSpartanOuterRemainderRound,
     SumcheckSpartanOuterRemainderRowStateRequest, SumcheckSpartanOuterRemainderState,
     SumcheckSpartanOuterRemainderStateRequest, SumcheckSpartanOuterUniskipRequest,
-    SumcheckStage3ShiftStateRequest, SumcheckStage7AdviceAddressState,
+    SumcheckStage2RegularBatchStateRequest, SumcheckStage3ShiftStateRequest, SumcheckStage7AdviceAddressState,
     SumcheckStage7AdviceAddressStateRequest, SumcheckStage7HammingState,
     SumcheckStage7HammingStateRequest, SumcheckViewResolution,
 };
@@ -122,6 +122,32 @@ pub trait RamReadWriteSumcheckBackend<F: Field>: Backend {
         &mut self,
         state: &Self::RamOutputCheckState,
     ) -> Result<F, BackendError>;
+}
+
+/// Stage 2 fused regular-batch tail sumcheck (product remainder + instruction claim).
+pub trait Stage2RegularBatchSumcheckBackend<F: Field>: Backend {
+    type Stage2RegularBatchState;
+
+    fn materialize_sumcheck_stage2_regular_batch_state(
+        &mut self,
+        request: &SumcheckStage2RegularBatchStateRequest<F>,
+    ) -> Result<Self::Stage2RegularBatchState, BackendError>;
+
+    fn evaluate_sumcheck_stage2_regular_batch_round(
+        &mut self,
+        state: &mut Self::Stage2RegularBatchState,
+        round: usize,
+        max_rounds: usize,
+        previous_claims: &[F],
+    ) -> Result<Vec<SumcheckRegularBatchRound<F>>, BackendError>;
+
+    fn bind_sumcheck_stage2_regular_batch_state(
+        &mut self,
+        state: &mut Self::Stage2RegularBatchState,
+        round: usize,
+        max_rounds: usize,
+        challenge: F,
+    ) -> Result<(), BackendError>;
 }
 
 pub trait Stage3SpartanSumcheckBackend<F: Field>: Backend {

@@ -89,6 +89,7 @@ pub use sumcheck::{
     SumcheckSpartanOuterRemainderRound, SumcheckSpartanOuterRemainderRowStateRequest,
     SumcheckSpartanOuterRemainderState, SumcheckSpartanOuterRemainderStateRequest,
     SumcheckSpartanOuterRow, SumcheckSpartanOuterUniskipQuery, SumcheckSpartanOuterUniskipRequest,
+    SumcheckStage2RegularBatchStateRequest, STAGE2_REGULAR_BATCH_TAIL_LABEL,
     SumcheckStage3ShiftRow, SumcheckStage3ShiftStateRequest, SumcheckStage6IncRow,
     SumcheckStage6RaRow, SumcheckStage7AdviceAddressState, SumcheckStage7AdviceAddressStateRequest,
     SumcheckStage7HammingState, SumcheckStage7HammingStateRequest, SumcheckViewEvaluationRequest,
@@ -137,6 +138,6 @@ pub use timing::{reset_backend_timings, take_backend_timings, BackendTiming};
 pub use traits::BlindFoldBackend;
 pub use traits::{
     Backend, CommitmentBackend, OpeningBackend, RamReadWriteSumcheckBackend,
-    Stage3SpartanSumcheckBackend, Stage4ReadWriteSumcheckBackend,
+    Stage2RegularBatchSumcheckBackend, Stage3SpartanSumcheckBackend, Stage4ReadWriteSumcheckBackend,
     Stage5ValueEvaluationSumcheckBackend, Stage6RegularBatchSumcheckBackend, SumcheckBackend,
 };

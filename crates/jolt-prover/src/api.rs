@@ -2,8 +2,9 @@ use common::jolt_device::JoltDevice;
 #[cfg(feature = "zk")]
 use jolt_backends::BlindFoldBackend;
 use jolt_backends::{
-    RamReadWriteSumcheckBackend, Stage3SpartanSumcheckBackend, Stage4ReadWriteSumcheckBackend,
-    Stage5ValueEvaluationSumcheckBackend, Stage6RegularBatchSumcheckBackend, SumcheckBackend,
+    RamReadWriteSumcheckBackend, Stage2RegularBatchSumcheckBackend, Stage3SpartanSumcheckBackend,
+    Stage4ReadWriteSumcheckBackend, Stage5ValueEvaluationSumcheckBackend,
+    Stage6RegularBatchSumcheckBackend, SumcheckBackend,
 };
 use jolt_crypto::{HomomorphicCommitment, VectorCommitment};
 use jolt_field::Field;
@@ -61,6 +62,7 @@ pub(crate) trait ClearProverBackend<F>:
     SumcheckBackend<F, JoltVmNamespace>
     + SumcheckBackend<F, FieldInlineNamespace>
     + RamReadWriteSumcheckBackend<F>
+    + Stage2RegularBatchSumcheckBackend<F>
     + Stage3SpartanSumcheckBackend<F>
     + Stage4ReadWriteSumcheckBackend<F>
     + Stage5ValueEvaluationSumcheckBackend<F>
@@ -77,6 +79,7 @@ where
     T: SumcheckBackend<F, JoltVmNamespace>
         + SumcheckBackend<F, FieldInlineNamespace>
         + RamReadWriteSumcheckBackend<F>
+        + Stage2RegularBatchSumcheckBackend<F>
         + Stage3SpartanSumcheckBackend<F>
         + Stage4ReadWriteSumcheckBackend<F>
         + Stage5ValueEvaluationSumcheckBackend<F>
@@ -88,6 +91,7 @@ where
 pub(crate) trait ClearProverBackend<F>:
     SumcheckBackend<F, JoltVmNamespace>
     + RamReadWriteSumcheckBackend<F>
+    + Stage2RegularBatchSumcheckBackend<F>
     + Stage3SpartanSumcheckBackend<F>
     + Stage4ReadWriteSumcheckBackend<F>
     + Stage5ValueEvaluationSumcheckBackend<F>
@@ -103,6 +107,7 @@ where
     F: Field,
     T: SumcheckBackend<F, JoltVmNamespace>
         + RamReadWriteSumcheckBackend<F>
+        + Stage2RegularBatchSumcheckBackend<F>
         + Stage3SpartanSumcheckBackend<F>
         + Stage4ReadWriteSumcheckBackend<F>
         + Stage5ValueEvaluationSumcheckBackend<F>
@@ -224,6 +229,7 @@ where
     B: stage0::CommitmentStageBackend<PCS::Field, PCS>
         + SumcheckBackend<PCS::Field, JoltVmNamespace>
         + RamReadWriteSumcheckBackend<PCS::Field>
+        + Stage2RegularBatchSumcheckBackend<PCS::Field>
         + Stage3SpartanSumcheckBackend<PCS::Field>
         + Stage4ReadWriteSumcheckBackend<PCS::Field>
         + Stage5ValueEvaluationSumcheckBackend<PCS::Field>
@@ -265,6 +271,7 @@ where
         + SumcheckBackend<PCS::Field, JoltVmNamespace>
         + SumcheckBackend<PCS::Field, FieldInlineNamespace>
         + RamReadWriteSumcheckBackend<PCS::Field>
+        + Stage2RegularBatchSumcheckBackend<PCS::Field>
         + Stage3SpartanSumcheckBackend<PCS::Field>
         + Stage4ReadWriteSumcheckBackend<PCS::Field>
         + Stage5ValueEvaluationSumcheckBackend<PCS::Field>
@@ -315,6 +322,7 @@ where
     B: stage0::CommitmentStageBackend<PCS::Field, PCS>
         + SumcheckBackend<PCS::Field, JoltVmNamespace>
         + RamReadWriteSumcheckBackend<PCS::Field>
+        + Stage2RegularBatchSumcheckBackend<PCS::Field>
         + Stage3SpartanSumcheckBackend<PCS::Field>
         + Stage4ReadWriteSumcheckBackend<PCS::Field>
         + Stage5ValueEvaluationSumcheckBackend<PCS::Field>
@@ -362,6 +370,7 @@ where
         + SumcheckBackend<PCS::Field, JoltVmNamespace>
         + SumcheckBackend<PCS::Field, FieldInlineNamespace>
         + RamReadWriteSumcheckBackend<PCS::Field>
+        + Stage2RegularBatchSumcheckBackend<PCS::Field>
         + Stage3SpartanSumcheckBackend<PCS::Field>
         + Stage4ReadWriteSumcheckBackend<PCS::Field>
         + Stage5ValueEvaluationSumcheckBackend<PCS::Field>

@@ -219,6 +219,33 @@ impl<F: Field> SumcheckRegularBatchState<F> {
     }
 }
 
+pub const STAGE2_REGULAR_BATCH_TAIL_LABEL: &str = "stage2.regular_batch.tail";
+
+/// Inputs for materializing the Stage 2 fused regular-batch tail sumcheck.
+///
+/// `instances` hold the CPU MLE tables used by the reference backend. The
+/// transcript-derived Spartan parameters are carried alongside them so cluster
+/// backends can upload equivalent GPU initial state without re-deriving values
+/// from the materialized polynomials.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SumcheckStage2RegularBatchStateRequest<F: Field> {
+    pub instances: Vec<SumcheckRegularBatchInstance<F>>,
+    pub log_t: usize,
+    pub log_k: usize,
+    pub phase1_num_rounds: usize,
+    pub phase2_num_rounds: usize,
+    pub product_r0: F,
+    pub tau_low: Vec<F>,
+    pub tau_high: F,
+    pub instruction_gamma: F,
+}
+
+impl<F: Field> SumcheckStage2RegularBatchStateRequest<F> {
+    pub fn instance_count(&self) -> usize {
+        self.instances.len()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SumcheckStage3ShiftRow {
     pub unexpanded_pc: u64,

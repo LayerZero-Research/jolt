@@ -8,9 +8,10 @@ use jolt_backends::{
     ram_read_write_rows_from_trace, stage2_product_instruction_openings_from_rows,
     stage2_product_uniskip_first_round, stage2_ram_state_requests, RamReadWriteSumcheckBackend,
     Stage2ProductUniskipFirstRoundRequest, Stage2RamStateRequests, Stage2RamStateRequestsRequest,
-    Stage2RegularBatchInstanceRequest, SumcheckBackend, SumcheckRamOutputCheckStateRequest,
-    SumcheckRamRafStateRequest, SumcheckRamReadWriteRow, SumcheckRamReadWriteStateRequest,
-    SumcheckRegularBatchInstance, SumcheckRegularBatchState,
+    Stage2RegularBatchInstanceRequest, Stage2RegularBatchSumcheckBackend, SumcheckBackend,
+    SumcheckRamOutputCheckStateRequest, SumcheckRamRafStateRequest, SumcheckRamReadWriteRow,
+    SumcheckRamReadWriteStateRequest, SumcheckRegularBatchInstance,
+    SumcheckStage2RegularBatchStateRequest,
 };
 #[cfg(feature = "field-inline")]
 use jolt_backends::{
@@ -334,7 +335,7 @@ struct PreparedStage2RegularBatch<F: Field> {
     ram_read_write: SumcheckRamReadWriteStateRequest<F>,
     ram_raf: SumcheckRamRafStateRequest<F>,
     ram_output_check: SumcheckRamOutputCheckStateRequest<F>,
-    instances: Vec<SumcheckRegularBatchInstance<F>>,
+    regular_batch: SumcheckStage2RegularBatchStateRequest<F>,
 }
 
 struct Stage2RegularBatchPrepareInput<'a, F: Field, C> {
@@ -374,13 +375,20 @@ where
     )?;
     let instances =
         build_regular_batch_instances(input.config, input.rows, input.product_uniskip, &prefix)?;
+    let regular_batch = build_stage2_regular_batch_state_request(
+        input.config,
+        instances,
+        input.product_uniskip,
+        &prefix,
+        &ram_requests.ram_read_write,
+    );
 
     Ok(PreparedStage2RegularBatch {
         prefix,
         ram_read_write: ram_requests.ram_read_write,
         ram_raf: ram_requests.ram_raf,
         ram_output_check: ram_requests.ram_output_check,
-        instances,
+        regular_batch,
     })
 }
 
@@ -417,13 +425,20 @@ where
         &prefix,
         field_factors,
     )?;
+    let regular_batch = build_stage2_regular_batch_state_request(
+        input.config,
+        instances,
+        input.product_uniskip,
+        &prefix,
+        &ram_requests.ram_read_write,
+    );
 
     Ok(PreparedStage2RegularBatch {
         prefix,
         ram_read_write: ram_requests.ram_read_write,
         ram_raf: ram_requests.ram_raf,
         ram_output_check: ram_requests.ram_output_check,
-        instances,
+        regular_batch,
     })
 }
 
@@ -468,7 +483,9 @@ pub fn prove<F, W, B, T, C>(
 where
     F: Field,
     W: JoltVmStage2Rows + WitnessProvider<F, JoltVmNamespace>,
-    B: SumcheckBackend<F, JoltVmNamespace> + RamReadWriteSumcheckBackend<F>,
+    B: SumcheckBackend<F, JoltVmNamespace>
+        + RamReadWriteSumcheckBackend<F>
+        + Stage2RegularBatchSumcheckBackend<F>,
     T: Transcript<Challenge = F>,
 {
     validate_stage2_request(input.checked, input.config, false, "clear")?;
@@ -502,7 +519,7 @@ where
         prepared.ram_read_write,
         prepared.ram_raf,
         prepared.ram_output_check,
-        prepared.instances,
+        prepared.regular_batch,
         backend,
         transcript,
     )?;
@@ -576,7 +593,8 @@ where
     FI: WitnessProvider<F, FieldInlineNamespace>,
     B: SumcheckBackend<F, JoltVmNamespace>
         + SumcheckBackend<F, FieldInlineNamespace>
-        + RamReadWriteSumcheckBackend<F>,
+        + RamReadWriteSumcheckBackend<F>
+        + Stage2RegularBatchSumcheckBackend<F>,
     T: Transcript<Challenge = F>,
 {
     validate_stage2_request(input.checked, input.config, false, "clear")?;
@@ -616,7 +634,7 @@ where
         prepared.ram_read_write,
         prepared.ram_raf,
         prepared.ram_output_check,
-        prepared.instances,
+        prepared.regular_batch,
         backend,
         transcript,
     )?;
@@ -694,7 +712,9 @@ pub fn prove_committed_proof_component<F, W, B, T, VC>(
 where
     F: Field,
     W: JoltVmStage2Rows + WitnessProvider<F, JoltVmNamespace>,
-    B: SumcheckBackend<F, JoltVmNamespace> + RamReadWriteSumcheckBackend<F>,
+    B: SumcheckBackend<F, JoltVmNamespace>
+        + RamReadWriteSumcheckBackend<F>
+        + Stage2RegularBatchSumcheckBackend<F>,
     T: Transcript<Challenge = F>,
     VC: VectorCommitment<Field = F>,
 {
@@ -730,7 +750,7 @@ where
         prepared.ram_read_write,
         prepared.ram_raf,
         prepared.ram_output_check,
-        prepared.instances,
+        prepared.regular_batch,
         backend,
         vc_setup,
         transcript,
@@ -809,7 +829,8 @@ where
     FI: WitnessProvider<F, FieldInlineNamespace>,
     B: SumcheckBackend<F, JoltVmNamespace>
         + SumcheckBackend<F, FieldInlineNamespace>
-        + RamReadWriteSumcheckBackend<F>,
+        + RamReadWriteSumcheckBackend<F>
+        + Stage2RegularBatchSumcheckBackend<F>,
     T: Transcript<Challenge = F>,
     VC: VectorCommitment<Field = F>,
 {
@@ -852,7 +873,7 @@ where
         prepared.ram_read_write,
         prepared.ram_raf,
         prepared.ram_output_check,
-        prepared.instances,
+        prepared.regular_batch,
         backend,
         vc_setup,
         transcript,
@@ -1470,24 +1491,46 @@ fn stage2_regular_batch_output_mismatch<F: Field>(
     invalid_sumcheck_output(reason)
 }
 
+fn build_stage2_regular_batch_state_request<F: Field, C>(
+    config: Stage2BatchProverConfig,
+    instances: Vec<SumcheckRegularBatchInstance<F>>,
+    product_uniskip: &Stage2ProductUniSkipOutput<F, C>,
+    prefix: &Stage2RegularBatchPrefixOutput<F>,
+    ram_read_write: &SumcheckRamReadWriteStateRequest<F>,
+) -> SumcheckStage2RegularBatchStateRequest<F> {
+    SumcheckStage2RegularBatchStateRequest {
+        instances,
+        log_t: config.log_t,
+        log_k: config.log_k,
+        phase1_num_rounds: ram_read_write.phase1_num_rounds,
+        phase2_num_rounds: ram_read_write.phase2_num_rounds,
+        product_r0: product_uniskip.challenge,
+        tau_low: product_uniskip.tau_low.clone(),
+        tau_high: product_uniskip.tau_high,
+        instruction_gamma: prefix.instruction_gamma,
+    }
+}
+
 fn prove_regular_batch_sumcheck<F, T, C, B>(
     ram_read_write: SumcheckRamReadWriteStateRequest<F>,
     ram_raf: SumcheckRamRafStateRequest<F>,
     ram_output_check: SumcheckRamOutputCheckStateRequest<F>,
-    instances: Vec<SumcheckRegularBatchInstance<F>>,
+    regular_batch: SumcheckStage2RegularBatchStateRequest<F>,
     backend: &mut B,
     transcript: &mut T,
 ) -> Result<RegularBatchProof<F, SumcheckProof<F, C>>, ProverError>
 where
     F: Field,
     T: Transcript<Challenge = F>,
-    B: SumcheckBackend<F, JoltVmNamespace> + RamReadWriteSumcheckBackend<F>,
+    B: SumcheckBackend<F, JoltVmNamespace>
+        + RamReadWriteSumcheckBackend<F>
+        + Stage2RegularBatchSumcheckBackend<F>,
 {
     prove_regular_batch_sumcheck_with_recorder(
         ram_read_write,
         ram_raf,
         ram_output_check,
-        instances,
+        regular_batch,
         backend,
         transcript,
         ClearStage2RegularBatchProofRecorder::<F, C>::new(),
@@ -1498,7 +1541,7 @@ fn prove_regular_batch_sumcheck_with_recorder<F, T, B, R>(
     ram_read_write: SumcheckRamReadWriteStateRequest<F>,
     ram_raf: SumcheckRamRafStateRequest<F>,
     ram_output_check: SumcheckRamOutputCheckStateRequest<F>,
-    instances: Vec<SumcheckRegularBatchInstance<F>>,
+    regular_batch: SumcheckStage2RegularBatchStateRequest<F>,
     backend: &mut B,
     transcript: &mut T,
     mut proof_recorder: R,
@@ -1506,25 +1549,23 @@ fn prove_regular_batch_sumcheck_with_recorder<F, T, B, R>(
 where
     F: Field,
     T: Transcript<Challenge = F>,
-    B: SumcheckBackend<F, JoltVmNamespace> + RamReadWriteSumcheckBackend<F>,
+    B: SumcheckBackend<F, JoltVmNamespace>
+        + RamReadWriteSumcheckBackend<F>
+        + Stage2RegularBatchSumcheckBackend<F>,
     R: Stage2RegularBatchProofRecorder<F>,
 {
+    let instances = &regular_batch.instances;
     let mut ram_state = backend.materialize_sumcheck_ram_read_write_state(&ram_read_write)?;
     let mut ram_raf_state = backend.materialize_sumcheck_ram_raf_state(&ram_raf)?;
     let mut ram_output_check_state =
         backend.materialize_sumcheck_ram_output_check_state(&ram_output_check)?;
-    let mut state = SumcheckRegularBatchState::new("stage2.regular_batch.tail", instances);
+    let mut state = backend.materialize_sumcheck_stage2_regular_batch_state(&regular_batch)?;
     let ram_read_write_rounds = ram_read_write.log_t + ram_read_write.log_k;
     let ram_raf_rounds = ram_raf.log_t + ram_raf.log_k - ram_raf.phase1_num_rounds;
     let ram_output_check_rounds =
         ram_output_check.log_t + ram_output_check.log_k - ram_output_check.phase1_num_rounds;
     let max_num_rounds = std::iter::once(ram_read_write_rounds)
-        .chain(
-            state
-                .instances
-                .iter()
-                .map(SumcheckRegularBatchInstance::num_rounds),
-        )
+        .chain(instances.iter().map(SumcheckRegularBatchInstance::num_rounds))
         .chain([ram_raf_rounds, ram_output_check_rounds])
         .max()
         .ok_or_else(|| invalid_sumcheck_output("Stage 2 regular batch has no instances"))?;
@@ -1533,21 +1574,21 @@ where
 
     proof_recorder.absorb_input_claims(
         ram_read_write.input_claim,
-        &state.instances,
+        instances,
         ram_raf.input_claim,
         transcript,
     );
 
     let tail_start = 1;
-    let terminal_start = tail_start + state.instances.len();
+    let terminal_start = tail_start + instances.len();
     let ram_raf_index = terminal_start;
     let ram_output_check_index = terminal_start + 1;
-    let instance_count = state.instances.len() + 3;
+    let instance_count = instances.len() + 3;
     let batching_coefficients = (0..instance_count)
         .map(|_| transcript.challenge_scalar())
         .collect::<Vec<_>>();
     let mut individual_claims = std::iter::once(ram_read_write.input_claim)
-        .chain(state.instances.iter().map(|instance| {
+        .chain(instances.iter().map(|instance| {
             instance
                 .input_claim
                 .mul_pow_2(max_num_rounds - instance.num_rounds())
@@ -1569,7 +1610,7 @@ where
         let ram_poly =
             backend.evaluate_sumcheck_ram_read_write_round(&ram_state, individual_claims[0])?;
         let tail_messages = backend
-            .evaluate_sumcheck_regular_batch_round(
+            .evaluate_sumcheck_stage2_regular_batch_round(
                 &mut state,
                 round,
                 max_num_rounds,
@@ -1577,11 +1618,11 @@ where
             )?
             .into_iter()
             .collect::<Vec<_>>();
-        if tail_messages.len() != state.instances.len() {
+        if tail_messages.len() != instances.len() {
             return Err(invalid_sumcheck_output(format!(
                 "Stage 2 regular batch round {round} returned {} instance messages, expected {}",
                 tail_messages.len() + 1,
-                state.instances.len() + 1
+                instances.len() + 1
             )));
         }
         let mut univariate_polys = Vec::with_capacity(instance_count);
@@ -1635,7 +1676,12 @@ where
             *claim = poly.evaluate(challenge);
         }
         backend.bind_sumcheck_ram_read_write_state(&mut ram_state, challenge)?;
-        backend.bind_sumcheck_regular_batch_state(&mut state, round, max_num_rounds, challenge)?;
+        backend.bind_sumcheck_stage2_regular_batch_state(
+            &mut state,
+            round,
+            max_num_rounds,
+            challenge,
+        )?;
         if round >= ram_raf_offset {
             backend.bind_sumcheck_ram_raf_state(&mut ram_raf_state, challenge)?;
         }
@@ -1665,7 +1711,7 @@ fn prove_regular_batch_sumcheck_committed<'a, F, T, B, VC>(
     ram_read_write: SumcheckRamReadWriteStateRequest<F>,
     ram_raf: SumcheckRamRafStateRequest<F>,
     ram_output_check: SumcheckRamOutputCheckStateRequest<F>,
-    instances: Vec<SumcheckRegularBatchInstance<F>>,
+    regular_batch: SumcheckStage2RegularBatchStateRequest<F>,
     backend: &mut B,
     vc_setup: &'a VC::Setup,
     transcript: &mut T,
@@ -1673,14 +1719,16 @@ fn prove_regular_batch_sumcheck_committed<'a, F, T, B, VC>(
 where
     F: Field,
     T: Transcript<Challenge = F>,
-    B: SumcheckBackend<F, JoltVmNamespace> + RamReadWriteSumcheckBackend<F>,
+    B: SumcheckBackend<F, JoltVmNamespace>
+        + RamReadWriteSumcheckBackend<F>
+        + Stage2RegularBatchSumcheckBackend<F>,
     VC: VectorCommitment<Field = F>,
 {
     prove_regular_batch_sumcheck_with_recorder(
         ram_read_write,
         ram_raf,
         ram_output_check,
-        instances,
+        regular_batch,
         backend,
         transcript,
         CommittedStage2RegularBatchProofRecorder::<F, VC>::new(vc_setup)?,
