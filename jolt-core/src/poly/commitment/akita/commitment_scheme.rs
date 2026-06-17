@@ -349,6 +349,11 @@ fn evaluate_dense_evals_at_point(evals: &[JoltFp128], point: &[JoltFp128]) -> Jo
         .sum()
 }
 
+fn ring_padded_dense_num_vars<const D: usize>(len: usize) -> usize {
+    let ring_count = len.div_ceil(D).next_power_of_two().max(1);
+    (ring_count * D).log_2()
+}
+
 fn dense_poly_from_jolt_evals_padded<const D: usize>(
     evals: &[JoltFp128],
     num_vars: usize,
@@ -747,6 +752,10 @@ where
                 })
                 .collect(),
         )
+    }
+
+    fn dense_num_vars(len: usize) -> usize {
+        ring_padded_dense_num_vars::<D>(len)
     }
 
     fn batch_commit<S>(

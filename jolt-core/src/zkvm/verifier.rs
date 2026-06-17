@@ -1922,7 +1922,9 @@ impl<
                 advice_point,
                 advice_claim,
                 lagrange_factor,
-                Some((self.program_io.memory_layout.max_trusted_advice_size as usize / 8).log_2()),
+                Some(PCS::dense_num_vars(
+                    self.program_io.memory_layout.max_trusted_advice_size as usize / 8,
+                )),
             );
             include_trusted_advice = true;
         }
@@ -1937,9 +1939,9 @@ impl<
                 advice_point,
                 advice_claim,
                 lagrange_factor,
-                Some(
-                    (self.program_io.memory_layout.max_untrusted_advice_size as usize / 8).log_2(),
-                ),
+                Some(PCS::dense_num_vars(
+                    self.program_io.memory_layout.max_untrusted_advice_size as usize / 8,
+                )),
             );
             include_untrusted_advice = true;
         }
@@ -1948,7 +1950,7 @@ impl<
         {
             let chunk_count = bytecode_commitments.bytecode_chunk_count;
             let bytecode_chunk_num_vars =
-                (committed_lanes() * bytecode_commitments.bytecode_T).log_2();
+                PCS::dense_num_vars(committed_lanes() * bytecode_commitments.bytecode_T);
             for chunk_idx in 0..chunk_count {
                 let (chunk_point, chunk_claim) =
                     self.opening_accumulator.get_committed_polynomial_opening(
@@ -1966,12 +1968,12 @@ impl<
             }
         }
         if self.preprocessing.shared.program.is_committed() {
-            let program_image_num_vars = self
+            let program_image_num_words = self
                 .preprocessing
                 .shared
                 .program
-                .committed_program_image_num_words(&self.program_io.memory_layout)
-                .log_2();
+                .committed_program_image_num_words(&self.program_io.memory_layout);
+            let program_image_num_vars = PCS::dense_num_vars(program_image_num_words);
             let (program_point, program_claim) =
                 self.opening_accumulator.get_committed_polynomial_opening(
                     CommittedPolynomial::ProgramImageInit,

@@ -13,7 +13,7 @@ use crate::{
     poly::multilinear_polynomial::MultilinearPolynomial,
     poly::opening_proof::BatchOpeningState,
     poly::rlc_polynomial::{RLCStreamingData, TraceSource},
-    utils::{errors::ProofVerifyError, small_scalar::SmallScalar},
+    utils::{errors::ProofVerifyError, math::Math, small_scalar::SmallScalar},
     zkvm::{
         claim_reductions::PrecommittedPolynomial, config::OneHotParams,
         witness::CommittedPolynomial,
@@ -242,6 +242,10 @@ pub trait CommitmentScheme: Clone + Sync + Send + 'static {
         _setup: &Self::ProverSetup,
     ) -> Option<Vec<(Self::Commitment, Self::OpeningProofHint)>> {
         None
+    }
+
+    fn dense_num_vars(len: usize) -> usize {
+        len.log_2()
     }
 
     /// Commits to multiple multilinear polynomials in batch.
