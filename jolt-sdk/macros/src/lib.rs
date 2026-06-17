@@ -686,23 +686,20 @@ impl MacroBuilder {
                     None,
                 );
 
-                // Commit trusted advice in its dedicated Dory context, using a preprocessing-only
-                // matrix shape derived *deterministically* from the advice length (balanced dims).
-                //
-                // This makes the commitment independent of the trace length (preprocessing-only),
-                // while still allowing the prover to batch the advice opening into the single
-                // Stage 8 Dory opening proof by interpreting it as a zero-padded submatrix of the
-                // main polynomial matrix.
-                let (sigma_a, nu_a) =
-                    jolt::DoryGlobals::advice_sigma_nu_from_max_bytes(max_trusted_advice_size as usize);
-                let num_rows = 1usize << nu_a;
-                let num_cols = 1usize << sigma_a;
-
-                let _guard = jolt::DoryGlobals::initialize_context(num_rows, num_cols, jolt::DoryContext::TrustedAdvice, None);
-                let _ctx = jolt::DoryGlobals::with_context(jolt::DoryContext::TrustedAdvice);
-
+                // Commit trusted advice in its dedicated commitment layout, derived
+                // deterministically from the advice length (preprocessing-only). This makes the
+                // commitment independent of the trace length, while still allowing the prover to
+                // batch the advice opening into the single Stage 8 Dory opening proof by
+                // interpreting it as a zero-padded submatrix of the main polynomial matrix.
                 let poly = MultilinearPolynomial::<jolt::F>::from(trusted_advice_vec);
-                let (commitment, hint) = jolt::PCS::default().commit(&poly, &preprocessing.generators);
+                let advice_len = poly.len().next_power_of_two().max(1);
+
+                let pcs = jolt::PCS::default();
+                let advice_layout = <jolt::PCS as jolt::CommitmentScheme>::commitment_layout(
+                    pcs.config(),
+                    jolt::CommitmentContext::TrustedAdvice { len: advice_len },
+                );
+                let (commitment, hint) = pcs.commit(&advice_layout, &poly, &preprocessing.generators);
 
                 (Some(commitment), Some(hint))
             }

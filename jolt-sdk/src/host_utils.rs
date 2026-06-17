@@ -26,7 +26,7 @@ pub use jolt_core::zkvm::{
 pub use jolt_core::AdviceTape;
 
 // Re-exports needed by the provable macro
-pub use jolt_core::poly::commitment::commitment_scheme::CommitmentScheme;
+pub use jolt_core::poly::commitment::commitment_scheme::{CommitmentContext, CommitmentScheme};
 pub use jolt_core::poly::commitment::dory::{DoryContext, DoryGlobals, DoryLayout};
 pub use jolt_core::poly::multilinear_polynomial::MultilinearPolynomial;
 pub use jolt_core::zkvm::ram::populate_memory_states;

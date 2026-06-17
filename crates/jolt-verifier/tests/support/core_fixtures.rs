@@ -81,7 +81,7 @@ use jolt_core::poly::commitment::dory::ArkGT;
 #[cfg(not(feature = "zk"))]
 use jolt_core::{
     poly::{
-        commitment::dory::{DoryContext, DoryGlobals},
+        commitment::commitment_scheme::CommitmentContext,
         multilinear_polynomial::MultilinearPolynomial,
     },
     zkvm::ram::populate_memory_states,
@@ -1329,9 +1329,12 @@ fn commit_trusted_advice_preprocessing_only(
     let poly = MultilinearPolynomial::<CoreField>::from(trusted_advice_words);
     let advice_len = poly.len().next_power_of_two().max(1);
 
-    let _guard = DoryGlobals::initialize_context(1, advice_len, DoryContext::TrustedAdvice, None);
-    let _ctx = DoryGlobals::with_context(DoryContext::TrustedAdvice);
-    DoryCommitmentScheme::default().commit(&poly, &preprocessing.generators)
+    let pcs = DoryCommitmentScheme::default();
+    let advice_layout = DoryCommitmentScheme::commitment_layout(
+        pcs.config(),
+        CommitmentContext::TrustedAdvice { len: advice_len },
+    );
+    pcs.commit(&advice_layout, &poly, &preprocessing.generators)
 }
 
 fn convert_preprocessing(
