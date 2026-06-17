@@ -1185,7 +1185,18 @@ where
             );
             if sumcheck_claim != expected_sumcheck_claim {
                 return Err(ProofVerifyError::AkitaError(
-                    "dense sumcheck final claim mismatch".to_string(),
+                    format!(
+                        "dense sumcheck final claim mismatch: max_vars={}, item_vars={:?}, point_vars={:?}",
+                        max_vars,
+                        dense_items
+                            .iter()
+                            .map(|item| item.field_evals_len.log_2())
+                            .collect::<Vec<_>>(),
+                        original_points
+                            .iter()
+                            .map(Vec::len)
+                            .collect::<Vec<_>>()
+                    ),
                 ));
             }
             let akita_opening_point = common_point.iter().map(jolt_to_akita).collect::<Vec<_>>();
