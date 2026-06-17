@@ -3007,6 +3007,67 @@ where
         }
     }
 
+    /// Build committed-program (Dory-only) prover preprocessing from a full program.
+    ///
+    /// Sizes the Dory generators to cover the main trace and the committed bytecode-chunk /
+    /// program-image candidates (which may dominate the trace), derives the committed
+    /// commitments + opening hints, and wires them via [`Self::new_committed`].
+    ///
+    /// `bytecode_chunk_count` selects the committed bytecode chunking: it must be a power of
+    /// two in `1..=MAX_COMMITTED_BYTECODE_CHUNK_COUNT` that divides the bytecode length.
+    /// Smaller counts keep each chunk within the main matrix; `chunk_count = 1` is the
+    /// reference-domain dominance case (supported).
+    pub fn preprocess_committed(
+        shared: JoltSharedPreprocessing,
+        full: crate::zkvm::program::FullProgramPreprocessing,
+        bytecode_chunk_count: usize,
+    ) -> Self {
+        use crate::zkvm::bytecode::chunks::{
+            committed_lanes, is_valid_committed_bytecode_chunking_for_len,
+            MAX_COMMITTED_BYTECODE_CHUNK_COUNT,
+        };
+
+        assert!(
+            PCS::supports_committed_program(),
+            "committed program mode is only supported by the Dory commitment scheme"
+        );
+        let bytecode_len = full.bytecode.code_size;
+        assert!(
+            is_valid_committed_bytecode_chunking_for_len(bytecode_len, bytecode_chunk_count),
+            "bytecode chunk count ({bytecode_chunk_count}) must be non-zero, a power of two, at \
+             most {MAX_COMMITTED_BYTECODE_CHUNK_COUNT}, and divide bytecode length ({bytecode_len})"
+        );
+
+        let memory_layout = shared.memory_layout.clone();
+        let max_log_t = shared.max_padded_trace_length.next_power_of_two().log_2();
+        let max_log_k_chunk = PCS::log_k_chunk_for_trace(max_log_t);
+        let main_total_vars = max_log_t + max_log_k_chunk;
+        let chunk_cycle_log_t = (bytecode_len / bytecode_chunk_count)
+            .next_power_of_two()
+            .log_2();
+        let bytecode_cand = committed_lanes().log_2() + chunk_cycle_log_t;
+        let prog_cand = full
+            .committed_program_image_num_words(&memory_layout)
+            .log_2();
+        let max_total_vars = main_total_vars.max(bytecode_cand).max(prog_cand);
+        let generators = PCS::setup_prover(max_total_vars);
+
+        let (committed_enum, prover_data) = crate::zkvm::program::ProgramPreprocessing::Full(full)
+            .commit(
+                &memory_layout,
+                &generators,
+                bytecode_chunk_count,
+                max_log_k_chunk,
+            );
+        let committed_program = match committed_enum {
+            crate::zkvm::program::ProgramPreprocessing::Committed(c) => c,
+            crate::zkvm::program::ProgramPreprocessing::Full(_) => {
+                unreachable!("commit produces a Committed program")
+            }
+        };
+        Self::new_committed(shared, committed_program, prover_data, generators)
+    }
+
     pub fn is_committed_mode(&self) -> bool {
         self.committed_program_prover_data.is_some()
     }
@@ -3244,12 +3305,11 @@ mod tests {
         max_trace_len: usize,
         bytecode_chunk_count: usize,
     ) -> JoltProverPreprocessing<Fr, Bn254Curve, DoryCommitmentScheme> {
-        use crate::utils::math::Math;
         let shared = test_shared_preprocessing(
             bytecode.clone(),
             init_memory_state.clone(),
             entry_address,
-            memory_layout.clone(),
+            memory_layout,
             max_trace_len,
         )
         .unwrap();
@@ -3259,31 +3319,7 @@ mod tests {
             entry_address,
         )
         .unwrap();
-        let max_log_t = max_trace_len.next_power_of_two().log_2();
-        let max_log_k_chunk = DoryCommitmentScheme::log_k_chunk_for_trace(max_log_t);
-        let main_total_vars = max_log_t + max_log_k_chunk;
-        let chunk_cycle_log_t = (full.bytecode.code_size / bytecode_chunk_count)
-            .next_power_of_two()
-            .log_2();
-        let bytecode_cand =
-            crate::zkvm::bytecode::chunks::committed_lanes().log_2() + chunk_cycle_log_t;
-        let prog_cand = full
-            .committed_program_image_num_words(&memory_layout)
-            .log_2();
-        let max_total_vars = main_total_vars.max(bytecode_cand).max(prog_cand);
-        let generators = DoryCommitmentScheme::setup_prover(max_total_vars);
-        let (committed_enum, prover_data) = crate::zkvm::program::ProgramPreprocessing::Full(full)
-            .commit(
-                &memory_layout,
-                &generators,
-                bytecode_chunk_count,
-                max_log_k_chunk,
-            );
-        let committed_program = match committed_enum {
-            crate::zkvm::program::ProgramPreprocessing::Committed(c) => c,
-            _ => unreachable!("commit produces a Committed program"),
-        };
-        JoltProverPreprocessing::new_committed(shared, committed_program, prover_data, generators)
+        JoltProverPreprocessing::preprocess_committed(shared, full, bytecode_chunk_count)
     }
 
     // Committed-program mode (Dory-only): end-to-end prove + verify. Exercises committed
