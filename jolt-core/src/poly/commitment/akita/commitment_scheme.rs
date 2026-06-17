@@ -210,7 +210,7 @@ fn akita_verify_one<
         akita_types::BasisMode::Lagrange,
         SetupContributionMode::Direct,
     )
-    .map_err(|_| ProofVerifyError::InvalidOpeningProof)
+    .map_err(|err| ProofVerifyError::AkitaError(format!("single opening verify failed: {err:?}")))
 }
 
 fn akita_prove_dense_batch<const D: usize, ProofTranscript: akita_transcript::Transcript<Fp128>>(
@@ -284,7 +284,7 @@ fn akita_verify_dense_batch<
         akita_types::BasisMode::Lagrange,
         SetupContributionMode::Direct,
     )
-    .map_err(|_| ProofVerifyError::InvalidOpeningProof)
+    .map_err(|err| ProofVerifyError::AkitaError(format!("dense batch verify failed: {err:?}")))
 }
 
 fn to_akita_opening_point(point: &[JoltFp128]) -> Vec<Fp128> {
@@ -1174,7 +1174,9 @@ where
                 &common_point,
             );
             if sumcheck_claim != expected_sumcheck_claim {
-                return Err(ProofVerifyError::InvalidOpeningProof);
+                return Err(ProofVerifyError::AkitaError(
+                    "dense sumcheck final claim mismatch".to_string(),
+                ));
             }
             let akita_opening_point = common_point.iter().map(jolt_to_akita).collect::<Vec<_>>();
             let akita_openings = proof

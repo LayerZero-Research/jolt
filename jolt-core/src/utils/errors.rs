@@ -36,6 +36,8 @@ pub enum ProofVerifyError {
     InvalidTraceLength(usize, usize),
     #[error("Dory proof verification failed: {0}")]
     DoryError(String),
+    #[error("Akita proof verification failed: {0}")]
+    AkitaError(String),
     #[error("Sumcheck verification failed")]
     SumcheckVerificationError,
     #[error("Univariate-skip round verification failed")]
