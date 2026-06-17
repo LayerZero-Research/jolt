@@ -940,8 +940,11 @@ where
                     .iter()
                     .map(|item| {
                         let item_vars = item.field_evals.len().log_2();
+                        let head_vars = max_vars - item_vars;
+                        let head_selector =
+                            EqPolynomial::<JoltFp128>::zero_selector(&common_point[..head_vars]);
                         let item_point = &common_point[max_vars - item_vars..];
-                        evaluate_dense_evals_at_point(&item.field_evals, item_point)
+                        head_selector * evaluate_dense_evals_at_point(&item.field_evals, item_point)
                     })
                     .collect::<Vec<_>>();
                 transcript.append_scalars(b"akita_dense_openings", &dense_openings);
