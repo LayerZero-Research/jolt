@@ -57,8 +57,8 @@ pub type F = crate::field::fp128::JoltFp128;
 pub type Curve = crate::curve::fp128_curve::Fp128Curve;
 #[cfg(feature = "akita-pcs")]
 pub type PCS = crate::poly::commitment::akita::JoltAkitaCommitmentScheme<
-    { <crate::poly::commitment::akita::Fp128OneHot32Config as akita_config::CommitmentConfig>::D },
-    crate::poly::commitment::akita::Fp128OneHot32Config,
+    { <crate::poly::commitment::akita::Fp128OneHot64Config as akita_config::CommitmentConfig>::D },
+    crate::poly::commitment::akita::Fp128OneHot64Config,
 >;
 
 pub(crate) fn stage8_opening_ids(

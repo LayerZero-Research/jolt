@@ -5,7 +5,7 @@ mod packed_layout;
 mod packed_poly;
 mod wrappers;
 
-pub use commitment_scheme::{Fp128OneHot32Config, JoltAkitaCommitmentScheme};
+pub use commitment_scheme::{Fp128OneHot64Config, JoltAkitaCommitmentScheme};
 pub use wrappers::JoltToAkitaTranscript;
 
 #[cfg(test)]
