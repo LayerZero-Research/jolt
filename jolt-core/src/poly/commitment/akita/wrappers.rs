@@ -9,6 +9,8 @@ use akita_serialization::{
     AkitaDeserialize, AkitaSerialize, Compress as AkitaCompress, Valid as AkitaValid,
     Validate as AkitaValidate,
 };
+use akita_transcript::labels::{ABSORB_SPARSE_CHALLENGE, CHALLENGE_SPARSE_CHALLENGE};
+use akita_transcript::FoldChallengeSeedPreview;
 use akita_transcript::Transcript as AkitaTranscript;
 use akita_types::{
     AkitaBatchedProof, AkitaBatchedProofShape, AkitaExpandedSetup,
@@ -57,6 +59,12 @@ impl<T: JoltTranscript> JoltToAkitaTranscript<T> {
         // SAFETY: `ptr` is created from a unique `&mut T` in `new` and the adapter is
         // used only for the dynamic extent of that call into Akita.
         unsafe { &mut *self.ptr }
+    }
+
+    fn inner_ref(&self) -> &T {
+        // SAFETY: see `inner`. Preview paths clone the transcript and never mutate through
+        // this shared reference.
+        unsafe { &*self.ptr }
     }
 
     #[inline]
@@ -110,6 +118,34 @@ impl<T: JoltTranscript> AkitaTranscript<Fp128> for JoltToAkitaTranscript<T> {
         out
     }
 }
+
+impl<T: JoltTranscript> FoldChallengeSeedPreview for JoltToAkitaTranscript<T> {
+    fn preview_challenge_bytes_after_absorb(&self, absorb_payload: &[u8], len: usize) -> Vec<u8> {
+        let mut transcript = self.inner_ref().clone();
+        let mut adapter = Self::new(&mut transcript);
+        adapter.append_bytes(ABSORB_SPARSE_CHALLENGE, absorb_payload);
+        adapter.challenge_bytes(CHALLENGE_SPARSE_CHALLENGE, len)
+    }
+
+    fn preview_challenge_bytes_after_absorb_chain(
+        &self,
+        absorbs: &[&[u8]],
+        squeeze_lens: &[usize],
+    ) -> Vec<u8> {
+        let mut transcript = self.inner_ref().clone();
+        let mut adapter = Self::new(&mut transcript);
+        let mut out = Vec::new();
+        for (&absorb, &squeeze_len) in absorbs.iter().zip(squeeze_lens.iter()) {
+            adapter.append_bytes(ABSORB_SPARSE_CHALLENGE, absorb);
+            if squeeze_len > 0 {
+                out = adapter.challenge_bytes(CHALLENGE_SPARSE_CHALLENGE, squeeze_len);
+            }
+        }
+        out
+    }
+}
+
+impl<T: JoltTranscript> akita_prover::ProverTranscriptGrind<Fp128> for JoltToAkitaTranscript<T> {}
 
 /// Newtype wrapper that bridges Akita's native `AkitaSerialize`/`AkitaDeserialize`
 /// to arkworks' `CanonicalSerialize`/`CanonicalDeserialize`, which Jolt's

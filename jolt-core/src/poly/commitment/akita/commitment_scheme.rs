@@ -154,7 +154,7 @@ fn akita_prove_one<
     const D: usize,
     Cfg: CommitmentConfig<Field = Fp128, ExtField = Fp128>,
     P: AkitaPolyOps<Fp128, D>,
-    ProofTranscript: akita_transcript::Transcript<Fp128>,
+    ProofTranscript: akita_transcript::Transcript<Fp128> + akita_prover::ProverTranscriptGrind<Fp128>,
 >(
     setup: &AkitaProverSetup<Fp128, D>,
     poly: &P,
@@ -213,7 +213,10 @@ fn akita_verify_one<
     .map_err(|err| ProofVerifyError::AkitaError(format!("single opening verify failed: {err:?}")))
 }
 
-fn akita_prove_dense_batch<const D: usize, ProofTranscript: akita_transcript::Transcript<Fp128>>(
+fn akita_prove_dense_batch<
+    const D: usize,
+    ProofTranscript: akita_transcript::Transcript<Fp128> + akita_prover::ProverTranscriptGrind<Fp128>,
+>(
     setup: &AkitaProverSetup<Fp128, D>,
     items: Vec<DenseBatchProverItem<D>>,
     opening_point: &[Fp128],
@@ -552,7 +555,8 @@ impl<const D: usize> JoltAkitaOpeningHint<D> {
         transcript: &mut ProofTranscript,
     ) -> AkitaProof<Fp128>
     where
-        ProofTranscript: akita_transcript::Transcript<Fp128>,
+        ProofTranscript:
+            akita_transcript::Transcript<Fp128> + akita_prover::ProverTranscriptGrind<Fp128>,
         Cfg: CommitmentConfig<Field = Fp128, ExtField = Fp128>,
     {
         if let Some(onehot_k) = self.onehot_k {
