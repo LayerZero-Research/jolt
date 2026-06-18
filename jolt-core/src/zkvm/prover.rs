@@ -3170,23 +3170,91 @@ where
 {
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "akita-pcs"))]
+mod akita_tests {
+    extern crate jolt_inlines_keccak256;
+    extern crate jolt_inlines_sha2;
+
+    use serial_test::serial;
+
+    use crate::host;
+    use crate::poly::commitment::commitment_scheme::CommitmentScheme;
+    use crate::zkvm::prover::JoltProverPreprocessing;
+    use crate::zkvm::verifier::{JoltSharedPreprocessing, JoltVerifierPreprocessing};
+    use crate::zkvm::{RV64IMACProver, RV64IMACVerifier, PCS};
+
+    #[test]
+    #[serial]
+    fn muldiv_e2e_akita() {
+        // Akita prove paths use large ring stack frames.
+        rayon::ThreadPoolBuilder::new()
+            .stack_size(64 * 1024 * 1024)
+            .build_global()
+            .ok();
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(muldiv_e2e_akita_inner)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn muldiv_e2e_akita_inner() {
+        let mut program = host::Program::new("muldiv-guest");
+        let (bytecode, init_memory_state, _, e_entry) = program.decode();
+        let inputs = postcard::to_stdvec(&[9u32, 5u32, 3u32]).unwrap();
+        let (_, _, _, io_device) = program.trace(&inputs, &[], &[]);
+
+        let shared_preprocessing = JoltSharedPreprocessing::new(
+            bytecode,
+            io_device.memory_layout.clone(),
+            init_memory_state,
+            1 << 12,
+            e_entry,
+        )
+        .unwrap();
+
+        let prover_preprocessing = JoltProverPreprocessing::new(shared_preprocessing.clone());
+        let elf_contents = program.get_elf_contents().expect("elf contents is None");
+        let prover = RV64IMACProver::gen_from_elf(
+            &prover_preprocessing,
+            &elf_contents,
+            &inputs,
+            &[],
+            &[],
+            None,
+            None,
+            None,
+        );
+        let io_device = prover.program_io.clone();
+        let (jolt_proof, debug_info) = prover.prove();
+
+        let verifier_preprocessing = JoltVerifierPreprocessing::new(
+            prover_preprocessing.shared.clone(),
+            PCS::setup_verifier(&prover_preprocessing.generators),
+            None,
+        );
+        let verifier = RV64IMACVerifier::new(
+            &verifier_preprocessing,
+            jolt_proof,
+            io_device,
+            None,
+            debug_info,
+        )
+        .expect("Failed to create verifier");
+        verifier.verify().expect("Failed to verify proof");
+    }
+}
+
+#[cfg(all(test, not(feature = "akita-pcs")))]
 mod tests {
     use std::sync::Arc;
 
-    #[cfg(not(feature = "zk"))]
-    use akita_config::CommitmentConfig;
     use ark_bn254::Fr;
     use serial_test::serial;
 
-    #[cfg(not(feature = "zk"))]
-    use crate::curve::fp128_curve::Fp128Curve;
     use crate::curve::Bn254Curve;
-    #[cfg(not(feature = "zk"))]
-    use crate::field::fp128::JoltFp128;
     use crate::host;
-    #[cfg(not(feature = "zk"))]
-    use crate::poly::commitment::akita::{Fp128OneHot32Config, JoltAkitaCommitmentScheme};
     use crate::poly::commitment::dory::{DoryGlobals, DoryLayout};
     #[cfg(feature = "zk")]
     use crate::poly::commitment::pedersen::PedersenGenerators;
@@ -3198,12 +3266,8 @@ mod tests {
         multilinear_polynomial::MultilinearPolynomial,
         opening_proof::{OpeningAccumulator, SumcheckId},
     };
-    #[cfg(not(feature = "zk"))]
-    use crate::transcripts::Blake2bTranscript;
     use crate::zkvm::bytecode::PreprocessingError;
     use crate::zkvm::claim_reductions::AdviceKind;
-    #[cfg(not(feature = "zk"))]
-    use crate::zkvm::prover::JoltCpuProver;
     use crate::zkvm::verifier::JoltSharedPreprocessing;
     use crate::zkvm::witness::CommittedPolynomial;
     use crate::zkvm::{
@@ -3219,15 +3283,6 @@ mod tests {
     #[cfg(feature = "host")]
     use jolt_inlines_sha2 as _;
     use jolt_riscv::JoltInstructionRow;
-
-    #[cfg(not(feature = "zk"))]
-    type AkitaPcs = JoltAkitaCommitmentScheme<{ Fp128OneHot32Config::D }, Fp128OneHot32Config>;
-    #[cfg(not(feature = "zk"))]
-    type RV64IMACAkitaProver<'a> =
-        JoltCpuProver<'a, JoltFp128, Fp128Curve, AkitaPcs, Blake2bTranscript>;
-    #[cfg(not(feature = "zk"))]
-    type RV64IMACAkitaVerifier<'a> =
-        JoltVerifier<'a, JoltFp128, Fp128Curve, AkitaPcs, Blake2bTranscript>;
 
     #[cfg(feature = "zk")]
     fn round_commitment_data<F: JoltField, C: JoltCurve<F = F>, R: rand_core::RngCore>(
@@ -4344,76 +4399,6 @@ mod tests {
             total_constraints > 0,
             "Expected at least some R1CS constraints"
         );
-    }
-
-    #[cfg(not(feature = "zk"))]
-    #[test]
-    #[serial]
-    fn muldiv_e2e_akita() {
-        // D=512 rings are ~8KB each; the prove path needs more than the default
-        // 8MB thread stack. Rayon workers get 64MB below, and we run the test
-        // body on a 64MB thread so the main thread doesn't overflow either.
-        rayon::ThreadPoolBuilder::new()
-            .stack_size(64 * 1024 * 1024)
-            .build_global()
-            .ok();
-        std::thread::Builder::new()
-            .stack_size(64 * 1024 * 1024)
-            .spawn(muldiv_e2e_akita_inner)
-            .unwrap()
-            .join()
-            .unwrap();
-    }
-
-    #[cfg(not(feature = "zk"))]
-    fn muldiv_e2e_akita_inner() {
-        let mut program = host::Program::new("muldiv-guest");
-        let (bytecode, init_memory_state, _, e_entry) = program.decode();
-        let inputs = postcard::to_stdvec(&[9u32, 5u32, 3u32]).unwrap();
-        let (_, _, _, io_device) = program.trace(&inputs, &[], &[]);
-
-        let shared_preprocessing = JoltSharedPreprocessing::new(
-            bytecode.clone(),
-            io_device.memory_layout.clone(),
-            init_memory_state,
-            1 << 12,
-            e_entry,
-        )
-        .unwrap();
-
-        let prover_preprocessing = JoltProverPreprocessing::<JoltFp128, Fp128Curve, AkitaPcs>::new(
-            shared_preprocessing.clone(),
-        );
-        let elf_contents_opt = program.get_elf_contents();
-        let elf_contents = elf_contents_opt.as_deref().expect("elf contents is None");
-        let prover = RV64IMACAkitaProver::gen_from_elf(
-            &prover_preprocessing,
-            elf_contents,
-            &inputs,
-            &[],
-            &[],
-            None,
-            None,
-            None,
-        );
-        let io_device = prover.program_io.clone();
-        let (jolt_proof, debug_info) = prover.prove();
-
-        let verifier_preprocessing =
-            JoltVerifierPreprocessing::<JoltFp128, Fp128Curve, AkitaPcs>::new(
-                prover_preprocessing.shared.clone(),
-                AkitaPcs::setup_verifier(&prover_preprocessing.generators),
-                None,
-            );
-        let verifier = RV64IMACAkitaVerifier::new(
-            &verifier_preprocessing,
-            jolt_proof,
-            io_device,
-            None,
-            debug_info,
-        )
-        .expect("Failed to create verifier");
-        verifier.verify().expect("Failed to verify proof");
     }
 
     #[test]

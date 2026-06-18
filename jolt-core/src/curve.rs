@@ -311,6 +311,7 @@ impl JoltCurve for Bn254Curve {
 
 /// Phantom curve for `JoltFp128` — satisfies `JoltCurve<F = JoltFp128>` at the type level.
 /// Akita PCS does not use pairing-based ZK, so all group operations panic if called.
+#[cfg(feature = "akita-pcs")]
 pub mod fp128_curve {
     use super::*;
     use crate::field::fp128::JoltFp128;

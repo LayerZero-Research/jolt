@@ -831,7 +831,7 @@ impl<F: JoltField, T: Transcript, A: AbstractVerifierOpeningAccumulator<F>>
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "akita-pcs"))]
 mod tests {
     use common::constants::XLEN;
 
