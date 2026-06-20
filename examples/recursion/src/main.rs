@@ -161,7 +161,7 @@ impl GuestProgram {
     fn inputs(&self) -> Vec<Vec<u8>> {
         match self {
             GuestProgram::Fibonacci => {
-                vec![postcard::to_stdvec(&2u32).unwrap()]
+                vec![postcard::to_stdvec(&50u32).unwrap()]
             }
             GuestProgram::Muldiv => {
                 vec![postcard::to_stdvec(&(10u32, 5u32, 2u32)).unwrap()]

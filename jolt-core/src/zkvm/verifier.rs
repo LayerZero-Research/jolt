@@ -562,6 +562,7 @@ impl<
             );
         }
 
+        #[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
         let tv_s16a = std::time::Instant::now();
         let (stage1_result, uniskip_challenge1) = self
             .verify_stage1()
@@ -581,23 +582,36 @@ impl<
         let (stage6a_result, stage6b_result) = self
             .verify_stage6()
             .inspect_err(|e| tracing::error!("Stage 6: {e}"))?;
+        #[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
         let v_s16a_ms = tv_s16a.elapsed().as_secs_f64() * 1000.0;
+        #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+        let v_s16a_ms = 0.0;
 
+        #[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
         let tv_s7 = std::time::Instant::now();
         let stage7_result = self
             .verify_stage7()
             .inspect_err(|e| tracing::error!("Stage 7: {e}"))?;
+        #[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
         let v_s7_ms = tv_s7.elapsed().as_secs_f64() * 1000.0;
+        #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+        let v_s7_ms = 0.0;
 
+        #[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
         let tv_s8 = std::time::Instant::now();
         let stage8_data = self
             .verify_stage8()
             .inspect_err(|e| tracing::error!("Stage 8: {e}"))?;
+        #[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
         let v_s8_ms = tv_s8.elapsed().as_secs_f64() * 1000.0;
+        #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+        let v_s8_ms = 0.0;
 
         tracing::info!(
             "VERIFY_STAGE_TIMES: stages_1_6={:.1}ms stage_7={:.1}ms stage_8={:.1}ms",
-            v_s16a_ms, v_s7_ms, v_s8_ms,
+            v_s16a_ms,
+            v_s7_ms,
+            v_s8_ms,
         );
 
         if zk_mode {
@@ -2201,6 +2215,7 @@ impl<PCS: CommitmentScheme> JoltSharedPreprocessing<PCS> {
             max_padded_trace_length,
             bytecode_chunk_count,
         };
+        DoryGlobals::set_layout_from_env_var();
         let (max_total_vars, max_log_k_chunk) = shared.compute_max_total_vars(true);
         let generators = PCS::setup_prover(max_total_vars);
         shared.program = shared.program.commit(

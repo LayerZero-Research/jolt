@@ -459,13 +459,7 @@ impl<
             }
         }
 
-        if let Ok(layout_str) = std::env::var("JOLT_LAYOUT") {
-            let layout = match layout_str.to_uppercase().as_str() {
-                "AM" | "ADDRESSMAJOR" | "1" => DoryLayout::AddressMajor,
-                _ => DoryLayout::CycleMajor,
-            };
-            DoryGlobals::set_layout_from_env(layout);
-        }
+        DoryGlobals::set_layout_from_env_var();
 
         trace.resize(padded_trace_len, Cycle::NoOp);
 
@@ -665,14 +659,24 @@ impl<
 
         tracing::info!(
             "STAGE_TIMES: stages_1_6a={:.1}ms stage_6b={:.1}ms stage_7={:.1}ms stage_8={:.1}ms",
-            stages_1_6a_ms, stage_6b_ms, stage_7_ms, stage_8_ms,
+            stages_1_6a_ms,
+            stage_6b_ms,
+            stage_7_ms,
+            stage_8_ms,
         );
         #[cfg(feature = "zk")]
         let blindfold_proof = self.prove_blindfold(&joint_opening_proof);
 
         #[cfg(not(feature = "zk"))]
-        let opening_claims =
-            crate::zkvm::proof_serialization::Claims(self.opening_accumulator.openings.clone());
+        let opening_claims = {
+            let mut openings = self.opening_accumulator.openings.clone();
+            for (alias, canonical) in &self.opening_accumulator.aliases {
+                if let Some(opening) = openings.get(canonical).cloned() {
+                    openings.insert(*alias, opening);
+                }
+            }
+            crate::zkvm::proof_serialization::Claims(openings)
+        };
 
         #[cfg(test)]
         {
@@ -735,9 +739,15 @@ impl<
         {
             use ark_serialize::CanonicalSerialize;
             let c = ark_serialize::Compress::Yes;
-            let commitments_sz: usize = proof.commitments.iter().map(|v| CanonicalSerialize::serialized_size(v, c)).sum();
-            let s1_sz = proof.stage1_sumcheck_proof.serialized_size(c) + proof.stage1_uni_skip_first_round_proof.serialized_size(c);
-            let s2_sz = proof.stage2_sumcheck_proof.serialized_size(c) + proof.stage2_uni_skip_first_round_proof.serialized_size(c);
+            let commitments_sz: usize = proof
+                .commitments
+                .iter()
+                .map(|v| CanonicalSerialize::serialized_size(v, c))
+                .sum();
+            let s1_sz = proof.stage1_sumcheck_proof.serialized_size(c)
+                + proof.stage1_uni_skip_first_round_proof.serialized_size(c);
+            let s2_sz = proof.stage2_sumcheck_proof.serialized_size(c)
+                + proof.stage2_uni_skip_first_round_proof.serialized_size(c);
             let s3_sz = proof.stage3_sumcheck_proof.serialized_size(c);
             let s4_sz = proof.stage4_sumcheck_proof.serialized_size(c);
             let s5_sz = proof.stage5_sumcheck_proof.serialized_size(c);
@@ -4089,4 +4099,3 @@ mod tests {
         assert_eq!(io_device.outputs, expected_output);
     }
 }
-

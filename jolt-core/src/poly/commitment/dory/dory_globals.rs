@@ -303,6 +303,16 @@ impl DoryGlobals {
         CURRENT_LAYOUT.store(layout as u8, Ordering::SeqCst);
     }
 
+    pub fn set_layout_from_env_var() {
+        if let Ok(layout_str) = std::env::var("JOLT_LAYOUT") {
+            let layout = match layout_str.to_uppercase().as_str() {
+                "AM" | "ADDRESSMAJOR" | "1" => DoryLayout::AddressMajor,
+                _ => DoryLayout::CycleMajor,
+            };
+            Self::set_layout_from_env(layout);
+        }
+    }
+
     /// Returns the configured Dory matrix shape `(num_rows, num_cols)` for the current context.
     pub fn matrix_shape() -> (usize, usize) {
         (Self::get_max_num_rows(), Self::get_num_columns())

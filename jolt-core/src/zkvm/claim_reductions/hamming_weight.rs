@@ -105,12 +105,12 @@ use crate::subprotocols::{
     sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier},
 };
 use crate::transcripts::Transcript;
+#[cfg(feature = "prover")]
+use crate::zkvm::prover::JoltProverPreprocessing;
 use crate::zkvm::{
     config::OneHotParams,
     witness::{CommittedPolynomial, VirtualPolynomial},
 };
-#[cfg(feature = "prover")]
-use crate::zkvm::prover::JoltProverPreprocessing;
 
 // Degree bound of the sumcheck round polynomials.
 // The fused relation includes `G(k) * eq(k)` terms where both are multilinear in k,
