@@ -300,16 +300,11 @@ impl CanonicalSerialize for CommittedPolynomial {
                 (u8::try_from(*i).unwrap()).serialize_with_mode(writer, compress)
             }
             Self::ProgramImageInit => 8u8.serialize_with_mode(writer, compress),
-            Self::RdIncRa(i) => {
+            Self::UnsignedIncChunk(i) => {
                 9u8.serialize_with_mode(&mut writer, compress)?;
                 (u8::try_from(*i).unwrap()).serialize_with_mode(writer, compress)
             }
-            Self::RdIncMsb => 10u8.serialize_with_mode(writer, compress),
-            Self::RamIncRa(i) => {
-                11u8.serialize_with_mode(&mut writer, compress)?;
-                (u8::try_from(*i).unwrap()).serialize_with_mode(writer, compress)
-            }
-            Self::RamIncMsb => 12u8.serialize_with_mode(writer, compress),
+            Self::UnsignedIncMsb => 10u8.serialize_with_mode(writer, compress),
         }
     }
 
@@ -320,14 +315,12 @@ impl CanonicalSerialize for CommittedPolynomial {
             | Self::TrustedAdvice
             | Self::UntrustedAdvice
             | Self::ProgramImageInit
-            | Self::RdIncMsb
-            | Self::RamIncMsb => 1,
+            | Self::UnsignedIncMsb => 1,
             Self::InstructionRa(_)
             | Self::BytecodeRa(_)
             | Self::RamRa(_)
             | Self::BytecodeChunk(_)
-            | Self::RdIncRa(_)
-            | Self::RamIncRa(_) => 2,
+            | Self::UnsignedIncChunk(_) => 2,
         }
     }
 }
@@ -369,14 +362,9 @@ impl CanonicalDeserialize for CommittedPolynomial {
                 8 => Self::ProgramImageInit,
                 9 => {
                     let i = u8::deserialize_with_mode(reader, compress, validate)?;
-                    Self::RdIncRa(i as usize)
+                    Self::UnsignedIncChunk(i as usize)
                 }
-                10 => Self::RdIncMsb,
-                11 => {
-                    let i = u8::deserialize_with_mode(reader, compress, validate)?;
-                    Self::RamIncRa(i as usize)
-                }
-                12 => Self::RamIncMsb,
+                10 => Self::UnsignedIncMsb,
                 _ => return Err(SerializationError::InvalidData),
             },
         )

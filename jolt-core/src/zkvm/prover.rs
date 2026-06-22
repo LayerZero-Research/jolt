@@ -2326,28 +2326,21 @@ impl<
         if PCS::uses_onehot_inc() {
             for i in 0..self.one_hot_params.inc_onehot_d() {
                 let (point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
-                    CommittedPolynomial::RdIncRa(i),
+                    CommittedPolynomial::UnsignedIncChunk(i),
                     SumcheckId::HammingWeightClaimReduction,
                 );
-                record_opening(CommittedPolynomial::RdIncRa(i), point, claim, F::one());
-            }
-            let (point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
-                CommittedPolynomial::RdIncMsb,
-                SumcheckId::HammingWeightClaimReduction,
-            );
-            record_opening(CommittedPolynomial::RdIncMsb, point, claim, F::one());
-            for i in 0..self.one_hot_params.inc_onehot_d() {
-                let (point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
-                    CommittedPolynomial::RamIncRa(i),
-                    SumcheckId::HammingWeightClaimReduction,
+                record_opening(
+                    CommittedPolynomial::UnsignedIncChunk(i),
+                    point,
+                    claim,
+                    F::one(),
                 );
-                record_opening(CommittedPolynomial::RamIncRa(i), point, claim, F::one());
             }
             let (point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
-                CommittedPolynomial::RamIncMsb,
-                SumcheckId::HammingWeightClaimReduction,
+                CommittedPolynomial::UnsignedIncMsb,
+                SumcheckId::Booleanity,
             );
-            record_opening(CommittedPolynomial::RamIncMsb, point, claim, F::one());
+            record_opening(CommittedPolynomial::UnsignedIncMsb, point, claim, F::one());
         } else {
             let (ram_inc_point, ram_inc_claim) =
                 self.opening_accumulator.get_committed_polynomial_opening(

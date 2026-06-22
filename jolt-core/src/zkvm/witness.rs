@@ -11,7 +11,7 @@ use crate::curve::JoltCurve;
 #[cfg(feature = "prover")]
 use crate::poly::commitment::commitment_scheme::StreamingCommitmentScheme;
 use crate::zkvm::config::OneHotParams;
-use crate::zkvm::instruction::InstructionFlags;
+use crate::zkvm::instruction::{Flags, InstructionFlags, JoltTraceCycle};
 #[cfg(feature = "prover")]
 use crate::zkvm::prover::JoltProverPreprocessing;
 use crate::{
@@ -22,22 +22,40 @@ use crate::{
 
 use super::instruction::{CircuitFlags, LookupQuery};
 
-/// Compute the unsigned register increment for a cycle: `rd_inc + 2^XLEN`.
-pub(super) fn rd_unsigned_inc(cycle: &Cycle) -> u128 {
+pub(super) fn rd_inc(cycle: &Cycle) -> i128 {
     let (_, rd_pre, rd_post) = cycle.rd_write().unwrap_or_default();
-    let rd_inc = rd_post as i128 - rd_pre as i128;
-    (rd_inc + (1i128 << XLEN)) as u128
+    rd_post as i128 - rd_pre as i128
 }
 
-/// Compute the unsigned RAM increment for a cycle: `ram_inc + 2^XLEN`.
-pub(super) fn ram_unsigned_inc(cycle: &Cycle) -> u128 {
-    let ram_inc = match cycle.ram_access() {
+pub(super) fn ram_inc(cycle: &Cycle) -> i128 {
+    match cycle.ram_access() {
         tracer::instruction::RAMAccess::Write(write) => {
             write.post_value as i128 - write.pre_value as i128
         }
         _ => 0,
-    };
-    (ram_inc + (1i128 << XLEN)) as u128
+    }
+}
+
+#[expect(
+    clippy::expect_used,
+    reason = "trace cycles reaching proving must contain final Jolt instruction rows"
+)]
+pub(super) fn store_flag(cycle: &Cycle) -> bool {
+    let jolt_cycle =
+        JoltTraceCycle::try_new(cycle).expect("trace cycle must be a final Jolt instruction row");
+    jolt_cycle.instruction().circuit_flags()[CircuitFlags::Store]
+}
+
+pub(super) fn signed_inc(cycle: &Cycle) -> i128 {
+    if store_flag(cycle) {
+        ram_inc(cycle)
+    } else {
+        rd_inc(cycle)
+    }
+}
+
+pub(crate) fn unsigned_inc(cycle: &Cycle) -> u128 {
+    (signed_inc(cycle) + (1i128 << XLEN)) as u128
 }
 
 #[derive(Hash, PartialEq, Eq, Copy, Clone, Debug, PartialOrd, Ord, Allocative)]
@@ -58,14 +76,10 @@ pub enum CommittedPolynomial {
     /// Note that for RAM, ra and wa are the same polynomial because
     /// there is at most one load or store per cycle.
     RamRa(usize),
-    /// One-hot lower chunk for register-write increments in the Akita path.
-    RdIncRa(usize),
-    /// One-hot MSB chunk for register-write increments in the Akita path.
-    RdIncMsb,
-    /// One-hot lower chunk for RAM-write increments in the Akita path.
-    RamIncRa(usize),
-    /// One-hot MSB chunk for RAM-write increments in the Akita path.
-    RamIncMsb,
+    /// One-hot lower chunk for fused unsigned increments in the Akita path.
+    UnsignedIncChunk(usize),
+    /// Dense MSB bit for fused unsigned increments in the Akita path.
+    UnsignedIncMsb,
     /// Trusted advice polynomial - committed before proving, verifier has commitment.
     /// Length cannot exceed max_trace_length.
     TrustedAdvice,
@@ -89,6 +103,11 @@ pub fn all_committed_polynomials(
     for i in 0..one_hot_params.instruction_d {
         polynomials.push(CommittedPolynomial::InstructionRa(i));
     }
+    if onehot_inc {
+        for i in 0..one_hot_params.inc_onehot_d() {
+            polynomials.push(CommittedPolynomial::UnsignedIncChunk(i));
+        }
+    }
     for i in 0..one_hot_params.ram_d {
         polynomials.push(CommittedPolynomial::RamRa(i));
     }
@@ -96,14 +115,7 @@ pub fn all_committed_polynomials(
         polynomials.push(CommittedPolynomial::BytecodeRa(i));
     }
     if onehot_inc {
-        for i in 0..one_hot_params.inc_onehot_d() {
-            polynomials.push(CommittedPolynomial::RdIncRa(i));
-        }
-        polynomials.push(CommittedPolynomial::RdIncMsb);
-        for i in 0..one_hot_params.inc_onehot_d() {
-            polynomials.push(CommittedPolynomial::RamIncRa(i));
-        }
-        polynomials.push(CommittedPolynomial::RamIncMsb);
+        polynomials.push(CommittedPolynomial::UnsignedIncMsb);
     }
     polynomials
 }
@@ -178,37 +190,21 @@ impl CommittedPolynomial {
                     .collect();
                 PCS::process_chunk_onehot(&preprocessing.generators, one_hot_params.k_chunk, &row)
             }
-            CommittedPolynomial::RdIncRa(idx) => {
+            CommittedPolynomial::UnsignedIncChunk(idx) => {
                 let row: Vec<Option<usize>> = row_cycles
                     .iter()
                     .map(|cycle| {
-                        Some(one_hot_params.inc_chunk(rd_unsigned_inc(cycle), idx + 1) as usize)
+                        Some(one_hot_params.inc_chunk(unsigned_inc(cycle), idx + 1) as usize)
                     })
                     .collect();
                 PCS::process_chunk_onehot(&preprocessing.generators, one_hot_params.k_chunk, &row)
             }
-            CommittedPolynomial::RdIncMsb => {
-                let row: Vec<Option<usize>> = row_cycles
+            CommittedPolynomial::UnsignedIncMsb => {
+                let row: Vec<u8> = row_cycles
                     .iter()
-                    .map(|cycle| Some((rd_unsigned_inc(cycle) >> XLEN) as usize))
+                    .map(|cycle| (unsigned_inc(cycle) >> XLEN) as u8)
                     .collect();
-                PCS::process_chunk_onehot(&preprocessing.generators, one_hot_params.k_chunk, &row)
-            }
-            CommittedPolynomial::RamIncRa(idx) => {
-                let row: Vec<Option<usize>> = row_cycles
-                    .iter()
-                    .map(|cycle| {
-                        Some(one_hot_params.inc_chunk(ram_unsigned_inc(cycle), idx + 1) as usize)
-                    })
-                    .collect();
-                PCS::process_chunk_onehot(&preprocessing.generators, one_hot_params.k_chunk, &row)
-            }
-            CommittedPolynomial::RamIncMsb => {
-                let row: Vec<Option<usize>> = row_cycles
-                    .iter()
-                    .map(|cycle| Some((ram_unsigned_inc(cycle) >> XLEN) as usize))
-                    .collect();
-                PCS::process_chunk_onehot(&preprocessing.generators, one_hot_params.k_chunk, &row)
+                PCS::process_chunk(&preprocessing.generators, &row)
             }
             CommittedPolynomial::TrustedAdvice
             | CommittedPolynomial::UntrustedAdvice
@@ -299,49 +295,23 @@ impl CommittedPolynomial {
                     one_hot_params.k_chunk,
                 ))
             }
-            CommittedPolynomial::RdIncRa(i) => {
+            CommittedPolynomial::UnsignedIncChunk(i) => {
                 let one_hot_params = one_hot_params.unwrap();
                 let addresses: Vec<_> = trace
                     .par_iter()
-                    .map(|cycle| Some(one_hot_params.inc_chunk(rd_unsigned_inc(cycle), i + 1)))
+                    .map(|cycle| Some(one_hot_params.inc_chunk(unsigned_inc(cycle), i + 1)))
                     .collect();
                 MultilinearPolynomial::OneHot(OneHotPolynomial::from_indices(
                     addresses,
                     one_hot_params.k_chunk,
                 ))
             }
-            CommittedPolynomial::RdIncMsb => {
-                let one_hot_params = one_hot_params.unwrap();
-                let addresses: Vec<Option<u8>> = trace
+            CommittedPolynomial::UnsignedIncMsb => {
+                let coeffs: Vec<u8> = trace
                     .par_iter()
-                    .map(|cycle| Some((rd_unsigned_inc(cycle) >> XLEN) as u8))
+                    .map(|cycle| (unsigned_inc(cycle) >> XLEN) as u8)
                     .collect();
-                MultilinearPolynomial::OneHot(OneHotPolynomial::from_indices(
-                    addresses,
-                    one_hot_params.k_chunk,
-                ))
-            }
-            CommittedPolynomial::RamIncRa(i) => {
-                let one_hot_params = one_hot_params.unwrap();
-                let addresses: Vec<_> = trace
-                    .par_iter()
-                    .map(|cycle| Some(one_hot_params.inc_chunk(ram_unsigned_inc(cycle), i + 1)))
-                    .collect();
-                MultilinearPolynomial::OneHot(OneHotPolynomial::from_indices(
-                    addresses,
-                    one_hot_params.k_chunk,
-                ))
-            }
-            CommittedPolynomial::RamIncMsb => {
-                let one_hot_params = one_hot_params.unwrap();
-                let addresses: Vec<Option<u8>> = trace
-                    .par_iter()
-                    .map(|cycle| Some((ram_unsigned_inc(cycle) >> XLEN) as u8))
-                    .collect();
-                MultilinearPolynomial::OneHot(OneHotPolynomial::from_indices(
-                    addresses,
-                    one_hot_params.k_chunk,
-                ))
+                coeffs.into()
             }
             CommittedPolynomial::TrustedAdvice
             | CommittedPolynomial::UntrustedAdvice
@@ -357,10 +327,7 @@ impl CommittedPolynomial {
             CommittedPolynomial::InstructionRa(_)
             | CommittedPolynomial::BytecodeRa(_)
             | CommittedPolynomial::RamRa(_)
-            | CommittedPolynomial::RdIncRa(_)
-            | CommittedPolynomial::RamIncRa(_)
-            | CommittedPolynomial::RdIncMsb
-            | CommittedPolynomial::RamIncMsb => Some(one_hot_params.k_chunk),
+            | CommittedPolynomial::UnsignedIncChunk(_) => Some(one_hot_params.k_chunk),
             _ => None,
         }
     }
@@ -386,14 +353,9 @@ impl CommittedPolynomial {
                 remap_address(cycle.ram_access().address() as u64, memory_layout)
                     .map(|address| one_hot_params.ram_address_chunk(address, *i))
             }
-            CommittedPolynomial::RdIncRa(i) => {
-                Some(one_hot_params.inc_chunk(rd_unsigned_inc(cycle), i + 1))
+            CommittedPolynomial::UnsignedIncChunk(i) => {
+                Some(one_hot_params.inc_chunk(unsigned_inc(cycle), i + 1))
             }
-            CommittedPolynomial::RdIncMsb => Some((rd_unsigned_inc(cycle) >> XLEN) as u8),
-            CommittedPolynomial::RamIncRa(i) => {
-                Some(one_hot_params.inc_chunk(ram_unsigned_inc(cycle), i + 1))
-            }
-            CommittedPolynomial::RamIncMsb => Some((ram_unsigned_inc(cycle) >> XLEN) as u8),
             _ => panic!("extract_index called on non-onehot polynomial"),
         }
     }

@@ -1798,11 +1798,11 @@ impl<
         if PCS::uses_onehot_inc() {
             for i in 0..self.one_hot_params.inc_onehot_d() {
                 let (point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
-                    CommittedPolynomial::RdIncRa(i),
+                    CommittedPolynomial::UnsignedIncChunk(i),
                     SumcheckId::HammingWeightClaimReduction,
                 );
                 record_opening(
-                    CommittedPolynomial::RdIncRa(i),
+                    CommittedPolynomial::UnsignedIncChunk(i),
                     point,
                     claim,
                     F::one(),
@@ -1810,28 +1810,16 @@ impl<
                 );
             }
             let (point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
-                CommittedPolynomial::RdIncMsb,
-                SumcheckId::HammingWeightClaimReduction,
+                CommittedPolynomial::UnsignedIncMsb,
+                SumcheckId::Booleanity,
             );
-            record_opening(CommittedPolynomial::RdIncMsb, point, claim, F::one(), None);
-            for i in 0..self.one_hot_params.inc_onehot_d() {
-                let (point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
-                    CommittedPolynomial::RamIncRa(i),
-                    SumcheckId::HammingWeightClaimReduction,
-                );
-                record_opening(
-                    CommittedPolynomial::RamIncRa(i),
-                    point,
-                    claim,
-                    F::one(),
-                    None,
-                );
-            }
-            let (point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
-                CommittedPolynomial::RamIncMsb,
-                SumcheckId::HammingWeightClaimReduction,
+            record_opening(
+                CommittedPolynomial::UnsignedIncMsb,
+                point,
+                claim,
+                F::one(),
+                Some(self.proof.trace_length.log_2()),
             );
-            record_opening(CommittedPolynomial::RamIncMsb, point, claim, F::one(), None);
         } else {
             // Dense polynomials: RamInc and RdInc (from IncClaimReduction in Stage 6)
             let (ram_inc_point, ram_inc_claim) =
