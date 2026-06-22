@@ -20,6 +20,11 @@ debug = ["zeroos?/debug"]
 zk = ["jolt-core?/zk"]
 dory-pcs = ["jolt-core?/dory-pcs"]
 akita-pcs = ["jolt-core?/akita-pcs"]
+field-inline = [
+  "jolt-core?/field-inline",
+  "jolt-program?/field-inline",
+  "tracer?/field-inline",
+]
 
 host = [
   "jolt-core/host",

@@ -205,7 +205,7 @@ where
         .map(PCS::commitment_into_verifier)
         .collect::<Vec<_>>();
 
-    commitments_from_proof_payload_order(commitments, instruction_ra_count, ram_ra_count)
+    commitments_from_akita_proof_payload_order(commitments, instruction_ra_count, ram_ra_count)
 }
 
 fn ceil_log_2(value: usize) -> usize {
@@ -216,7 +216,9 @@ fn ceil_log_2(value: usize) -> usize {
     }
 }
 
-fn commitments_from_proof_payload_order<C>(
+/// Matches `jolt_core::zkvm::witness::all_committed_polynomials` on the Akita
+/// integration branch (instruction RA, dense increments, RAM RA, bytecode RA).
+fn commitments_from_akita_proof_payload_order<C>(
     commitments: Vec<C>,
     instruction_ra_count: usize,
     ram_ra_count: usize,
@@ -230,22 +232,22 @@ fn commitments_from_proof_payload_order<C>(
     }
 
     let mut commitments = commitments.into_iter();
+    let instruction_ra = commitments
+        .by_ref()
+        .take(instruction_ra_count)
+        .collect::<Vec<_>>();
     let Some(rd_inc) = commitments.next() else {
         return Err(VerifierError::InvalidCommitmentCount {
             expected: minimum,
-            got: 0,
+            got: instruction_ra_count,
         });
     };
     let Some(ram_inc) = commitments.next() else {
         return Err(VerifierError::InvalidCommitmentCount {
             expected: minimum,
-            got: 1,
+            got: instruction_ra_count + 1,
         });
     };
-    let instruction_ra = commitments
-        .by_ref()
-        .take(instruction_ra_count)
-        .collect::<Vec<_>>();
     let ram_ra = commitments.by_ref().take(ram_ra_count).collect::<Vec<_>>();
     let bytecode_ra = commitments.collect::<Vec<_>>();
 
