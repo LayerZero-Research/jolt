@@ -1,6 +1,5 @@
 use allocative::Allocative;
 use rayon::prelude::*;
-use tracer::instruction::Cycle;
 
 use common::constants::XLEN;
 
@@ -16,7 +15,7 @@ use crate::subprotocols::sumcheck_prover::SumcheckInstanceProver;
 use crate::subprotocols::sumcheck_verifier::{SumcheckInstanceParams, SumcheckInstanceVerifier};
 use crate::transcripts::Transcript;
 use crate::utils::math::Math;
-use crate::zkvm::witness::{unsigned_inc, VirtualPolynomial};
+use crate::zkvm::witness::VirtualPolynomial;
 
 const DEGREE_BOUND: usize = 2;
 
@@ -67,15 +66,14 @@ pub struct UnsignedIncClaimReductionProver<F: JoltField> {
 
 impl<F: JoltField> UnsignedIncClaimReductionProver<F> {
     #[tracing::instrument(skip_all, name = "UnsignedIncClaimReductionProver::initialize")]
-    pub fn initialize(params: UnsignedIncClaimReductionParams<F>, trace: &[Cycle]) -> Self {
-        let coeffs: Vec<F> = trace
-            .par_iter()
-            .map(|cycle| F::from_u128(unsigned_inc(cycle)))
-            .collect();
+    pub fn initialize(
+        params: UnsignedIncClaimReductionParams<F>,
+        unsigned_inc: MultilinearPolynomial<F>,
+    ) -> Self {
         let eq = EqPolynomial::evals(&params.r_cycle_inc.r);
 
         Self {
-            unsigned_inc: coeffs.into(),
+            unsigned_inc,
             eq: eq.into(),
             params,
         }

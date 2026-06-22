@@ -273,6 +273,8 @@ pub struct JoltCpuProver<
     blindfold_accumulator: crate::subprotocols::blindfold::BlindFoldAccumulator<F, C>,
     #[cfg(not(feature = "zk"))]
     _curve: std::marker::PhantomData<C>,
+    #[cfg(feature = "akita-pcs")]
+    akita_fused_inc_witness: Option<crate::zkvm::witness::AkitaFusedIncWitness<F>>,
 }
 
 #[cfg(all(test, feature = "akita-pcs"))]
@@ -640,6 +642,8 @@ impl<
             blindfold_accumulator: crate::subprotocols::blindfold::BlindFoldAccumulator::new(),
             #[cfg(not(feature = "zk"))]
             _curve: std::marker::PhantomData,
+            #[cfg(feature = "akita-pcs")]
+            akita_fused_inc_witness: None,
         }
     }
 
@@ -1016,13 +1020,13 @@ impl<
                 .append_serializable(b"commitment", commitment);
         }
 
+        #[cfg(feature = "akita-pcs")]
         let unsigned_inc_msb_dense = if PCS::uses_onehot_inc() {
-            let msb_witness = CommittedPolynomial::UnsignedIncMsb.generate_witness(
-                &self.preprocessing.materialized_program().bytecode,
-                &self.preprocessing.shared.memory_layout,
-                &trace,
-                Some(&self.one_hot_params),
-            );
+            let fused_inc_witness =
+                crate::zkvm::witness::AkitaFusedIncWitness::build_unsigned_inc_and_msb(
+                    self.trace.as_ref(),
+                );
+            let msb_witness = fused_inc_witness.unsigned_inc_msb_for_commit();
             let mut dense_commitments =
                 PCS::commit_dense_batch(&[msb_witness], &self.preprocessing.generators)
                     .expect("UnsignedIncMsb dense commitment");
@@ -1031,10 +1035,13 @@ impl<
                 .expect("UnsignedIncMsb dense commitment");
             self.transcript
                 .append_serializable(b"unsigned_inc_msb", &commitment);
+            self.akita_fused_inc_witness = Some(fused_inc_witness);
             Some((commitment, hint))
         } else {
             None
         };
+        #[cfg(not(feature = "akita-pcs"))]
+        let unsigned_inc_msb_dense: Option<(PCS::Commitment, PCS::OpeningProofHint)> = None;
 
         (commitments, hint_map, unsigned_inc_msb_dense)
     }
@@ -1509,8 +1516,13 @@ impl<
             &self.program_io.memory_layout,
             &self.one_hot_params,
         );
-        let mut inc_virtualization =
-            IncVirtualizationProver::initialize(inc_virtualization_params, &self.trace);
+        let mut inc_virtualization = {
+            let (inc, store) =
+                crate::zkvm::witness::AkitaFusedIncWitness::build_signed_inc_and_store(
+                    self.trace.as_ref(),
+                );
+            IncVirtualizationProver::initialize(inc_virtualization_params, inc, store)
+        };
         let mut instances: Vec<&mut dyn SumcheckInstanceProver<_, _>> =
             vec![&mut ram_ra_reduction, &mut inc_virtualization];
 
@@ -1556,12 +1568,28 @@ impl<
             Arc::clone(&self.trace),
             self.preprocessing.bytecode(),
         );
-        let mut booleanity = BooleanityAddressSumcheckProver::initialize(
-            booleanity_params,
-            &self.trace,
-            &self.preprocessing.materialized_program().bytecode,
-            &self.program_io.memory_layout,
-        );
+        let mut booleanity = {
+            #[cfg(feature = "akita-pcs")]
+            let unsigned_inc_msb = self
+                .akita_fused_inc_witness
+                .as_mut()
+                .and_then(|witness| {
+                    if booleanity_params.unsigned_inc_msb_gamma.is_some() {
+                        Some(witness.take_unsigned_inc_msb())
+                    } else {
+                        None
+                    }
+                });
+            #[cfg(not(feature = "akita-pcs"))]
+            let unsigned_inc_msb = None;
+            BooleanityAddressSumcheckProver::initialize(
+                booleanity_params,
+                &self.trace,
+                &self.preprocessing.materialized_program().bytecode,
+                &self.program_io.memory_layout,
+                unsigned_inc_msb,
+            )
+        };
 
         #[cfg(feature = "allocative")]
         {
@@ -1754,8 +1782,17 @@ impl<
         let mut inc_reduction =
             IncClaimReductionSumcheckProver::initialize(inc_reduction_params, self.trace.clone());
         #[cfg(feature = "akita-pcs")]
-        let mut unsigned_inc_reduction =
-            UnsignedIncClaimReductionProver::initialize(unsigned_inc_reduction_params, &self.trace);
+        let mut unsigned_inc_reduction = {
+            let unsigned_inc = self
+                .akita_fused_inc_witness
+                .as_mut()
+                .expect("akita fused increment witness must be built before stage 6b")
+                .take_unsigned_inc();
+            UnsignedIncClaimReductionProver::initialize(
+                unsigned_inc_reduction_params,
+                unsigned_inc,
+            )
+        };
 
         #[cfg(feature = "allocative")]
         {

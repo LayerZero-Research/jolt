@@ -58,6 +58,75 @@ pub(crate) fn unsigned_inc(cycle: &Cycle) -> u128 {
     (signed_inc(cycle) + (1i128 << XLEN)) as u128
 }
 
+/// Dense fused-increment witness polynomials built in a single trace pass (Akita only).
+#[cfg(feature = "akita-pcs")]
+pub struct AkitaFusedIncWitness<F: JoltField> {
+    unsigned_inc: Option<MultilinearPolynomial<F>>,
+    unsigned_inc_msb: Option<MultilinearPolynomial<F>>,
+}
+
+#[cfg(feature = "akita-pcs")]
+impl<F: JoltField> AkitaFusedIncWitness<F> {
+    pub fn build_unsigned_inc_and_msb(trace: &[Cycle]) -> Self {
+        let tuples: Vec<(F, u8)> = trace
+            .par_iter()
+            .map(|cycle| {
+                let unsigned = unsigned_inc(cycle);
+                (F::from_u128(unsigned), (unsigned >> XLEN) as u8)
+            })
+            .collect();
+
+        let unsigned_inc_vals: Vec<F> = tuples.iter().map(|t| t.0).collect();
+        let msb: Vec<u8> = tuples.iter().map(|t| t.1).collect();
+
+        Self {
+            unsigned_inc: Some(unsigned_inc_vals.into()),
+            unsigned_inc_msb: Some(msb.into()),
+        }
+    }
+
+    pub fn build_signed_inc_and_store(
+        trace: &[Cycle],
+    ) -> (MultilinearPolynomial<F>, MultilinearPolynomial<F>) {
+        let tuples: Vec<(F, F)> = trace
+            .par_iter()
+            .map(|cycle| {
+                (
+                    F::from_i128(signed_inc(cycle)),
+                    if store_flag(cycle) {
+                        F::one()
+                    } else {
+                        F::zero()
+                    },
+                )
+            })
+            .collect();
+
+        let signed_inc_vals: Vec<F> = tuples.iter().map(|t| t.0).collect();
+        let store: Vec<F> = tuples.iter().map(|t| t.1).collect();
+        (signed_inc_vals.into(), store.into())
+    }
+
+    pub fn unsigned_inc_msb_for_commit(&self) -> MultilinearPolynomial<F> {
+        self.unsigned_inc_msb
+            .as_ref()
+            .expect("UnsignedIncMsb witness must be present")
+            .clone()
+    }
+
+    pub fn take_unsigned_inc_msb(&mut self) -> MultilinearPolynomial<F> {
+        self.unsigned_inc_msb
+            .take()
+            .expect("UnsignedIncMsb witness already consumed")
+    }
+
+    pub fn take_unsigned_inc(&mut self) -> MultilinearPolynomial<F> {
+        self.unsigned_inc
+            .take()
+            .expect("unsigned_inc witness already consumed")
+    }
+}
+
 #[derive(Hash, PartialEq, Eq, Copy, Clone, Debug, PartialOrd, Ord, Allocative)]
 pub enum CommittedPolynomial {
     /*  Twist/Shout witnesses */

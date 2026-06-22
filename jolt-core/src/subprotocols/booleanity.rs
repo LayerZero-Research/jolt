@@ -23,7 +23,7 @@ use ark_std::Zero;
 use rayon::prelude::*;
 use std::iter::zip;
 
-use common::{constants::XLEN, jolt_device::MemoryLayout};
+use common::jolt_device::MemoryLayout;
 use tracer::instruction::Cycle;
 
 #[cfg(feature = "zk")]
@@ -54,7 +54,7 @@ use crate::{
     zkvm::{
         bytecode::BytecodePreprocessing,
         config::OneHotParams,
-        witness::{unsigned_inc, CommittedPolynomial, VirtualPolynomial},
+        witness::{CommittedPolynomial, VirtualPolynomial},
     },
 };
 
@@ -275,6 +275,7 @@ impl<F: JoltField> BooleanityAddressSumcheckProver<F> {
         trace: &[Cycle],
         bytecode: &BytecodePreprocessing,
         memory_layout: &MemoryLayout,
+        unsigned_inc_msb: Option<MultilinearPolynomial<F>>,
     ) -> Self {
         let (G, ra_indices) = compute_all_G_and_ra_indices::<F>(
             trace,
@@ -290,11 +291,8 @@ impl<F: JoltField> BooleanityAddressSumcheckProver<F> {
         F_table.reset(F::one());
         let unsigned_inc_msb = if params.unsigned_inc_msb_gamma.is_some() {
             Some(
-                trace
-                    .par_iter()
-                    .map(|cycle| F::from_u64((unsigned_inc(cycle) >> XLEN) as u64))
-                    .collect::<Vec<_>>()
-                    .into(),
+                unsigned_inc_msb
+                    .expect("akita booleanity requires precomputed UnsignedIncMsb witness"),
             )
         } else {
             None

@@ -1,6 +1,5 @@
 use allocative::Allocative;
 use rayon::prelude::*;
-use tracer::instruction::Cycle;
 
 use crate::field::JoltField;
 use crate::poly::eq_poly::EqPolynomial;
@@ -15,7 +14,7 @@ use crate::subprotocols::sumcheck_verifier::{SumcheckInstanceParams, SumcheckIns
 use crate::transcripts::Transcript;
 use crate::utils::math::Math;
 use crate::zkvm::instruction::CircuitFlags;
-use crate::zkvm::witness::{signed_inc, store_flag, CommittedPolynomial, VirtualPolynomial};
+use crate::zkvm::witness::{CommittedPolynomial, VirtualPolynomial};
 
 const DEGREE_BOUND: usize = 3;
 
@@ -124,21 +123,11 @@ pub struct IncVirtualizationProver<F: JoltField> {
 
 impl<F: JoltField> IncVirtualizationProver<F> {
     #[tracing::instrument(skip_all, name = "IncVirtualizationProver::initialize")]
-    pub fn initialize(params: IncVirtualizationParams<F>, trace: &[Cycle]) -> Self {
-        let inc_coeffs: Vec<F> = trace
-            .par_iter()
-            .map(|cycle| F::from_i128(signed_inc(cycle)))
-            .collect();
-        let store_coeffs: Vec<F> = trace
-            .par_iter()
-            .map(|cycle| {
-                if store_flag(cycle) {
-                    F::one()
-                } else {
-                    F::zero()
-                }
-            })
-            .collect();
+    pub fn initialize(
+        params: IncVirtualizationParams<F>,
+        inc: MultilinearPolynomial<F>,
+        store: MultilinearPolynomial<F>,
+    ) -> Self {
         let [gamma, gamma_sqr, gamma_cub] = params.gamma_powers;
 
         let ram_eq = {
@@ -165,8 +154,8 @@ impl<F: JoltField> IncVirtualizationProver<F> {
         };
 
         Self {
-            inc: inc_coeffs.into(),
-            store: store_coeffs.into(),
+            inc,
+            store,
             ram_eq: ram_eq.into(),
             rd_eq: rd_eq.into(),
             params,
