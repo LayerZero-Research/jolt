@@ -474,10 +474,13 @@ impl<
     /// committed-program sizes from `committed_program` since Akita stores committed
     /// data on the prover preprocessing rather than on `shared`.
     fn precommitted_candidate_total_vars(&self) -> Vec<usize> {
-        let mut candidates = self.preprocessing.shared.precommitted_candidate_total_vars::<PCS>(
-            !self.program_io.trusted_advice.is_empty(),
-            !self.program_io.untrusted_advice.is_empty(),
-        );
+        let mut candidates = self
+            .preprocessing
+            .shared
+            .precommitted_candidate_total_vars::<PCS>(
+                !self.program_io.trusted_advice.is_empty(),
+                !self.program_io.untrusted_advice.is_empty(),
+            );
         if let Some(committed) = self.preprocessing.committed_program.as_ref() {
             let bytecode_chunk_count = committed.bytecode_commitments.bytecode_chunk_count;
             let chunk_cycle_log_t = (self.preprocessing.shared.bytecode_size()
@@ -956,112 +959,112 @@ impl<
         let (commitments, hint_map) = if let Some(chunk_size) = streaming_chunk {
             let num_chunks = T / chunk_size;
 
-                tracing::debug!(
-                    "Streaming commit: {} polynomials, T={}, chunk_size={}, num_chunks={}",
-                    polys.len(),
-                    T,
-                    chunk_size,
-                    num_chunks,
-                );
+            tracing::debug!(
+                "Streaming commit: {} polynomials, T={}, chunk_size={}, num_chunks={}",
+                polys.len(),
+                T,
+                chunk_size,
+                num_chunks,
+            );
 
-                // Tier 1: Compute chunk commitments for each polynomial
-                let mut row_commitments: Vec<Vec<PCS::ChunkState>> = vec![vec![]; num_chunks];
+            // Tier 1: Compute chunk commitments for each polynomial
+            let mut row_commitments: Vec<Vec<PCS::ChunkState>> = vec![vec![]; num_chunks];
 
-                self.lazy_trace
-                    .clone()
-                    .pad_using(T, |_| Cycle::NoOp)
-                    .iter_chunks(chunk_size)
-                    .zip(row_commitments.iter_mut())
-                    .par_bridge()
-                    .for_each(|(chunk, row_tier1_commitments)| {
-                        let res: Vec<_> = polys
-                            .par_iter()
-                            .map(|poly| {
-                                poly.stream_witness_and_commit_rows::<_, _, PCS>(
-                                    self.preprocessing,
-                                    &chunk,
-                                    &self.one_hot_params,
-                                )
-                            })
-                            .collect();
-                        *row_tier1_commitments = res;
-                    });
-
-                // Transpose: row_commitments[chunk][poly] -> tier1_per_poly[poly][chunk]
-                // Consuming drain avoids cloning each ChunkState.
-                let num_polys = polys.len();
-                let num_chunks = row_commitments.len();
-                let mut tier1_per_poly: Vec<Vec<PCS::ChunkState>> = (0..num_polys)
-                    .map(|_| Vec::with_capacity(num_chunks))
-                    .collect();
-                for mut row in row_commitments.drain(..) {
-                    for (poly_idx, state) in row.drain(..).enumerate() {
-                        tier1_per_poly[poly_idx].push(state);
-                    }
-                }
-
-                let onehot_ks: Vec<Option<usize>> = polys
-                    .iter()
-                    .map(|poly| poly.get_onehot_k(&self.one_hot_params))
-                    .collect();
-
-                if let Some((commitments, batch_hint)) = pcs.aggregate_streaming_batch(
-                    &self.preprocessing.generators,
-                    &onehot_ks,
-                    &tier1_per_poly,
-                ) {
-                    (commitments, batch_hint)
-                } else {
-                    // Tier 2: Compute final commitments from tier1 commitments
-                    let (commitments, hints): (Vec<_>, Vec<_>) = tier1_per_poly
-                        .into_par_iter()
-                        .zip(onehot_ks.into_par_iter())
-                        .map(|(tier1_commitments, onehot_k)| {
-                            pcs.aggregate_chunks(
-                                &self.preprocessing.generators,
-                                onehot_k,
-                                &tier1_commitments,
-                            )
-                        })
-                        .unzip();
-
-                    let batch_hint = PCS::streaming_batch_hint(hints);
-                    (commitments, batch_hint)
-                }
-            } else {
-                tracing::debug!("Non-streaming commit: {} polynomials, T={}", polys.len(), T,);
-
-                if PCS::uses_onehot_inc() {
-                    let source = LazyOneHotSource {
-                        trace: &self.trace,
-                        polys: &polys,
-                        preprocessing: &self.preprocessing.shared,
-                        one_hot_params: &self.one_hot_params,
-                    };
-                    let (commitments, batch_hint) =
-                        pcs.batch_commit(&main_layout, &source, &self.preprocessing.generators);
-                    (commitments, batch_hint)
-                } else {
-                    // Lay witnesses on the trace prefix (`k * trace_len + cycle`), matching Stage-8
-                    // opening. Padding to embedded `T` when the matrix is widened would place
-                    // coefficients at `k * T + cycle` and break the batched opening.
-                    let witnesses: Vec<MultilinearPolynomial<F>> = polys
+            self.lazy_trace
+                .clone()
+                .pad_using(T, |_| Cycle::NoOp)
+                .iter_chunks(chunk_size)
+                .zip(row_commitments.iter_mut())
+                .par_bridge()
+                .for_each(|(chunk, row_tier1_commitments)| {
+                    let res: Vec<_> = polys
                         .par_iter()
-                        .map(|poly_id| {
-                            poly_id.generate_witness(
-                                &self.preprocessing.shared.bytecode,
-                                &self.preprocessing.shared.memory_layout,
-                                &self.trace,
-                                Some(&self.one_hot_params),
+                        .map(|poly| {
+                            poly.stream_witness_and_commit_rows::<_, _, PCS>(
+                                self.preprocessing,
+                                &chunk,
+                                &self.one_hot_params,
                             )
                         })
                         .collect();
+                    *row_tier1_commitments = res;
+                });
 
-                    let (commitments, batch_hint) =
-                        pcs.batch_commit(&main_layout, &witnesses, &self.preprocessing.generators);
-                    (commitments, batch_hint)
+            // Transpose: row_commitments[chunk][poly] -> tier1_per_poly[poly][chunk]
+            // Consuming drain avoids cloning each ChunkState.
+            let num_polys = polys.len();
+            let num_chunks = row_commitments.len();
+            let mut tier1_per_poly: Vec<Vec<PCS::ChunkState>> = (0..num_polys)
+                .map(|_| Vec::with_capacity(num_chunks))
+                .collect();
+            for mut row in row_commitments.drain(..) {
+                for (poly_idx, state) in row.drain(..).enumerate() {
+                    tier1_per_poly[poly_idx].push(state);
                 }
-            };
+            }
+
+            let onehot_ks: Vec<Option<usize>> = polys
+                .iter()
+                .map(|poly| poly.get_onehot_k(&self.one_hot_params))
+                .collect();
+
+            if let Some((commitments, batch_hint)) = pcs.aggregate_streaming_batch(
+                &self.preprocessing.generators,
+                &onehot_ks,
+                &tier1_per_poly,
+            ) {
+                (commitments, batch_hint)
+            } else {
+                // Tier 2: Compute final commitments from tier1 commitments
+                let (commitments, hints): (Vec<_>, Vec<_>) = tier1_per_poly
+                    .into_par_iter()
+                    .zip(onehot_ks.into_par_iter())
+                    .map(|(tier1_commitments, onehot_k)| {
+                        pcs.aggregate_chunks(
+                            &self.preprocessing.generators,
+                            onehot_k,
+                            &tier1_commitments,
+                        )
+                    })
+                    .unzip();
+
+                let batch_hint = PCS::streaming_batch_hint(hints);
+                (commitments, batch_hint)
+            }
+        } else {
+            tracing::debug!("Non-streaming commit: {} polynomials, T={}", polys.len(), T,);
+
+            if PCS::uses_onehot_inc() {
+                let source = LazyOneHotSource {
+                    trace: &self.trace,
+                    polys: &polys,
+                    preprocessing: &self.preprocessing.shared,
+                    one_hot_params: &self.one_hot_params,
+                };
+                let (commitments, batch_hint) =
+                    pcs.batch_commit(&main_layout, &source, &self.preprocessing.generators);
+                (commitments, batch_hint)
+            } else {
+                // Lay witnesses on the trace prefix (`k * trace_len + cycle`), matching Stage-8
+                // opening. Padding to embedded `T` when the matrix is widened would place
+                // coefficients at `k * T + cycle` and break the batched opening.
+                let witnesses: Vec<MultilinearPolynomial<F>> = polys
+                    .par_iter()
+                    .map(|poly_id| {
+                        poly_id.generate_witness(
+                            &self.preprocessing.shared.bytecode,
+                            &self.preprocessing.shared.memory_layout,
+                            &self.trace,
+                            Some(&self.one_hot_params),
+                        )
+                    })
+                    .collect();
+
+                let (commitments, batch_hint) =
+                    pcs.batch_commit(&main_layout, &witnesses, &self.preprocessing.generators);
+                (commitments, batch_hint)
+            }
+        };
 
         // Append commitments to transcript
         for commitment in &commitments {

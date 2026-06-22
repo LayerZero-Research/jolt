@@ -8,7 +8,10 @@
 use crate::{
     poly::coefficient_layout::CoefficientLayout,
     poly::rlc_polynomial::{RLCPolynomial, RLCStreamingData, TraceSource},
-    zkvm::{claim_reductions::PrecommittedPolynomial, claim_reductions::AdviceKind, config::OneHotParams},
+    zkvm::{
+        claim_reductions::AdviceKind, claim_reductions::PrecommittedPolynomial,
+        config::OneHotParams,
+    },
 };
 use allocative::Allocative;
 use num_derive::FromPrimitive;

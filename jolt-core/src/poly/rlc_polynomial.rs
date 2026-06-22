@@ -1,6 +1,6 @@
 use crate::field::{BarrettReduce, FMAdd, JoltField};
-use crate::poly::commitment::dory::{balanced_sigma_nu, DoryGlobals};
 use crate::poly::coefficient_layout::CoefficientLayout;
+use crate::poly::commitment::dory::{balanced_sigma_nu, DoryGlobals};
 use crate::poly::multilinear_polynomial::MultilinearPolynomial;
 use crate::utils::accumulation::MedAccumS;
 use crate::utils::math::{s64_from_diff_u64s, Math};

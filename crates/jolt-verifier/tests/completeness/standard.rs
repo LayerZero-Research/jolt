@@ -43,7 +43,11 @@ fn standard_sha2_small_core_proof_is_accepted() {
 }
 
 #[test]
-#[cfg(all(feature = "core-fixtures", feature = "committed-program", not(feature = "zk")))]
+#[cfg(all(
+    feature = "core-fixtures",
+    feature = "committed-program",
+    not(feature = "zk")
+))]
 fn standard_committed_muldiv_core_proof_is_accepted() {
     support::assert_accepts(
         crate::support::core_fixtures::standard_committed_muldiv_case().verify(),

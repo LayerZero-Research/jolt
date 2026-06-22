@@ -323,10 +323,13 @@ impl<
     /// main-trace layout (advice plus, in committed mode, committed bytecode chunks
     /// and the program image). Mirrors the verifier helper.
     fn precommitted_candidate_total_vars(&self) -> Vec<usize> {
-        let mut candidates = self.preprocessing.shared.precommitted_candidate_total_vars::<PCS>(
-            self.trusted_advice_commitment.is_some(),
-            self.proof.untrusted_advice_commitment.is_some(),
-        );
+        let mut candidates = self
+            .preprocessing
+            .shared
+            .precommitted_candidate_total_vars::<PCS>(
+                self.trusted_advice_commitment.is_some(),
+                self.proof.untrusted_advice_commitment.is_some(),
+            );
         if let Some(committed) = self.preprocessing.committed_program.as_ref() {
             let bytecode_chunk_count = committed.bytecode_commitments.bytecode_chunk_count;
             let chunk_cycle_log_t = (committed.meta.bytecode_len / bytecode_chunk_count)

@@ -29,13 +29,21 @@ fn zk_muldiv_core_proof_is_accepted() {
 }
 
 #[test]
-#[cfg(all(feature = "core-fixtures", feature = "zk", feature = "committed-program"))]
+#[cfg(all(
+    feature = "core-fixtures",
+    feature = "zk",
+    feature = "committed-program"
+))]
 fn zk_committed_muldiv_core_proof_is_accepted() {
     support::assert_zk_accepts(crate::support::core_fixtures::zk_committed_muldiv_case().verify());
 }
 
 #[test]
-#[cfg(all(feature = "core-fixtures", feature = "zk", feature = "committed-program"))]
+#[cfg(all(
+    feature = "core-fixtures",
+    feature = "zk",
+    feature = "committed-program"
+))]
 fn zk_committed_muldiv_blindfold_shape_audit_matches_modular_protocol() {
     let case = crate::support::core_fixtures::zk_committed_muldiv_case();
     let modular = jolt_verifier::compat::audit_zk_blindfold_protocol_shape::<
