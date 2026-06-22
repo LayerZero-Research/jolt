@@ -2,9 +2,7 @@ use ark_serialize::CanonicalSerialize;
 use jolt_core::host;
 use jolt_core::zkvm::prover::JoltProverPreprocessing;
 use jolt_core::zkvm::verifier::{JoltSharedPreprocessing, JoltVerifierPreprocessing};
-use jolt_core::zkvm::{
-    AkitaPcs, RV64IMACAkitaProver, RV64IMACAkitaVerifier, RV64IMACProver, RV64IMACVerifier,
-};
+use jolt_core::zkvm::{RV64IMACProver, RV64IMACVerifier};
 use std::fs;
 use std::io::Write;
 use std::time::Instant;
@@ -167,15 +165,31 @@ pub fn master_benchmark(
         let guest_name = format!("{bench_name}-guest");
         let input = input_fn(bench_target);
         let (duration, proof_size, proof_size_comp, trace_length) = match pcs {
-            PcsChoice::Dory => prove_example_with_trace_dory(
-                &guest_name,
-                input,
-                max_trace_length,
-                bench_name,
-                bench_scale,
-            ),
+            PcsChoice::Dory => {
+                #[cfg(feature = "akita-pcs")]
+                {
+                    panic!("Dory profiling requires rebuilding with the `dory-pcs` feature");
+                }
+                #[cfg(not(feature = "akita-pcs"))]
+                {
+                    prove_example_with_trace_dory(
+                        &guest_name,
+                        input,
+                        max_trace_length,
+                        bench_name,
+                        bench_scale,
+                    )
+                }
+            }
             PcsChoice::Akita => {
-                prove_example_with_trace_akita(&guest_name, input, max_trace_length)
+                #[cfg(feature = "akita-pcs")]
+                {
+                    prove_example_with_trace_akita(&guest_name, input, max_trace_length)
+                }
+                #[cfg(not(feature = "akita-pcs"))]
+                {
+                    panic!("Akita profiling requires rebuilding with the `akita-pcs` feature");
+                }
             }
         };
 
@@ -231,11 +245,30 @@ fn prove_example(
     pcs: PcsChoice,
 ) -> Vec<(tracing::Span, Box<dyn FnOnce()>)> {
     match pcs {
-        PcsChoice::Dory => prove_example_dory(example_name, serialized_input),
-        PcsChoice::Akita => prove_example_akita(example_name, serialized_input),
+        PcsChoice::Dory => {
+            #[cfg(feature = "akita-pcs")]
+            {
+                panic!("Dory profiling requires rebuilding with the `dory-pcs` feature");
+            }
+            #[cfg(not(feature = "akita-pcs"))]
+            {
+                prove_example_dory(example_name, serialized_input)
+            }
+        }
+        PcsChoice::Akita => {
+            #[cfg(feature = "akita-pcs")]
+            {
+                prove_example_akita(example_name, serialized_input)
+            }
+            #[cfg(not(feature = "akita-pcs"))]
+            {
+                panic!("Akita profiling requires rebuilding with the `akita-pcs` feature");
+            }
+        }
     }
 }
 
+#[cfg(not(feature = "akita-pcs"))]
 fn prove_example_dory(
     example_name: &str,
     serialized_input: Vec<u8>,
@@ -285,6 +318,7 @@ fn prove_example_dory(
     )]
 }
 
+#[cfg(feature = "akita-pcs")]
 fn prove_example_akita(
     example_name: &str,
     serialized_input: Vec<u8>,
@@ -304,12 +338,11 @@ fn prove_example_akita(
             e_entry,
         )
         .unwrap();
-        let preprocessing =
-            JoltProverPreprocessing::<_, _, AkitaPcs>::new(shared_preprocessing.clone());
+        let preprocessing = JoltProverPreprocessing::new(shared_preprocessing.clone());
 
         let elf_contents_opt = program.get_elf_contents();
         let elf_contents = elf_contents_opt.as_deref().expect("elf contents is None");
-        let prover = RV64IMACAkitaProver::gen_from_elf(
+        let prover = RV64IMACProver::gen_from_elf(
             &preprocessing,
             elf_contents,
             &serialized_input,
@@ -324,7 +357,7 @@ fn prove_example_akita(
 
         let verifier_preprocessing = JoltVerifierPreprocessing::from(&preprocessing);
         let verifier =
-            RV64IMACAkitaVerifier::new(&verifier_preprocessing, jolt_proof, program_io, None, None)
+            RV64IMACVerifier::new(&verifier_preprocessing, jolt_proof, program_io, None, None)
                 .expect("Failed to create verifier");
         verifier.verify().unwrap();
     };
@@ -335,6 +368,7 @@ fn prove_example_akita(
     )]
 }
 
+#[cfg(not(feature = "akita-pcs"))]
 fn prove_example_with_trace_dory(
     example_name: &str,
     serialized_input: Vec<u8>,
@@ -414,6 +448,7 @@ fn prove_example_with_trace_dory(
     )
 }
 
+#[cfg(feature = "akita-pcs")]
 fn prove_example_with_trace_akita(
     example_name: &str,
     serialized_input: Vec<u8>,
@@ -436,14 +471,13 @@ fn prove_example_with_trace_akita(
         e_entry,
     )
     .unwrap();
-    let preprocessing =
-        JoltProverPreprocessing::<_, _, AkitaPcs>::new(shared_preprocessing.clone());
+    let preprocessing = JoltProverPreprocessing::new(shared_preprocessing.clone());
 
     let elf_contents_opt = program.get_elf_contents();
     let elf_contents = elf_contents_opt.as_deref().expect("elf contents is None");
 
     let span = tracing::info_span!("E2E").entered();
-    let prover = RV64IMACAkitaProver::gen_from_elf(
+    let prover = RV64IMACProver::gen_from_elf(
         &preprocessing,
         elf_contents,
         &serialized_input,
@@ -461,7 +495,7 @@ fn prove_example_with_trace_akita(
 
     let verifier_preprocessing = JoltVerifierPreprocessing::from(&preprocessing);
     let verifier =
-        RV64IMACAkitaVerifier::new(&verifier_preprocessing, jolt_proof, program_io, None, None)
+        RV64IMACVerifier::new(&verifier_preprocessing, jolt_proof, program_io, None, None)
             .expect("Failed to create verifier");
     verifier.verify().unwrap();
 

@@ -8,7 +8,7 @@
 use crate::{
     poly::coefficient_layout::CoefficientLayout,
     poly::rlc_polynomial::{RLCPolynomial, RLCStreamingData, TraceSource},
-    zkvm::{claim_reductions::AdviceKind, config::OneHotParams},
+    zkvm::{claim_reductions::PrecommittedPolynomial, claim_reductions::AdviceKind, config::OneHotParams},
 };
 use allocative::Allocative;
 use num_derive::FromPrimitive;
@@ -64,7 +64,7 @@ pub struct StreamingBatchSource<F: JoltField> {
     pub one_hot_params: OneHotParams,
     pub trace_source: TraceSource,
     pub streaming_data: Arc<RLCStreamingData>,
-    pub advice_polys: HashMap<CommittedPolynomial, MultilinearPolynomial<F>>,
+    pub precommitted_polys: HashMap<CommittedPolynomial, PrecommittedPolynomial<F>>,
     pub poly_ids: Vec<CommittedPolynomial>,
     pub layout: CoefficientLayout,
 }
@@ -77,7 +77,7 @@ impl<F: JoltField> BatchPolynomialSource<F> for StreamingBatchSource<F> {
             self.trace_source.clone(),
             self.poly_ids.clone(),
             coeffs,
-            self.advice_polys.clone(),
+            self.precommitted_polys.clone(),
             self.layout,
         ))
     }

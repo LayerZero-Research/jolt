@@ -170,6 +170,24 @@ impl CommitmentScheme for DoryCommitmentScheme {
     type OpeningProofHint = DoryOpeningProofHint;
     type BatchOpeningHint = Vec<Self::OpeningProofHint>;
 
+    fn supports_committed_program() -> bool {
+        true
+    }
+
+    fn init_committed_program_globals(
+        config: &Self::Config,
+        k: usize,
+        trace_len: usize,
+        commitment_total_vars: usize,
+    ) {
+        DoryGlobals::initialize_main_with_log_embedding(
+            k,
+            trace_len,
+            commitment_total_vars,
+            Some(*config),
+        );
+    }
+
     fn setup_prover(max_num_vars: usize) -> Self::ProverSetup {
         let _span = trace_span!("DoryCommitmentScheme::setup_prover").entered();
         let canonical_max_num_vars = canonical_setup_log_n(max_num_vars);

@@ -3,10 +3,8 @@ use std::fs::File;
 use crate::zkvm::config::{OneHotConfig, OneHotParams, ProgramMode, ReadWriteConfig};
 use crate::zkvm::witness::CommittedPolynomial;
 use crate::{
-    curve::Bn254Curve,
     field::JoltField,
     poly::commitment::commitment_scheme::CommitmentScheme,
-    poly::commitment::dory::DoryCommitmentScheme,
     poly::commitment::{layout::LayoutDescriptor, opening_point::FinalOpeningPointParts},
     poly::opening_proof::{
         OpeningAccumulator, OpeningId, OpeningPoint, ProverOpeningAccumulator, SumcheckId,
@@ -17,7 +15,6 @@ use crate::{
     utils::errors::ProofVerifyError,
     zkvm::claim_reductions::AdviceKind,
 };
-use ark_bn254::Fr;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use eyre::Result;
 use proof_serialization::JoltProof;
@@ -47,6 +44,22 @@ mod trace_row_parity;
 pub mod transpilable_verifier;
 pub mod verifier;
 pub mod witness;
+
+#[cfg(not(feature = "akita-pcs"))]
+pub type F = ark_bn254::Fr;
+#[cfg(not(feature = "akita-pcs"))]
+pub type Curve = crate::curve::Bn254Curve;
+#[cfg(not(feature = "akita-pcs"))]
+pub type PCS = crate::poly::commitment::dory::DoryCommitmentScheme;
+#[cfg(feature = "akita-pcs")]
+pub type F = crate::field::fp128::JoltFp128;
+#[cfg(feature = "akita-pcs")]
+pub type Curve = crate::curve::fp128_curve::Fp128Curve;
+#[cfg(feature = "akita-pcs")]
+pub type PCS = crate::poly::commitment::akita::JoltAkitaCommitmentScheme<
+    { <crate::poly::commitment::akita::Fp128OneHot64Config as akita_config::CommitmentConfig>::D },
+    crate::poly::commitment::akita::Fp128OneHot64Config,
+>;
 
 pub(crate) fn stage8_opening_ids(
     one_hot_params: &OneHotParams,
@@ -328,31 +341,9 @@ pub fn fiat_shamir_preamble(preamble: FiatShamirPreamble<'_>, transcript: &mut i
 }
 
 #[cfg(feature = "prover")]
-pub type RV64IMACProver<'a> =
-    JoltCpuProver<'a, Fr, Bn254Curve, DoryCommitmentScheme, Blake2bTranscript>;
-pub type RV64IMACVerifier<'a> =
-    JoltVerifier<'a, Fr, Bn254Curve, DoryCommitmentScheme, Blake2bTranscript>;
-pub type RV64IMACProof = JoltProof<Fr, Bn254Curve, DoryCommitmentScheme, Blake2bTranscript>;
-
-pub type AkitaPcs = crate::poly::commitment::akita::JoltAkitaCommitmentScheme<
-    { <crate::poly::commitment::akita::Fp128OneHot32Config as akita_config::CommitmentConfig>::D },
-    crate::poly::commitment::akita::Fp128OneHot32Config,
->;
-#[cfg(feature = "prover")]
-pub type RV64IMACAkitaProver<'a> = JoltCpuProver<
-    'a,
-    crate::field::fp128::JoltFp128,
-    crate::curve::fp128_curve::Fp128Curve,
-    AkitaPcs,
-    Blake2bTranscript,
->;
-pub type RV64IMACAkitaVerifier<'a> = JoltVerifier<
-    'a,
-    crate::field::fp128::JoltFp128,
-    crate::curve::fp128_curve::Fp128Curve,
-    AkitaPcs,
-    Blake2bTranscript,
->;
+pub type RV64IMACProver<'a> = JoltCpuProver<'a, F, Curve, PCS, Blake2bTranscript>;
+pub type RV64IMACVerifier<'a> = JoltVerifier<'a, F, Curve, PCS, Blake2bTranscript>;
+pub type RV64IMACProof = JoltProof<F, Curve, PCS, Blake2bTranscript>;
 
 pub trait Serializable: CanonicalSerialize + CanonicalDeserialize + Sized {
     /// Gets the byte size of the serialized data
@@ -389,5 +380,6 @@ pub trait Serializable: CanonicalSerialize + CanonicalDeserialize + Sized {
     }
 }
 
+#[cfg(not(feature = "akita-pcs"))]
 impl Serializable for RV64IMACProof {}
 impl Serializable for JoltDevice {}

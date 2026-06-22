@@ -1,5 +1,5 @@
 #[cfg(test)]
-#[cfg(feature = "host")]
+#[cfg(all(feature = "host", not(feature = "akita-pcs")))]
 mod tests {
     use jolt_sdk::{JoltVerifierPreprocessing, RV64IMACProof, RV64IMACVerifier, Serializable};
 

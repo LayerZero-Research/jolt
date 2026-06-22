@@ -79,6 +79,7 @@ impl MacroBuilder {
         let compile_fn = self.make_compile_func();
         let preprocess_shared_fn = self.make_preprocess_shared_func();
         let preprocess_prover_fn = self.make_preprocess_prover_func();
+        let preprocess_committed_prover_fn = self.make_preprocess_committed_prover_func();
         let preprocess_verifier_fn = self.make_preprocess_verifier_func();
         let verifier_preprocess_from_prover_fn = self.make_preprocess_from_prover_func();
         let commit_trusted_advice_fn = self.make_commit_trusted_advice_func();
@@ -114,6 +115,7 @@ impl MacroBuilder {
             #compile_fn
             #preprocess_shared_fn
             #preprocess_prover_fn
+            #preprocess_committed_prover_fn
             #preprocess_verifier_fn
             #verifier_preprocess_from_prover_fn
             #commit_trusted_advice_fn
@@ -315,6 +317,7 @@ impl MacroBuilder {
         let set_std = self.make_set_std();
         let set_backtrace = self.make_set_backtrace();
         let set_profile = self.make_set_profile();
+        let enable_field_inline = self.make_enable_field_inline();
 
         let fn_name = self.get_func_name();
         let fn_name_str = fn_name.to_string();
@@ -347,6 +350,7 @@ impl MacroBuilder {
                 #set_std
                 #set_profile
                 #set_backtrace
+                #enable_field_inline
                 #set_mem_size
 
                 let mut input_bytes = vec![];
@@ -368,6 +372,7 @@ impl MacroBuilder {
         let set_std = self.make_set_std();
         let set_backtrace = self.make_set_backtrace();
         let set_profile = self.make_set_profile();
+        let enable_field_inline = self.make_enable_field_inline();
 
         let fn_name = self.get_func_name();
         let fn_name_str = fn_name.to_string();
@@ -414,6 +419,7 @@ impl MacroBuilder {
                 #set_std
                 #set_profile
                 #set_backtrace
+                #enable_field_inline
                 #set_mem_size
 
                 let mut input_bytes = vec![];
@@ -440,6 +446,7 @@ impl MacroBuilder {
         let set_std = self.make_set_std();
         let set_backtrace = self.make_set_backtrace();
         let set_profile = self.make_set_profile();
+        let enable_field_inline = self.make_enable_field_inline();
 
         let fn_name = self.get_func_name();
         let fn_name_str = fn_name.to_string();
@@ -472,6 +479,7 @@ impl MacroBuilder {
                 #set_std
                 #set_profile
                 #set_backtrace
+                #enable_field_inline
                 #set_mem_size
 
                 let mut input_bytes = vec![];
@@ -493,6 +501,7 @@ impl MacroBuilder {
         let set_std = self.make_set_std();
         let set_backtrace = self.make_set_backtrace();
         let set_profile = self.make_set_profile();
+        let enable_field_inline = self.make_enable_field_inline();
 
         let fn_name = self.get_func_name();
         let fn_name_str = fn_name.to_string();
@@ -507,6 +516,7 @@ impl MacroBuilder {
                 #set_std
                 #set_profile
                 #set_backtrace
+                #enable_field_inline
                 #set_mem_size
 
                 // Build the compute_advice version first
@@ -583,6 +593,72 @@ impl MacroBuilder {
                 let prover_preprocessing = JoltProverPreprocessing::new(shared_preprocessing);
 
                 prover_preprocessing
+            }
+        }
+    }
+
+    fn make_preprocess_committed_prover_func(&self) -> TokenStream2 {
+        let attributes = parse_attributes(&self.attr);
+        let max_trace_length = proc_macro2::Literal::u64_unsuffixed(attributes.max_trace_length);
+        let max_input_size = proc_macro2::Literal::u64_unsuffixed(attributes.max_input_size);
+        let max_output_size = proc_macro2::Literal::u64_unsuffixed(attributes.max_output_size);
+        let max_untrusted_advice_size =
+            proc_macro2::Literal::u64_unsuffixed(attributes.max_untrusted_advice_size);
+        let max_trusted_advice_size =
+            proc_macro2::Literal::u64_unsuffixed(attributes.max_trusted_advice_size);
+        let stack_size = proc_macro2::Literal::u64_unsuffixed(attributes.stack_size);
+        let heap_size = proc_macro2::Literal::u64_unsuffixed(attributes.heap_size);
+        let imports = self.make_imports();
+
+        let fn_name = self.get_func_name();
+        let preprocess_committed_prover_fn_name = Ident::new(
+            &format!("preprocess_committed_prover_{fn_name}"),
+            fn_name.span(),
+        );
+        quote! {
+            // Committed-program preprocessing is Dory-only; `preprocess_committed` panics for
+            // commitment schemes that do not support it.
+            #[cfg(all(not(target_arch = "wasm32"), not(feature = "guest")))]
+            pub fn #preprocess_committed_prover_fn_name(
+                program: &mut dyn jolt::host::JoltProgramSource,
+                bytecode_chunk_count: usize,
+            ) -> Result<
+                jolt::JoltProverPreprocessing<jolt::F, jolt::Curve, jolt::PCS>,
+                jolt::PreprocessingError,
+            >
+            {
+                #imports
+
+                let (bytecode, memory_init, program_size, e_entry) = program.decode();
+                let memory_config = MemoryConfig {
+                    max_input_size: #max_input_size,
+                    max_output_size: #max_output_size,
+                    max_untrusted_advice_size: #max_untrusted_advice_size,
+                    max_trusted_advice_size: #max_trusted_advice_size,
+                    stack_size: #stack_size,
+                    heap_size: #heap_size,
+                    program_size: Some(program_size),
+                };
+                let memory_layout = MemoryLayout::new(&memory_config);
+
+                let shared_preprocessing = JoltSharedPreprocessing::new(
+                    bytecode.clone(),
+                    memory_layout,
+                    memory_init.clone(),
+                    #max_trace_length,
+                    e_entry,
+                )?;
+                let full = jolt::FullProgramPreprocessing::preprocess(
+                    bytecode,
+                    memory_init,
+                    e_entry,
+                )?;
+
+                Ok(JoltProverPreprocessing::preprocess_committed(
+                    shared_preprocessing,
+                    full,
+                    bytecode_chunk_count,
+                ))
             }
         }
     }
@@ -1125,6 +1201,15 @@ impl MacroBuilder {
             }
         } else {
             quote! {}
+        }
+    }
+
+    fn make_enable_field_inline(&self) -> TokenStream2 {
+        quote! {
+            #[cfg(feature = "field-inline")]
+            {
+                program.enable_field_inline();
+            }
         }
     }
 

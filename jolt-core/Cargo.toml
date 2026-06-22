@@ -23,18 +23,26 @@ license-file = "LICENSE"
 keywords = ["SNARK", "cryptography", "proofs", "zkVM"]
 
 [features]
-default = ["host"]
-zk = ["dory/zk"]
-host = ["prover", "dep:jolt-inlines-sha2", "dep:jolt-inlines-keccak256"]
-prover = [
-  "minimal",
-  "ark-ec/parallel",
-  "ark-ff/parallel",
-  "ark-std/parallel",
+default = ["host", "dory-pcs"]
+dory-pcs = [
   "dory/backends",
   "dory/cache",            # This includes `parallel` feature
   "dory/disk-persistence",
 ]
+akita-pcs = [
+  "dep:akita-algebra",
+  "dep:akita-challenges",
+  "dep:akita-config",
+  "dep:akita-field",
+  "dep:akita-pcs",
+  "dep:akita-prover",
+  "dep:akita-serialization",
+  "dep:akita-transcript",
+  "dep:akita-types",
+]
+zk = ["dory-pcs", "dory/zk"]
+host = ["prover", "dep:jolt-inlines-sha2", "dep:jolt-inlines-keccak256"]
+prover = ["minimal", "ark-ec/parallel", "ark-ff/parallel", "ark-std/parallel"]
 # This is for building jolt-core without prover capabilities, e.g. for recursion
 # jolt-core needs std and rayon to compile, so these are the minimal set of features.
 minimal = ["ark-ec/std", "ark-ff/std", "ark-std/std", "ark-ff/asm", "rayon"]
@@ -43,6 +51,11 @@ monitor = ["dep:sysinfo"]
 pprof = ["dep:pprof", "dep:prost"]
 test_incremental = []
 challenge-254-bit = []
+field-inline = [
+  "jolt-program/field-inline",
+  "jolt-riscv/field-inline",
+  "tracer/field-inline",
+]
 transcript-poseidon = ["dep:light-poseidon", "challenge-254-bit"]
 transcript-keccak = []
 transcript-blake2b = []
@@ -82,15 +95,15 @@ tracer = { workspace = true, default-features = false, features = ["std"] }
 bincode.workspace = true
 derive_more.workspace = true
 dory.workspace = true
-akita-pcs.workspace = true
-akita-prover.workspace = true
-akita-algebra.workspace = true
-akita-challenges.workspace = true
-akita-config.workspace = true
-akita-types.workspace = true
-akita-field.workspace = true
-akita-serialization.workspace = true
-akita-transcript.workspace = true
+akita-algebra = { workspace = true, optional = true }
+akita-challenges = { workspace = true, optional = true }
+akita-config = { workspace = true, optional = true }
+akita-field = { workspace = true, optional = true }
+akita-pcs = { workspace = true, optional = true }
+akita-prover = { workspace = true, optional = true }
+akita-serialization = { workspace = true, optional = true }
+akita-transcript = { workspace = true, optional = true }
+akita-types = { workspace = true, optional = true }
 allocative.workspace = true
 inferno = { workspace = true, optional = true }
 jolt-program = { workspace = true, features = ["image", "serialization"] }

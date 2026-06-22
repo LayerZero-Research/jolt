@@ -358,6 +358,18 @@ impl DoryGlobals {
             .expect("main k not initialized")
     }
 
+    /// Main-trace cycle count `T`, independent of the current Dory context.
+    /// Used by precommitted claim reductions to size the dense cycle prefix
+    /// when a precommitted polynomial dominates the main-trace layout.
+    #[inline]
+    pub(crate) fn main_t() -> usize {
+        *GLOBAL_T
+            .read()
+            .unwrap()
+            .as_ref()
+            .expect("main t not initialized")
+    }
+
     #[inline]
     pub(crate) fn configured_main_num_columns() -> usize {
         *NUM_COLUMNS
