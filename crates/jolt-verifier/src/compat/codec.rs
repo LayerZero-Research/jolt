@@ -268,6 +268,10 @@ impl CanonicalSerialize for CommittedPolynomial {
             Self::UntrustedAdvice => 6u8.serialize_with_mode(writer, compress),
             Self::BytecodeChunk(i) => serialize_tagged_index(7, *i, writer, compress),
             Self::ProgramImageInit => 8u8.serialize_with_mode(writer, compress),
+            Self::RdIncRa(i) => serialize_tagged_index(9, *i, writer, compress),
+            Self::RdIncMsb => 10u8.serialize_with_mode(writer, compress),
+            Self::RamIncRa(i) => serialize_tagged_index(11, *i, writer, compress),
+            Self::RamIncMsb => 12u8.serialize_with_mode(writer, compress),
         }
     }
 
@@ -277,11 +281,15 @@ impl CanonicalSerialize for CommittedPolynomial {
             | Self::RamInc
             | Self::TrustedAdvice
             | Self::UntrustedAdvice
-            | Self::ProgramImageInit => 1,
+            | Self::ProgramImageInit
+            | Self::RdIncMsb
+            | Self::RamIncMsb => 1,
             Self::InstructionRa(_)
             | Self::BytecodeRa(_)
             | Self::RamRa(_)
-            | Self::BytecodeChunk(_) => 2,
+            | Self::BytecodeChunk(_)
+            | Self::RdIncRa(_)
+            | Self::RamIncRa(_) => 2,
         }
     }
 }
@@ -309,6 +317,10 @@ impl CanonicalDeserialize for CommittedPolynomial {
                 6 => Self::UntrustedAdvice,
                 7 => Self::BytecodeChunk(read_index(reader, compress, validate)?),
                 8 => Self::ProgramImageInit,
+                9 => Self::RdIncRa(read_index(reader, compress, validate)?),
+                10 => Self::RdIncMsb,
+                11 => Self::RamIncRa(read_index(reader, compress, validate)?),
+                12 => Self::RamIncMsb,
                 _ => return Err(SerializationError::InvalidData),
             },
         )
@@ -720,7 +732,7 @@ mod tests {
             round_trip(polynomial)?;
             assert_eq!(bytes(&polynomial)?, bytes(&core_committed(polynomial))?);
         }
-        assert!(CommittedPolynomial::deserialize_compressed([9u8].as_slice()).is_err());
+        assert!(CommittedPolynomial::deserialize_compressed([13u8].as_slice()).is_err());
         assert!(bytes(&CommittedPolynomial::InstructionRa(256)).is_err());
         Ok(())
     }
@@ -820,6 +832,12 @@ mod tests {
         vec![
             CommittedPolynomial::RdInc,
             CommittedPolynomial::RamInc,
+            CommittedPolynomial::RdIncRa(0),
+            CommittedPolynomial::RdIncRa(7),
+            CommittedPolynomial::RdIncMsb,
+            CommittedPolynomial::RamIncRa(0),
+            CommittedPolynomial::RamIncRa(7),
+            CommittedPolynomial::RamIncMsb,
             CommittedPolynomial::InstructionRa(0),
             CommittedPolynomial::InstructionRa(7),
             CommittedPolynomial::InstructionRa(255),
@@ -994,6 +1012,10 @@ mod tests {
         match polynomial {
             CommittedPolynomial::RdInc => CoreCommittedPolynomial::RdInc,
             CommittedPolynomial::RamInc => CoreCommittedPolynomial::RamInc,
+            CommittedPolynomial::RdIncRa(i) => CoreCommittedPolynomial::RdIncRa(i),
+            CommittedPolynomial::RdIncMsb => CoreCommittedPolynomial::RdIncMsb,
+            CommittedPolynomial::RamIncRa(i) => CoreCommittedPolynomial::RamIncRa(i),
+            CommittedPolynomial::RamIncMsb => CoreCommittedPolynomial::RamIncMsb,
             CommittedPolynomial::InstructionRa(i) => CoreCommittedPolynomial::InstructionRa(i),
             CommittedPolynomial::BytecodeRa(i) => CoreCommittedPolynomial::BytecodeRa(i),
             CommittedPolynomial::BytecodeChunk(i) => CoreCommittedPolynomial::BytecodeChunk(i),

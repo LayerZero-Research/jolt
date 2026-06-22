@@ -161,10 +161,12 @@ fn convert_one_hot_config(config: CoreOneHotConfig) -> JoltOneHotConfig {
     }
 }
 
-fn convert_trace_polynomial_order(layout: CoreDoryLayout) -> TracePolynomialOrder {
-    match layout {
-        CoreDoryLayout::CycleMajor => TracePolynomialOrder::CycleMajor,
-        CoreDoryLayout::AddressMajor => TracePolynomialOrder::AddressMajor,
+fn trace_polynomial_order_from_pcs_config<PCS: CoreCommitmentScheme>(
+    config: &PCS::Config,
+) -> TracePolynomialOrder {
+    match PCS::dory_layout(config) {
+        Some(CoreDoryLayout::AddressMajor) => TracePolynomialOrder::AddressMajor,
+        Some(CoreDoryLayout::CycleMajor) | None => TracePolynomialOrder::CycleMajor,
     }
 }
 
@@ -289,7 +291,7 @@ where
             ram_K: proof.ram_K,
             rw_config: convert_read_write_config(proof.rw_config),
             one_hot_config,
-            trace_polynomial_order: convert_trace_polynomial_order(proof.pcs_config),
+            trace_polynomial_order: trace_polynomial_order_from_pcs_config::<PCS>(&proof.pcs_config),
         })
     }
 }
@@ -342,7 +344,7 @@ where
             ram_K: proof.ram_K,
             rw_config: convert_read_write_config(proof.rw_config),
             one_hot_config,
-            trace_polynomial_order: convert_trace_polynomial_order(proof.pcs_config),
+            trace_polynomial_order: trace_polynomial_order_from_pcs_config::<PCS>(&proof.pcs_config),
         })
     }
 }
@@ -711,6 +713,16 @@ fn convert_committed_polynomial(
     match poly {
         core_witness::CommittedPolynomial::RdInc => verifier_ids::CommittedPolynomial::RdInc,
         core_witness::CommittedPolynomial::RamInc => verifier_ids::CommittedPolynomial::RamInc,
+        core_witness::CommittedPolynomial::RdIncRa(index) => {
+            verifier_ids::CommittedPolynomial::RdIncRa(index)
+        }
+        core_witness::CommittedPolynomial::RdIncMsb => verifier_ids::CommittedPolynomial::RdIncMsb,
+        core_witness::CommittedPolynomial::RamIncRa(index) => {
+            verifier_ids::CommittedPolynomial::RamIncRa(index)
+        }
+        core_witness::CommittedPolynomial::RamIncMsb => {
+            verifier_ids::CommittedPolynomial::RamIncMsb
+        }
         core_witness::CommittedPolynomial::InstructionRa(index) => {
             verifier_ids::CommittedPolynomial::InstructionRa(index)
         }

@@ -146,7 +146,10 @@ zeroos-build.workspace = true
 
 ark-bn254.workspace = true
 
-jolt-sdk = { workspace = true, default-features = false, features = ["host", "dory-pcs"] }
+jolt-sdk = { workspace = true, default-features = false, features = [
+  "host",
+  "dory-pcs",
+] }
 jolt-core = { workspace = true, default-features = false }
 common = { workspace = true, features = ["std"] }
 
@@ -276,16 +279,16 @@ dory = { package = "dory-pcs", version = "0.3.0", features = [
   "disk-persistence",
   "zk",
 ] }
-akita-pcs = { git = "https://github.com/LayerZero-Labs/akita.git", branch = "lz/jolt-dense-batch-openings" }
-akita-prover = { git = "https://github.com/LayerZero-Labs/akita.git", branch = "lz/jolt-dense-batch-openings" }
-akita-algebra = { git = "https://github.com/LayerZero-Labs/akita.git", branch = "lz/jolt-dense-batch-openings" }
-akita-challenges = { git = "https://github.com/LayerZero-Labs/akita.git", branch = "lz/jolt-dense-batch-openings" }
-akita-config = { git = "https://github.com/LayerZero-Labs/akita.git", branch = "lz/jolt-dense-batch-openings" }
-akita-types = { git = "https://github.com/LayerZero-Labs/akita.git", branch = "lz/jolt-dense-batch-openings" }
-akita-verifier = { git = "https://github.com/LayerZero-Labs/akita.git", branch = "lz/jolt-dense-batch-openings" }
-akita-field = { git = "https://github.com/LayerZero-Labs/akita.git", branch = "lz/jolt-dense-batch-openings" }
-akita-serialization = { git = "https://github.com/LayerZero-Labs/akita.git", branch = "lz/jolt-dense-batch-openings" }
-akita-transcript = { git = "https://github.com/LayerZero-Labs/akita.git", branch = "lz/jolt-dense-batch-openings" }
+akita-pcs = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "879edcc01b31c4bf619e66ce696d138e78359854" }
+akita-prover = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "879edcc01b31c4bf619e66ce696d138e78359854" }
+akita-algebra = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "879edcc01b31c4bf619e66ce696d138e78359854" }
+akita-challenges = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "879edcc01b31c4bf619e66ce696d138e78359854" }
+akita-config = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "879edcc01b31c4bf619e66ce696d138e78359854" }
+akita-types = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "879edcc01b31c4bf619e66ce696d138e78359854" }
+akita-verifier = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "879edcc01b31c4bf619e66ce696d138e78359854" }
+akita-field = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "879edcc01b31c4bf619e66ce696d138e78359854" }
+akita-serialization = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "879edcc01b31c4bf619e66ce696d138e78359854" }
+akita-transcript = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "879edcc01b31c4bf619e66ce696d138e78359854" }
 
 # Core Utilities
 clap = { version = "4.6.1", features = ["derive"] }
