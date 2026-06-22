@@ -4,7 +4,7 @@
 |-------------|--------------------|
 | Author(s)   | @quangvdao         |
 | Created     | 2026-06-22         |
-| Status      | proposed           |
+| Status      | accepted           |
 | PR          |                    |
 
 ## Summary
@@ -178,6 +178,7 @@ The remaining proof gaps are outside this spec:
 - [ ] With `akita-pcs`, bytecode read-RAF validates `Store(r_cycle_inc)` against the committed bytecode row's `CircuitFlags::Store` value before later stages rely on it.
 - [ ] With `akita-pcs`, Stage 6b reduces `Inc(r_cycle_inc) + 2^64` to `UnsignedInc(r_cycle_6)`.
 - [ ] With `akita-pcs`, lower `UnsignedIncChunk(j)` polynomials are boolean-constrained in Stage 6a/6b and one-hot-constrained over the address chunk domain in Stage 7.
+- [ ] With `akita-pcs`, `UnsignedIncMsb` booleanity is enforced inside the Booleanity cycle phase at `r_cycle_6`, not as a separate Stage 6b sumcheck instance.
 - [ ] With `akita-pcs`, Stage 7 reconstructs `UnsignedInc(r_cycle_6)` from lower `UnsignedIncChunk(j)` openings and the size-`T` `UnsignedIncMsb(r_cycle_6)` opening.
 - [ ] With `akita-pcs`, `UnsignedIncMsb` is opened as a size-`T` polynomial at the Stage 6b cycle point, not as an address-plus-cycle one-hot polynomial.
 - [ ] Existing Dory standard and Dory ZK `muldiv` tests keep passing.
@@ -221,7 +222,18 @@ Add targeted unit tests for:
 ### Performance
 
 The expected large-trace Akita packed-polynomial count changes from separate RAM/register increment decompositions to one fused decomposition.
-For `log_k_chunk = 8`, the preferred packed layout orders fixed-width families first:
+The committed-polynomial enumeration order in `all_committed_polynomials` is normative for the Akita packed layout and must be exactly:
+
+```text
+InstructionRa
+UnsignedIncChunk
+RamRa
+BytecodeRa
+UnsignedIncMsb
+rest (trusted/untrusted advice, bytecode chunks, program image)
+```
+
+For `log_k_chunk = 8` this is concretely:
 
 ```text
 16 InstructionRa
@@ -231,6 +243,8 @@ at most 3 BytecodeRa
  1 shared slot for UnsignedIncMsb plus smaller advice/bytecode material
 ```
 
+`UnsignedIncMsb` is a size-`T` dense polynomial, so it occupies the shared trailing slot rather than a full one-hot lane.
+The trailing `rest` material is not exercised by the Akita correctness tests today and may live in separate commitments, so the reorder only has to be correct for the leading one-hot families.
 The target is to fit the dominant Akita packed main commitment into 32 size-`256 * T` lanes for large traces.
 `UnsignedIncMsb` must not consume a full size-`256 * T` lane by itself.
 The RAM and bytecode counts above are practical upper estimates for the current presets, not protocol constants.
@@ -269,11 +283,12 @@ akita-pcs
              including lower UnsignedIncChunk
   Stage 6b:  BytecodeReadRaf cycle phase validates Store(r_cycle_inc)
              + Booleanity cycle phase including lower UnsignedIncChunk
-             + UnsignedIncMsb booleanity
+             + UnsignedIncMsb booleanity (folded into Booleanity cycle phase)
              + UnsignedIncClaimReduction
              + existing non-increment reductions
-  Stage 7:   HammingWeightClaimReduction for non-increment RA families
-             + lower UnsignedIncChunk address reduction and value link
+  Stage 7:   HammingWeightClaimReduction over all one-hot RA families,
+             now including lower UnsignedIncChunk, plus a single
+             increment value-link claim
   Stage 8:   opens lower UnsignedIncChunk at Stage 7 points
              + opens UnsignedIncMsb at Stage 6b cycle point
 ```
@@ -412,15 +427,17 @@ They use the same split address/cycle booleanity structure as the current one-ho
       * sum_j gamma_j * (UnsignedIncChunk(j)(a,t)^2 - UnsignedIncChunk(j)(a,t))
 ```
 
-Stage 6b also includes `UnsignedIncMsb` booleanity over the cycle domain:
+Stage 6b folds `UnsignedIncMsb` booleanity into the existing Booleanity cycle phase.
+It is not a separate Stage 6b sumcheck instance.
+The cycle relation adds a batched term over the same `r_cycle_6` challenges as the lower-chunk booleanity cycle pass:
 
 ```text
 0 = sum_t eq(r_cycle_6, t)
       * (UnsignedIncMsb(t)^2 - UnsignedIncMsb(t))
 ```
 
-This can be implemented as a separate Stage 6b sumcheck instance or folded into the Booleanity cycle implementation.
-The implementation should prefer the shape that reuses generated `UnsignedInc` witness data and avoids a second pass over the trace solely for `UnsignedIncMsb`.
+The Booleanity cycle implementation should reuse the materialized `UnsignedIncMsb` witness column from fused increment generation and avoid a second trace pass.
+Because `UnsignedIncMsb` is already a size-`T` boolean polynomial, the prover may use specialized handling that exploits the `{0,1}` coefficient domain; a generic dense booleanity term is also acceptable if it is simpler.
 
 Stage 6b replaces the current Akita use of `IncClaimReduction` with `UnsignedIncClaimReduction`.
 Its input claim is:
@@ -455,60 +472,37 @@ The only Stage 6 changes are the added `Store(r_cycle_inc)` bytecode claim, lowe
 
 ### Stage 7 Changes For Akita
 
-Stage 7 uses the Stage 6b cycle point `r_cycle_6` for lower increment chunks.
-Non-increment RA families also keep the current Stage 6 cycle point.
+Because `UnsignedIncClaimReduction` runs inside the Stage 6b batched sumcheck alongside Booleanity, its final cycle point is the same `r_cycle_6` shared by every one-hot RA family.
+The lower `UnsignedIncChunk(j)` polynomials therefore live at exactly the same cycle point as `InstructionRa`, `RamRa`, and `BytecodeRa`, so they fold into the single existing `HammingWeightClaimReduction` sumcheck rather than a separate increment-only sumcheck.
+This matches how the current Akita code already folds `RdIncRa` and `RamIncRa` into `HammingWeightClaimReduction`; the change is that the two families collapse to one `UnsignedIncChunk` family and the two old value-link claims collapse to one.
 
-For non-increment RA families, Stage 7 remains the existing hamming-weight and address-reduction relation.
+Concretely, in `HammingWeightClaimReduction`:
 
-For lower `UnsignedIncChunk(j)`, Stage 7 proves both one-hot hamming and value reconstruction at `r_cycle_6`.
-The hamming claim for every lower chunk is public value `1`:
+- The polynomial list replaces `RdIncRa(j)`, `RamIncRa(j)`, `RdIncMsb`, `RamIncMsb` with lower `UnsignedIncChunk(j)` only.
+- Each lower `UnsignedIncChunk(j)` keeps the existing per-family hamming, booleanity, and address-virtualization batched terms, with hamming claim public value `1`:
 
 ```text
 sum_a UnsignedIncChunk(j)(a, r_cycle_6) = 1
 ```
 
-The lower-value claim is:
+- The two old per-family value-link claims (`rd_inc_claim + 2^64`, `ram_inc_claim + 2^64`) are replaced by a single value-link claim:
 
 ```text
 lower_value_claim
   = UnsignedInc(r_cycle_6) - 2^64 * UnsignedIncMsb(r_cycle_6)
 ```
 
-Stage 7 proves:
+reconstructed as:
 
 ```text
 lower_value_claim
   = sum_j weight_j * sum_a identity(a) * UnsignedIncChunk(j)(a, r_cycle_6)
 ```
 
-where `weight_j` is the positional base-`K` weight for chunk `j`.
-Equivalently, for:
+where `weight_j` is the positional base-`K` weight for lower chunk `j`.
+The fused increment chunk weights drop the old `2^64` MSB weight, because the MSB contribution is now subtracted explicitly on the left-hand side rather than carried as a top chunk weight.
 
-```text
-G_j(a) = sum_t eq(r_cycle_6, t) * UnsignedIncChunk(j)(a,t)
-```
-
-Stage 7 batches the increment chunk terms:
-
-```text
-sum_j alpha_j * sum_a G_j(a)
-+ sum_j beta_j * sum_a eq(r_addr_bool, a) * G_j(a)
-+ delta * sum_j weight_j * sum_a identity(a) * G_j(a)
-```
-
-with input claim:
-
-```text
-sum_j alpha_j
-+ sum_j beta_j * UnsignedIncChunk(j)(r_addr_bool, r_cycle_6)
-+ delta * lower_value_claim
-```
-
-Stage 7 reduces the lower chunk claims to openings:
-
-```text
-UnsignedIncChunk(j)(r_addr_stage7_inc, r_cycle_6)
-```
+After this sumcheck, each lower `UnsignedIncChunk(j)` has a single opening at `(r_addr_stage7, r_cycle_6)`, the same address-plus-cycle point as the other RA families.
 
 `UnsignedIncMsb` does not participate in Stage 7 address reduction.
 It is already a size-`T` polynomial and is opened directly at `r_cycle_6` in Stage 8.
@@ -600,7 +594,7 @@ Implement in this order:
 3. Add the Akita-only `stage5_inc_sumcheck_proof` field and prover/verifier orchestration.
 4. Move `RamRaClaimReduction` out of Stage 5 only under `akita-pcs`.
 5. Implement `IncVirtualization`.
-6. Extend Stage 6 booleanity with lower `UnsignedIncChunk(j)` and `UnsignedIncMsb`.
+6. Extend Stage 6 booleanity with lower `UnsignedIncChunk(j)` and fold `UnsignedIncMsb` booleanity into the Booleanity cycle phase.
 7. Extend Akita bytecode read-RAF to validate `Store(r_cycle_inc)`.
 8. Replace Akita's old dense increment reduction in Stage 6b with `UnsignedIncClaimReduction`.
 9. Update Stage 7 so lower increment chunks use `r_cycle_6` and `UnsignedIncMsb` is excluded from address reduction.
