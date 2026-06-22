@@ -13,7 +13,7 @@ use crate::poly::opening_proof::{OpeningPoint, Openings};
 #[cfg(feature = "zk")]
 use crate::subprotocols::blindfold::BlindFoldProof;
 use crate::{
-    curve::JoltCurve,
+    curve::ZkCompatibleCurve,
     field::JoltField,
     poly::{
         commitment::{commitment_scheme::CommitmentScheme, dory::DoryLayout},
@@ -34,7 +34,12 @@ use crate::{
 };
 
 #[derive(CanonicalSerialize, CanonicalDeserialize)]
-pub struct JoltProof<F: JoltField, C: JoltCurve, PCS: CommitmentScheme<Field = F>, FS: Transcript> {
+pub struct JoltProof<
+    F: JoltField,
+    C: ZkCompatibleCurve<F>,
+    PCS: CommitmentScheme<Field = F>,
+    FS: Transcript,
+> {
     pub commitments: Vec<PCS::Commitment>,
     pub stage1_uni_skip_first_round_proof: UniSkipFirstRoundProofVariant<F, C, FS>,
     pub stage1_sumcheck_proof: SumcheckInstanceProof<F, C, FS>,
@@ -59,7 +64,7 @@ pub struct JoltProof<F: JoltField, C: JoltCurve, PCS: CommitmentScheme<Field = F
     pub pcs_config: PCS::Config,
 }
 
-impl<F: JoltField, C: JoltCurve, PCS: CommitmentScheme<Field = F>, FS: Transcript>
+impl<F: JoltField, C: ZkCompatibleCurve<F>, PCS: CommitmentScheme<Field = F>, FS: Transcript>
     JoltProof<F, C, PCS, FS>
 {
     /// Verifies all sumcheck and uniskip proofs use the same ZK variant.

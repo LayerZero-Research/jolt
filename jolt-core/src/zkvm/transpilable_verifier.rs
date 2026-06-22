@@ -41,7 +41,7 @@
 //! - Stage 6b: CycleVariables phase (bind cycle-derived coordinates)
 //! - Stage 7: AddressVariables phase (bind address-derived coordinates)
 
-use crate::curve::JoltCurve;
+use crate::curve::ZkCompatibleCurve;
 use crate::poly::commitment::commitment_scheme::CommitmentScheme;
 use crate::poly::commitment::dory::DoryGlobals;
 #[cfg(not(feature = "zk"))]
@@ -108,7 +108,7 @@ use tracer::JoltDevice;
 
 /// Extract the Clear (non-ZK) proof from a SumcheckInstanceProof enum.
 /// TranspilableVerifier only handles non-ZK proofs; ZK mode uses the main verifier.
-fn extract_clear_proof<F: JoltField, C: JoltCurve, T: Transcript>(
+fn extract_clear_proof<F: JoltField, C: ZkCompatibleCurve<F>, T: Transcript>(
     proof: &SumcheckInstanceProof<F, C, T>,
 ) -> &ClearSumcheckProof<F, T> {
     match proof {
@@ -127,7 +127,7 @@ fn extract_clear_proof<F: JoltField, C: JoltCurve, T: Transcript>(
 pub struct TranspilableVerifier<
     'a,
     F: JoltField,
-    C: JoltCurve,
+    C: ZkCompatibleCurve<F>,
     PCS: CommitmentScheme<Field = F>,
     ProofTranscript: Transcript,
     A: AbstractVerifierOpeningAccumulator<F> = VerifierOpeningAccumulator<F>,
@@ -149,7 +149,7 @@ pub struct TranspilableVerifier<
 impl<
         'a,
         F: JoltField,
-        C: JoltCurve,
+        C: ZkCompatibleCurve<F>,
         PCS: CommitmentScheme<Field = F>,
         ProofTranscript: Transcript,
         A: AbstractVerifierOpeningAccumulator<F>,

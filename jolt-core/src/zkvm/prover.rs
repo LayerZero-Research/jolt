@@ -67,7 +67,6 @@ use crate::{
         bytecode::{
             chunks::{build_committed_bytecode_chunk_coeffs, committed_bytecode_chunk_cycle_len},
             read_raf_checking::BytecodeReadRafSumcheckParams,
-            BytecodePreprocessing,
         },
         claim_reductions::{
             AdviceClaimReductionParams, AdviceClaimReductionProver, AdviceKind,
@@ -147,7 +146,7 @@ use crate::{
 
 #[cfg(feature = "allocative")]
 use allocative::FlameGraphBuilder;
-use common::jolt_device::{MemoryConfig, MemoryLayout};
+use common::jolt_device::MemoryConfig;
 use itertools::{zip_eq, Itertools};
 use rayon::prelude::*;
 use tracer::{
@@ -182,14 +181,13 @@ use crate::zkvm::verifier::BlindfoldSetup;
 struct LazyOneHotSource<'a, PCS: CommitmentScheme> {
     trace: &'a [Cycle],
     polys: &'a [CommittedPolynomial],
-    bytecode: Arc<BytecodePreprocessing>,
-    memory_layout: &'a MemoryLayout,
+    preprocessing: &'a JoltSharedPreprocessing<PCS>,
     one_hot_params: &'a OneHotParams,
-    _pcs: std::marker::PhantomData<PCS>,
 }
 
-impl<PCS> PolynomialBatchSource<PCS::Field> for LazyOneHotSource<'_, PCS>
+impl<F, PCS> PolynomialBatchSource<F> for LazyOneHotSource<'_, PCS>
 where
+    F: JoltField,
     PCS: CommitmentScheme,
 {
     fn num_polys(&self) -> usize {
@@ -200,8 +198,13 @@ where
     fn onehot_index(&self, cycle_idx: usize, poly_idx: usize) -> Option<u8> {
         self.polys[poly_idx].extract_index(
             &self.trace[cycle_idx],
-            self.bytecode.as_ref(),
-            self.memory_layout,
+            &self
+                .preprocessing
+                .program
+                .as_full()
+                .expect("Akita packed path requires full program mode")
+                .bytecode,
+            &self.preprocessing.memory_layout,
             self.one_hot_params,
         )
     }
@@ -209,11 +212,8 @@ where
     #[inline]
     fn batch_onehot_indices(&self, cycle_idx: usize, poly_start: usize, buf: &mut [Option<u8>]) {
         for (i, slot) in buf.iter_mut().enumerate() {
-            *slot = <Self as PolynomialBatchSource<PCS::Field>>::onehot_index(
-                self,
-                cycle_idx,
-                poly_start + i,
-            );
+            *slot =
+                <Self as PolynomialBatchSource<F>>::onehot_index(self, cycle_idx, poly_start + i);
         }
     }
 
@@ -230,7 +230,7 @@ where
 pub struct JoltCpuProver<
     'a,
     F: JoltField,
-    C: JoltCurve,
+    C: ZkCompatibleCurve<F>,
     PCS: StreamingCommitmentScheme<Field = F>,
     ProofTranscript: Transcript,
 > {
@@ -274,10 +274,11 @@ mod akita_tests {
     use serial_test::serial;
 
     use crate::host;
+    use crate::zkvm::bytecode::chunks::DEFAULT_COMMITTED_BYTECODE_CHUNK_COUNT;
     use crate::zkvm::program::ProgramPreprocessing;
     use crate::zkvm::prover::JoltProverPreprocessing;
     use crate::zkvm::verifier::{JoltSharedPreprocessing, JoltVerifierPreprocessing};
-    use crate::zkvm::{RV64IMACProver, RV64IMACVerifier};
+    use crate::zkvm::{RV64IMACProver, RV64IMACVerifier, PCS};
 
     fn prove_and_verify_full(program_name: &str, inputs: Vec<u8>) {
         let mut program = host::Program::new(program_name);
@@ -317,59 +318,30 @@ mod akita_tests {
         .expect("Verification failed");
     }
 
-    fn prove_and_verify_committed(program_name: &str, inputs: Vec<u8>) {
-        let mut program = host::Program::new(program_name);
-        let (bytecode, init_memory_state, _, e_entry) = program.decode();
-        let (_, _, _, io_device) = program.trace(&inputs, &[], &[]);
-
-        let program_preprocessing =
-            ProgramPreprocessing::preprocess(bytecode, init_memory_state, e_entry).unwrap();
-        let (shared_preprocessing, committed_program_prover_data, generators) =
-            JoltSharedPreprocessing::new_committed(
-                program_preprocessing,
-                io_device.memory_layout,
-                1 << 16,
-                1,
-            );
-        let prover_preprocessing = JoltProverPreprocessing::new_committed(
-            shared_preprocessing,
-            committed_program_prover_data,
-            generators,
-        );
-        let elf_contents = program.get_elf_contents().expect("elf contents is None");
-
-        let prover = RV64IMACProver::gen_from_elf(
-            &prover_preprocessing,
-            &elf_contents,
-            &inputs,
-            &[],
-            &[],
-            None,
-            None,
-            None,
-        );
-        let io_device = prover.program_io.clone();
-        let (jolt_proof, debug_info) = prover.prove();
-
-        let verifier_preprocessing = JoltVerifierPreprocessing::from(&prover_preprocessing);
-        RV64IMACVerifier::new(
-            &verifier_preprocessing,
-            jolt_proof,
-            io_device,
-            None,
-            debug_info,
-        )
-        .expect("Failed to create verifier")
-        .verify()
-        .expect("Verification failed");
-    }
-
     #[test]
     #[serial]
     fn muldiv_e2e_akita() {
         prove_and_verify_full(
             "muldiv-guest",
             postcard::to_stdvec(&[9u32, 5u32, 3u32]).unwrap(),
+        );
+    }
+
+    #[test]
+    #[serial]
+    #[should_panic(expected = "Akita does not support committed program preprocessing")]
+    fn committed_preprocessing_rejects_akita() {
+        let mut program = host::Program::new("muldiv-guest");
+        let (bytecode, init_memory_state, _, e_entry) = program.decode();
+        let (_, _, _, io_device) = program.trace(&[], &[], &[]);
+        let program_preprocessing =
+            ProgramPreprocessing::preprocess(bytecode, init_memory_state, e_entry).unwrap();
+
+        let _ = JoltSharedPreprocessing::<PCS>::new_committed(
+            program_preprocessing,
+            io_device.memory_layout,
+            1 << 16,
+            DEFAULT_COMMITTED_BYTECODE_CHUNK_COUNT,
         );
     }
 
@@ -389,33 +361,6 @@ mod akita_tests {
     #[serial]
     fn sha3_e2e_akita() {
         prove_and_verify_full("sha3-guest", postcard::to_stdvec(&[5u8; 32]).unwrap());
-    }
-
-    #[test]
-    #[serial]
-    fn muldiv_e2e_akita_committed_program_commitments() {
-        prove_and_verify_committed(
-            "muldiv-guest",
-            postcard::to_stdvec(&[9u32, 5u32, 3u32]).unwrap(),
-        );
-    }
-
-    #[test]
-    #[serial]
-    fn fib_e2e_akita_committed_program_commitments() {
-        prove_and_verify_committed("fibonacci-guest", postcard::to_stdvec(&50u32).unwrap());
-    }
-
-    #[test]
-    #[serial]
-    fn sha2_e2e_akita_committed_program_commitments() {
-        prove_and_verify_committed("sha2-guest", postcard::to_stdvec(&[5u8; 32]).unwrap());
-    }
-
-    #[test]
-    #[serial]
-    fn sha3_e2e_akita_committed_program_commitments() {
-        prove_and_verify_committed("sha3-guest", postcard::to_stdvec(&[5u8; 32]).unwrap());
     }
 }
 
@@ -888,13 +833,11 @@ impl<
             );
 
             if PCS::packed_main_commitment_arity().is_some() {
-                let source: LazyOneHotSource<'_, PCS> = LazyOneHotSource {
+                let source = LazyOneHotSource {
                     trace: &trace,
                     polys: &polys,
-                    bytecode: self.preprocessing.bytecode(),
-                    memory_layout: &self.preprocessing.shared.memory_layout,
+                    preprocessing: &self.preprocessing.shared,
                     one_hot_params: &self.one_hot_params,
-                    _pcs: std::marker::PhantomData,
                 };
                 PCS::batch_commit(&source, &self.preprocessing.generators)
             } else {
@@ -2317,7 +2260,6 @@ impl<
                 polynomial,
                 opening_point: point,
                 claim,
-                num_vars: None,
             });
             polynomial_claims.push((polynomial, claim * lagrange));
             scaling_factors.push(lagrange);
@@ -2587,7 +2529,6 @@ impl<
 
         let state = BatchOpeningState {
             opening_point: opening_point.r.clone(),
-            packed_log_k: Some(self.one_hot_params.log_k_chunk),
             gamma_powers,
             polynomial_claims,
             individual_openings,
@@ -2817,7 +2758,26 @@ where
         let max_T = shared.max_padded_trace_length.next_power_of_two();
         let max_log_T = max_T.log_2();
         let max_log_k_chunk = PCS::log_k_chunk_for_trace(max_log_T);
-        let log_packed = shared.packed_main_log_packed(max_log_T, max_log_k_chunk);
+        let log_packed = if PCS::uses_onehot_inc() {
+            let bytecode_len = shared.bytecode_size();
+            let ram_k = crate::zkvm::ram::compute_max_ram_K(&shared.memory_layout);
+            let max_n_polys = PCS::supported_log_k_chunks(max_log_k_chunk)
+                .into_iter()
+                .map(|log_k_chunk| {
+                    let mut config = OneHotConfig::new(max_log_T);
+                    config.log_k_chunk = log_k_chunk as u8;
+                    all_committed_polynomials(
+                        &OneHotParams::from_config(&config, bytecode_len, ram_k),
+                        true,
+                    )
+                    .len()
+                })
+                .max()
+                .unwrap_or(1);
+            Some(max_n_polys.next_power_of_two().log_2())
+        } else {
+            None
+        };
         let generators = PCS::setup_prover_from_shape(max_log_T, max_log_k_chunk, log_packed);
 
         Self::new_with_generators(shared, generators)
@@ -3029,53 +2989,6 @@ mod tests {
         );
         let program = Arc::new(program);
         Ok((shared, prover_data, generators, program))
-    }
-
-    fn prove_and_verify_committed_dory(program_name: &str, inputs: Vec<u8>) {
-        DoryGlobals::reset();
-        let mut program = host::Program::new(program_name);
-        let (bytecode, init_memory_state, _, e_entry) = program.decode();
-        let (_, _, _, io_device) = program.trace(&inputs, &[], &[]);
-        let (shared_preprocessing, committed_program_prover_data, generators, _program_data) =
-            test_shared_preprocessing_committed(
-                bytecode,
-                init_memory_state,
-                e_entry,
-                io_device.memory_layout.clone(),
-                1 << 16,
-                1,
-            )
-            .unwrap();
-        let prover_preprocessing = JoltProverPreprocessing::new_committed(
-            shared_preprocessing,
-            committed_program_prover_data,
-            generators,
-        );
-        let elf_contents_opt = program.get_elf_contents();
-        let elf_contents = elf_contents_opt.as_deref().expect("elf contents is None");
-        let prover = RV64IMACProver::gen_from_elf(
-            &prover_preprocessing,
-            elf_contents,
-            &inputs,
-            &[],
-            &[],
-            None,
-            None,
-            None,
-        );
-        let io_device = prover.program_io.clone();
-        let (jolt_proof, debug_info) = prover.prove();
-
-        let verifier_preprocessing = JoltVerifierPreprocessing::from(&prover_preprocessing);
-        let verifier = RV64IMACVerifier::new(
-            &verifier_preprocessing,
-            jolt_proof,
-            io_device,
-            None,
-            debug_info,
-        )
-        .expect("Failed to create verifier");
-        verifier.verify().expect("Failed to verify proof");
     }
 
     #[test]
@@ -3718,28 +3631,51 @@ mod tests {
     #[test]
     #[serial]
     fn muldiv_e2e_dory_committed_program_commitments() {
-        prove_and_verify_committed_dory(
-            "muldiv-guest",
-            postcard::to_stdvec(&[9u32, 5u32, 3u32]).unwrap(),
+        DoryGlobals::reset();
+        let mut program = host::Program::new("muldiv-guest");
+        let (bytecode, init_memory_state, _, e_entry) = program.decode();
+        let inputs = postcard::to_stdvec(&[9u32, 5u32, 3u32]).unwrap();
+        let (_, _, _, io_device) = program.trace(&inputs, &[], &[]);
+        let (shared_preprocessing, committed_program_prover_data, generators, _program_data) =
+            test_shared_preprocessing_committed(
+                bytecode,
+                init_memory_state,
+                e_entry,
+                io_device.memory_layout.clone(),
+                1 << 16,
+                1,
+            )
+            .unwrap();
+        let prover_preprocessing = JoltProverPreprocessing::new_committed(
+            shared_preprocessing.clone(),
+            committed_program_prover_data,
+            generators,
         );
-    }
+        let elf_contents_opt = program.get_elf_contents();
+        let elf_contents = elf_contents_opt.as_deref().expect("elf contents is None");
+        let prover = RV64IMACProver::gen_from_elf(
+            &prover_preprocessing,
+            elf_contents,
+            &inputs,
+            &[],
+            &[],
+            None,
+            None,
+            None,
+        );
+        let io_device = prover.program_io.clone();
+        let (jolt_proof, debug_info) = prover.prove();
 
-    #[test]
-    #[serial]
-    fn fib_e2e_dory_committed_program_commitments() {
-        prove_and_verify_committed_dory("fibonacci-guest", postcard::to_stdvec(&50u32).unwrap());
-    }
-
-    #[test]
-    #[serial]
-    fn sha2_e2e_dory_committed_program_commitments() {
-        prove_and_verify_committed_dory("sha2-guest", postcard::to_stdvec(&[5u8; 32]).unwrap());
-    }
-
-    #[test]
-    #[serial]
-    fn sha3_e2e_dory_committed_program_commitments() {
-        prove_and_verify_committed_dory("sha3-guest", postcard::to_stdvec(&[5u8; 32]).unwrap());
+        let verifier_preprocessing = JoltVerifierPreprocessing::from(&prover_preprocessing);
+        let verifier = RV64IMACVerifier::new(
+            &verifier_preprocessing,
+            jolt_proof,
+            io_device,
+            None,
+            debug_info,
+        )
+        .expect("Failed to create verifier");
+        verifier.verify().expect("Failed to verify proof");
     }
 
     #[test]

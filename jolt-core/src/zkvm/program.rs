@@ -13,10 +13,6 @@ use crate::poly::multilinear_polynomial::MultilinearPolynomial;
 use crate::utils::errors::ProofVerifyError;
 use crate::utils::math::Math;
 use crate::zkvm::bytecode::{
-    chunks::{
-        build_committed_bytecode_chunk_polynomials, committed_bytecode_chunk_cycle_len,
-        committed_lanes,
-    },
     BytecodePreprocessing, PreprocessingError, TrustedBytecodeCommitments, TrustedBytecodeHints,
 };
 use crate::zkvm::ram::RAMPreprocessing;
@@ -240,67 +236,14 @@ impl<PCS: CommitmentScheme> ProgramPreprocessing<PCS> {
             panic!("cannot commit already-committed program preprocessing");
         };
         let meta = full.meta();
-        let dense_batch_commitments = {
-            let bytecode_chunk_polys = build_committed_bytecode_chunk_polynomials::<PCS::Field>(
-                &full.bytecode.bytecode,
-                bytecode_chunk_count,
-            );
-            let program_image_num_words = full.committed_program_image_num_words(memory_layout);
-            let program_image_poly = MultilinearPolynomial::from(build_program_image_words_padded(
-                &full,
-                program_image_num_words,
-            ));
-            let mut polys = bytecode_chunk_polys;
-            polys.push(program_image_poly);
-            PCS::commit_dense_batch(&polys, generators)
-        };
-        let (bytecode_commitments, bytecode_hints, program_commitments, program_hints) =
-            if let Some(mut committed) = dense_batch_commitments {
-                let program_image_num_words = full.committed_program_image_num_words(memory_layout);
-                let bytecode_len = full.bytecode.code_size;
-                let bytecode_T =
-                    committed_bytecode_chunk_cycle_len(bytecode_len, bytecode_chunk_count);
-                let total_vars = bytecode_T.log_2() + committed_lanes().log_2();
-                let (bytecode_sigma, _) = DoryGlobals::balanced_sigma_nu(total_vars);
-                let (program_image_sigma, _) =
-                    DoryGlobals::balanced_sigma_nu(program_image_num_words.log_2());
-                let (program_image_commitment, program_image_hint) = committed
-                    .pop()
-                    .expect("program image dense commitment missing");
-                let (commitments, hints): (Vec<_>, Vec<_>) = committed.into_iter().unzip();
-                (
-                    TrustedBytecodeCommitments {
-                        commitments,
-                        num_columns: 1usize << bytecode_sigma,
-                        log_k_chunk: max_log_k_chunk as u8,
-                        bytecode_chunk_count,
-                        bytecode_len,
-                        bytecode_T,
-                    },
-                    TrustedBytecodeHints { hints },
-                    TrustedProgramCommitments {
-                        program_image_commitment,
-                        program_image_num_columns: 1usize << program_image_sigma,
-                        program_image_num_words,
-                    },
-                    TrustedProgramHints { program_image_hint },
-                )
-            } else {
-                let (bytecode_commitments, bytecode_hints) = TrustedBytecodeCommitments::derive(
-                    &full.bytecode,
-                    generators,
-                    max_log_k_chunk,
-                    bytecode_chunk_count,
-                );
-                let (program_commitments, program_hints) =
-                    TrustedProgramCommitments::derive(&full, memory_layout, generators);
-                (
-                    bytecode_commitments,
-                    bytecode_hints,
-                    program_commitments,
-                    program_hints,
-                )
-            };
+        let (bytecode_commitments, bytecode_hints) = TrustedBytecodeCommitments::derive(
+            &full.bytecode,
+            generators,
+            max_log_k_chunk,
+            bytecode_chunk_count,
+        );
+        let (program_commitments, program_hints) =
+            TrustedProgramCommitments::derive(&full, memory_layout, generators);
 
         (
             Self::Committed(CommittedProgramPreprocessing {

@@ -13,7 +13,7 @@ use crate::{
     poly::multilinear_polynomial::MultilinearPolynomial,
     poly::opening_proof::BatchOpeningState,
     poly::rlc_polynomial::{RLCStreamingData, TraceSource},
-    utils::{errors::ProofVerifyError, math::Math, small_scalar::SmallScalar},
+    utils::{errors::ProofVerifyError, small_scalar::SmallScalar},
     zkvm::{
         claim_reductions::PrecommittedPolynomial, config::OneHotParams,
         witness::CommittedPolynomial,
@@ -109,23 +109,10 @@ pub trait CommitmentScheme: Clone + Sync + Send + 'static {
         max_log_k: usize,
         log_packed: Option<usize>,
     ) -> Self::ProverSetup {
-        Self::setup_prover_from_shape_with_extra(max_log_t, max_log_k, log_packed, &[])
-    }
-
-    fn setup_prover_from_shape_with_extra(
-        max_log_t: usize,
-        max_log_k: usize,
-        log_packed: Option<usize>,
-        extra_num_vars: &[usize],
-    ) -> Self::ProverSetup {
         let max_num_vars = max_log_t
             .checked_add(max_log_k)
             .and_then(|n| n.checked_add(log_packed.unwrap_or(0)))
             .expect("setup_prover_from_shape max_num_vars overflow");
-        let max_num_vars = extra_num_vars
-            .iter()
-            .copied()
-            .fold(max_num_vars, usize::max);
         Self::setup_prover(max_num_vars)
     }
 
@@ -145,6 +132,10 @@ pub trait CommitmentScheme: Clone + Sync + Send + 'static {
 
     fn dory_layout(_config: &Self::Config) -> Option<crate::poly::commitment::dory::DoryLayout> {
         None
+    }
+
+    fn supports_committed_program() -> bool {
+        true
     }
 
     fn prove_batch_opening<ProofTranscript: Transcript>(
@@ -236,17 +227,6 @@ pub trait CommitmentScheme: Clone + Sync + Send + 'static {
         poly: &MultilinearPolynomial<Self::Field>,
         setup: &Self::ProverSetup,
     ) -> (Self::Commitment, Self::OpeningProofHint);
-
-    fn commit_dense_batch(
-        _polys: &[MultilinearPolynomial<Self::Field>],
-        _setup: &Self::ProverSetup,
-    ) -> Option<Vec<(Self::Commitment, Self::OpeningProofHint)>> {
-        None
-    }
-
-    fn dense_num_vars(len: usize) -> usize {
-        len.log_2()
-    }
 
     /// Commits to multiple multilinear polynomials in batch.
     ///

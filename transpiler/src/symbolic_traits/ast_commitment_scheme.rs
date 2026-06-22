@@ -45,7 +45,7 @@
 
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use jolt_core::field::JoltField;
-use jolt_core::poly::commitment::commitment_scheme::{CommitmentScheme, PolynomialBatchSource};
+use jolt_core::poly::commitment::commitment_scheme::CommitmentScheme;
 use jolt_core::poly::commitment::dory::DoryLayout;
 use jolt_core::poly::multilinear_polynomial::MultilinearPolynomial;
 use jolt_core::transcripts::Transcript;
@@ -98,7 +98,6 @@ impl CommitmentScheme for AstCommitmentScheme {
     type Proof = AstProof;
     type BatchedProof = AstBatchedProof;
     type OpeningProofHint = AstOpeningHint;
-    type BatchOpeningHint = AstOpeningHint;
 
     fn setup_prover(_max_num_vars: usize) -> Self::ProverSetup {
         panic!("AstCommitmentScheme::setup_prover should never be called during verification")
@@ -119,12 +118,12 @@ impl CommitmentScheme for AstCommitmentScheme {
         panic!("AstCommitmentScheme::commit should never be called during verification")
     }
 
-    fn batch_commit<S>(
-        _source: &S,
+    fn batch_commit<U>(
+        _polys: &[U],
         _gens: &Self::ProverSetup,
-    ) -> (Vec<Self::Commitment>, Self::BatchOpeningHint)
+    ) -> Vec<(Self::Commitment, Self::OpeningProofHint)>
     where
-        S: PolynomialBatchSource<Self::Field>,
+        U: Borrow<MultilinearPolynomial<Self::Field>> + Sync,
     {
         panic!("AstCommitmentScheme::batch_commit should never be called during verification")
     }
@@ -163,9 +162,5 @@ impl CommitmentScheme for AstCommitmentScheme {
 
     fn protocol_name() -> &'static [u8] {
         b"AstCommitmentScheme"
-    }
-
-    fn split_batch_hint(_batch_hint: &Self::BatchOpeningHint) -> Vec<Self::OpeningProofHint> {
-        panic!("AstCommitmentScheme::split_batch_hint should never be called during verification")
     }
 }

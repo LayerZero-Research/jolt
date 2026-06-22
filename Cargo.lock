@@ -3045,7 +3045,6 @@ dependencies = [
  "akita-serialization",
  "akita-transcript",
  "akita-types",
- "akita-verifier",
  "allocative",
  "ark-bn254",
  "ark-ec",

@@ -26,7 +26,7 @@ use crate::zkvm::bytecode::chunks::{
     committed_lanes, is_valid_committed_bytecode_chunking_for_len,
 };
 use crate::zkvm::claim_reductions::RegistersClaimReductionSumcheckVerifier;
-use crate::zkvm::config::{OneHotConfig, OneHotParams, ProgramMode};
+use crate::zkvm::config::{OneHotParams, ProgramMode};
 use crate::zkvm::program::{CommittedProgramProverData, ProgramMetadata, ProgramPreprocessing};
 #[cfg(feature = "prover")]
 use crate::zkvm::prover::JoltProverPreprocessing;
@@ -232,7 +232,7 @@ use tracer::JoltDevice;
 pub struct JoltVerifier<
     'a,
     F: JoltField,
-    C: JoltCurve,
+    C: ZkCompatibleCurve<F>,
     PCS: CommitmentScheme<Field = F>,
     ProofTranscript: Transcript,
 > {
@@ -1783,13 +1783,11 @@ impl<
         let mut record_opening = |polynomial: CommittedPolynomial,
                                   point: OpeningPoint<BIG_ENDIAN, F>,
                                   claim: F,
-                                  lagrange: F,
-                                  num_vars: Option<usize>| {
+                                  lagrange: F| {
             individual_openings.push(BatchOpening {
                 polynomial,
                 opening_point: point,
                 claim,
-                num_vars,
             });
             polynomial_claims.push((polynomial, claim * lagrange));
             scaling_factors.push(lagrange);
@@ -1801,37 +1799,25 @@ impl<
                     CommittedPolynomial::RdIncRa(i),
                     SumcheckId::HammingWeightClaimReduction,
                 );
-                record_opening(
-                    CommittedPolynomial::RdIncRa(i),
-                    point,
-                    claim,
-                    F::one(),
-                    None,
-                );
+                record_opening(CommittedPolynomial::RdIncRa(i), point, claim, F::one());
             }
             let (point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
                 CommittedPolynomial::RdIncMsb,
                 SumcheckId::HammingWeightClaimReduction,
             );
-            record_opening(CommittedPolynomial::RdIncMsb, point, claim, F::one(), None);
+            record_opening(CommittedPolynomial::RdIncMsb, point, claim, F::one());
             for i in 0..self.one_hot_params.inc_onehot_d() {
                 let (point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
                     CommittedPolynomial::RamIncRa(i),
                     SumcheckId::HammingWeightClaimReduction,
                 );
-                record_opening(
-                    CommittedPolynomial::RamIncRa(i),
-                    point,
-                    claim,
-                    F::one(),
-                    None,
-                );
+                record_opening(CommittedPolynomial::RamIncRa(i), point, claim, F::one());
             }
             let (point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
                 CommittedPolynomial::RamIncMsb,
                 SumcheckId::HammingWeightClaimReduction,
             );
-            record_opening(CommittedPolynomial::RamIncMsb, point, claim, F::one(), None);
+            record_opening(CommittedPolynomial::RamIncMsb, point, claim, F::one());
         } else {
             // Dense polynomials: RamInc and RdInc (from IncClaimReduction in Stage 6)
             let (ram_inc_point, ram_inc_claim) =
@@ -1851,14 +1837,12 @@ impl<
                 ram_inc_point,
                 ram_inc_claim,
                 ram_inc_lagrange,
-                None,
             );
             record_opening(
                 CommittedPolynomial::RdInc,
                 rd_inc_point,
                 rd_inc_claim,
                 rd_inc_lagrange,
-                None,
             );
         }
 
@@ -1874,7 +1858,6 @@ impl<
                 ra_point,
                 claim,
                 lagrange,
-                None,
             );
         }
         for i in 0..self.one_hot_params.bytecode_d {
@@ -1888,7 +1871,6 @@ impl<
                 ra_point,
                 claim,
                 lagrange,
-                None,
             );
         }
         for i in 0..self.one_hot_params.ram_d {
@@ -1897,13 +1879,7 @@ impl<
                 SumcheckId::HammingWeightClaimReduction,
             );
             let lagrange = lagrange_factor_for(&ra_point);
-            record_opening(
-                CommittedPolynomial::RamRa(i),
-                ra_point,
-                claim,
-                lagrange,
-                None,
-            );
+            record_opening(CommittedPolynomial::RamRa(i), ra_point, claim, lagrange);
         }
 
         // Advice polynomials: TrustedAdvice and UntrustedAdvice (from AdviceClaimReduction in Stage 6)
@@ -1922,9 +1898,6 @@ impl<
                 advice_point,
                 advice_claim,
                 lagrange_factor,
-                Some(PCS::dense_num_vars(
-                    self.program_io.memory_layout.max_trusted_advice_size as usize / 8,
-                )),
             );
             include_trusted_advice = true;
         }
@@ -1939,36 +1912,12 @@ impl<
                 advice_point,
                 advice_claim,
                 lagrange_factor,
-                Some(PCS::dense_num_vars(
-                    self.program_io.memory_layout.max_untrusted_advice_size as usize / 8,
-                )),
             );
             include_untrusted_advice = true;
         }
 
-        let committed_program_dense_num_vars = self
-            .preprocessing
-            .shared
-            .program
-            .bytecode_commitments()
-            .map(|bytecode_commitments| {
-                let bytecode_num_vars =
-                    PCS::dense_num_vars(committed_lanes() * bytecode_commitments.bytecode_T);
-                let program_num_vars = PCS::dense_num_vars(
-                    self.preprocessing
-                        .shared
-                        .program
-                        .committed_program_image_num_words(&self.program_io.memory_layout),
-                );
-                bytecode_num_vars.max(program_num_vars)
-            });
-
-        if let Some(bytecode_commitments) = self.preprocessing.shared.program.bytecode_commitments()
-        {
-            let chunk_count = bytecode_commitments.bytecode_chunk_count;
-            let bytecode_chunk_num_vars = committed_program_dense_num_vars.unwrap_or_else(|| {
-                PCS::dense_num_vars(committed_lanes() * bytecode_commitments.bytecode_T)
-            });
+        if self.preprocessing.shared.program.is_committed() {
+            let chunk_count = self.preprocessing.shared.bytecode_chunk_count;
             for chunk_idx in 0..chunk_count {
                 let (chunk_point, chunk_claim) =
                     self.opening_accumulator.get_committed_polynomial_opening(
@@ -1981,18 +1930,10 @@ impl<
                     chunk_point,
                     chunk_claim,
                     lagrange_factor,
-                    Some(bytecode_chunk_num_vars),
                 );
             }
         }
         if self.preprocessing.shared.program.is_committed() {
-            let program_image_num_words = self
-                .preprocessing
-                .shared
-                .program
-                .committed_program_image_num_words(&self.program_io.memory_layout);
-            let program_image_num_vars = committed_program_dense_num_vars
-                .unwrap_or_else(|| PCS::dense_num_vars(program_image_num_words));
             let (program_point, program_claim) =
                 self.opening_accumulator.get_committed_polynomial_opening(
                     CommittedPolynomial::ProgramImageInit,
@@ -2004,7 +1945,6 @@ impl<
                 program_point,
                 program_claim,
                 lagrange_factor,
-                Some(program_image_num_vars),
             );
         }
 
@@ -2077,7 +2017,6 @@ impl<
         // Build state for computing joint commitment/claim
         let state = BatchOpeningState {
             opening_point: opening_point.r.clone(),
-            packed_log_k: Some(self.one_hot_params.log_k_chunk),
             gamma_powers: gamma_powers.clone(),
             polynomial_claims,
             individual_openings,
@@ -2338,6 +2277,11 @@ impl<PCS: CommitmentScheme> JoltSharedPreprocessing<PCS> {
         CommittedProgramProverData<PCS>,
         PCS::ProverSetup,
     ) {
+        assert!(
+            PCS::supports_committed_program(),
+            "{} does not support committed program preprocessing",
+            String::from_utf8_lossy(PCS::protocol_name()),
+        );
         let bytecode_len = program.bytecode_len();
         assert!(
             is_valid_committed_bytecode_chunking_for_len(bytecode_len, bytecode_chunk_count),
@@ -2352,16 +2296,8 @@ impl<PCS: CommitmentScheme> JoltSharedPreprocessing<PCS> {
             max_padded_trace_length,
             bytecode_chunk_count,
         };
-        let max_log_t = shared.max_padded_trace_length.next_power_of_two().log_2();
-        let (_, max_log_k_chunk) = shared.compute_max_total_vars(true);
-        let log_packed = shared.packed_main_log_packed(max_log_t, max_log_k_chunk);
-        let extra_num_vars = shared.precommitted_candidate_total_vars(true, true, true);
-        let generators = PCS::setup_prover_from_shape_with_extra(
-            max_log_t,
-            max_log_k_chunk,
-            log_packed,
-            &extra_num_vars,
-        );
+        let (max_total_vars, max_log_k_chunk) = shared.compute_max_total_vars(true);
+        let generators = PCS::setup_prover(max_total_vars);
         let (committed_program, prover_data) = shared.program.commit(
             &shared.memory_layout,
             &generators,
@@ -2437,43 +2373,15 @@ impl<PCS: CommitmentScheme> JoltSharedPreprocessing<PCS> {
         max_total_vars
     }
 
-    #[inline]
-    pub(crate) fn packed_main_log_packed(
-        &self,
-        max_log_t: usize,
-        max_log_k_chunk: usize,
-    ) -> Option<usize> {
-        if !PCS::uses_onehot_inc() {
-            return None;
-        }
-
-        let bytecode_len = self.bytecode_size();
-        let ram_k = compute_max_ram_K(&self.memory_layout);
-        let max_n_polys = PCS::supported_log_k_chunks(max_log_k_chunk)
-            .into_iter()
-            .map(|log_k_chunk| {
-                let mut config = OneHotConfig::new(max_log_t);
-                config.log_k_chunk = log_k_chunk as u8;
-                if PCS::uses_onehot_inc() {
-                    config.lookups_ra_virtual_log_k_chunk = (4 * log_k_chunk) as u8;
-                }
-                all_committed_polynomials(
-                    &OneHotParams::from_config(&config, bytecode_len, ram_k),
-                    true,
-                )
-                .len()
-            })
-            .max()
-            .unwrap_or(1);
-
-        Some(max_n_polys.next_power_of_two().log_2())
-    }
-
-    #[inline]
     pub(crate) fn compute_max_total_vars(&self, include_committed: bool) -> (usize, usize) {
+        use common::constants::ONEHOT_CHUNK_THRESHOLD_LOG_T;
         let max_t_any = self.max_padded_trace_length.next_power_of_two();
         let max_log_t = max_t_any.log_2();
-        let max_log_k_chunk = PCS::log_k_chunk_for_trace(max_log_t);
+        let max_log_k_chunk = if max_log_t < ONEHOT_CHUNK_THRESHOLD_LOG_T {
+            4
+        } else {
+            8
+        };
 
         let max_total_vars = Self::max_total_vars_from_candidates(
             max_log_k_chunk + max_log_t,
