@@ -1042,18 +1042,16 @@ impl<
                         pcs.batch_commit(&main_layout, &source, &self.preprocessing.generators);
                     (commitments, batch_hint)
                 } else {
-                    let trace: Vec<Cycle> = self
-                        .lazy_trace
-                        .clone()
-                        .pad_using(T, |_| Cycle::NoOp)
-                        .collect();
+                    // Lay witnesses on the trace prefix (`k * trace_len + cycle`), matching Stage-8
+                    // opening. Padding to embedded `T` when the matrix is widened would place
+                    // coefficients at `k * T + cycle` and break the batched opening.
                     let witnesses: Vec<MultilinearPolynomial<F>> = polys
                         .par_iter()
                         .map(|poly_id| {
                             poly_id.generate_witness(
                                 &self.preprocessing.shared.bytecode,
                                 &self.preprocessing.shared.memory_layout,
-                                &trace,
+                                &self.trace,
                                 Some(&self.one_hot_params),
                             )
                         })
