@@ -25,6 +25,8 @@ use crate::zkvm::bytecode::chunks::DEFAULT_COMMITTED_BYTECODE_CHUNK_COUNT;
 use crate::zkvm::bytecode::chunks::{
     committed_lanes, is_valid_committed_bytecode_chunking_for_len,
 };
+#[cfg(feature = "akita-pcs")]
+use crate::zkvm::claim_reductions::IncVirtualizationVerifier;
 use crate::zkvm::claim_reductions::RegistersClaimReductionSumcheckVerifier;
 use crate::zkvm::config::{OneHotConfig, OneHotParams, ProgramMode};
 use crate::zkvm::program::{CommittedProgramProverData, ProgramMetadata, ProgramPreprocessing};
@@ -503,6 +505,10 @@ impl<
         let stage5_result = self.verify_stage5().inspect_err(|e| {
             tracing::error!("Stage 5: {e}");
         })?;
+        #[cfg(feature = "akita-pcs")]
+        let stage5_inc_result = self.verify_stage5_inc().inspect_err(|e| {
+            tracing::error!("Stage 5i: {e}");
+        })?;
         let (stage6a_result, stage6b_result) = self.verify_stage6().inspect_err(|e| {
             tracing::error!("Stage 6: {e}");
         })?;
@@ -522,6 +528,8 @@ impl<
                     stage3_result.challenges.clone(),
                     stage4_result.challenges.clone(),
                     stage5_result.challenges.clone(),
+                    #[cfg(feature = "akita-pcs")]
+                    stage5_inc_result.challenges.clone(),
                     stage6a_result.challenges.clone(),
                     stage6b_result.challenges.clone(),
                     stage7_result.challenges.clone(),
@@ -534,6 +542,8 @@ impl<
                     stage3_result.batched_output_constraint,
                     stage4_result.batched_output_constraint,
                     stage5_result.batched_output_constraint,
+                    #[cfg(feature = "akita-pcs")]
+                    stage5_inc_result.batched_output_constraint,
                     stage6a_result.batched_output_constraint,
                     stage6b_result.batched_output_constraint,
                     stage7_result.batched_output_constraint,
@@ -545,6 +555,8 @@ impl<
                     stage3_result.batched_input_constraint.clone(),
                     stage4_result.batched_input_constraint.clone(),
                     stage5_result.batched_input_constraint.clone(),
+                    #[cfg(feature = "akita-pcs")]
+                    stage5_inc_result.batched_input_constraint.clone(),
                     stage6a_result.batched_input_constraint.clone(),
                     stage6b_result.batched_input_constraint.clone(),
                     stage7_result.batched_input_constraint.clone(),
@@ -560,6 +572,8 @@ impl<
                     stage3_result.input_constraint_challenge_values.clone(),
                     stage4_result.input_constraint_challenge_values.clone(),
                     stage5_result.input_constraint_challenge_values.clone(),
+                    #[cfg(feature = "akita-pcs")]
+                    stage5_inc_result.input_constraint_challenge_values.clone(),
                     stage6a_result.input_constraint_challenge_values.clone(),
                     stage6b_result.input_constraint_challenge_values.clone(),
                     stage7_result.input_constraint_challenge_values.clone(),
@@ -571,6 +585,8 @@ impl<
                     stage3_result.output_constraint_challenge_values.clone(),
                     stage4_result.output_constraint_challenge_values.clone(),
                     stage5_result.output_constraint_challenge_values.clone(),
+                    #[cfg(feature = "akita-pcs")]
+                    stage5_inc_result.output_constraint_challenge_values.clone(),
                     stage6a_result.output_constraint_challenge_values.clone(),
                     stage6b_result.output_constraint_challenge_values.clone(),
                     stage7_result.output_constraint_challenge_values.clone(),
@@ -582,6 +598,8 @@ impl<
                 oc_blocks.extend(stage3_result.oc_block_ids);
                 oc_blocks.extend(stage4_result.oc_block_ids);
                 oc_blocks.extend(stage5_result.oc_block_ids);
+                #[cfg(feature = "akita-pcs")]
+                oc_blocks.extend(stage5_inc_result.oc_block_ids);
                 oc_blocks.extend(stage6a_result.oc_block_ids);
                 oc_blocks.extend(stage6b_result.oc_block_ids);
                 oc_blocks.extend(stage7_result.oc_block_ids);
@@ -1028,6 +1046,7 @@ impl<
             &self.opening_accumulator,
             &mut self.transcript,
         );
+        #[cfg(not(feature = "akita-pcs"))]
         let ram_ra_reduction = RamRaClaimReductionSumcheckVerifier::new(
             self.proof.trace_length,
             &self.one_hot_params,
@@ -1037,13 +1056,12 @@ impl<
         let registers_val_evaluation =
             RegistersValEvaluationSumcheckVerifier::new(&self.opening_accumulator);
 
-        let instances: Vec<
+        let mut instances: Vec<
             &dyn SumcheckInstanceVerifier<F, ProofTranscript, VerifierOpeningAccumulator<F>>,
-        > = vec![
-            &lookups_read_raf,
-            &ram_ra_reduction,
-            &registers_val_evaluation,
-        ];
+        > = vec![&lookups_read_raf];
+        #[cfg(not(feature = "akita-pcs"))]
+        instances.push(&ram_ra_reduction);
+        instances.push(&registers_val_evaluation);
 
         let (batching_coefficients, r_stage5) = BatchedSumcheck::verify(
             &self.proof.stage5_sumcheck_proof,
@@ -1088,6 +1106,36 @@ impl<
         #[cfg(not(feature = "zk"))]
         Ok(StageVerifyResult {
             challenges: r_stage5,
+        })
+    }
+
+    #[cfg(feature = "akita-pcs")]
+    fn verify_stage5_inc(&mut self) -> Result<StageVerifyResult<F>, ProofVerifyError> {
+        let ram_ra_reduction = RamRaClaimReductionSumcheckVerifier::new(
+            self.proof.trace_length,
+            &self.one_hot_params,
+            &self.opening_accumulator,
+            &mut self.transcript,
+        );
+        let inc_virtualization = IncVirtualizationVerifier::new(
+            self.proof.trace_length,
+            &self.opening_accumulator,
+            &mut self.transcript,
+        );
+        let instances: Vec<
+            &dyn SumcheckInstanceVerifier<F, ProofTranscript, VerifierOpeningAccumulator<F>>,
+        > = vec![&ram_ra_reduction, &inc_virtualization];
+
+        let (_batching_coefficients, r_stage5_inc) = BatchedSumcheck::verify(
+            &self.proof.stage5_inc_sumcheck_proof,
+            instances,
+            &mut self.opening_accumulator,
+            &mut self.transcript,
+        )
+        .inspect_err(|err| tracing::error!("Stage 5i: {err}"))?;
+
+        Ok(StageVerifyResult {
+            challenges: r_stage5_inc,
         })
     }
 

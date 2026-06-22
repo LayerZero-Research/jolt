@@ -110,6 +110,9 @@ use crate::{
         witness::all_committed_polynomials,
     },
 };
+
+#[cfg(feature = "akita-pcs")]
+use crate::zkvm::claim_reductions::{IncVirtualizationParams, IncVirtualizationProver};
 use crate::{
     poly::commitment::commitment_scheme::CommitmentScheme,
     zkvm::{
@@ -717,6 +720,8 @@ impl<
         let (stage3_sumcheck_proof, r_stage3) = self.prove_stage3();
         let (stage4_sumcheck_proof, r_stage4) = self.prove_stage4();
         let (stage5_sumcheck_proof, r_stage5) = self.prove_stage5();
+        #[cfg(feature = "akita-pcs")]
+        let (stage5_inc_sumcheck_proof, r_stage5_inc) = self.prove_stage5_inc();
         let (stage6a_sumcheck_proof, bytecode_read_raf_params, booleanity_cycle_input) =
             self.prove_stage6a();
         let (stage6b_sumcheck_proof, r_stage6) =
@@ -726,6 +731,8 @@ impl<
         let _sumcheck_challenges = [
             r_stage1, r_stage2, r_stage3, r_stage4, r_stage5, r_stage6, r_stage7,
         ];
+        #[cfg(feature = "akita-pcs")]
+        let _stage5_inc_challenges = r_stage5_inc;
 
         let joint_opening_proof = self.prove_stage8(batch_hint, opening_proof_hints);
         #[cfg(feature = "zk")]
@@ -767,6 +774,8 @@ impl<
             stage3_sumcheck_proof,
             stage4_sumcheck_proof,
             stage5_sumcheck_proof,
+            #[cfg(feature = "akita-pcs")]
+            stage5_inc_sumcheck_proof,
             stage6a_sumcheck_proof,
             stage6b_sumcheck_proof,
             stage7_sumcheck_proof,
@@ -1369,6 +1378,7 @@ impl<
             &self.opening_accumulator,
             &mut self.transcript,
         );
+        #[cfg(not(feature = "akita-pcs"))]
         let ram_ra_reduction_params = RaReductionParams::new(
             self.trace.len(),
             &self.one_hot_params,
@@ -1382,6 +1392,7 @@ impl<
             lookups_read_raf_params,
             Arc::clone(&self.trace),
         );
+        #[cfg(not(feature = "akita-pcs"))]
         let ram_ra_reduction = RamRaClaimReductionSumcheckProver::initialize(
             ram_ra_reduction_params,
             &self.trace,
@@ -1398,6 +1409,7 @@ impl<
         #[cfg(feature = "allocative")]
         {
             print_data_structure_heap_usage("InstructionReadRafSumcheckProver", &lookups_read_raf);
+            #[cfg(not(feature = "akita-pcs"))]
             print_data_structure_heap_usage("RamRaClaimReductionSumcheckProver", &ram_ra_reduction);
             print_data_structure_heap_usage(
                 "RegistersValEvaluationSumcheckProver",
@@ -1405,11 +1417,11 @@ impl<
             );
         }
 
-        let mut instances: Vec<Box<dyn SumcheckInstanceProver<_, _>>> = vec![
-            Box::new(lookups_read_raf),
-            Box::new(ram_ra_reduction),
-            Box::new(registers_val_evaluation),
-        ];
+        let mut instances: Vec<Box<dyn SumcheckInstanceProver<_, _>>> =
+            vec![Box::new(lookups_read_raf)];
+        #[cfg(not(feature = "akita-pcs"))]
+        instances.push(Box::new(ram_ra_reduction));
+        instances.push(Box::new(registers_val_evaluation));
 
         #[cfg(feature = "allocative")]
         write_boxed_instance_flamegraph_svg(&instances, "stage5_start_flamechart.svg");
@@ -1422,6 +1434,49 @@ impl<
         drop_in_background_thread(instances);
 
         (sumcheck_proof, r_stage5)
+    }
+
+    #[cfg(feature = "akita-pcs")]
+    #[tracing::instrument(skip_all)]
+    fn prove_stage5_inc(
+        &mut self,
+    ) -> (
+        SumcheckInstanceProof<F, C, ProofTranscript>,
+        Vec<F::Challenge>,
+    ) {
+        #[cfg(not(target_arch = "wasm32"))]
+        print_current_memory_usage("Stage 5i baseline");
+
+        let ram_ra_reduction_params = RaReductionParams::new(
+            self.trace.len(),
+            &self.one_hot_params,
+            &self.opening_accumulator,
+            &mut self.transcript,
+        );
+        let inc_virtualization_params = IncVirtualizationParams::new(
+            self.trace.len(),
+            &self.opening_accumulator,
+            &mut self.transcript,
+        );
+        let mut ram_ra_reduction = RamRaClaimReductionSumcheckProver::initialize(
+            ram_ra_reduction_params,
+            &self.trace,
+            &self.program_io.memory_layout,
+            &self.one_hot_params,
+        );
+        let mut inc_virtualization =
+            IncVirtualizationProver::initialize(inc_virtualization_params, &self.trace);
+        let mut instances: Vec<&mut dyn SumcheckInstanceProver<_, _>> =
+            vec![&mut ram_ra_reduction, &mut inc_virtualization];
+
+        tracing::info!("Stage 5i proving");
+        let (sumcheck_proof, r_stage5i, _initial_claim) =
+            self.prove_batched_sumcheck(instances.iter_mut().map(|v| &mut **v as _).collect());
+        drop(instances);
+        drop_in_background_thread(ram_ra_reduction);
+        drop_in_background_thread(inc_virtualization);
+
+        (sumcheck_proof, r_stage5i)
     }
 
     #[tracing::instrument(skip_all)]

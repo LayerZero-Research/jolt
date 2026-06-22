@@ -164,6 +164,7 @@ pub enum SumcheckId {
     BytecodeClaimReduction,
     ProgramImageClaimReductionCyclePhase,
     ProgramImageClaimReduction,
+    IncVirtualization,
     IncClaimReduction,
     HammingWeightClaimReduction,
 }

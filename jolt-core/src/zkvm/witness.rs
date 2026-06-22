@@ -40,13 +40,13 @@ pub(super) fn ram_inc(cycle: &Cycle) -> i128 {
     clippy::expect_used,
     reason = "trace cycles reaching proving must contain final Jolt instruction rows"
 )]
-pub(super) fn store_flag(cycle: &Cycle) -> bool {
+pub(crate) fn store_flag(cycle: &Cycle) -> bool {
     let jolt_cycle =
         JoltTraceCycle::try_new(cycle).expect("trace cycle must be a final Jolt instruction row");
     jolt_cycle.instruction().circuit_flags()[CircuitFlags::Store]
 }
 
-pub(super) fn signed_inc(cycle: &Cycle) -> i128 {
+pub(crate) fn signed_inc(cycle: &Cycle) -> i128 {
     if store_flag(cycle) {
         ram_inc(cycle)
     } else {
@@ -398,6 +398,7 @@ pub enum VirtualPolynomial {
     RamValInit,
     RamValFinal,
     RamHammingWeight,
+    Inc,
     UnivariateSkip,
     OpFlags(CircuitFlags),
     InstructionFlags(InstructionFlags),
