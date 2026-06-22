@@ -45,7 +45,9 @@ use crate::transcripts::Transcript;
 use crate::utils::errors::ProofVerifyError;
 use crate::utils::math::Math;
 use crate::utils::small_scalar::SmallScalar;
-use crate::zkvm::witness::{all_committed_polynomials, CommittedPolynomial};
+use crate::zkvm::witness::{
+    packed_main_committed_polynomials, CommittedPolynomial,
+};
 
 pub type Fp128OneHot64Config = D64OneHot;
 
@@ -850,7 +852,7 @@ where
         mut context: BatchOpeningProverContext<'_, Self::Field, Self>,
         transcript: &mut ProofTranscript,
     ) -> (Self::Proof, Option<Self::Field>) {
-        let main_polys = all_committed_polynomials(&context.one_hot_params, true);
+        let main_polys = packed_main_committed_polynomials(&context.one_hot_params, true);
         let mut claim_map = state
             .polynomial_claims
             .iter()

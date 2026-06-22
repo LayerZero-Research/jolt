@@ -120,6 +120,17 @@ pub fn all_committed_polynomials(
     polynomials
 }
 
+/// One-hot polynomials committed in the Akita packed main commitment.
+pub fn packed_main_committed_polynomials(
+    one_hot_params: &OneHotParams,
+    onehot_inc: bool,
+) -> Vec<CommittedPolynomial> {
+    all_committed_polynomials(one_hot_params, onehot_inc)
+        .into_iter()
+        .filter(|poly| !matches!(poly, CommittedPolynomial::UnsignedIncMsb))
+        .collect()
+}
+
 impl CommittedPolynomial {
     /// Generate witness data and compute tier 1 commitment for a single row
     #[cfg(feature = "prover")]

@@ -52,6 +52,8 @@ pub struct JoltProof<F: JoltField, C: JoltCurve, PCS: CommitmentScheme<Field = F
     pub blindfold_proof: BlindFoldProof<F, C>,
     pub joint_opening_proof: PCS::Proof,
     pub untrusted_advice_commitment: Option<PCS::Commitment>,
+    #[cfg(feature = "akita-pcs")]
+    pub unsigned_inc_msb_commitment: Option<PCS::Commitment>,
     #[cfg(not(feature = "zk"))]
     pub opening_claims: Claims<F>,
     pub trace_length: usize,

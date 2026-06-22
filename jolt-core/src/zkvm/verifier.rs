@@ -39,7 +39,7 @@ use crate::zkvm::r1cs::constraints::{
     OUTER_FIRST_ROUND_POLY_NUM_COEFFS, OUTER_UNIVARIATE_SKIP_DOMAIN_SIZE,
     PRODUCT_VIRTUAL_FIRST_ROUND_POLY_NUM_COEFFS, PRODUCT_VIRTUAL_UNIVARIATE_SKIP_DOMAIN_SIZE,
 };
-use crate::zkvm::witness::all_committed_polynomials;
+use crate::zkvm::witness::{all_committed_polynomials, packed_main_committed_polynomials};
 use crate::zkvm::Serializable;
 use crate::zkvm::{
     bytecode::read_raf_checking::{
@@ -470,6 +470,11 @@ impl<
         for commitment in &self.proof.commitments {
             self.transcript
                 .append_serializable(b"commitment", commitment);
+        }
+        #[cfg(feature = "akita-pcs")]
+        if let Some(ref unsigned_inc_msb_commitment) = self.proof.unsigned_inc_msb_commitment {
+            self.transcript
+                .append_serializable(b"unsigned_inc_msb", unsigned_inc_msb_commitment);
         }
         // Append untrusted advice commitment to transcript
         if let Some(ref untrusted_advice_commitment) = self.proof.untrusted_advice_commitment {
@@ -2063,7 +2068,9 @@ impl<
                 .drain(..)
                 .collect::<HashMap<CommittedPolynomial, F>>();
             let mut sorted_claims = Vec::new();
-            for poly in all_committed_polynomials(&self.one_hot_params, PCS::uses_onehot_inc()) {
+            for poly in
+                packed_main_committed_polynomials(&self.one_hot_params, PCS::uses_onehot_inc())
+            {
                 let claim = claim_map
                     .remove(&poly)
                     .ok_or(ProofVerifyError::InvalidOpeningProof)?;
@@ -2150,8 +2157,17 @@ impl<
                 .first()
                 .ok_or(ProofVerifyError::InvalidOpeningProof)?
                 .clone();
-            for polynomial in expected_polynomials {
+            for polynomial in
+                packed_main_committed_polynomials(&self.one_hot_params, PCS::uses_onehot_inc())
+            {
                 commitments_map.insert(polynomial, packed_commitment.clone());
+            }
+            #[cfg(feature = "akita-pcs")]
+            if let Some(ref unsigned_inc_msb_commitment) = self.proof.unsigned_inc_msb_commitment {
+                commitments_map.insert(
+                    CommittedPolynomial::UnsignedIncMsb,
+                    unsigned_inc_msb_commitment.clone(),
+                );
             }
         } else if expected_polynomials.len() != self.proof.commitments.len() {
             return Err(ProofVerifyError::InvalidInputLength(

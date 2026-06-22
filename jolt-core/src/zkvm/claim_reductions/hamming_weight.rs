@@ -209,14 +209,23 @@ impl<F: JoltField> HammingWeightClaimReductionParams<F> {
         for i in 0..instruction_d {
             polynomial_types.push(CommittedPolynomial::InstructionRa(i));
         }
-        for i in 0..inc_onehot_d {
-            polynomial_types.push(CommittedPolynomial::UnsignedIncChunk(i));
-        }
-        for i in 0..ram_d {
-            polynomial_types.push(CommittedPolynomial::RamRa(i));
-        }
-        for i in 0..bytecode_d {
-            polynomial_types.push(CommittedPolynomial::BytecodeRa(i));
+        if onehot_inc {
+            for i in 0..inc_onehot_d {
+                polynomial_types.push(CommittedPolynomial::UnsignedIncChunk(i));
+            }
+            for i in 0..ram_d {
+                polynomial_types.push(CommittedPolynomial::RamRa(i));
+            }
+            for i in 0..bytecode_d {
+                polynomial_types.push(CommittedPolynomial::BytecodeRa(i));
+            }
+        } else {
+            for i in 0..bytecode_d {
+                polynomial_types.push(CommittedPolynomial::BytecodeRa(i));
+            }
+            for i in 0..ram_d {
+                polynomial_types.push(CommittedPolynomial::RamRa(i));
+            }
         }
 
         // Sample batching challenge γ and compute powers (3 claims per ra_i + optional value constraints).
@@ -292,12 +301,15 @@ impl<F: JoltField> HammingWeightClaimReductionParams<F> {
 
         let inc_chunk_weights = inc_chunk_weights::<F>(one_hot_params, onehot_inc);
         let claim_inc_value = if onehot_inc {
-            let (_, rd_inc_claim) = accumulator.get_committed_polynomial_opening(
-                CommittedPolynomial::RdInc,
-                SumcheckId::IncClaimReduction,
+            let (_, unsigned_inc_claim) = accumulator.get_virtual_polynomial_opening(
+                VirtualPolynomial::UnsignedInc,
+                SumcheckId::UnsignedIncClaimReduction,
             );
-            let shift = F::from_u128(1u128 << XLEN);
-            Some(rd_inc_claim + shift)
+            let (_, unsigned_inc_msb_claim) = accumulator.get_committed_polynomial_opening(
+                CommittedPolynomial::UnsignedIncMsb,
+                SumcheckId::Booleanity,
+            );
+            Some(unsigned_inc_claim - F::from_u128(1u128 << XLEN) * unsigned_inc_msb_claim)
         } else {
             None
         };

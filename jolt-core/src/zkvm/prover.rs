@@ -106,7 +106,7 @@ use crate::{
             },
             shift::ShiftSumcheckParams,
         },
-        witness::all_committed_polynomials,
+        witness::{all_committed_polynomials, packed_main_committed_polynomials},
     },
 };
 
@@ -674,7 +674,12 @@ impl<
             self.preprocessing.shared.bytecode_size()
         );
 
-        let (commitments, batch_hint) = self.generate_and_commit_witness_polynomials();
+        let (commitments, batch_hint, unsigned_inc_msb_dense) =
+            self.generate_and_commit_witness_polynomials();
+        #[cfg(feature = "akita-pcs")]
+        let unsigned_inc_msb_commitment = unsigned_inc_msb_dense
+            .as_ref()
+            .map(|(commitment, _)| commitment.clone());
         let untrusted_advice_commitment = self.generate_and_commit_untrusted_advice();
         self.generate_and_commit_trusted_advice();
 
@@ -686,6 +691,9 @@ impl<
                 PCS::split_batch_hint(&batch_hint),
             ))
         };
+        if let Some((_, hint)) = unsigned_inc_msb_dense {
+            opening_proof_hints.insert(CommittedPolynomial::UnsignedIncMsb, hint);
+        }
 
         // Add advice hints for batched Stage 8 opening
         if let Some(hint) = self.advice.trusted_advice_hint.take() {
@@ -788,6 +796,8 @@ impl<
             #[cfg(feature = "zk")]
             blindfold_proof,
             joint_opening_proof,
+            #[cfg(feature = "akita-pcs")]
+            unsigned_inc_msb_commitment,
             #[cfg(not(feature = "zk"))]
             opening_claims,
             trace_length: self.trace.len(),
@@ -871,9 +881,14 @@ impl<
     }
 
     #[tracing::instrument(skip_all, name = "generate_and_commit_witness_polynomials")]
+    #[expect(clippy::type_complexity, reason = "witness commit returns packed + optional dense MSB")]
     fn generate_and_commit_witness_polynomials(
         &mut self,
-    ) -> (Vec<PCS::Commitment>, PCS::BatchOpeningHint) {
+    ) -> (
+        Vec<PCS::Commitment>,
+        PCS::BatchOpeningHint,
+        Option<(PCS::Commitment, PCS::OpeningProofHint)>,
+    ) {
         let main_total_vars = self.main_total_vars();
         let dory_layout = PCS::dory_layout(&PCS::active_config());
         let trace = Arc::clone(&self.trace);
@@ -884,7 +899,11 @@ impl<
             dory_layout,
         );
 
-        let polys = all_committed_polynomials(&self.one_hot_params, PCS::uses_onehot_inc());
+        let polys = if PCS::packed_main_commitment_arity().is_some() {
+            packed_main_committed_polynomials(&self.one_hot_params, PCS::uses_onehot_inc())
+        } else {
+            all_committed_polynomials(&self.one_hot_params, PCS::uses_onehot_inc())
+        };
         let T = if dory_layout.is_some() {
             DoryGlobals::get_embedded_t()
         } else {
@@ -997,7 +1016,27 @@ impl<
                 .append_serializable(b"commitment", commitment);
         }
 
-        (commitments, hint_map)
+        let unsigned_inc_msb_dense = if PCS::uses_onehot_inc() {
+            let msb_witness = CommittedPolynomial::UnsignedIncMsb.generate_witness(
+                &self.preprocessing.materialized_program().bytecode,
+                &self.preprocessing.shared.memory_layout,
+                &trace,
+                Some(&self.one_hot_params),
+            );
+            let mut dense_commitments =
+                PCS::commit_dense_batch(&[msb_witness], &self.preprocessing.generators)
+                    .expect("UnsignedIncMsb dense commitment");
+            let (commitment, hint) = dense_commitments
+                .pop()
+                .expect("UnsignedIncMsb dense commitment");
+            self.transcript
+                .append_serializable(b"unsigned_inc_msb", &commitment);
+            Some((commitment, hint))
+        } else {
+            None
+        };
+
+        (commitments, hint_map, unsigned_inc_msb_dense)
     }
 
     fn generate_and_commit_untrusted_advice(&mut self) -> Option<PCS::Commitment> {
@@ -2394,11 +2433,18 @@ impl<
                                   point: OpeningPoint<BIG_ENDIAN, F>,
                                   claim: F,
                                   lagrange: F| {
+            let num_vars = if PCS::uses_onehot_inc()
+                && matches!(polynomial, CommittedPolynomial::UnsignedIncMsb)
+            {
+                Some(self.trace.len().log_2())
+            } else {
+                None
+            };
             individual_openings.push(BatchOpening {
                 polynomial,
                 opening_point: point,
                 claim,
-                num_vars: None,
+                num_vars,
             });
             polynomial_claims.push((polynomial, claim * lagrange));
             scaling_factors.push(lagrange);
@@ -2600,7 +2646,9 @@ impl<
                 .drain(..)
                 .collect::<HashMap<CommittedPolynomial, F>>();
             let mut sorted_claims = Vec::new();
-            for poly in all_committed_polynomials(&self.one_hot_params, PCS::uses_onehot_inc()) {
+            for poly in
+                packed_main_committed_polynomials(&self.one_hot_params, PCS::uses_onehot_inc())
+            {
                 let claim = claim_map
                     .remove(&poly)
                     .expect("missing packed main polynomial claim");
