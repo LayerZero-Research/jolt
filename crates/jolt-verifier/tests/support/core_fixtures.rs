@@ -1041,6 +1041,10 @@ fn core_committed_polynomial(id: JoltCommittedPolynomial) -> CoreCommittedPolyno
     match id {
         JoltCommittedPolynomial::RdInc => CoreCommittedPolynomial::RdInc,
         JoltCommittedPolynomial::RamInc => CoreCommittedPolynomial::RamInc,
+        JoltCommittedPolynomial::RdIncRa(index) => CoreCommittedPolynomial::RdIncRa(index),
+        JoltCommittedPolynomial::RdIncMsb => CoreCommittedPolynomial::RdIncMsb,
+        JoltCommittedPolynomial::RamIncRa(index) => CoreCommittedPolynomial::RamIncRa(index),
+        JoltCommittedPolynomial::RamIncMsb => CoreCommittedPolynomial::RamIncMsb,
         JoltCommittedPolynomial::InstructionRa(index) => {
             CoreCommittedPolynomial::InstructionRa(index)
         }

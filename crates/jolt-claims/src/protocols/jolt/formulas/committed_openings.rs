@@ -78,7 +78,11 @@ pub fn final_opening_relation(polynomial: JoltCommittedPolynomial) -> JoltRelati
         JoltCommittedPolynomial::RdInc | JoltCommittedPolynomial::RamInc => {
             JoltRelationId::IncClaimReduction
         }
-        JoltCommittedPolynomial::InstructionRa(_)
+        JoltCommittedPolynomial::RdIncRa(_)
+        | JoltCommittedPolynomial::RdIncMsb
+        | JoltCommittedPolynomial::RamIncRa(_)
+        | JoltCommittedPolynomial::RamIncMsb
+        | JoltCommittedPolynomial::InstructionRa(_)
         | JoltCommittedPolynomial::BytecodeRa(_)
         | JoltCommittedPolynomial::RamRa(_) => JoltRelationId::HammingWeightClaimReduction,
         JoltCommittedPolynomial::TrustedAdvice | JoltCommittedPolynomial::UntrustedAdvice => {

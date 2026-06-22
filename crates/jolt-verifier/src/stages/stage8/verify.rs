@@ -392,6 +392,12 @@ where
                         .ok_or(VerifierError::MissingFinalOpeningCommitment { polynomial })?;
                     (commitment, opening.point.as_slice(), opening.opening_claim)
                 }
+                JoltCommittedPolynomial::RdIncRa(_)
+                | JoltCommittedPolynomial::RdIncMsb
+                | JoltCommittedPolynomial::RamIncRa(_)
+                | JoltCommittedPolynomial::RamIncMsb => {
+                    return Err(VerifierError::MissingFinalOpeningCommitment { polynomial });
+                }
             };
         entries.push(Stage8BatchEntry {
             id: id.into(),

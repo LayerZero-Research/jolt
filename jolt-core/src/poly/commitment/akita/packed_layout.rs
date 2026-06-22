@@ -1,5 +1,7 @@
 use akita_config::CommitmentConfig;
-use akita_types::{sis::num_digits_for_bound, AkitaScheduleLookupKey, LevelParams, Step};
+use akita_types::{
+    sis::num_digits_for_bound, AkitaScheduleLookupKey, LevelParams, OpeningBatch, Step,
+};
 
 /// Avoid degenerate layouts that tile only across polynomials and barely any
 /// cycles; that would defeat the trace-locality goal of the packed layout.
@@ -12,17 +14,23 @@ const PACKED_MAX_POLY_TILE_BITS: usize = 4;
 const FIELD_BITS: u32 = 128;
 
 fn level0_level_params<Cfg: CommitmentConfig>(max_num_vars: usize) -> LevelParams {
-    Cfg::runtime_schedule(AkitaScheduleLookupKey::singleton(max_num_vars))
-        .and_then(|schedule| match schedule.steps.first() {
-            Some(Step::Fold(root)) => Ok(root.params.clone()),
-            Some(Step::Direct(direct)) => direct.params.clone().ok_or_else(|| {
-                akita_field::AkitaError::InvalidSetup(
-                    "runtime schedule has no root commit params".to_string(),
-                )
-            }),
-            None => Err(akita_field::AkitaError::InvalidSetup(
-                "runtime schedule has no steps".to_string(),
-            )),
+    let opening_batch = OpeningBatch::same_point(max_num_vars, 1)
+        .expect("singleton packed layout opening batch should be valid");
+    Cfg::get_params_for_batched_commitment(&opening_batch)
+        .or_else(|_| {
+            Cfg::runtime_schedule(AkitaScheduleLookupKey::singleton(max_num_vars)).and_then(
+                |schedule| match schedule.steps.first() {
+                    Some(Step::Fold(root)) => Ok(root.params.clone()),
+                    Some(Step::Direct(direct)) => direct.params.clone().ok_or_else(|| {
+                        akita_field::AkitaError::InvalidSetup(
+                            "runtime schedule has no root commit params".to_string(),
+                        )
+                    }),
+                    None => Err(akita_field::AkitaError::InvalidSetup(
+                        "runtime schedule has no steps".to_string(),
+                    )),
+                },
+            )
         })
         .expect("Akita runtime schedule should produce root commit params")
 }

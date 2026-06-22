@@ -104,7 +104,7 @@ dependencies = [
 [[package]]
 name = "akita-algebra"
 version = "0.1.0"
-source = "git+https://github.com/LayerZero-Labs/akita.git?branch=lz%2Fjolt-dense-batch-openings#a904ff79e8e9eec37b877c71de4646744f1fb26a"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=879edcc01b31c4bf619e66ce696d138e78359854#879edcc01b31c4bf619e66ce696d138e78359854"
 dependencies = [
  "akita-field",
  "akita-serialization",
@@ -116,7 +116,7 @@ dependencies = [
 [[package]]
 name = "akita-challenges"
 version = "0.1.0"
-source = "git+https://github.com/LayerZero-Labs/akita.git?branch=lz%2Fjolt-dense-batch-openings#a904ff79e8e9eec37b877c71de4646744f1fb26a"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=879edcc01b31c4bf619e66ce696d138e78359854#879edcc01b31c4bf619e66ce696d138e78359854"
 dependencies = [
  "akita-field",
  "akita-transcript",
@@ -127,11 +127,12 @@ dependencies = [
 [[package]]
 name = "akita-config"
 version = "0.1.0"
-source = "git+https://github.com/LayerZero-Labs/akita.git?branch=lz%2Fjolt-dense-batch-openings#a904ff79e8e9eec37b877c71de4646744f1fb26a"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=879edcc01b31c4bf619e66ce696d138e78359854#879edcc01b31c4bf619e66ce696d138e78359854"
 dependencies = [
  "akita-challenges",
  "akita-field",
  "akita-planner",
+ "akita-schedules",
  "akita-transcript",
  "akita-types",
  "tracing",
@@ -140,7 +141,7 @@ dependencies = [
 [[package]]
 name = "akita-field"
 version = "0.1.0"
-source = "git+https://github.com/LayerZero-Labs/akita.git?branch=lz%2Fjolt-dense-batch-openings#a904ff79e8e9eec37b877c71de4646744f1fb26a"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=879edcc01b31c4bf619e66ce696d138e78359854#879edcc01b31c4bf619e66ce696d138e78359854"
 dependencies = [
  "akita-serialization",
  "num-traits",
@@ -152,7 +153,7 @@ dependencies = [
 [[package]]
 name = "akita-pcs"
 version = "0.1.0"
-source = "git+https://github.com/LayerZero-Labs/akita.git?branch=lz%2Fjolt-dense-batch-openings#a904ff79e8e9eec37b877c71de4646744f1fb26a"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=879edcc01b31c4bf619e66ce696d138e78359854#879edcc01b31c4bf619e66ce696d138e78359854"
 dependencies = [
  "akita-algebra",
  "akita-challenges",
@@ -172,7 +173,7 @@ dependencies = [
 [[package]]
 name = "akita-planner"
 version = "0.1.0"
-source = "git+https://github.com/LayerZero-Labs/akita.git?branch=lz%2Fjolt-dense-batch-openings#a904ff79e8e9eec37b877c71de4646744f1fb26a"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=879edcc01b31c4bf619e66ce696d138e78359854#879edcc01b31c4bf619e66ce696d138e78359854"
 dependencies = [
  "akita-challenges",
  "akita-field",
@@ -182,7 +183,7 @@ dependencies = [
 [[package]]
 name = "akita-prover"
 version = "0.1.0"
-source = "git+https://github.com/LayerZero-Labs/akita.git?branch=lz%2Fjolt-dense-batch-openings#a904ff79e8e9eec37b877c71de4646744f1fb26a"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=879edcc01b31c4bf619e66ce696d138e78359854#879edcc01b31c4bf619e66ce696d138e78359854"
 dependencies = [
  "aes",
  "akita-algebra",
@@ -202,9 +203,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "akita-schedules"
+version = "0.1.0"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=879edcc01b31c4bf619e66ce696d138e78359854#879edcc01b31c4bf619e66ce696d138e78359854"
+dependencies = [
+ "akita-planner",
+]
+
+[[package]]
 name = "akita-serialization"
 version = "0.1.0"
-source = "git+https://github.com/LayerZero-Labs/akita.git?branch=lz%2Fjolt-dense-batch-openings#a904ff79e8e9eec37b877c71de4646744f1fb26a"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=879edcc01b31c4bf619e66ce696d138e78359854#879edcc01b31c4bf619e66ce696d138e78359854"
 dependencies = [
  "thiserror 2.0.18",
 ]
@@ -212,7 +221,7 @@ dependencies = [
 [[package]]
 name = "akita-setup"
 version = "0.1.0"
-source = "git+https://github.com/LayerZero-Labs/akita.git?branch=lz%2Fjolt-dense-batch-openings#a904ff79e8e9eec37b877c71de4646744f1fb26a"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=879edcc01b31c4bf619e66ce696d138e78359854#879edcc01b31c4bf619e66ce696d138e78359854"
 dependencies = [
  "akita-algebra",
  "akita-config",
@@ -226,7 +235,7 @@ dependencies = [
 [[package]]
 name = "akita-sumcheck"
 version = "0.1.0"
-source = "git+https://github.com/LayerZero-Labs/akita.git?branch=lz%2Fjolt-dense-batch-openings#a904ff79e8e9eec37b877c71de4646744f1fb26a"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=879edcc01b31c4bf619e66ce696d138e78359854#879edcc01b31c4bf619e66ce696d138e78359854"
 dependencies = [
  "akita-algebra",
  "akita-field",
@@ -238,7 +247,7 @@ dependencies = [
 [[package]]
 name = "akita-transcript"
 version = "0.1.0"
-source = "git+https://github.com/LayerZero-Labs/akita.git?branch=lz%2Fjolt-dense-batch-openings#a904ff79e8e9eec37b877c71de4646744f1fb26a"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=879edcc01b31c4bf619e66ce696d138e78359854#879edcc01b31c4bf619e66ce696d138e78359854"
 dependencies = [
  "akita-field",
  "akita-serialization",
@@ -249,7 +258,7 @@ dependencies = [
 [[package]]
 name = "akita-types"
 version = "0.1.0"
-source = "git+https://github.com/LayerZero-Labs/akita.git?branch=lz%2Fjolt-dense-batch-openings#a904ff79e8e9eec37b877c71de4646744f1fb26a"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=879edcc01b31c4bf619e66ce696d138e78359854#879edcc01b31c4bf619e66ce696d138e78359854"
 dependencies = [
  "akita-algebra",
  "akita-challenges",
@@ -268,7 +277,7 @@ dependencies = [
 [[package]]
 name = "akita-verifier"
 version = "0.1.0"
-source = "git+https://github.com/LayerZero-Labs/akita.git?branch=lz%2Fjolt-dense-batch-openings#a904ff79e8e9eec37b877c71de4646744f1fb26a"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=879edcc01b31c4bf619e66ce696d138e78359854#879edcc01b31c4bf619e66ce696d138e78359854"
 dependencies = [
  "akita-algebra",
  "akita-challenges",
