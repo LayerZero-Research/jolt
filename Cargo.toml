@@ -146,7 +146,7 @@ zeroos-build.workspace = true
 
 ark-bn254.workspace = true
 
-jolt-sdk = { workspace = true, default-features = false, features = ["host"] }
+jolt-sdk = { workspace = true, default-features = false, features = ["host", "dory-pcs"] }
 jolt-core = { workspace = true, default-features = false }
 common = { workspace = true, features = ["std"] }
 
