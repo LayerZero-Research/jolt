@@ -399,6 +399,7 @@ pub enum VirtualPolynomial {
     RamValFinal,
     RamHammingWeight,
     Inc,
+    UnsignedInc,
     UnivariateSkip,
     OpFlags(CircuitFlags),
     InstructionFlags(InstructionFlags),

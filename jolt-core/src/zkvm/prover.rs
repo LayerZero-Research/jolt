@@ -73,7 +73,6 @@ use crate::{
             AdviceClaimReductionParams, AdviceClaimReductionProver, AdviceKind,
             BytecodeClaimReductionParams, BytecodeClaimReductionProver,
             HammingWeightClaimReductionParams, HammingWeightClaimReductionProver,
-            IncClaimReductionSumcheckParams, IncClaimReductionSumcheckProver,
             InstructionLookupsClaimReductionSumcheckParams,
             InstructionLookupsClaimReductionSumcheckProver, PrecommittedClaimReduction,
             PrecommittedPolynomial, ProgramImageClaimReductionParams,
@@ -111,8 +110,15 @@ use crate::{
     },
 };
 
+#[cfg(not(feature = "akita-pcs"))]
+use crate::zkvm::claim_reductions::{
+    IncClaimReductionSumcheckParams, IncClaimReductionSumcheckProver,
+};
 #[cfg(feature = "akita-pcs")]
-use crate::zkvm::claim_reductions::{IncVirtualizationParams, IncVirtualizationProver};
+use crate::zkvm::claim_reductions::{
+    IncVirtualizationParams, IncVirtualizationProver, UnsignedIncClaimReductionParams,
+    UnsignedIncClaimReductionProver,
+};
 use crate::{
     poly::commitment::commitment_scheme::CommitmentScheme,
     zkvm::{
@@ -1490,7 +1496,7 @@ impl<
         #[cfg(not(target_arch = "wasm32"))]
         print_current_memory_usage("Stage 6a baseline");
 
-        let bytecode_read_raf_params = BytecodeReadRafSumcheckParams::gen(
+        let bytecode_read_raf_params = BytecodeReadRafSumcheckParams::generate(
             &self.preprocessing.shared.program,
             Some(self.preprocessing.materialized_program()),
             self.trace.len().log_2(),
@@ -1575,12 +1581,16 @@ impl<
             &self.opening_accumulator,
             &mut self.transcript,
         );
+        #[cfg(not(feature = "akita-pcs"))]
         let inc_reduction_params = IncClaimReductionSumcheckParams::new(
             self.trace.len(),
             &self.opening_accumulator,
             &mut self.transcript,
             PCS::uses_onehot_inc(),
         );
+        #[cfg(feature = "akita-pcs")]
+        let unsigned_inc_reduction_params =
+            UnsignedIncClaimReductionParams::new(self.trace.len(), &self.opening_accumulator);
 
         let main_total_vars = self.trace.len().log_2() + self.one_hot_params.log_k_chunk;
         let precommitted_candidates = self.preprocessing.shared.precommitted_candidate_total_vars(
@@ -1701,8 +1711,12 @@ impl<
         );
         let mut lookups_ra_virtual =
             LookupsRaSumcheckProver::initialize(lookups_ra_virtual_params, &self.trace);
+        #[cfg(not(feature = "akita-pcs"))]
         let mut inc_reduction =
             IncClaimReductionSumcheckProver::initialize(inc_reduction_params, self.trace.clone());
+        #[cfg(feature = "akita-pcs")]
+        let mut unsigned_inc_reduction =
+            UnsignedIncClaimReductionProver::initialize(unsigned_inc_reduction_params, &self.trace);
 
         #[cfg(feature = "allocative")]
         {
@@ -1717,7 +1731,13 @@ impl<
             );
             print_data_structure_heap_usage("RamRaSumcheckProver", &ram_ra_virtual);
             print_data_structure_heap_usage("LookupsRaSumcheckProver", &lookups_ra_virtual);
+            #[cfg(not(feature = "akita-pcs"))]
             print_data_structure_heap_usage("IncClaimReductionSumcheckProver", &inc_reduction);
+            #[cfg(feature = "akita-pcs")]
+            print_data_structure_heap_usage(
+                "UnsignedIncClaimReductionProver",
+                &unsigned_inc_reduction,
+            );
             if let Some(ref advice) = self.advice_reduction_prover_trusted {
                 print_data_structure_heap_usage("AdviceClaimReductionProver(trusted)", advice);
             }
@@ -1737,8 +1757,11 @@ impl<
             &mut ram_hamming_booleanity,
             &mut ram_ra_virtual,
             &mut lookups_ra_virtual,
-            &mut inc_reduction,
         ];
+        #[cfg(not(feature = "akita-pcs"))]
+        instances.push(&mut inc_reduction);
+        #[cfg(feature = "akita-pcs")]
+        instances.push(&mut unsigned_inc_reduction);
         if let Some(ref mut advice) = advice_trusted {
             instances.push(advice);
         }
@@ -1765,7 +1788,10 @@ impl<
         drop_in_background_thread(ram_hamming_booleanity);
         drop_in_background_thread(ram_ra_virtual);
         drop_in_background_thread(lookups_ra_virtual);
+        #[cfg(not(feature = "akita-pcs"))]
         drop_in_background_thread(inc_reduction);
+        #[cfg(feature = "akita-pcs")]
+        drop_in_background_thread(unsigned_inc_reduction);
 
         self.advice_reduction_prover_trusted = advice_trusted;
         self.advice_reduction_prover_untrusted = advice_untrusted;

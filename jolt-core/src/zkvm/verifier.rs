@@ -28,6 +28,8 @@ use crate::zkvm::bytecode::chunks::{
 #[cfg(feature = "akita-pcs")]
 use crate::zkvm::claim_reductions::IncVirtualizationVerifier;
 use crate::zkvm::claim_reductions::RegistersClaimReductionSumcheckVerifier;
+#[cfg(feature = "akita-pcs")]
+use crate::zkvm::claim_reductions::UnsignedIncClaimReductionVerifier;
 use crate::zkvm::config::{OneHotConfig, OneHotParams, ProgramMode};
 use crate::zkvm::program::{CommittedProgramProverData, ProgramMetadata, ProgramPreprocessing};
 #[cfg(feature = "prover")]
@@ -47,9 +49,9 @@ use crate::zkvm::{
     claim_reductions::{
         AdviceClaimReductionVerifier, AdviceKind, BytecodeClaimReductionParams,
         BytecodeClaimReductionVerifier, HammingWeightClaimReductionVerifier,
-        IncClaimReductionSumcheckVerifier, InstructionLookupsClaimReductionSumcheckVerifier,
-        PrecommittedClaimReduction, PrecommittedParams, ProgramImageClaimReductionParams,
-        ProgramImageClaimReductionVerifier, RamRaClaimReductionSumcheckVerifier,
+        InstructionLookupsClaimReductionSumcheckVerifier, PrecommittedClaimReduction,
+        PrecommittedParams, ProgramImageClaimReductionParams, ProgramImageClaimReductionVerifier,
+        RamRaClaimReductionSumcheckVerifier,
     },
     compute_final_opening_point, fiat_shamir_preamble,
     instruction_lookups::{
@@ -99,6 +101,9 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
+
+#[cfg(not(feature = "akita-pcs"))]
+use crate::zkvm::claim_reductions::IncClaimReductionSumcheckVerifier;
 
 #[cfg(feature = "zk")]
 struct StageVerifyResult<F: JoltField> {
@@ -1250,11 +1255,17 @@ impl<
             &self.opening_accumulator,
             &mut self.transcript,
         );
+        #[cfg(not(feature = "akita-pcs"))]
         let inc_reduction = IncClaimReductionSumcheckVerifier::new(
             self.proof.trace_length,
             &self.opening_accumulator,
             &mut self.transcript,
             PCS::uses_onehot_inc(),
+        );
+        #[cfg(feature = "akita-pcs")]
+        let unsigned_inc_reduction = UnsignedIncClaimReductionVerifier::new(
+            self.proof.trace_length,
+            &self.opening_accumulator,
         );
 
         let main_total_vars = self.proof.trace_length.log_2() + self.one_hot_params.log_k_chunk;
@@ -1331,8 +1342,11 @@ impl<
             &ram_hamming_booleanity,
             &ram_ra_virtual,
             &lookups_ra_virtual,
-            &inc_reduction,
         ];
+        #[cfg(not(feature = "akita-pcs"))]
+        instances.push(&inc_reduction);
+        #[cfg(feature = "akita-pcs")]
+        instances.push(&unsigned_inc_reduction);
         if let Some(ref advice) = self.advice_reduction_verifier_trusted {
             instances.push(advice);
         }

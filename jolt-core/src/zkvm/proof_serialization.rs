@@ -429,6 +429,7 @@ impl CanonicalSerialize for VirtualPolynomial {
             Self::RamValFinal => 33u8.serialize_with_mode(&mut writer, compress),
             Self::RamHammingWeight => 34u8.serialize_with_mode(&mut writer, compress),
             Self::Inc => 44u8.serialize_with_mode(&mut writer, compress),
+            Self::UnsignedInc => 45u8.serialize_with_mode(&mut writer, compress),
             Self::UnivariateSkip => 35u8.serialize_with_mode(&mut writer, compress),
             Self::OpFlags(flags) => {
                 36u8.serialize_with_mode(&mut writer, compress)?;
@@ -492,6 +493,7 @@ impl CanonicalSerialize for VirtualPolynomial {
             | Self::RamValFinal
             | Self::RamHammingWeight
             | Self::Inc
+            | Self::UnsignedInc
             | Self::UnivariateSkip
             | Self::BytecodeReadRafAddrClaim
             | Self::BooleanityAddrClaim
@@ -559,6 +561,7 @@ impl CanonicalDeserialize for VirtualPolynomial {
                 33 => Self::RamValFinal,
                 34 => Self::RamHammingWeight,
                 44 => Self::Inc,
+                45 => Self::UnsignedInc,
                 35 => Self::UnivariateSkip,
                 36 => {
                     let discriminant = u8::deserialize_with_mode(&mut reader, compress, validate)?;

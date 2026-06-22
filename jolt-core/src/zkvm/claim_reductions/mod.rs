@@ -9,6 +9,8 @@ mod precommitted;
 pub mod program_image;
 pub mod ram_ra;
 pub mod registers;
+#[cfg(feature = "akita-pcs")]
+pub mod unsigned_inc;
 
 pub use advice::{
     AdviceClaimReductionParams, AdviceClaimReductionProver, AdviceClaimReductionVerifier,
@@ -48,4 +50,9 @@ pub use ram_ra::{
 pub use registers::{
     RegistersClaimReductionSumcheckParams, RegistersClaimReductionSumcheckProver,
     RegistersClaimReductionSumcheckVerifier,
+};
+#[cfg(feature = "akita-pcs")]
+pub use unsigned_inc::{
+    UnsignedIncClaimReductionParams, UnsignedIncClaimReductionProver,
+    UnsignedIncClaimReductionVerifier,
 };
