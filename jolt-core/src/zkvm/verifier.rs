@@ -2454,6 +2454,9 @@ impl<PCS: CommitmentScheme> JoltSharedPreprocessing<PCS> {
             .map(|log_k_chunk| {
                 let mut config = OneHotConfig::new(max_log_t);
                 config.log_k_chunk = log_k_chunk as u8;
+                if PCS::uses_onehot_inc() {
+                    config.lookups_ra_virtual_log_k_chunk = (4 * log_k_chunk) as u8;
+                }
                 all_committed_polynomials(
                     &OneHotParams::from_config(&config, bytecode_len, ram_k),
                     true,
