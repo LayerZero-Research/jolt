@@ -5,7 +5,7 @@
 | Author(s)   | @quangvdao         |
 | Created     | 2026-06-22         |
 | Status      | accepted           |
-| PR          |                    |
+| PR          | https://github.com/LayerZero-Research/jolt/pull/27 |
 
 ## Summary
 
