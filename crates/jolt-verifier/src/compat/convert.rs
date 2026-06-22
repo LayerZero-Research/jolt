@@ -291,7 +291,9 @@ where
             ram_K: proof.ram_K,
             rw_config: convert_read_write_config(proof.rw_config),
             one_hot_config,
-            trace_polynomial_order: trace_polynomial_order_from_pcs_config::<PCS>(&proof.pcs_config),
+            trace_polynomial_order: trace_polynomial_order_from_pcs_config::<PCS>(
+                &proof.pcs_config,
+            ),
         })
     }
 }
@@ -344,7 +346,9 @@ where
             ram_K: proof.ram_K,
             rw_config: convert_read_write_config(proof.rw_config),
             one_hot_config,
-            trace_polynomial_order: trace_polynomial_order_from_pcs_config::<PCS>(&proof.pcs_config),
+            trace_polynomial_order: trace_polynomial_order_from_pcs_config::<PCS>(
+                &proof.pcs_config,
+            ),
         })
     }
 }

@@ -6,7 +6,7 @@ use std::slice::from_ref;
 use super::packed_layout::{choose_packed_bit_layout, PackedBitLayout};
 use super::packed_poly::build_packed_poly;
 use akita_algebra::CyclotomicRing;
-use akita_config::proof_optimized::fp128::{D32Full, D32OneHot};
+use akita_config::proof_optimized::fp128::{D64Full, D64OneHot};
 use akita_config::CommitmentConfig;
 use akita_field::CanonicalField;
 use akita_pcs::AkitaCommitmentScheme;
@@ -47,9 +47,9 @@ use crate::utils::math::Math;
 use crate::utils::small_scalar::SmallScalar;
 use crate::zkvm::witness::{all_committed_polynomials, CommittedPolynomial};
 
-pub type Fp128OneHot32Config = D32OneHot;
+pub type Fp128OneHot64Config = D64OneHot;
 
-type Fp128DenseConfig = D32Full;
+type Fp128DenseConfig = D64Full;
 const AKITA_DENSE_MAX_BATCH_POLYS: usize = 64;
 
 #[derive(Clone, Default)]
@@ -1245,12 +1245,13 @@ where
         true
     }
 
+    fn log_k_chunk_for_trace(_log_T: usize) -> usize {
+        // D64OneHot fixes onehot_k=256 (log_k_chunk=8); smaller chunks are rejected at commit.
+        8
+    }
+
     fn supported_log_k_chunks(max_log_k: usize) -> Vec<usize> {
-        if max_log_k > 4 {
-            vec![4, max_log_k]
-        } else {
-            vec![max_log_k]
-        }
+        vec![max_log_k]
     }
 
     fn validate_batch_proof_shape(

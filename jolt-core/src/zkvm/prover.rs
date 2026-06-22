@@ -588,6 +588,9 @@ impl<
         let log_k_chunk = PCS::log_k_chunk_for_trace(log_T);
         let mut one_hot_config = OneHotConfig::new(log_T);
         one_hot_config.log_k_chunk = log_k_chunk as u8;
+        if PCS::uses_onehot_inc() {
+            one_hot_config.lookups_ra_virtual_log_k_chunk = (4 * log_k_chunk) as u8;
+        }
         let one_hot_params =
             OneHotParams::from_config(&one_hot_config, preprocessing.shared.bytecode_size(), ram_K);
 
