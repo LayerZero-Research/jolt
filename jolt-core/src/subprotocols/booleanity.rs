@@ -36,7 +36,7 @@ use crate::{
     field::JoltField,
     poly::{
         eq_poly::EqPolynomial,
-        multilinear_polynomial::BindingOrder,
+        multilinear_polynomial::{BindingOrder, MultilinearPolynomial, PolynomialBinding},
         opening_proof::{
             AbstractVerifierOpeningAccumulator, OpeningAccumulator, OpeningPoint,
             ProverOpeningAccumulator, SumcheckId, BIG_ENDIAN,
@@ -79,6 +79,8 @@ pub struct BooleanitySumcheckParams<F: JoltField> {
     pub r_cycle: Vec<F::Challenge>,
     /// Polynomial types for all families
     pub polynomial_types: Vec<CommittedPolynomial>,
+    pub unsigned_inc_msb_gamma: Option<F>,
+    pub onehot_inc: bool,
     /// OneHotParams for SharedRaPolynomials
     pub one_hot_params: OneHotParams,
 }
@@ -105,8 +107,7 @@ impl<F: JoltField> BooleanitySumcheckParams<F> {
         } else {
             0
         };
-        let msb_d = if onehot_inc { 1 } else { 0 };
-        let total_d = instruction_d + bytecode_d + ram_d + 2 * (inc_d + msb_d);
+        let total_d = instruction_d + inc_d + ram_d + bytecode_d;
         let log_k_instruction = one_hot_params.lookups_ra_virtual_log_k_chunk;
 
         // Get Stage 5 opening point: order is address (LOG_K_INSTRUCTION) => cycle (log_t)
@@ -145,23 +146,23 @@ impl<F: JoltField> BooleanitySumcheckParams<F> {
         for i in 0..instruction_d {
             polynomial_types.push(CommittedPolynomial::InstructionRa(i));
         }
-        for i in 0..bytecode_d {
-            polynomial_types.push(CommittedPolynomial::BytecodeRa(i));
-        }
-        for i in 0..ram_d {
-            polynomial_types.push(CommittedPolynomial::RamRa(i));
-        }
-        for i in 0..inc_d {
-            polynomial_types.push(CommittedPolynomial::RdIncRa(i));
-        }
         if onehot_inc {
-            polynomial_types.push(CommittedPolynomial::RdIncMsb);
-        }
-        for i in 0..inc_d {
-            polynomial_types.push(CommittedPolynomial::RamIncRa(i));
-        }
-        if onehot_inc {
-            polynomial_types.push(CommittedPolynomial::RamIncMsb);
+            for i in 0..inc_d {
+                polynomial_types.push(CommittedPolynomial::UnsignedIncChunk(i));
+            }
+            for i in 0..ram_d {
+                polynomial_types.push(CommittedPolynomial::RamRa(i));
+            }
+            for i in 0..bytecode_d {
+                polynomial_types.push(CommittedPolynomial::BytecodeRa(i));
+            }
+        } else {
+            for i in 0..bytecode_d {
+                polynomial_types.push(CommittedPolynomial::BytecodeRa(i));
+            }
+            for i in 0..ram_d {
+                polynomial_types.push(CommittedPolynomial::RamRa(i));
+            }
         }
 
         // Sample a single batching challenge γ, and derive per-polynomial weights γ^{2i}.
@@ -181,6 +182,7 @@ impl<F: JoltField> BooleanitySumcheckParams<F> {
             gamma_powers_square.push(gamma2_i);
             gamma2_i *= gamma_sq;
         }
+        let unsigned_inc_msb_gamma = if onehot_inc { Some(gamma2_i) } else { None };
 
         Self {
             log_k_chunk,
@@ -190,6 +192,8 @@ impl<F: JoltField> BooleanitySumcheckParams<F> {
             r_address,
             r_cycle,
             polynomial_types,
+            unsigned_inc_msb_gamma,
+            onehot_inc,
             one_hot_params: one_hot_params.clone(),
         }
     }
@@ -236,6 +240,7 @@ fn compute_gamma_powers<F: JoltField>(gamma: F::Challenge, count: usize) -> (Vec
 pub struct BooleanityCycleInput<F: JoltField> {
     params: BooleanitySumcheckParams<F>,
     ra_indices: Vec<RaIndices>,
+    unsigned_inc_msb: Option<MultilinearPolynomial<F>>,
 }
 
 /// Booleanity address-phase prover.
@@ -253,6 +258,7 @@ pub struct BooleanityAddressSumcheckProver<F: JoltField> {
     last_round_poly: Option<UniPoly<F>>,
     /// Output claim after the final address round (input claim for cycle phase).
     address_claim: Option<F>,
+    unsigned_inc_msb: Option<MultilinearPolynomial<F>>,
     /// Address-only `SumcheckInstanceParams` wrapper.
     params: BooleanityAddressPhaseParams<F>,
 }
@@ -269,6 +275,7 @@ impl<F: JoltField> BooleanityAddressSumcheckProver<F> {
         trace: &[Cycle],
         bytecode: &BytecodePreprocessing,
         memory_layout: &MemoryLayout,
+        unsigned_inc_msb: Option<MultilinearPolynomial<F>>,
     ) -> Self {
         let (G, ra_indices) = compute_all_G_and_ra_indices::<F>(
             trace,
@@ -276,20 +283,20 @@ impl<F: JoltField> BooleanityAddressSumcheckProver<F> {
             memory_layout,
             &params.one_hot_params,
             &params.r_cycle,
-            params.polynomial_types.iter().any(|poly| {
-                matches!(
-                    poly,
-                    CommittedPolynomial::RdIncRa(_)
-                        | CommittedPolynomial::RamIncRa(_)
-                        | CommittedPolynomial::RdIncMsb
-                        | CommittedPolynomial::RamIncMsb
-                )
-            }),
+            params.onehot_inc,
         );
         let B = GruenSplitEqPolynomial::new(&params.r_address, BindingOrder::LowToHigh);
         let k_chunk = 1 << params.log_k_chunk;
         let mut F_table = ExpandingTable::new(k_chunk, BindingOrder::LowToHigh);
         F_table.reset(F::one());
+        let unsigned_inc_msb = if params.unsigned_inc_msb_gamma.is_some() {
+            Some(
+                unsigned_inc_msb
+                    .expect("akita booleanity requires precomputed UnsignedIncMsb witness"),
+            )
+        } else {
+            None
+        };
 
         Self {
             B,
@@ -298,6 +305,7 @@ impl<F: JoltField> BooleanityAddressSumcheckProver<F> {
             F: F_table,
             last_round_poly: None,
             address_claim: None,
+            unsigned_inc_msb,
             params: BooleanityAddressPhaseParams::new(params),
         }
     }
@@ -306,6 +314,7 @@ impl<F: JoltField> BooleanityAddressSumcheckProver<F> {
         BooleanityCycleInput {
             params: self.params.into_inner(),
             ra_indices: self.ra_indices,
+            unsigned_inc_msb: self.unsigned_inc_msb,
         }
     }
 }
@@ -422,6 +431,9 @@ pub struct BooleanityCycleSumcheckProver<F: JoltField> {
     gamma_powers: Vec<F>,
     /// Per-polynomial inverse powers γ^{-i} used to unscale cached openings.
     gamma_powers_inv: Vec<F>,
+    unsigned_inc_msb: Option<MultilinearPolynomial<F>>,
+    unsigned_inc_msb_claim: F,
+    unsigned_inc_msb_round_poly: Option<UniPoly<F>>,
     /// Cycle-only `SumcheckInstanceParams` wrapper.
     params: BooleanityCyclePhaseParams<F>,
 }
@@ -450,10 +462,14 @@ impl<F: JoltField> BooleanityCycleSumcheckProver<F> {
                 tables,
                 input.ra_indices,
                 params.common.one_hot_params.clone(),
+                params.common.onehot_inc,
             ),
             eq_r_r,
             gamma_powers,
             gamma_powers_inv,
+            unsigned_inc_msb: input.unsigned_inc_msb,
+            unsigned_inc_msb_claim: F::zero(),
+            unsigned_inc_msb_round_poly: None,
             params,
         }
     }
@@ -503,17 +519,55 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
                     F::reduce_product_accum(acc_e),
                 ]
             });
+        let msb_quadratic_coeffs: [F; DEGREE_BOUND - 1] = if let (Some(msb), Some(gamma)) = (
+            self.unsigned_inc_msb.as_ref(),
+            self.params.common.unsigned_inc_msb_gamma,
+        ) {
+            self.D
+                .par_fold_out_in_unreduced::<{ DEGREE_BOUND - 1 }>(&|j_prime| {
+                    let msb_0 = msb.get_bound_coeff(2 * j_prime);
+                    let msb_1 = msb.get_bound_coeff(2 * j_prime + 1);
+                    let b = msb_1 - msb_0;
+                    let mut acc_c = F::UnreducedProductAccum::zero();
+                    let mut acc_e = F::UnreducedProductAccum::zero();
+                    acc_c += (gamma * msb_0).mul_to_product_accum(msb_0 - F::one());
+                    acc_e += (gamma * b).mul_to_product_accum(b);
+                    [
+                        F::reduce_product_accum(acc_c),
+                        F::reduce_product_accum(acc_e),
+                    ]
+                })
+        } else {
+            [F::zero(); DEGREE_BOUND - 1]
+        };
         // previous_claim is s(0)+s(1) of the scaled polynomial; divide out eq_r_r to get inner claim
-        let adjusted_claim = previous_claim * self.eq_r_r.inverse().unwrap();
+        let adjusted_claim =
+            (previous_claim - self.unsigned_inc_msb_claim) * self.eq_r_r.inverse().unwrap();
         let gruen_poly =
             self.D
                 .gruen_poly_deg_3(quadratic_coeffs[0], quadratic_coeffs[1], adjusted_claim);
-        gruen_poly * self.eq_r_r
+        let mut round_poly = gruen_poly * self.eq_r_r;
+        if self.unsigned_inc_msb.is_some() {
+            let msb_poly = self.D.gruen_poly_deg_3(
+                msb_quadratic_coeffs[0],
+                msb_quadratic_coeffs[1],
+                self.unsigned_inc_msb_claim,
+            );
+            round_poly += &msb_poly;
+            self.unsigned_inc_msb_round_poly = Some(msb_poly);
+        }
+        round_poly
     }
 
     fn ingest_challenge(&mut self, r_j: F::Challenge, _round: usize) {
+        if let Some(msb_poly) = self.unsigned_inc_msb_round_poly.take() {
+            self.unsigned_inc_msb_claim = msb_poly.evaluate(&r_j);
+        }
         self.D.bind(r_j);
         self.H.bind_in_place(r_j, BindingOrder::LowToHigh);
+        if let Some(msb) = self.unsigned_inc_msb.as_mut() {
+            msb.bind_parallel(r_j, BindingOrder::LowToHigh);
+        }
     }
 
     fn cache_openings(
@@ -533,6 +587,14 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
             opening_point.r[self.params.common.log_k_chunk..].to_vec(),
             claims,
         );
+        if let Some(msb) = self.unsigned_inc_msb.as_ref() {
+            accumulator.append_dense(
+                CommittedPolynomial::UnsignedIncMsb,
+                SumcheckId::Booleanity,
+                opening_point.r[self.params.common.log_k_chunk..].to_vec(),
+                msb.final_sumcheck_claim(),
+            );
+        }
     }
 
     #[cfg(feature = "allocative")]
@@ -620,12 +682,26 @@ impl<F: JoltField, T: Transcript, A: AbstractVerifierOpeningAccumulator<F>>
                     .1
             })
             .collect();
-        EqPolynomial::<F>::mle(
+        let ra_claim = EqPolynomial::<F>::mle(
             &full_challenges,
             &self.params.common.combined_r_big_endian(),
         ) * zip(&self.params.common.gamma_powers_square, ra_claims)
             .map(|(gamma_2i, ra)| (ra.square() - ra) * gamma_2i)
-            .sum::<F>()
+            .sum::<F>();
+        let msb_claim = if let Some(gamma) = self.params.common.unsigned_inc_msb_gamma {
+            let (_, msb) = accumulator.get_committed_polynomial_opening(
+                CommittedPolynomial::UnsignedIncMsb,
+                SumcheckId::Booleanity,
+            );
+            let opening_point = self.params.normalize_opening_point(sumcheck_challenges);
+            let r_cycle_prime = &opening_point.r[self.params.common.log_k_chunk..];
+            gamma
+                * EqPolynomial::<F>::mle(&self.params.common.r_cycle, r_cycle_prime)
+                * (msb.square() - msb)
+        } else {
+            F::zero()
+        };
+        ra_claim + msb_claim
     }
 
     fn cache_openings(&self, accumulator: &mut A, sumcheck_challenges: &[F::Challenge]) {
@@ -635,6 +711,14 @@ impl<F: JoltField, T: Transcript, A: AbstractVerifierOpeningAccumulator<F>>
             SumcheckId::Booleanity,
             opening_point.r,
         );
+        if self.params.common.unsigned_inc_msb_gamma.is_some() {
+            let opening_point = self.params.normalize_opening_point(sumcheck_challenges);
+            accumulator.append_dense(
+                CommittedPolynomial::UnsignedIncMsb,
+                SumcheckId::Booleanity,
+                opening_point.r[self.params.common.log_k_chunk..].to_vec(),
+            );
+        }
     }
 }
 

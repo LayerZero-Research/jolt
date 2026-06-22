@@ -1,12 +1,16 @@
 pub mod advice;
 pub mod bytecode;
 pub mod hamming_weight;
+#[cfg(feature = "akita-pcs")]
+pub mod inc_virtualization;
 pub mod increments;
 pub mod instruction_lookups;
 mod precommitted;
 pub mod program_image;
 pub mod ram_ra;
 pub mod registers;
+#[cfg(feature = "akita-pcs")]
+pub mod unsigned_inc;
 
 pub use advice::{
     AdviceClaimReductionParams, AdviceClaimReductionProver, AdviceClaimReductionVerifier,
@@ -18,6 +22,10 @@ pub use bytecode::{
 #[cfg(feature = "prover")]
 pub use hamming_weight::HammingWeightClaimReductionProver;
 pub use hamming_weight::{HammingWeightClaimReductionParams, HammingWeightClaimReductionVerifier};
+#[cfg(feature = "akita-pcs")]
+pub use inc_virtualization::{
+    IncVirtualizationParams, IncVirtualizationProver, IncVirtualizationVerifier,
+};
 pub use increments::{
     IncClaimReductionSumcheckParams, IncClaimReductionSumcheckProver,
     IncClaimReductionSumcheckVerifier,
@@ -42,4 +50,9 @@ pub use ram_ra::{
 pub use registers::{
     RegistersClaimReductionSumcheckParams, RegistersClaimReductionSumcheckProver,
     RegistersClaimReductionSumcheckVerifier,
+};
+#[cfg(feature = "akita-pcs")]
+pub use unsigned_inc::{
+    UnsignedIncClaimReductionParams, UnsignedIncClaimReductionProver,
+    UnsignedIncClaimReductionVerifier,
 };

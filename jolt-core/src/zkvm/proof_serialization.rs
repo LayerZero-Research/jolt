@@ -43,6 +43,8 @@ pub struct JoltProof<F: JoltField, C: JoltCurve, PCS: CommitmentScheme<Field = F
     pub stage3_sumcheck_proof: SumcheckInstanceProof<F, C, FS>,
     pub stage4_sumcheck_proof: SumcheckInstanceProof<F, C, FS>,
     pub stage5_sumcheck_proof: SumcheckInstanceProof<F, C, FS>,
+    #[cfg(feature = "akita-pcs")]
+    pub stage5_inc_sumcheck_proof: SumcheckInstanceProof<F, C, FS>,
     pub stage6a_sumcheck_proof: SumcheckInstanceProof<F, C, FS>,
     pub stage6b_sumcheck_proof: SumcheckInstanceProof<F, C, FS>,
     pub stage7_sumcheck_proof: SumcheckInstanceProof<F, C, FS>,
@@ -50,6 +52,8 @@ pub struct JoltProof<F: JoltField, C: JoltCurve, PCS: CommitmentScheme<Field = F
     pub blindfold_proof: BlindFoldProof<F, C>,
     pub joint_opening_proof: PCS::Proof,
     pub untrusted_advice_commitment: Option<PCS::Commitment>,
+    #[cfg(feature = "akita-pcs")]
+    pub unsigned_inc_msb_commitment: Option<PCS::Commitment>,
     #[cfg(not(feature = "zk"))]
     pub opening_claims: Claims<F>,
     pub trace_length: usize,
@@ -73,6 +77,16 @@ impl<F: JoltField, C: JoltCurve, PCS: CommitmentScheme<Field = F>, FS: Transcrip
             && self.stage3_sumcheck_proof.is_zk() == zk_mode
             && self.stage4_sumcheck_proof.is_zk() == zk_mode
             && self.stage5_sumcheck_proof.is_zk() == zk_mode
+            && {
+                #[cfg(feature = "akita-pcs")]
+                {
+                    self.stage5_inc_sumcheck_proof.is_zk() == zk_mode
+                }
+                #[cfg(not(feature = "akita-pcs"))]
+                {
+                    true
+                }
+            }
             && self.stage6a_sumcheck_proof.is_zk() == zk_mode
             && self.stage6b_sumcheck_proof.is_zk() == zk_mode
             && self.stage7_sumcheck_proof.is_zk() == zk_mode;
@@ -300,16 +314,11 @@ impl CanonicalSerialize for CommittedPolynomial {
                 (u8::try_from(*i).unwrap()).serialize_with_mode(writer, compress)
             }
             Self::ProgramImageInit => 8u8.serialize_with_mode(writer, compress),
-            Self::RdIncRa(i) => {
+            Self::UnsignedIncChunk(i) => {
                 9u8.serialize_with_mode(&mut writer, compress)?;
                 (u8::try_from(*i).unwrap()).serialize_with_mode(writer, compress)
             }
-            Self::RdIncMsb => 10u8.serialize_with_mode(writer, compress),
-            Self::RamIncRa(i) => {
-                11u8.serialize_with_mode(&mut writer, compress)?;
-                (u8::try_from(*i).unwrap()).serialize_with_mode(writer, compress)
-            }
-            Self::RamIncMsb => 12u8.serialize_with_mode(writer, compress),
+            Self::UnsignedIncMsb => 10u8.serialize_with_mode(writer, compress),
         }
     }
 
@@ -320,14 +329,12 @@ impl CanonicalSerialize for CommittedPolynomial {
             | Self::TrustedAdvice
             | Self::UntrustedAdvice
             | Self::ProgramImageInit
-            | Self::RdIncMsb
-            | Self::RamIncMsb => 1,
+            | Self::UnsignedIncMsb => 1,
             Self::InstructionRa(_)
             | Self::BytecodeRa(_)
             | Self::RamRa(_)
             | Self::BytecodeChunk(_)
-            | Self::RdIncRa(_)
-            | Self::RamIncRa(_) => 2,
+            | Self::UnsignedIncChunk(_) => 2,
         }
     }
 }
@@ -369,14 +376,9 @@ impl CanonicalDeserialize for CommittedPolynomial {
                 8 => Self::ProgramImageInit,
                 9 => {
                     let i = u8::deserialize_with_mode(reader, compress, validate)?;
-                    Self::RdIncRa(i as usize)
+                    Self::UnsignedIncChunk(i as usize)
                 }
-                10 => Self::RdIncMsb,
-                11 => {
-                    let i = u8::deserialize_with_mode(reader, compress, validate)?;
-                    Self::RamIncRa(i as usize)
-                }
-                12 => Self::RamIncMsb,
+                10 => Self::UnsignedIncMsb,
                 _ => return Err(SerializationError::InvalidData),
             },
         )
@@ -428,6 +430,8 @@ impl CanonicalSerialize for VirtualPolynomial {
             Self::RamValInit => 32u8.serialize_with_mode(&mut writer, compress),
             Self::RamValFinal => 33u8.serialize_with_mode(&mut writer, compress),
             Self::RamHammingWeight => 34u8.serialize_with_mode(&mut writer, compress),
+            Self::Inc => 44u8.serialize_with_mode(&mut writer, compress),
+            Self::UnsignedInc => 45u8.serialize_with_mode(&mut writer, compress),
             Self::UnivariateSkip => 35u8.serialize_with_mode(&mut writer, compress),
             Self::OpFlags(flags) => {
                 36u8.serialize_with_mode(&mut writer, compress)?;
@@ -490,6 +494,8 @@ impl CanonicalSerialize for VirtualPolynomial {
             | Self::RamValInit
             | Self::RamValFinal
             | Self::RamHammingWeight
+            | Self::Inc
+            | Self::UnsignedInc
             | Self::UnivariateSkip
             | Self::BytecodeReadRafAddrClaim
             | Self::BooleanityAddrClaim
@@ -556,6 +562,8 @@ impl CanonicalDeserialize for VirtualPolynomial {
                 32 => Self::RamValInit,
                 33 => Self::RamValFinal,
                 34 => Self::RamHammingWeight,
+                44 => Self::Inc,
+                45 => Self::UnsignedInc,
                 35 => Self::UnivariateSkip,
                 36 => {
                     let discriminant = u8::deserialize_with_mode(&mut reader, compress, validate)?;

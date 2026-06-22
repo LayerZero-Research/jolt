@@ -13,7 +13,7 @@ use crate::zkvm::{
         chunks::{committed_lanes, for_each_active_lane_value, ActiveLaneValue},
         get_pc_for_cycle, BytecodePreprocessing,
     },
-    witness::CommittedPolynomial,
+    witness::{unsigned_inc, CommittedPolynomial},
 };
 use allocative::Allocative;
 use common::constants::XLEN;
@@ -190,16 +190,15 @@ impl<F: JoltField> RLCPolynomial<F> {
 
         for (poly_id, coeff) in poly_ids.iter().zip(coefficients.iter()) {
             match poly_id {
-                CommittedPolynomial::RdInc | CommittedPolynomial::RamInc => {
+                CommittedPolynomial::RdInc
+                | CommittedPolynomial::RamInc
+                | CommittedPolynomial::UnsignedIncMsb => {
                     dense_polys.push((*poly_id, *coeff));
                 }
                 CommittedPolynomial::InstructionRa(_)
                 | CommittedPolynomial::BytecodeRa(_)
                 | CommittedPolynomial::RamRa(_)
-                | CommittedPolynomial::RdIncRa(_)
-                | CommittedPolynomial::RamIncRa(_)
-                | CommittedPolynomial::RdIncMsb
-                | CommittedPolynomial::RamIncMsb => {
+                | CommittedPolynomial::UnsignedIncChunk(_) => {
                     onehot_polys.push((*poly_id, *coeff));
                 }
                 CommittedPolynomial::TrustedAdvice
@@ -671,6 +670,7 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
 
                     let scaled_rd_inc = row_weight * setup.rd_inc_coeff;
                     let scaled_ram_inc = row_weight * setup.ram_inc_coeff;
+                    let scaled_unsigned_inc_msb = row_weight * setup.unsigned_inc_msb_coeff;
 
                     // Split into valid trace range vs padding range.
                     let valid_end = std::cmp::min(chunk_start + num_columns, trace_len);
@@ -687,6 +687,7 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
                                 cycle,
                                 scaled_rd_inc,
                                 scaled_ram_inc,
+                                scaled_unsigned_inc_msb,
                                 &mut dense_accs[col_idx],
                             );
                             setup.process_cycle_onehot_prefix(
@@ -704,6 +705,7 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
                                 cycle,
                                 scaled_rd_inc,
                                 scaled_ram_inc,
+                                scaled_unsigned_inc_msb,
                                 row_factor,
                                 &mut dense_accs[col_idx],
                                 &mut onehot_accs[col_idx],
@@ -756,6 +758,7 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
                     let row_weight = left_vec[row_idx];
                     let scaled_rd_inc = row_weight * setup.rd_inc_coeff;
                     let scaled_ram_inc = row_weight * setup.ram_inc_coeff;
+                    let scaled_unsigned_inc_msb = row_weight * setup.unsigned_inc_msb_coeff;
 
                     // Process columns within chunk sequentially.
                     for (col_idx, cycle) in chunk.iter().enumerate() {
@@ -765,6 +768,7 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
                                 cycle,
                                 scaled_rd_inc,
                                 scaled_ram_inc,
+                                scaled_unsigned_inc_msb,
                                 &mut dense_accs[col_idx],
                             );
                             setup.process_cycle_onehot_prefix(
@@ -782,6 +786,7 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
                                 cycle,
                                 scaled_rd_inc,
                                 scaled_ram_inc,
+                                scaled_unsigned_inc_msb,
                                 row_factor,
                                 &mut dense_accs[col_idx],
                                 &mut onehot_accs[col_idx],
@@ -809,6 +814,8 @@ guardrail in gen_from_trace should ensure sigma_main >= sigma_a."
 struct FoldedOneHotTables<F: JoltField> {
     /// Tables for InstructionRa polynomials, indexed by [poly_idx][k]
     instruction: Vec<Vec<F>>,
+    /// Tables for UnsignedIncChunk polynomials, indexed by [poly_idx][k]
+    unsigned_inc: Vec<Vec<F>>,
     /// Tables for BytecodeRa polynomials, indexed by [poly_idx][k]
     bytecode: Vec<Vec<F>>,
     /// Tables for RamRa polynomials, indexed by [poly_idx][k]
@@ -821,6 +828,8 @@ struct VmvSetup<'a, F: JoltField> {
     rd_inc_coeff: F,
     /// Coefficient for RamInc dense polynomial
     ram_inc_coeff: F,
+    /// Coefficient for dense UnsignedIncMsb polynomial
+    unsigned_inc_msb_coeff: F,
     /// Row factors from left vector decomposition
     row_factors: Vec<F>,
     /// Folded one-hot tables (coeff * eq_k pre-multiplied)
@@ -860,10 +869,12 @@ impl<'a, F: JoltField> VmvSetup<'a, F> {
         // Extract dense coefficients
         let mut rd_inc_coeff = F::zero();
         let mut ram_inc_coeff = F::zero();
+        let mut unsigned_inc_msb_coeff = F::zero();
         for (poly_id, coeff) in ctx.dense_polys.iter() {
             match poly_id {
                 CommittedPolynomial::RdInc => rd_inc_coeff = *coeff,
                 CommittedPolynomial::RamInc => ram_inc_coeff = *coeff,
+                CommittedPolynomial::UnsignedIncMsb => unsigned_inc_msb_coeff = *coeff,
                 _ => unreachable!("one-hot polynomial found in dense_polys"),
             }
         }
@@ -875,6 +886,7 @@ impl<'a, F: JoltField> VmvSetup<'a, F> {
         Self {
             rd_inc_coeff,
             ram_inc_coeff,
+            unsigned_inc_msb_coeff,
             row_factors,
             folded_tables,
             bytecode: &ctx.preprocessing.bytecode,
@@ -914,6 +926,7 @@ impl<'a, F: JoltField> VmvSetup<'a, F> {
         cycle: &Cycle,
         scaled_rd_inc: F,
         scaled_ram_inc: F,
+        scaled_unsigned_inc_msb: F,
         dense_acc: &mut MedAccumS<F>,
     ) {
         let (_, pre_value, post_value) = cycle.rd_write().unwrap_or_default();
@@ -923,6 +936,10 @@ impl<'a, F: JoltField> VmvSetup<'a, F> {
         if let tracer::instruction::RAMAccess::Write(write) = cycle.ram_access() {
             let diff = s64_from_diff_u64s(write.post_value, write.pre_value);
             dense_acc.fmadd(&scaled_ram_inc, &diff);
+        }
+        if !scaled_unsigned_inc_msb.is_zero() {
+            let msb = (unsigned_inc(cycle) >> XLEN) as u64;
+            dense_acc.fmadd(&scaled_unsigned_inc_msb, &msb);
         }
     }
 
@@ -961,6 +978,9 @@ impl<'a, F: JoltField> VmvSetup<'a, F> {
                     };
                     self.one_hot_params.ram_address_chunk(addr, *idx) as usize
                 }
+                CommittedPolynomial::UnsignedIncChunk(idx) => {
+                    self.one_hot_params.inc_chunk(unsigned_inc(cycle), *idx + 1) as usize
+                }
                 _ => unreachable!("dense polynomial found in onehot_polys"),
             };
 
@@ -981,11 +1001,15 @@ impl<'a, F: JoltField> VmvSetup<'a, F> {
         k_chunk: usize,
     ) -> FoldedOneHotTables<F> {
         let instruction_d = one_hot_params.instruction_d;
+        let inc_d = one_hot_params.inc_onehot_d();
         let bytecode_d = one_hot_params.bytecode_d;
         let ram_d = one_hot_params.ram_d;
 
         // Initialize tables with zeros
         let mut instruction: Vec<Vec<F>> = (0..instruction_d)
+            .map(|_| unsafe_allocate_zero_vec(k_chunk))
+            .collect();
+        let mut unsigned_inc_tables: Vec<Vec<F>> = (0..inc_d)
             .map(|_| unsafe_allocate_zero_vec(k_chunk))
             .collect();
         let mut bytecode: Vec<Vec<F>> = (0..bytecode_d)
@@ -1016,29 +1040,46 @@ impl<'a, F: JoltField> VmvSetup<'a, F> {
                         ram[*idx][k] = *coeff * eq_k[k];
                     }
                 }
+                CommittedPolynomial::UnsignedIncChunk(idx) => {
+                    for k in 0..k_chunk {
+                        unsigned_inc_tables[*idx][k] = *coeff * eq_k[k];
+                    }
+                }
                 _ => unreachable!("dense polynomial found in onehot_polys"),
             }
         }
 
         FoldedOneHotTables {
             instruction,
+            unsigned_inc: unsigned_inc_tables,
             bytecode,
             ram,
         }
     }
 
     /// Process a single cycle.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "hot-path helper keeps dense and one-hot accumulators explicit"
+    )]
     #[inline(always)]
     fn process_cycle(
         &self,
         cycle: &Cycle,
         scaled_rd_inc: F,
         scaled_ram_inc: F,
+        scaled_unsigned_inc_msb: F,
         row_factor: F,
         dense_acc: &mut MedAccumS<F>,
         onehot_acc: &mut F::UnreducedProductAccum,
     ) {
-        self.process_cycle_dense(cycle, scaled_rd_inc, scaled_ram_inc, dense_acc);
+        self.process_cycle_dense(
+            cycle,
+            scaled_rd_inc,
+            scaled_ram_inc,
+            scaled_unsigned_inc_msb,
+            dense_acc,
+        );
 
         // One-hot polynomials: accumulate using pre-folded K tables (unreduced)
         let mut inner_sum = F::UnreducedMulU64::default();
@@ -1047,6 +1088,13 @@ impl<'a, F: JoltField> VmvSetup<'a, F> {
         let lookup_index = LookupQuery::<XLEN>::to_lookup_index(cycle);
         for (i, table) in self.folded_tables.instruction.iter().enumerate() {
             let k = self.one_hot_params.lookup_index_chunk(lookup_index, i) as usize;
+            inner_sum += table[k].to_unreduced();
+        }
+
+        // Fused increment chunks
+        let unsigned_inc_value = unsigned_inc(cycle);
+        for (i, table) in self.folded_tables.unsigned_inc.iter().enumerate() {
+            let k = self.one_hot_params.inc_chunk(unsigned_inc_value, i + 1) as usize;
             inner_sum += table[k].to_unreduced();
         }
 

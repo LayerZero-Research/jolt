@@ -36,6 +36,7 @@ use crate::zkvm::bytecode::{get_pc_for_cycle, BytecodePreprocessing};
 use crate::zkvm::config::OneHotParams;
 use crate::zkvm::instruction::LookupQuery;
 use crate::zkvm::ram::remap_address;
+use crate::zkvm::witness::unsigned_inc;
 use common::constants::XLEN;
 use common::jolt_device::MemoryLayout;
 use rayon::prelude::*;
@@ -91,16 +92,9 @@ pub struct RaIndices {
     pub bytecode: [u8; MAX_BYTECODE_D],
     /// RAM RA chunk indices (None for non-memory cycles)
     pub ram: [Option<u8>; MAX_RAM_D],
-    /// Register increment one-hot chunk indices (chunks 1..d_inc-1 of unsigned_rd_inc).
+    /// Fused increment one-hot chunk indices (chunks 1..d_inc-1 of unsigned_inc).
     /// Populated only when `onehot_inc` is true (Akita path).
-    pub rd_inc: [u8; MAX_INC_D],
-    /// MSB (bit 64) of unsigned_rd_inc. Always 0 or 1.
-    pub rd_inc_msb: u8,
-    /// RAM increment one-hot chunk indices (chunks 1..d_inc-1 of unsigned_ram_inc).
-    /// Populated only when `onehot_inc` is true (Akita path).
-    pub ram_inc: [u8; MAX_INC_D],
-    /// MSB (bit 64) of unsigned_ram_inc. Always 0 or 1.
-    pub ram_inc_msb: u8,
+    pub unsigned_inc: [u8; MAX_INC_D],
 }
 
 impl std::ops::Add for RaIndices {
@@ -129,10 +123,7 @@ impl Zero for RaIndices {
         self.instruction.iter().all(|&x| x == 0)
             && self.bytecode.iter().all(|&x| x == 0)
             && self.ram.iter().all(|x| x.is_none())
-            && self.rd_inc.iter().all(|&x| x == 0)
-            && self.rd_inc_msb == 0
-            && self.ram_inc.iter().all(|&x| x == 0)
-            && self.ram_inc_msb == 0
+            && self.unsigned_inc.iter().all(|&x| x == 0)
     }
 }
 
@@ -193,67 +184,64 @@ impl RaIndices {
             ram[i] = remapped.map(|a| one_hot_params.ram_address_chunk(a, i));
         }
 
-        // Increment indices (always computed; only used when onehot_inc=true)
-        let (_, rd_pre, rd_post) = cycle.rd_write().unwrap_or_default();
-        let rd_inc = rd_post as i128 - rd_pre as i128;
-        let ram_inc = match cycle.ram_access() {
-            tracer::instruction::RAMAccess::Write(write) => {
-                write.post_value as i128 - write.pre_value as i128
-            }
-            _ => 0,
-        };
-        let unsigned_rd_inc = (rd_inc + (1i128 << XLEN)) as u128;
-        let rd_inc_msb = (unsigned_rd_inc >> XLEN) as u8;
+        // Fused increment indices (always computed; only used when onehot_inc=true).
+        let unsigned_inc_value = unsigned_inc(cycle);
         let inc_onehot_d = one_hot_params.inc_onehot_d();
-        let mut rd_inc_arr = [0u8; MAX_INC_D];
+        let mut unsigned_inc_arr = [0u8; MAX_INC_D];
         for i in 0..inc_onehot_d {
-            rd_inc_arr[i] = one_hot_params.inc_chunk(unsigned_rd_inc, i + 1);
-        }
-        let unsigned_ram_inc = (ram_inc + (1i128 << XLEN)) as u128;
-        let ram_inc_msb = (unsigned_ram_inc >> XLEN) as u8;
-        let mut ram_inc_arr = [0u8; MAX_INC_D];
-        for i in 0..inc_onehot_d {
-            ram_inc_arr[i] = one_hot_params.inc_chunk(unsigned_ram_inc, i + 1);
+            unsigned_inc_arr[i] = one_hot_params.inc_chunk(unsigned_inc_value, i + 1);
         }
 
         Self {
             instruction,
             bytecode: bytecode_arr,
             ram,
-            rd_inc: rd_inc_arr,
-            rd_inc_msb,
-            ram_inc: ram_inc_arr,
-            ram_inc_msb,
+            unsigned_inc: unsigned_inc_arr,
         }
     }
 
-    /// Extract the index for polynomial `poly_idx` in the unified ordering:
-    /// [instruction_0..d, bytecode_0..d, ram_0..d, rd_inc_0..d, rd_msb, ram_inc_0..d, ram_msb]
+    /// Extract the index for polynomial `poly_idx`.
+    ///
+    /// Akita (`onehot_inc`): [instruction, unsigned_inc, ram, bytecode]
+    /// Dory (`!onehot_inc`): [instruction, bytecode, ram]
     #[inline]
-    pub fn get_index(&self, poly_idx: usize, one_hot_params: &OneHotParams) -> Option<u8> {
+    pub fn get_index(
+        &self,
+        poly_idx: usize,
+        one_hot_params: &OneHotParams,
+        onehot_inc: bool,
+    ) -> Option<u8> {
         let instruction_d = one_hot_params.instruction_d;
         let bytecode_d = one_hot_params.bytecode_d;
         let ram_d = one_hot_params.ram_d;
-        let inc_d = one_hot_params.inc_onehot_d();
-        let rd_start = instruction_d + bytecode_d + ram_d;
-        let rd_msb_idx = rd_start + inc_d;
-        let ram_start = rd_msb_idx + 1;
-        let ram_msb_idx = ram_start + inc_d;
 
-        if poly_idx < instruction_d {
-            Some(self.instruction[poly_idx])
-        } else if poly_idx < instruction_d + bytecode_d {
-            Some(self.bytecode[poly_idx - instruction_d])
-        } else if poly_idx < rd_start {
-            self.ram[poly_idx - instruction_d - bytecode_d]
-        } else if poly_idx < rd_msb_idx {
-            Some(self.rd_inc[poly_idx - rd_start])
-        } else if poly_idx == rd_msb_idx {
-            Some(self.rd_inc_msb)
-        } else if poly_idx < ram_msb_idx {
-            Some(self.ram_inc[poly_idx - ram_start])
+        if onehot_inc {
+            let inc_d = one_hot_params.inc_onehot_d();
+            let inc_start = instruction_d;
+            let ram_start = inc_start + inc_d;
+            let bytecode_start = ram_start + ram_d;
+
+            if poly_idx < instruction_d {
+                Some(self.instruction[poly_idx])
+            } else if poly_idx < ram_start {
+                Some(self.unsigned_inc[poly_idx - inc_start])
+            } else if poly_idx < bytecode_start {
+                self.ram[poly_idx - ram_start]
+            } else {
+                Some(self.bytecode[poly_idx - bytecode_start])
+            }
         } else {
-            Some(self.ram_inc_msb)
+            let ram_start = instruction_d + bytecode_d;
+
+            if poly_idx < instruction_d {
+                Some(self.instruction[poly_idx])
+            } else if poly_idx < ram_start {
+                Some(self.bytecode[poly_idx - instruction_d])
+            } else if poly_idx < ram_start + ram_d {
+                self.ram[poly_idx - ram_start]
+            } else {
+                None
+            }
         }
     }
 }
@@ -269,7 +257,7 @@ impl RaIndices {
 /// then `eq(r_cycle, c) = E_hi[c_hi] * E_lo[c_lo]` where `c = (c_hi << lo_bits) | c_lo`.
 ///
 /// Returns G in order:
-/// [instruction_0..d, bytecode_0..d, ram_0..d, (rd_inc_0..d, rd_msb, ram_inc_0..d, ram_msb if onehot_inc)]
+/// [instruction_0..d, (unsigned_inc_0..d if onehot_inc), ram_0..d, bytecode_0..d]
 /// Each inner Vec has length k_chunk.
 #[tracing::instrument(skip_all, name = "shared_ra_polys::compute_all_G")]
 pub fn compute_all_G<F: JoltField>(
@@ -344,14 +332,12 @@ fn compute_all_G_impl<F: JoltField>(
     let instruction_d = one_hot_params.instruction_d;
     let bytecode_d = one_hot_params.bytecode_d;
     let ram_d = one_hot_params.ram_d;
-    let rd_inc_d = if onehot_inc {
+    let inc_d = if onehot_inc {
         one_hot_params.inc_onehot_d()
     } else {
         0
     };
-    let ram_inc_d = rd_inc_d;
-    let msb_d: usize = if onehot_inc { 1 } else { 0 };
-    let N = instruction_d + bytecode_d + ram_d + (rd_inc_d + msb_d) + (ram_inc_d + msb_d);
+    let N = instruction_d + inc_d + ram_d + bytecode_d;
     let T = trace.len();
 
     // Two-table split-eq:
@@ -382,49 +368,30 @@ fn compute_all_G_impl<F: JoltField>(
             let mut partial_instruction: Vec<Vec<F>> = (0..instruction_d)
                 .map(|_| unsafe_allocate_zero_vec(K))
                 .collect();
+            let mut partial_inc: Vec<Vec<F>> =
+                (0..inc_d).map(|_| unsafe_allocate_zero_vec(K)).collect();
+            let mut partial_ram: Vec<Vec<F>> =
+                (0..ram_d).map(|_| unsafe_allocate_zero_vec(K)).collect();
             let mut partial_bytecode: Vec<Vec<F>> = (0..bytecode_d)
                 .map(|_| unsafe_allocate_zero_vec(K))
                 .collect();
-            let mut partial_ram: Vec<Vec<F>> =
-                (0..ram_d).map(|_| unsafe_allocate_zero_vec(K)).collect();
-            let mut partial_rd_inc: Vec<Vec<F>> =
-                (0..rd_inc_d).map(|_| unsafe_allocate_zero_vec(K)).collect();
-            let mut partial_rd_msb: Vec<Vec<F>> =
-                (0..msb_d).map(|_| unsafe_allocate_zero_vec(K)).collect();
-            let mut partial_ram_inc: Vec<Vec<F>> = (0..ram_inc_d)
-                .map(|_| unsafe_allocate_zero_vec(K))
-                .collect();
-            let mut partial_ram_msb: Vec<Vec<F>> =
-                (0..msb_d).map(|_| unsafe_allocate_zero_vec(K)).collect();
 
             let mut local_instruction: Vec<Vec<F::UnreducedMulU64>> = (0..instruction_d)
                 .map(|_| unsafe_allocate_zero_vec(K))
                 .collect();
+            let mut local_inc: Vec<Vec<F::UnreducedMulU64>> =
+                (0..inc_d).map(|_| unsafe_allocate_zero_vec(K)).collect();
+            let mut local_ram: Vec<Vec<F::UnreducedMulU64>> =
+                (0..ram_d).map(|_| unsafe_allocate_zero_vec(K)).collect();
             let mut local_bytecode: Vec<Vec<F::UnreducedMulU64>> = (0..bytecode_d)
                 .map(|_| unsafe_allocate_zero_vec(K))
                 .collect();
-            let mut local_ram: Vec<Vec<F::UnreducedMulU64>> =
-                (0..ram_d).map(|_| unsafe_allocate_zero_vec(K)).collect();
-            let mut local_rd_inc: Vec<Vec<F::UnreducedMulU64>> =
-                (0..rd_inc_d).map(|_| unsafe_allocate_zero_vec(K)).collect();
-            let mut local_rd_msb: Vec<Vec<F::UnreducedMulU64>> =
-                (0..msb_d).map(|_| unsafe_allocate_zero_vec(K)).collect();
-            let mut local_ram_inc: Vec<Vec<F::UnreducedMulU64>> = (0..ram_inc_d)
-                .map(|_| unsafe_allocate_zero_vec(K))
-                .collect();
-            let mut local_ram_msb: Vec<Vec<F::UnreducedMulU64>> =
-                (0..msb_d).map(|_| unsafe_allocate_zero_vec(K)).collect();
             let mut touched_instruction: Vec<FixedBitSet> =
                 vec![FixedBitSet::with_capacity(K); instruction_d];
+            let mut touched_inc: Vec<FixedBitSet> = vec![FixedBitSet::with_capacity(K); inc_d];
+            let mut touched_ram: Vec<FixedBitSet> = vec![FixedBitSet::with_capacity(K); ram_d];
             let mut touched_bytecode: Vec<FixedBitSet> =
                 vec![FixedBitSet::with_capacity(K); bytecode_d];
-            let mut touched_ram: Vec<FixedBitSet> = vec![FixedBitSet::with_capacity(K); ram_d];
-            let mut touched_rd_inc: Vec<FixedBitSet> =
-                vec![FixedBitSet::with_capacity(K); rd_inc_d];
-            let mut touched_rd_msb: Vec<FixedBitSet> = vec![FixedBitSet::with_capacity(K); msb_d];
-            let mut touched_ram_inc: Vec<FixedBitSet> =
-                vec![FixedBitSet::with_capacity(K); ram_inc_d];
-            let mut touched_ram_msb: Vec<FixedBitSet> = vec![FixedBitSet::with_capacity(K); msb_d];
 
             let chunk_start = chunk_idx * chunk_size;
             for (local_idx, &e_hi) in chunk.iter().enumerate() {
@@ -437,11 +404,11 @@ fn compute_all_G_impl<F: JoltField>(
                     }
                     touched_instruction[i].clear();
                 }
-                for i in 0..bytecode_d {
-                    for k in touched_bytecode[i].ones() {
-                        local_bytecode[i][k] = Default::default();
+                for i in 0..inc_d {
+                    for k in touched_inc[i].ones() {
+                        local_inc[i][k] = Default::default();
                     }
-                    touched_bytecode[i].clear();
+                    touched_inc[i].clear();
                 }
                 for i in 0..ram_d {
                     for k in touched_ram[i].ones() {
@@ -449,29 +416,11 @@ fn compute_all_G_impl<F: JoltField>(
                     }
                     touched_ram[i].clear();
                 }
-                for i in 0..rd_inc_d {
-                    for k in touched_rd_inc[i].ones() {
-                        local_rd_inc[i][k] = Default::default();
+                for i in 0..bytecode_d {
+                    for k in touched_bytecode[i].ones() {
+                        local_bytecode[i][k] = Default::default();
                     }
-                    touched_rd_inc[i].clear();
-                }
-                for i in 0..msb_d {
-                    for k in touched_rd_msb[i].ones() {
-                        local_rd_msb[i][k] = Default::default();
-                    }
-                    touched_rd_msb[i].clear();
-                }
-                for i in 0..ram_inc_d {
-                    for k in touched_ram_inc[i].ones() {
-                        local_ram_inc[i][k] = Default::default();
-                    }
-                    touched_ram_inc[i].clear();
-                }
-                for i in 0..msb_d {
-                    for k in touched_ram_msb[i].ones() {
-                        local_ram_msb[i][k] = Default::default();
-                    }
-                    touched_ram_msb[i].clear();
+                    touched_bytecode[i].clear();
                 }
 
                 // Sequential over c_lo (contiguous cycles for this c_hi)
@@ -506,13 +455,13 @@ fn compute_all_G_impl<F: JoltField>(
                         local_instruction[i][k] += add;
                     }
 
-                    // BytecodeRa contributions (unreduced accumulation)
-                    for i in 0..bytecode_d {
-                        let k = ra_idx.bytecode[i] as usize;
-                        if !touched_bytecode[i].contains(k) {
-                            touched_bytecode[i].insert(k);
+                    // UnsignedIncChunk contributions (unreduced accumulation)
+                    for i in 0..inc_d {
+                        let k = ra_idx.unsigned_inc[i] as usize;
+                        if !touched_inc[i].contains(k) {
+                            touched_inc[i].insert(k);
                         }
-                        local_bytecode[i][k] += add;
+                        local_inc[i][k] += add;
                     }
 
                     // RamRa contributions (may be None, unreduced accumulation)
@@ -526,40 +475,13 @@ fn compute_all_G_impl<F: JoltField>(
                         }
                     }
 
-                    // RdIncRa contributions (unreduced accumulation)
-                    for i in 0..rd_inc_d {
-                        let k = ra_idx.rd_inc[i] as usize;
-                        if !touched_rd_inc[i].contains(k) {
-                            touched_rd_inc[i].insert(k);
+                    // BytecodeRa contributions (unreduced accumulation)
+                    for i in 0..bytecode_d {
+                        let k = ra_idx.bytecode[i] as usize;
+                        if !touched_bytecode[i].contains(k) {
+                            touched_bytecode[i].insert(k);
                         }
-                        local_rd_inc[i][k] += add;
-                    }
-
-                    // RdIncMsb contributions (unreduced accumulation)
-                    if msb_d > 0 {
-                        let k = ra_idx.rd_inc_msb as usize;
-                        if !touched_rd_msb[0].contains(k) {
-                            touched_rd_msb[0].insert(k);
-                        }
-                        local_rd_msb[0][k] += add;
-                    }
-
-                    // RamIncRa contributions (unreduced accumulation)
-                    for i in 0..ram_inc_d {
-                        let k = ra_idx.ram_inc[i] as usize;
-                        if !touched_ram_inc[i].contains(k) {
-                            touched_ram_inc[i].insert(k);
-                        }
-                        local_ram_inc[i][k] += add;
-                    }
-
-                    // RamIncMsb contributions (unreduced accumulation)
-                    if msb_d > 0 {
-                        let k = ra_idx.ram_inc_msb as usize;
-                        if !touched_ram_msb[0].contains(k) {
-                            touched_ram_msb[0].insert(k);
-                        }
-                        local_ram_msb[0][k] += add;
+                        local_bytecode[i][k] += add;
                     }
                 }
 
@@ -570,10 +492,10 @@ fn compute_all_G_impl<F: JoltField>(
                         partial_instruction[i][k] += e_hi * reduced;
                     }
                 }
-                for i in 0..bytecode_d {
-                    for k in touched_bytecode[i].ones() {
-                        let reduced = F::reduce_mul_u64(local_bytecode[i][k]);
-                        partial_bytecode[i][k] += e_hi * reduced;
+                for i in 0..inc_d {
+                    for k in touched_inc[i].ones() {
+                        let reduced = F::reduce_mul_u64(local_inc[i][k]);
+                        partial_inc[i][k] += e_hi * reduced;
                     }
                 }
                 for i in 0..ram_d {
@@ -582,40 +504,24 @@ fn compute_all_G_impl<F: JoltField>(
                         partial_ram[i][k] += e_hi * reduced;
                     }
                 }
-                for i in 0..rd_inc_d {
-                    for k in touched_rd_inc[i].ones() {
-                        let reduced = F::reduce_mul_u64(local_rd_inc[i][k]);
-                        partial_rd_inc[i][k] += e_hi * reduced;
-                    }
-                }
-                for i in 0..msb_d {
-                    for k in touched_rd_msb[i].ones() {
-                        let reduced = F::reduce_mul_u64(local_rd_msb[i][k]);
-                        partial_rd_msb[i][k] += e_hi * reduced;
-                    }
-                }
-                for i in 0..ram_inc_d {
-                    for k in touched_ram_inc[i].ones() {
-                        let reduced = F::reduce_mul_u64(local_ram_inc[i][k]);
-                        partial_ram_inc[i][k] += e_hi * reduced;
-                    }
-                }
-                for i in 0..msb_d {
-                    for k in touched_ram_msb[i].ones() {
-                        let reduced = F::reduce_mul_u64(local_ram_msb[i][k]);
-                        partial_ram_msb[i][k] += e_hi * reduced;
+                for i in 0..bytecode_d {
+                    for k in touched_bytecode[i].ones() {
+                        let reduced = F::reduce_mul_u64(local_bytecode[i][k]);
+                        partial_bytecode[i][k] += e_hi * reduced;
                     }
                 }
             }
 
             let mut result: Vec<Vec<F>> = Vec::with_capacity(N);
             result.extend(partial_instruction);
-            result.extend(partial_bytecode);
-            result.extend(partial_ram);
-            result.extend(partial_rd_inc);
-            result.extend(partial_rd_msb);
-            result.extend(partial_ram_inc);
-            result.extend(partial_ram_msb);
+            if onehot_inc {
+                result.extend(partial_inc);
+                result.extend(partial_ram);
+                result.extend(partial_bytecode);
+            } else {
+                result.extend(partial_bytecode);
+                result.extend(partial_ram);
+            }
             result
         })
         .reduce(
@@ -664,6 +570,7 @@ pub struct SharedRaRound1<F: JoltField> {
     indices: Vec<RaIndices>,
     /// Number of polynomials
     num_polys: usize,
+    onehot_inc: bool,
     /// OneHotParams for index extraction
     #[allocative(skip)]
     one_hot_params: OneHotParams,
@@ -679,6 +586,7 @@ pub struct SharedRaRound2<F: JoltField> {
     /// RA indices for all cycles
     indices: Vec<RaIndices>,
     num_polys: usize,
+    onehot_inc: bool,
     #[allocative(skip)]
     one_hot_params: OneHotParams,
     binding_order: BindingOrder,
@@ -693,6 +601,7 @@ pub struct SharedRaRound3<F: JoltField> {
     tables_11: Vec<Vec<F>>,
     indices: Vec<RaIndices>,
     num_polys: usize,
+    onehot_inc: bool,
     #[allocative(skip)]
     one_hot_params: OneHotParams,
     binding_order: BindingOrder,
@@ -700,7 +609,12 @@ pub struct SharedRaRound3<F: JoltField> {
 
 impl<F: JoltField> SharedRaPolynomials<F> {
     /// Create new SharedRaPolynomials from eq table and indices.
-    pub fn new(tables: Vec<Vec<F>>, indices: Vec<RaIndices>, one_hot_params: OneHotParams) -> Self {
+    pub fn new(
+        tables: Vec<Vec<F>>,
+        indices: Vec<RaIndices>,
+        one_hot_params: OneHotParams,
+        onehot_inc: bool,
+    ) -> Self {
         let num_polys = tables.len();
         debug_assert!(
             num_polys
@@ -713,6 +627,7 @@ impl<F: JoltField> SharedRaPolynomials<F> {
             tables,
             indices,
             num_polys,
+            onehot_inc,
             one_hot_params,
         })
     }
@@ -788,7 +703,7 @@ impl<F: JoltField> SharedRaRound1<F> {
     #[inline]
     fn get_bound_coeff(&self, poly_idx: usize, j: usize) -> F {
         self.indices[j]
-            .get_index(poly_idx, &self.one_hot_params)
+            .get_index(poly_idx, &self.one_hot_params, self.onehot_inc)
             .map_or(F::zero(), |k| self.tables[poly_idx][k as usize])
     }
 
@@ -816,6 +731,7 @@ impl<F: JoltField> SharedRaRound1<F> {
             tables_1,
             indices: self.indices,
             num_polys: self.num_polys,
+            onehot_inc: self.onehot_inc,
             one_hot_params: self.one_hot_params,
             binding_order: order,
         }
@@ -829,19 +745,19 @@ impl<F: JoltField> SharedRaRound2<F> {
             BindingOrder::HighToLow => {
                 let mid = self.indices.len() / 2;
                 let h_0 = self.indices[j]
-                    .get_index(poly_idx, &self.one_hot_params)
+                    .get_index(poly_idx, &self.one_hot_params, self.onehot_inc)
                     .map_or(F::zero(), |k| self.tables_0[poly_idx][k as usize]);
                 let h_1 = self.indices[mid + j]
-                    .get_index(poly_idx, &self.one_hot_params)
+                    .get_index(poly_idx, &self.one_hot_params, self.onehot_inc)
                     .map_or(F::zero(), |k| self.tables_1[poly_idx][k as usize]);
                 h_0 + h_1
             }
             BindingOrder::LowToHigh => {
                 let h_0 = self.indices[2 * j]
-                    .get_index(poly_idx, &self.one_hot_params)
+                    .get_index(poly_idx, &self.one_hot_params, self.onehot_inc)
                     .map_or(F::zero(), |k| self.tables_0[poly_idx][k as usize]);
                 let h_1 = self.indices[2 * j + 1]
-                    .get_index(poly_idx, &self.one_hot_params)
+                    .get_index(poly_idx, &self.one_hot_params, self.onehot_inc)
                     .map_or(F::zero(), |k| self.tables_1[poly_idx][k as usize]);
                 h_0 + h_1
             }
@@ -897,6 +813,7 @@ impl<F: JoltField> SharedRaRound2<F> {
             tables_11,
             indices: self.indices,
             num_polys: self.num_polys,
+            onehot_inc: self.onehot_inc,
             one_hot_params: self.one_hot_params,
             binding_order: order,
         }
@@ -910,32 +827,32 @@ impl<F: JoltField> SharedRaRound3<F> {
             BindingOrder::HighToLow => {
                 let quarter = self.indices.len() / 4;
                 let h_00 = self.indices[j]
-                    .get_index(poly_idx, &self.one_hot_params)
+                    .get_index(poly_idx, &self.one_hot_params, self.onehot_inc)
                     .map_or(F::zero(), |k| self.tables_00[poly_idx][k as usize]);
                 let h_01 = self.indices[quarter + j]
-                    .get_index(poly_idx, &self.one_hot_params)
+                    .get_index(poly_idx, &self.one_hot_params, self.onehot_inc)
                     .map_or(F::zero(), |k| self.tables_01[poly_idx][k as usize]);
                 let h_10 = self.indices[2 * quarter + j]
-                    .get_index(poly_idx, &self.one_hot_params)
+                    .get_index(poly_idx, &self.one_hot_params, self.onehot_inc)
                     .map_or(F::zero(), |k| self.tables_10[poly_idx][k as usize]);
                 let h_11 = self.indices[3 * quarter + j]
-                    .get_index(poly_idx, &self.one_hot_params)
+                    .get_index(poly_idx, &self.one_hot_params, self.onehot_inc)
                     .map_or(F::zero(), |k| self.tables_11[poly_idx][k as usize]);
                 h_00 + h_01 + h_10 + h_11
             }
             BindingOrder::LowToHigh => {
                 // Bit pattern for offset: (r1, r0), so offset 1 = r0=1,r1=0 → F_10
                 let h_00 = self.indices[4 * j]
-                    .get_index(poly_idx, &self.one_hot_params)
+                    .get_index(poly_idx, &self.one_hot_params, self.onehot_inc)
                     .map_or(F::zero(), |k| self.tables_00[poly_idx][k as usize]);
                 let h_10 = self.indices[4 * j + 1]
-                    .get_index(poly_idx, &self.one_hot_params)
+                    .get_index(poly_idx, &self.one_hot_params, self.onehot_inc)
                     .map_or(F::zero(), |k| self.tables_10[poly_idx][k as usize]);
                 let h_01 = self.indices[4 * j + 2]
-                    .get_index(poly_idx, &self.one_hot_params)
+                    .get_index(poly_idx, &self.one_hot_params, self.onehot_inc)
                     .map_or(F::zero(), |k| self.tables_01[poly_idx][k as usize]);
                 let h_11 = self.indices[4 * j + 3]
-                    .get_index(poly_idx, &self.one_hot_params)
+                    .get_index(poly_idx, &self.one_hot_params, self.onehot_inc)
                     .map_or(F::zero(), |k| self.tables_11[poly_idx][k as usize]);
                 h_00 + h_10 + h_01 + h_11
             }
@@ -1007,6 +924,7 @@ impl<F: JoltField> SharedRaRound3<F> {
         let num_polys = self.num_polys;
         let indices = &self.indices;
         let one_hot_params = &self.one_hot_params;
+        let onehot_inc = self.onehot_inc;
         let new_len = indices.len() / 8;
 
         (0..num_polys)
@@ -1021,7 +939,7 @@ impl<F: JoltField> SharedRaRound3<F> {
                                 (0..8)
                                     .map(|offset| {
                                         indices[8 * j + offset]
-                                            .get_index(poly_idx, one_hot_params)
+                                            .get_index(poly_idx, one_hot_params, onehot_inc)
                                             .map_or(F::zero(), |k| {
                                                 table_groups[offset][poly_idx][k as usize]
                                             })
@@ -1038,7 +956,7 @@ impl<F: JoltField> SharedRaRound3<F> {
                                 (0..8)
                                     .map(|seg| {
                                         indices[seg * eighth + j]
-                                            .get_index(poly_idx, one_hot_params)
+                                            .get_index(poly_idx, one_hot_params, onehot_inc)
                                             .map_or(F::zero(), |k| {
                                                 table_groups[seg][poly_idx][k as usize]
                                             })
@@ -1098,12 +1016,8 @@ mod tests {
         for i in 0..one_hot_params.inc_onehot_d() {
             let expected = one_hot_params.inc_chunk(unsigned_zero_inc, i + 1);
             assert_eq!(
-                indices.rd_inc[i], expected,
-                "rd_inc chunk {i} should be populated for K=16"
-            );
-            assert_eq!(
-                indices.ram_inc[i], expected,
-                "ram_inc chunk {i} should be populated for K=16"
+                indices.unsigned_inc[i], expected,
+                "unsigned_inc chunk {i} should be populated for K=16"
             );
         }
     }

@@ -25,7 +25,11 @@ use crate::zkvm::bytecode::chunks::DEFAULT_COMMITTED_BYTECODE_CHUNK_COUNT;
 use crate::zkvm::bytecode::chunks::{
     committed_lanes, is_valid_committed_bytecode_chunking_for_len,
 };
+#[cfg(feature = "akita-pcs")]
+use crate::zkvm::claim_reductions::IncVirtualizationVerifier;
 use crate::zkvm::claim_reductions::RegistersClaimReductionSumcheckVerifier;
+#[cfg(feature = "akita-pcs")]
+use crate::zkvm::claim_reductions::UnsignedIncClaimReductionVerifier;
 use crate::zkvm::config::{OneHotConfig, OneHotParams, ProgramMode};
 use crate::zkvm::program::{CommittedProgramProverData, ProgramMetadata, ProgramPreprocessing};
 #[cfg(feature = "prover")]
@@ -35,7 +39,7 @@ use crate::zkvm::r1cs::constraints::{
     OUTER_FIRST_ROUND_POLY_NUM_COEFFS, OUTER_UNIVARIATE_SKIP_DOMAIN_SIZE,
     PRODUCT_VIRTUAL_FIRST_ROUND_POLY_NUM_COEFFS, PRODUCT_VIRTUAL_UNIVARIATE_SKIP_DOMAIN_SIZE,
 };
-use crate::zkvm::witness::all_committed_polynomials;
+use crate::zkvm::witness::{all_committed_polynomials, packed_main_committed_polynomials};
 use crate::zkvm::Serializable;
 use crate::zkvm::{
     bytecode::read_raf_checking::{
@@ -45,9 +49,9 @@ use crate::zkvm::{
     claim_reductions::{
         AdviceClaimReductionVerifier, AdviceKind, BytecodeClaimReductionParams,
         BytecodeClaimReductionVerifier, HammingWeightClaimReductionVerifier,
-        IncClaimReductionSumcheckVerifier, InstructionLookupsClaimReductionSumcheckVerifier,
-        PrecommittedClaimReduction, PrecommittedParams, ProgramImageClaimReductionParams,
-        ProgramImageClaimReductionVerifier, RamRaClaimReductionSumcheckVerifier,
+        InstructionLookupsClaimReductionSumcheckVerifier, PrecommittedClaimReduction,
+        PrecommittedParams, ProgramImageClaimReductionParams, ProgramImageClaimReductionVerifier,
+        RamRaClaimReductionSumcheckVerifier,
     },
     compute_final_opening_point, fiat_shamir_preamble,
     instruction_lookups::{
@@ -97,6 +101,9 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
+
+#[cfg(not(feature = "akita-pcs"))]
+use crate::zkvm::claim_reductions::IncClaimReductionSumcheckVerifier;
 
 #[cfg(feature = "zk")]
 struct StageVerifyResult<F: JoltField> {
@@ -464,6 +471,11 @@ impl<
             self.transcript
                 .append_serializable(b"commitment", commitment);
         }
+        #[cfg(feature = "akita-pcs")]
+        if let Some(ref unsigned_inc_msb_commitment) = self.proof.unsigned_inc_msb_commitment {
+            self.transcript
+                .append_serializable(b"unsigned_inc_msb", unsigned_inc_msb_commitment);
+        }
         // Append untrusted advice commitment to transcript
         if let Some(ref untrusted_advice_commitment) = self.proof.untrusted_advice_commitment {
             self.transcript
@@ -503,6 +515,10 @@ impl<
         let stage5_result = self.verify_stage5().inspect_err(|e| {
             tracing::error!("Stage 5: {e}");
         })?;
+        #[cfg(feature = "akita-pcs")]
+        let stage5_inc_result = self.verify_stage5_inc().inspect_err(|e| {
+            tracing::error!("Stage 5i: {e}");
+        })?;
         let (stage6a_result, stage6b_result) = self.verify_stage6().inspect_err(|e| {
             tracing::error!("Stage 6: {e}");
         })?;
@@ -522,6 +538,8 @@ impl<
                     stage3_result.challenges.clone(),
                     stage4_result.challenges.clone(),
                     stage5_result.challenges.clone(),
+                    #[cfg(feature = "akita-pcs")]
+                    stage5_inc_result.challenges.clone(),
                     stage6a_result.challenges.clone(),
                     stage6b_result.challenges.clone(),
                     stage7_result.challenges.clone(),
@@ -534,6 +552,8 @@ impl<
                     stage3_result.batched_output_constraint,
                     stage4_result.batched_output_constraint,
                     stage5_result.batched_output_constraint,
+                    #[cfg(feature = "akita-pcs")]
+                    stage5_inc_result.batched_output_constraint,
                     stage6a_result.batched_output_constraint,
                     stage6b_result.batched_output_constraint,
                     stage7_result.batched_output_constraint,
@@ -545,6 +565,8 @@ impl<
                     stage3_result.batched_input_constraint.clone(),
                     stage4_result.batched_input_constraint.clone(),
                     stage5_result.batched_input_constraint.clone(),
+                    #[cfg(feature = "akita-pcs")]
+                    stage5_inc_result.batched_input_constraint.clone(),
                     stage6a_result.batched_input_constraint.clone(),
                     stage6b_result.batched_input_constraint.clone(),
                     stage7_result.batched_input_constraint.clone(),
@@ -560,6 +582,8 @@ impl<
                     stage3_result.input_constraint_challenge_values.clone(),
                     stage4_result.input_constraint_challenge_values.clone(),
                     stage5_result.input_constraint_challenge_values.clone(),
+                    #[cfg(feature = "akita-pcs")]
+                    stage5_inc_result.input_constraint_challenge_values.clone(),
                     stage6a_result.input_constraint_challenge_values.clone(),
                     stage6b_result.input_constraint_challenge_values.clone(),
                     stage7_result.input_constraint_challenge_values.clone(),
@@ -571,6 +595,8 @@ impl<
                     stage3_result.output_constraint_challenge_values.clone(),
                     stage4_result.output_constraint_challenge_values.clone(),
                     stage5_result.output_constraint_challenge_values.clone(),
+                    #[cfg(feature = "akita-pcs")]
+                    stage5_inc_result.output_constraint_challenge_values.clone(),
                     stage6a_result.output_constraint_challenge_values.clone(),
                     stage6b_result.output_constraint_challenge_values.clone(),
                     stage7_result.output_constraint_challenge_values.clone(),
@@ -582,6 +608,8 @@ impl<
                 oc_blocks.extend(stage3_result.oc_block_ids);
                 oc_blocks.extend(stage4_result.oc_block_ids);
                 oc_blocks.extend(stage5_result.oc_block_ids);
+                #[cfg(feature = "akita-pcs")]
+                oc_blocks.extend(stage5_inc_result.oc_block_ids);
                 oc_blocks.extend(stage6a_result.oc_block_ids);
                 oc_blocks.extend(stage6b_result.oc_block_ids);
                 oc_blocks.extend(stage7_result.oc_block_ids);
@@ -1028,6 +1056,7 @@ impl<
             &self.opening_accumulator,
             &mut self.transcript,
         );
+        #[cfg(not(feature = "akita-pcs"))]
         let ram_ra_reduction = RamRaClaimReductionSumcheckVerifier::new(
             self.proof.trace_length,
             &self.one_hot_params,
@@ -1037,13 +1066,12 @@ impl<
         let registers_val_evaluation =
             RegistersValEvaluationSumcheckVerifier::new(&self.opening_accumulator);
 
-        let instances: Vec<
+        let mut instances: Vec<
             &dyn SumcheckInstanceVerifier<F, ProofTranscript, VerifierOpeningAccumulator<F>>,
-        > = vec![
-            &lookups_read_raf,
-            &ram_ra_reduction,
-            &registers_val_evaluation,
-        ];
+        > = vec![&lookups_read_raf];
+        #[cfg(not(feature = "akita-pcs"))]
+        instances.push(&ram_ra_reduction);
+        instances.push(&registers_val_evaluation);
 
         let (batching_coefficients, r_stage5) = BatchedSumcheck::verify(
             &self.proof.stage5_sumcheck_proof,
@@ -1088,6 +1116,36 @@ impl<
         #[cfg(not(feature = "zk"))]
         Ok(StageVerifyResult {
             challenges: r_stage5,
+        })
+    }
+
+    #[cfg(feature = "akita-pcs")]
+    fn verify_stage5_inc(&mut self) -> Result<StageVerifyResult<F>, ProofVerifyError> {
+        let ram_ra_reduction = RamRaClaimReductionSumcheckVerifier::new(
+            self.proof.trace_length,
+            &self.one_hot_params,
+            &self.opening_accumulator,
+            &mut self.transcript,
+        );
+        let inc_virtualization = IncVirtualizationVerifier::new(
+            self.proof.trace_length,
+            &self.opening_accumulator,
+            &mut self.transcript,
+        );
+        let instances: Vec<
+            &dyn SumcheckInstanceVerifier<F, ProofTranscript, VerifierOpeningAccumulator<F>>,
+        > = vec![&ram_ra_reduction, &inc_virtualization];
+
+        let (_batching_coefficients, r_stage5_inc) = BatchedSumcheck::verify(
+            &self.proof.stage5_inc_sumcheck_proof,
+            instances,
+            &mut self.opening_accumulator,
+            &mut self.transcript,
+        )
+        .inspect_err(|err| tracing::error!("Stage 5i: {err}"))?;
+
+        Ok(StageVerifyResult {
+            challenges: r_stage5_inc,
         })
     }
 
@@ -1202,11 +1260,17 @@ impl<
             &self.opening_accumulator,
             &mut self.transcript,
         );
+        #[cfg(not(feature = "akita-pcs"))]
         let inc_reduction = IncClaimReductionSumcheckVerifier::new(
             self.proof.trace_length,
             &self.opening_accumulator,
             &mut self.transcript,
             PCS::uses_onehot_inc(),
+        );
+        #[cfg(feature = "akita-pcs")]
+        let unsigned_inc_reduction = UnsignedIncClaimReductionVerifier::new(
+            self.proof.trace_length,
+            &self.opening_accumulator,
         );
 
         let main_total_vars = self.proof.trace_length.log_2() + self.one_hot_params.log_k_chunk;
@@ -1283,8 +1347,11 @@ impl<
             &ram_hamming_booleanity,
             &ram_ra_virtual,
             &lookups_ra_virtual,
-            &inc_reduction,
         ];
+        #[cfg(not(feature = "akita-pcs"))]
+        instances.push(&inc_reduction);
+        #[cfg(feature = "akita-pcs")]
+        instances.push(&unsigned_inc_reduction);
         if let Some(ref advice) = self.advice_reduction_verifier_trusted {
             instances.push(advice);
         }
@@ -1798,11 +1865,11 @@ impl<
         if PCS::uses_onehot_inc() {
             for i in 0..self.one_hot_params.inc_onehot_d() {
                 let (point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
-                    CommittedPolynomial::RdIncRa(i),
+                    CommittedPolynomial::UnsignedIncChunk(i),
                     SumcheckId::HammingWeightClaimReduction,
                 );
                 record_opening(
-                    CommittedPolynomial::RdIncRa(i),
+                    CommittedPolynomial::UnsignedIncChunk(i),
                     point,
                     claim,
                     F::one(),
@@ -1810,28 +1877,16 @@ impl<
                 );
             }
             let (point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
-                CommittedPolynomial::RdIncMsb,
-                SumcheckId::HammingWeightClaimReduction,
+                CommittedPolynomial::UnsignedIncMsb,
+                SumcheckId::Booleanity,
             );
-            record_opening(CommittedPolynomial::RdIncMsb, point, claim, F::one(), None);
-            for i in 0..self.one_hot_params.inc_onehot_d() {
-                let (point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
-                    CommittedPolynomial::RamIncRa(i),
-                    SumcheckId::HammingWeightClaimReduction,
-                );
-                record_opening(
-                    CommittedPolynomial::RamIncRa(i),
-                    point,
-                    claim,
-                    F::one(),
-                    None,
-                );
-            }
-            let (point, claim) = self.opening_accumulator.get_committed_polynomial_opening(
-                CommittedPolynomial::RamIncMsb,
-                SumcheckId::HammingWeightClaimReduction,
+            record_opening(
+                CommittedPolynomial::UnsignedIncMsb,
+                point,
+                claim,
+                F::one(),
+                Some(self.proof.trace_length.log_2()),
             );
-            record_opening(CommittedPolynomial::RamIncMsb, point, claim, F::one(), None);
         } else {
             // Dense polynomials: RamInc and RdInc (from IncClaimReduction in Stage 6)
             let (ram_inc_point, ram_inc_claim) =
@@ -2013,7 +2068,9 @@ impl<
                 .drain(..)
                 .collect::<HashMap<CommittedPolynomial, F>>();
             let mut sorted_claims = Vec::new();
-            for poly in all_committed_polynomials(&self.one_hot_params, PCS::uses_onehot_inc()) {
+            for poly in
+                packed_main_committed_polynomials(&self.one_hot_params, PCS::uses_onehot_inc())
+            {
                 let claim = claim_map
                     .remove(&poly)
                     .ok_or(ProofVerifyError::InvalidOpeningProof)?;
@@ -2100,8 +2157,17 @@ impl<
                 .first()
                 .ok_or(ProofVerifyError::InvalidOpeningProof)?
                 .clone();
-            for polynomial in expected_polynomials {
+            for polynomial in
+                packed_main_committed_polynomials(&self.one_hot_params, PCS::uses_onehot_inc())
+            {
                 commitments_map.insert(polynomial, packed_commitment.clone());
+            }
+            #[cfg(feature = "akita-pcs")]
+            if let Some(ref unsigned_inc_msb_commitment) = self.proof.unsigned_inc_msb_commitment {
+                commitments_map.insert(
+                    CommittedPolynomial::UnsignedIncMsb,
+                    unsigned_inc_msb_commitment.clone(),
+                );
             }
         } else if expected_polynomials.len() != self.proof.commitments.len() {
             return Err(ProofVerifyError::InvalidInputLength(
