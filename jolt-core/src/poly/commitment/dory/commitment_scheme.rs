@@ -166,6 +166,10 @@ impl CommitmentScheme for DoryCommitmentScheme {
         Some(*config)
     }
 
+    fn supports_committed_program() -> bool {
+        true
+    }
+
     fn commit(
         poly: &MultilinearPolynomial<ark_bn254::Fr>,
         setup: &Self::ProverSetup,

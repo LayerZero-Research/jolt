@@ -135,7 +135,7 @@ pub trait CommitmentScheme: Clone + Sync + Send + 'static {
     }
 
     fn supports_committed_program() -> bool {
-        true
+        false
     }
 
     fn prove_batch_opening<ProofTranscript: Transcript>(
