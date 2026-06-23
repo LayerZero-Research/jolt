@@ -142,13 +142,17 @@ pub fn master_benchmark(
         let guest_name = format!("{bench_name}-guest");
         // Generate input and run benchmark
         let input = input_fn(bench_target);
-        let (duration, proof_size, proof_size_comp, trace_length) = prove_example_with_trace(
-            &guest_name,
-            input,
-            max_trace_length,
-            bench_name,
-            bench_scale,
-        );
+        let (duration, proof_size, dory_compression_estimate, trace_length) =
+            prove_example_with_trace(
+                &guest_name,
+                input,
+                max_trace_length,
+                bench_name,
+                bench_scale,
+            );
+        let dory_compression_estimate = dory_compression_estimate
+            .map(|size| size.to_string())
+            .unwrap_or_default();
 
         let proving_hz = trace_length as f64 / duration.as_secs_f64();
         let padded_proving_hz = trace_length.next_power_of_two() as f64 / duration.as_secs_f64();
@@ -170,7 +174,7 @@ pub fn master_benchmark(
             trace_length.next_power_of_two(),
             padded_proving_hz,
             proof_size,
-            proof_size_comp
+            dory_compression_estimate
         );
 
         // Write individual result file for resume detection
@@ -253,7 +257,7 @@ fn prove_example_with_trace(
     max_trace_length: usize,
     _bench_name: &str,
     _scale: usize,
-) -> (std::time::Duration, usize, usize, usize) {
+) -> (std::time::Duration, usize, Option<usize>, usize) {
     let mut program = host::Program::new(example_name);
     let (bytecode, init_memory_state, _, e_entry) = program.decode();
     let (_, trace, _, program_io) = program.trace(&serialized_input, &[], &[]);
@@ -292,27 +296,30 @@ fn prove_example_with_trace(
     drop(span);
     let proof_size = jolt_proof.serialized_size(ark_serialize::Compress::Yes);
 
-    // Stage 8: Dory opening proof (curve points - benefits from compression)
-    let stage8_size_compressed = jolt_proof
-        .joint_opening_proof
-        .serialized_size(ark_serialize::Compress::Yes);
-    let stage8_size_uncompressed = jolt_proof
-        .joint_opening_proof
-        .serialized_size(ark_serialize::Compress::No);
+    #[cfg(feature = "dory-pcs")]
+    let dory_compression_estimate = {
+        let stage8_size_compressed = jolt_proof
+            .joint_opening_proof
+            .serialized_size(ark_serialize::Compress::Yes);
+        let stage8_size_uncompressed = jolt_proof
+            .joint_opening_proof
+            .serialized_size(ark_serialize::Compress::No);
+        let commitments_size_compressed = jolt_proof
+            .commitments
+            .serialized_size(ark_serialize::Compress::Yes);
+        let commitments_size_uncompressed = jolt_proof
+            .commitments
+            .serialized_size(ark_serialize::Compress::No);
 
-    // Commitments (curve points - benefits from compression)
-    let commitments_size_compressed = jolt_proof
-        .commitments
-        .serialized_size(ark_serialize::Compress::Yes);
-    let commitments_size_uncompressed = jolt_proof
-        .commitments
-        .serialized_size(ark_serialize::Compress::No);
+        Some(
+            proof_size - stage8_size_compressed + (stage8_size_uncompressed / 3)
+                - commitments_size_compressed
+                + (commitments_size_uncompressed / 3),
+        )
+    };
 
-    // Estimate proof size with full Dory compression (assuming ~3x compression ratio)
-    let proof_size_full_compressed = proof_size - stage8_size_compressed
-        + (stage8_size_uncompressed / 3)
-        - commitments_size_compressed
-        + (commitments_size_uncompressed / 3);
+    #[cfg(not(feature = "dory-pcs"))]
+    let dory_compression_estimate = None;
 
     let verifier_preprocessing = JoltVerifierPreprocessing::from(&preprocessing);
     let verifier =
@@ -323,7 +330,7 @@ fn prove_example_with_trace(
     (
         prove_duration,
         proof_size,
-        proof_size_full_compressed,
+        dory_compression_estimate,
         trace.len(),
     )
 }

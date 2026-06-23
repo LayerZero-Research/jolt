@@ -60,6 +60,36 @@ jobs:
         run: cargo clippy -p jolt-verifier --all-targets --features core-fixtures
       - name: cargo clippy -p jolt-verifier --features core-fixtures,zk
         run: cargo clippy -p jolt-verifier --all-targets --features core-fixtures,zk
+      # The field-inline feature is not enabled by host/zk/default, so the
+      # workspace-wide invocations above never build it. Lint the crates that
+      # define it explicitly so the feature keeps compiling.
+      - name: cargo clippy --features field-inline
+        run: >
+          cargo clippy
+          -q
+          --message-format=short
+          -p jolt-claims
+          -p jolt-r1cs
+          -p jolt-verifier
+          -p tracer
+          -p jolt-program
+          -p jolt-riscv
+          -p jolt-lookup-tables
+          --all-targets
+          --features field-inline
+          --
+          -D warnings
+      - name: cargo clippy -p jolt-core -p jolt-sdk --features host,field-inline
+        run: >
+          cargo clippy
+          -q
+          --message-format=short
+          -p jolt-core
+          -p jolt-sdk
+          --all-targets
+          --features host,field-inline
+          --
+          -D warnings
 
   machete:
     runs-on: ubuntu-latest
@@ -172,6 +202,10 @@ jobs:
         working-directory: ./sample_project
         run: cargo run --release
 
+      - name: Make sure the generated code runs with field-inline
+        working-directory: ./sample_project
+        run: cargo run --release -q --message-format=short --features field-inline
+
   test-wasm-verify:
     name: WASM Verifier E2E
     runs-on: ubuntu-latest
@@ -255,6 +289,15 @@ jobs:
             fi
             cargo nextest run -p "$pkg" "${features[@]}" --no-tests=pass
           done
+      - name: Test lookup table core ABI
+        run: cargo nextest run -p jolt-lookup-tables --features core-abi-tests --test core_lookup_table_abi --cargo-quiet
+      - name: Test crates with field-inline
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo nextest run -p jolt-claims -p jolt-r1cs -p jolt-verifier \
+            -p jolt-program -p jolt-riscv -p jolt-lookup-tables \
+            --features field-inline --no-tests=pass --cargo-quiet
 
   test-inlines:
     name: Test inlines
@@ -311,7 +354,9 @@ jobs:
       - name: Install nextest
         uses: taiki-e/install-action@nextest
       - name: Run tracer tests
-        run: cargo nextest run --release -p tracer --features test-utils
+        run: cargo nextest run --release -p tracer --features test-utils --cargo-quiet
+      - name: Run tracer tests with field-inline
+        run: cargo nextest run --release -p tracer --features test-utils,field-inline --cargo-quiet
 
   zklean-extractor-tests:
     name: ZkLean extractor tests

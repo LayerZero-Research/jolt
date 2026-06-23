@@ -535,6 +535,9 @@ edition = "2021"
 [workspace]
 members = ["guest"]
 
+[features]
+field-inline = ["jolt-sdk/field-inline", "guest/field-inline"]
+
 [profile.release]
 debug = 1
 codegen-units = 1
@@ -588,6 +591,9 @@ edition = "2021"
 
 [workspace]
 members = ["guest"]
+
+[features]
+field-inline = ["jolt-sdk/field-inline", "guest/field-inline"]
 
 [profile.release]
 debug = 1
@@ -647,6 +653,7 @@ edition = "2021"
 
 [features]
 guest = []
+field-inline = ["jolt/field-inline"]
 
 [dependencies]
 jolt = { package = "jolt-sdk", git = "https://github.com/a16z/jolt" }
@@ -659,6 +666,7 @@ edition = "2021"
 
 [features]
 guest = []
+field-inline = ["jolt/field-inline"]
 
 [dependencies]
 jolt = { package = "jolt-sdk", git = "https://github.com/a16z/jolt" }
