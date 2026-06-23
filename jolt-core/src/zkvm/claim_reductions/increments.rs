@@ -84,6 +84,7 @@ pub struct IncClaimReductionSumcheckParams<F: JoltField> {
     pub r_cycle_stage4: OpeningPoint<BIG_ENDIAN, F>, // RamInc from RamValCheck
     pub s_cycle_stage4: OpeningPoint<BIG_ENDIAN, F>, // RdInc from RegistersReadWriteChecking
     pub s_cycle_stage5: OpeningPoint<BIG_ENDIAN, F>, // RdInc from RegistersValEvaluation
+    pub onehot_inc: bool,
 }
 
 impl<F: JoltField> IncClaimReductionSumcheckParams<F> {
@@ -91,6 +92,7 @@ impl<F: JoltField> IncClaimReductionSumcheckParams<F> {
         trace_len: usize,
         accumulator: &dyn OpeningAccumulator<F>,
         transcript: &mut impl Transcript,
+        onehot_inc: bool,
     ) -> Self {
         let gamma: F = transcript.challenge_scalar();
         let gamma_sqr = gamma.square();
@@ -120,6 +122,7 @@ impl<F: JoltField> IncClaimReductionSumcheckParams<F> {
             r_cycle_stage4,
             s_cycle_stage4,
             s_cycle_stage5,
+            onehot_inc,
         }
     }
 }
@@ -680,8 +683,10 @@ impl<F: JoltField> IncClaimReductionSumcheckVerifier<F> {
         trace_len: usize,
         accumulator: &A,
         transcript: &mut impl Transcript,
+        onehot_inc: bool,
     ) -> Self {
-        let params = IncClaimReductionSumcheckParams::new(trace_len, accumulator, transcript);
+        let params =
+            IncClaimReductionSumcheckParams::new(trace_len, accumulator, transcript, onehot_inc);
         Self { params }
     }
 }

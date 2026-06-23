@@ -10,7 +10,7 @@ use crate::{
     curve::JoltCurve,
     field::JoltField,
     poly::commitment::commitment_scheme::{
-        CommitmentScheme, StreamingCommitmentScheme, ZkEvalCommitment,
+        CommitmentScheme, PolynomialBatchSource, StreamingCommitmentScheme, ZkEvalCommitment,
     },
     poly::multilinear_polynomial::MultilinearPolynomial,
     transcripts::Transcript,
@@ -117,12 +117,14 @@ pub fn bind_opening_inputs_zk<F: JoltField, C: JoltCurve<F = F>, ProofTranscript
 
 impl CommitmentScheme for DoryCommitmentScheme {
     type Field = ark_bn254::Fr;
+    type Config = super::DoryLayout;
     type ProverSetup = ArkworksProverSetup;
     type VerifierSetup = ArkworksVerifierSetup;
     type Commitment = ArkGT;
     type Proof = ArkDoryProof;
     type BatchedProof = Vec<ArkDoryProof>;
     type OpeningProofHint = DoryOpeningProofHint;
+    type BatchOpeningHint = Vec<DoryOpeningProofHint>;
 
     fn setup_prover(max_num_vars: usize) -> Self::ProverSetup {
         let _span = trace_span!("DoryCommitmentScheme::setup_prover").entered();
@@ -147,6 +149,25 @@ impl CommitmentScheme for DoryCommitmentScheme {
     fn setup_verifier(setup: &Self::ProverSetup) -> Self::VerifierSetup {
         let _span = trace_span!("DoryCommitmentScheme::setup_verifier").entered();
         setup.to_verifier_setup()
+    }
+
+    fn active_config() -> Self::Config {
+        DoryGlobals::get_layout()
+    }
+
+    fn append_pcs_config_to_transcript<ProofTranscript: Transcript>(
+        config: &Self::Config,
+        transcript: &mut ProofTranscript,
+    ) {
+        transcript.append_u64(b"dory_layout", *config as u64);
+    }
+
+    fn dory_layout(config: &Self::Config) -> Option<super::DoryLayout> {
+        Some(*config)
+    }
+
+    fn supports_committed_program() -> bool {
+        true
     }
 
     fn commit(
@@ -179,19 +200,24 @@ impl CommitmentScheme for DoryCommitmentScheme {
         )
     }
 
-    fn batch_commit<U>(
-        polys: &[U],
+    fn batch_commit<S>(
+        source: &S,
         gens: &Self::ProverSetup,
-    ) -> Vec<(Self::Commitment, Self::OpeningProofHint)>
+    ) -> (Vec<Self::Commitment>, Self::BatchOpeningHint)
     where
-        U: std::borrow::Borrow<MultilinearPolynomial<ark_bn254::Fr>> + Sync,
+        S: PolynomialBatchSource<ark_bn254::Fr>,
     {
         let _span = trace_span!("DoryCommitmentScheme::batch_commit").entered();
 
-        polys
-            .par_iter()
-            .map(|poly| Self::commit(poly.borrow(), gens))
-            .collect()
+        (0..source.num_polys())
+            .into_par_iter()
+            .map(|idx| {
+                let poly = source
+                    .get_poly(idx)
+                    .expect("Dory batch_commit requires materialized polynomials");
+                Self::commit(poly, gens)
+            })
+            .unzip()
     }
 
     fn prove<ProofTranscript: Transcript>(
@@ -295,6 +321,10 @@ impl CommitmentScheme for DoryCommitmentScheme {
 
     fn protocol_name() -> &'static [u8] {
         b"Dory"
+    }
+
+    fn split_batch_hint(batch_hint: &Self::BatchOpeningHint) -> Vec<Self::OpeningProofHint> {
+        batch_hint.clone()
     }
 
     /// In Dory, the opening proof hint consists of the Pedersen commitments to the rows
@@ -472,6 +502,10 @@ impl StreamingCommitmentScheme for DoryCommitmentScheme {
                 DoryOpeningProofHint::new(row_commitments, commit_blind),
             )
         }
+    }
+
+    fn streaming_batch_hint(hints: Vec<Self::OpeningProofHint>) -> Self::BatchOpeningHint {
+        hints
     }
 }
 

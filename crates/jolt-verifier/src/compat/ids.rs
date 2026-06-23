@@ -126,6 +126,10 @@ impl TryFrom<u8> for SumcheckId {
 pub enum CommittedPolynomial {
     RdInc,
     RamInc,
+    RdIncRa(usize),
+    RdIncMsb,
+    RamIncRa(usize),
+    RamIncMsb,
     InstructionRa(usize),
     BytecodeRa(usize),
     BytecodeChunk(usize),

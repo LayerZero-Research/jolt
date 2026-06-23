@@ -19,7 +19,7 @@ pub mod shift;
 
 pub fn verify_stage1_uni_skip<
     F: JoltField,
-    C: JoltCurve<F = F>,
+    C: JoltCurve,
     T: Transcript,
     A: AbstractVerifierOpeningAccumulator<F>,
 >(
@@ -48,7 +48,7 @@ pub fn verify_stage1_uni_skip<
 
 pub fn verify_stage2_uni_skip<
     F: JoltField,
-    C: JoltCurve<F = F>,
+    C: JoltCurve,
     T: Transcript,
     A: AbstractVerifierOpeningAccumulator<F>,
 >(

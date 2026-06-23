@@ -52,7 +52,7 @@ jobs:
       - name: cargo clippy --features allocative,host,zk
         run: cargo clippy --all --all-targets --features allocative,host,zk
       - name: cargo clippy --no-default-features
-        run: cargo clippy --all --all-targets --no-default-features
+        run: cargo clippy --all --all-targets --no-default-features --features dory-pcs
       # jolt-verifier's core-fixtures feature gates the jolt-core compat layer
       # (exhaustive enum mappings); it is not enabled by the workspace-wide
       # invocations above, so build it explicitly in both modes.
@@ -191,10 +191,11 @@ jobs:
       - name: Pin jolt-sdk to current commit in Cargo.toml files
         run: |
           COMMIT_HASH=$(git rev-parse HEAD)
+          REPO_URL="https://github.com/${{ github.repository }}"
           # Pin jolt-sdk in the host Cargo.toml
-          sed -i 's|jolt-sdk = { git = "https://github.com/a16z/jolt", features = \["host"\] }|jolt-sdk = { git = "https://github.com/a16z/jolt", rev = "'$COMMIT_HASH'", features = ["host"] }|' sample_project/Cargo.toml
+          sed -i 's|jolt-sdk = { git = "https://github.com/a16z/jolt", features = \["host"\] }|jolt-sdk = { git = "'$REPO_URL'", rev = "'$COMMIT_HASH'", features = ["host"] }|' sample_project/Cargo.toml
           # Pin jolt-sdk in the guest Cargo.toml
-          sed -i 's|jolt = { package = "jolt-sdk", git = "https://github.com/a16z/jolt" }|jolt = { package = "jolt-sdk", git = "https://github.com/a16z/jolt", rev = "'$COMMIT_HASH'" }|' sample_project/guest/Cargo.toml
+          sed -i 's|jolt = { package = "jolt-sdk", git = "https://github.com/a16z/jolt" }|jolt = { package = "jolt-sdk", git = "'$REPO_URL'", rev = "'$COMMIT_HASH'" }|' sample_project/guest/Cargo.toml
 
       - name: Make sure the generated code runs
         working-directory: ./sample_project
@@ -236,8 +237,9 @@ jobs:
       - name: Pin jolt-sdk to current commit
         run: |
           COMMIT_HASH=$(git rev-parse HEAD)
-          sed -i 's|jolt-sdk = { git = "https://github.com/a16z/jolt", features = \["host"\] }|jolt-sdk = { git = "https://github.com/a16z/jolt", rev = "'$COMMIT_HASH'", features = ["host"] }|' sample_project/Cargo.toml
-          sed -i 's|jolt = { package = "jolt-sdk", git = "https://github.com/a16z/jolt" }|jolt = { package = "jolt-sdk", git = "https://github.com/a16z/jolt", rev = "'$COMMIT_HASH'" }|' sample_project/guest/Cargo.toml
+          REPO_URL="https://github.com/${{ github.repository }}"
+          sed -i 's|jolt-sdk = { git = "https://github.com/a16z/jolt", features = \["host"\] }|jolt-sdk = { git = "'$REPO_URL'", rev = "'$COMMIT_HASH'", features = ["host"] }|' sample_project/Cargo.toml
+          sed -i 's|jolt = { package = "jolt-sdk", git = "https://github.com/a16z/jolt" }|jolt = { package = "jolt-sdk", git = "'$REPO_URL'", rev = "'$COMMIT_HASH'" }|' sample_project/guest/Cargo.toml
 
       - name: Set up prover and verifier scripts
         run: |

@@ -1,5 +1,5 @@
 use super::program::Program;
-use crate::curve::{Bn254Curve, JoltCurve};
+use crate::curve::{Bn254Curve, ZkCompatibleCurve};
 use crate::field::JoltField;
 use crate::poly::commitment::commitment_scheme::CommitmentScheme;
 use crate::poly::commitment::commitment_scheme::{StreamingCommitmentScheme, ZkEvalCommitment};
@@ -39,7 +39,7 @@ pub fn preprocess(
 #[cfg(feature = "prover")]
 pub fn prove<
     F: JoltField,
-    C: JoltCurve<F = F>,
+    C: ZkCompatibleCurve<F>,
     PCS: StreamingCommitmentScheme<Field = F> + ZkEvalCommitment<C>,
     FS: Transcript,
 >(

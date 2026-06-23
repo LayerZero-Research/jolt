@@ -1,4 +1,4 @@
-use crate::curve::{Bn254Curve, JoltCurve};
+use crate::curve::{Bn254Curve, ZkCompatibleCurve};
 use crate::field::JoltField;
 use crate::poly::commitment::commitment_scheme::CommitmentScheme;
 use crate::poly::commitment::commitment_scheme::{StreamingCommitmentScheme, ZkEvalCommitment};
@@ -53,7 +53,7 @@ fn preprocess_shared(
 
 pub fn verify<
     F: JoltField,
-    C: JoltCurve<F = F>,
+    C: ZkCompatibleCurve<F>,
     PCS: StreamingCommitmentScheme<Field = F> + ZkEvalCommitment<C>,
     FS: Transcript,
 >(

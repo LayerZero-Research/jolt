@@ -5,6 +5,7 @@ use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 
 use crate::{
     field::JoltField,
+    poly::commitment::commitment_scheme::PolynomialBatchSource,
     poly::multilinear_polynomial::MultilinearPolynomial,
     transcripts::Transcript,
     utils::{errors::ProofVerifyError, small_scalar::SmallScalar},
@@ -32,12 +33,14 @@ where
     F: JoltField,
 {
     type Field = F;
+    type Config = ();
     type ProverSetup = ();
     type VerifierSetup = ();
     type Commitment = MockCommitment<F>;
     type Proof = MockProof<F>;
     type BatchedProof = MockProof<F>;
     type OpeningProofHint = ();
+    type BatchOpeningHint = Vec<()>;
 
     fn setup_prover(_num_vars: usize) -> Self::ProverSetup {}
 
@@ -51,16 +54,20 @@ where
     }
 
     fn batch_commit<P>(
-        polys: &[P],
+        source: &P,
         gens: &Self::ProverSetup,
-    ) -> Vec<(Self::Commitment, Self::OpeningProofHint)>
+    ) -> (Vec<Self::Commitment>, Self::BatchOpeningHint)
     where
-        P: Borrow<MultilinearPolynomial<Self::Field>>,
+        P: PolynomialBatchSource<Self::Field>,
     {
-        polys
-            .iter()
-            .map(|poly| (Self::commit(poly.borrow(), gens).0, ()))
-            .collect()
+        (0..source.num_polys())
+            .map(|idx| {
+                let poly = source
+                    .get_poly(idx)
+                    .expect("mock batch_commit requires materialized polynomials");
+                Self::commit(poly, gens)
+            })
+            .unzip()
     }
 
     fn combine_commitments<C: Borrow<Self::Commitment>>(
@@ -106,6 +113,10 @@ where
     fn protocol_name() -> &'static [u8] {
         b"mock_commit"
     }
+
+    fn split_batch_hint(batch_hint: &Self::BatchOpeningHint) -> Vec<Self::OpeningProofHint> {
+        batch_hint.clone()
+    }
 }
 
 impl<F> super::commitment_scheme::StreamingCommitmentScheme for MockCommitScheme<F>
@@ -130,5 +141,9 @@ where
         _tier1_commitments: &[Self::ChunkState],
     ) -> (Self::Commitment, Self::OpeningProofHint) {
         (MockCommitment::default(), ())
+    }
+
+    fn streaming_batch_hint(hints: Vec<Self::OpeningProofHint>) -> Self::BatchOpeningHint {
+        hints
     }
 }

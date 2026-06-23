@@ -366,10 +366,12 @@ impl<F: JoltField, C: OneHotCoeff<F>> CycleMajorMatrixEntry<F> for RegistersCycl
                     OneHotCoeff::evals(Some(&even.wa_coeff), Some(&odd.wa_coeff), wa_lookup_table);
                 let val_evals = [even.val_coeff, odd.val_coeff - even.val_coeff];
                 [
-                    ra_evals[0].mul_to_product(val_evals[0])
-                        + wa_evals[0].mul_to_product(val_evals[0] + inc_evals[0]),
-                    ra_evals[1].mul_to_product(val_evals[1])
-                        + wa_evals[1].mul_to_product(val_evals[1] + inc_evals[1]),
+                    F::one().mul_to_product(
+                        ra_evals[0] * val_evals[0] + wa_evals[0] * (val_evals[0] + inc_evals[0]),
+                    ),
+                    F::one().mul_to_product(
+                        ra_evals[1] * val_evals[1] + wa_evals[1] * (val_evals[1] + inc_evals[1]),
+                    ),
                 ]
             }
             (Some(even), None) => {
@@ -378,10 +380,12 @@ impl<F: JoltField, C: OneHotCoeff<F>> CycleMajorMatrixEntry<F> for RegistersCycl
                 let wa_evals = OneHotCoeff::evals(Some(&even.wa_coeff), None, wa_lookup_table);
                 let val_evals = [even.val_coeff, odd_val_coeff - even.val_coeff];
                 [
-                    ra_evals[0].mul_to_product(val_evals[0])
-                        + wa_evals[0].mul_to_product(val_evals[0] + inc_evals[0]),
-                    ra_evals[1].mul_to_product(val_evals[1])
-                        + wa_evals[1].mul_to_product(val_evals[1] + inc_evals[1]),
+                    F::one().mul_to_product(
+                        ra_evals[0] * val_evals[0] + wa_evals[0] * (val_evals[0] + inc_evals[0]),
+                    ),
+                    F::one().mul_to_product(
+                        ra_evals[1] * val_evals[1] + wa_evals[1] * (val_evals[1] + inc_evals[1]),
+                    ),
                 ]
             }
             (None, Some(odd)) => {
@@ -391,8 +395,9 @@ impl<F: JoltField, C: OneHotCoeff<F>> CycleMajorMatrixEntry<F> for RegistersCycl
                 let val_evals = [even_val_coeff, odd.val_coeff - even_val_coeff];
                 [
                     F::UnreducedProduct::zero(),
-                    ra_evals[1].mul_to_product(val_evals[1])
-                        + wa_evals[1].mul_to_product(val_evals[1] + inc_evals[1]),
+                    F::one().mul_to_product(
+                        ra_evals[1] * val_evals[1] + wa_evals[1] * (val_evals[1] + inc_evals[1]),
+                    ),
                 ]
             }
             (None, None) => panic!("Both entries are None"),

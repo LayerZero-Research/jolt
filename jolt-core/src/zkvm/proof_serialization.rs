@@ -13,7 +13,7 @@ use crate::poly::opening_proof::{OpeningPoint, Openings};
 #[cfg(feature = "zk")]
 use crate::subprotocols::blindfold::BlindFoldProof;
 use crate::{
-    curve::JoltCurve,
+    curve::ZkCompatibleCurve,
     field::JoltField,
     poly::{
         commitment::{commitment_scheme::CommitmentScheme, dory::DoryLayout},
@@ -36,7 +36,7 @@ use crate::{
 #[derive(CanonicalSerialize, CanonicalDeserialize)]
 pub struct JoltProof<
     F: JoltField,
-    C: JoltCurve<F = F>,
+    C: ZkCompatibleCurve<F>,
     PCS: CommitmentScheme<Field = F>,
     FS: Transcript,
 > {
@@ -61,10 +61,10 @@ pub struct JoltProof<
     pub ram_K: usize,
     pub rw_config: ReadWriteConfig,
     pub one_hot_config: OneHotConfig,
-    pub dory_layout: DoryLayout,
+    pub pcs_config: PCS::Config,
 }
 
-impl<F: JoltField, C: JoltCurve<F = F>, PCS: CommitmentScheme<Field = F>, FS: Transcript>
+impl<F: JoltField, C: ZkCompatibleCurve<F>, PCS: CommitmentScheme<Field = F>, FS: Transcript>
     JoltProof<F, C, PCS, FS>
 {
     /// Verifies all sumcheck and uniskip proofs use the same ZK variant.
@@ -305,6 +305,16 @@ impl CanonicalSerialize for CommittedPolynomial {
                 (u8::try_from(*i).unwrap()).serialize_with_mode(writer, compress)
             }
             Self::ProgramImageInit => 8u8.serialize_with_mode(writer, compress),
+            Self::RdIncRa(i) => {
+                9u8.serialize_with_mode(&mut writer, compress)?;
+                (u8::try_from(*i).unwrap()).serialize_with_mode(writer, compress)
+            }
+            Self::RdIncMsb => 10u8.serialize_with_mode(writer, compress),
+            Self::RamIncRa(i) => {
+                11u8.serialize_with_mode(&mut writer, compress)?;
+                (u8::try_from(*i).unwrap()).serialize_with_mode(writer, compress)
+            }
+            Self::RamIncMsb => 12u8.serialize_with_mode(writer, compress),
         }
     }
 
@@ -314,11 +324,15 @@ impl CanonicalSerialize for CommittedPolynomial {
             | Self::RamInc
             | Self::TrustedAdvice
             | Self::UntrustedAdvice
-            | Self::ProgramImageInit => 1,
+            | Self::ProgramImageInit
+            | Self::RdIncMsb
+            | Self::RamIncMsb => 1,
             Self::InstructionRa(_)
             | Self::BytecodeRa(_)
             | Self::RamRa(_)
-            | Self::BytecodeChunk(_) => 2,
+            | Self::BytecodeChunk(_)
+            | Self::RdIncRa(_)
+            | Self::RamIncRa(_) => 2,
         }
     }
 }
@@ -358,6 +372,16 @@ impl CanonicalDeserialize for CommittedPolynomial {
                     Self::BytecodeChunk(i as usize)
                 }
                 8 => Self::ProgramImageInit,
+                9 => {
+                    let i = u8::deserialize_with_mode(reader, compress, validate)?;
+                    Self::RdIncRa(i as usize)
+                }
+                10 => Self::RdIncMsb,
+                11 => {
+                    let i = u8::deserialize_with_mode(reader, compress, validate)?;
+                    Self::RamIncRa(i as usize)
+                }
+                12 => Self::RamIncMsb,
                 _ => return Err(SerializationError::InvalidData),
             },
         )

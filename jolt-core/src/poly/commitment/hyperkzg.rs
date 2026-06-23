@@ -9,7 +9,7 @@
 //! (2) HyperKZG is specialized to use KZG as the univariate commitment scheme, so it includes several optimizations (both during the transformation of multilinear-to-univariate claims
 //! and within the KZG commitment scheme implementation itself).
 use super::{
-    commitment_scheme::CommitmentScheme,
+    commitment_scheme::{CommitmentScheme, PolynomialBatchSource},
     kzg::{KZGProverKey, KZGVerifierKey, UnivariateKZG},
 };
 use crate::field::JoltField;
@@ -449,6 +449,7 @@ where
     <P as Pairing>::ScalarField: JoltField,
 {
     type Field = P::ScalarField;
+    type Config = ();
     type ProverSetup = HyperKZGProverKey<P>;
     type VerifierSetup = HyperKZGVerifierKey<P>;
 
@@ -456,6 +457,7 @@ where
     type Proof = HyperKZGProof<P>;
     type BatchedProof = HyperKZGProof<P>;
     type OpeningProofHint = ();
+    type BatchOpeningHint = Vec<()>;
 
     fn setup_prover(max_num_vars: usize) -> Self::ProverSetup {
         let mut rng = OsRng;
@@ -488,17 +490,21 @@ where
 
     #[tracing::instrument(skip_all, name = "HyperKZG::batch_commit")]
     fn batch_commit<U>(
-        polys: &[U],
+        source: &U,
         gens: &Self::ProverSetup,
-    ) -> Vec<(Self::Commitment, Self::OpeningProofHint)>
+    ) -> (Vec<Self::Commitment>, Self::BatchOpeningHint)
     where
-        U: Borrow<MultilinearPolynomial<Self::Field>> + Sync,
+        U: PolynomialBatchSource<Self::Field>,
     {
-        UnivariateKZG::commit_batch(&gens.kzg_pk, polys)
-            .unwrap()
+        (0..source.num_polys())
             .into_par_iter()
-            .map(|c| (HyperKZGCommitment(c), ()))
-            .collect()
+            .map(|idx| {
+                let poly = source
+                    .get_poly(idx)
+                    .expect("HyperKZG batch_commit requires materialized polynomials");
+                <Self as CommitmentScheme>::commit(poly, gens)
+            })
+            .unzip()
     }
 
     fn combine_commitments<C: Borrow<Self::Commitment>>(
@@ -539,6 +545,10 @@ where
     fn protocol_name() -> &'static [u8] {
         b"hyperkzg"
     }
+
+    fn split_batch_hint(batch_hint: &Self::BatchOpeningHint) -> Vec<Self::OpeningProofHint> {
+        batch_hint.clone()
+    }
 }
 
 impl<P: Pairing> super::commitment_scheme::StreamingCommitmentScheme for HyperKZG<P>
@@ -563,6 +573,10 @@ where
         _tier1_commitments: &[Self::ChunkState],
     ) -> (Self::Commitment, Self::OpeningProofHint) {
         unimplemented!("HyperKZG does not support streaming commitment")
+    }
+
+    fn streaming_batch_hint(hints: Vec<Self::OpeningProofHint>) -> Self::BatchOpeningHint {
+        hints
     }
 }
 

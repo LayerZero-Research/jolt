@@ -15,9 +15,11 @@ repository = "https://github.com/a16z/jolt"
 edition = "2021"
 
 [features]
-default = ["jolt-platform/random"]
+default = ["jolt-platform/random", "dory-pcs"]
 debug = ["zeroos?/debug"]
 zk = ["jolt-core?/zk"]
+dory-pcs = ["jolt-core?/dory-pcs"]
+akita-pcs = ["jolt-core?/akita-pcs"]
 field-inline = [
   "jolt-core?/field-inline",
   "jolt-program?/field-inline",
@@ -25,7 +27,7 @@ field-inline = [
 ]
 
 host = [
-  "jolt-core/default",
+  "jolt-core/host",
   "jolt-platform/std",
   "dep:common",
   "dep:jolt-program",

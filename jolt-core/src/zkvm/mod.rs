@@ -3,10 +3,9 @@ use std::fs::File;
 use crate::zkvm::config::{OneHotConfig, OneHotParams, ProgramMode, ReadWriteConfig};
 use crate::zkvm::witness::CommittedPolynomial;
 use crate::{
-    curve::Bn254Curve,
     field::JoltField,
     poly::commitment::commitment_scheme::CommitmentScheme,
-    poly::commitment::dory::{DoryCommitmentScheme, DoryLayout},
+    poly::commitment::dory::DoryLayout,
     poly::opening_proof::{
         OpeningAccumulator, OpeningId, OpeningPoint, ProverOpeningAccumulator, SumcheckId,
         BIG_ENDIAN,
@@ -39,7 +38,6 @@ use crate::transcripts::Blake2bTranscript;
 use crate::transcripts::KeccakTranscript;
 #[cfg(feature = "transcript-poseidon")]
 use crate::transcripts::PoseidonTranscript;
-use ark_bn254::Fr;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use eyre::Result;
 use proof_serialization::JoltProof;
@@ -69,6 +67,19 @@ mod trace_row_parity;
 pub mod transpilable_verifier;
 pub mod verifier;
 pub mod witness;
+
+#[cfg(not(feature = "akita-pcs"))]
+pub type F = ark_bn254::Fr;
+pub type Curve = crate::curve::Bn254Curve;
+#[cfg(not(feature = "akita-pcs"))]
+pub type PCS = crate::poly::commitment::dory::DoryCommitmentScheme;
+#[cfg(feature = "akita-pcs")]
+pub type F = crate::field::fp128::JoltFp128;
+#[cfg(feature = "akita-pcs")]
+pub type PCS = crate::poly::commitment::akita::JoltAkitaCommitmentScheme<
+    { <crate::poly::commitment::akita::Fp128OneHot64Config as akita_config::CommitmentConfig>::D },
+    crate::poly::commitment::akita::Fp128OneHot64Config,
+>;
 
 pub(crate) fn stage8_opening_ids(
     one_hot_params: &OneHotParams,
@@ -311,14 +322,14 @@ where
 
 /// Absorb public instance data into the transcript for Fiat-Shamir.
 #[allow(clippy::too_many_arguments)]
-pub fn fiat_shamir_preamble(
+pub fn fiat_shamir_preamble<PCS: CommitmentScheme>(
     program_io: &JoltDevice,
     ram_K: usize,
     trace_length: usize,
     entry_address: u64,
     rw_config: &ReadWriteConfig,
     one_hot_config: &OneHotConfig,
-    dory_layout: DoryLayout,
+    pcs_config: &PCS::Config,
     preprocessing_digest: &[u8; 32],
     transcript: &mut impl Transcript,
 ) {
@@ -353,26 +364,22 @@ pub fn fiat_shamir_preamble(
         b"lookups_ra_virtual_log_k_chunk",
         one_hot_config.lookups_ra_virtual_log_k_chunk as u64,
     );
-    transcript.append_u64(b"dory_layout", dory_layout as u64);
+    PCS::append_pcs_config_to_transcript(pcs_config, transcript);
 }
 
 #[cfg(all(feature = "prover", feature = "transcript-poseidon"))]
-pub type RV64IMACProver<'a> =
-    JoltCpuProver<'a, Fr, Bn254Curve, DoryCommitmentScheme, PoseidonTranscript>;
+pub type RV64IMACProver<'a> = JoltCpuProver<'a, F, Curve, PCS, PoseidonTranscript>;
 #[cfg(feature = "transcript-poseidon")]
-pub type RV64IMACVerifier<'a> =
-    JoltVerifier<'a, Fr, Bn254Curve, DoryCommitmentScheme, PoseidonTranscript>;
+pub type RV64IMACVerifier<'a> = JoltVerifier<'a, F, Curve, PCS, PoseidonTranscript>;
 #[cfg(feature = "transcript-poseidon")]
-pub type RV64IMACProof = JoltProof<Fr, Bn254Curve, DoryCommitmentScheme, PoseidonTranscript>;
+pub type RV64IMACProof = JoltProof<F, Curve, PCS, PoseidonTranscript>;
 
 #[cfg(all(feature = "prover", feature = "transcript-keccak"))]
-pub type RV64IMACProver<'a> =
-    JoltCpuProver<'a, Fr, Bn254Curve, DoryCommitmentScheme, KeccakTranscript>;
+pub type RV64IMACProver<'a> = JoltCpuProver<'a, F, Curve, PCS, KeccakTranscript>;
 #[cfg(feature = "transcript-keccak")]
-pub type RV64IMACVerifier<'a> =
-    JoltVerifier<'a, Fr, Bn254Curve, DoryCommitmentScheme, KeccakTranscript>;
+pub type RV64IMACVerifier<'a> = JoltVerifier<'a, F, Curve, PCS, KeccakTranscript>;
 #[cfg(feature = "transcript-keccak")]
-pub type RV64IMACProof = JoltProof<Fr, Bn254Curve, DoryCommitmentScheme, KeccakTranscript>;
+pub type RV64IMACProof = JoltProof<F, Curve, PCS, KeccakTranscript>;
 
 #[cfg(all(
     feature = "prover",
@@ -382,30 +389,26 @@ pub type RV64IMACProof = JoltProof<Fr, Bn254Curve, DoryCommitmentScheme, KeccakT
         feature = "transcript-blake2b"
     ))
 ))]
-pub type RV64IMACProver<'a> =
-    JoltCpuProver<'a, Fr, Bn254Curve, DoryCommitmentScheme, Blake2bTranscript>;
+pub type RV64IMACProver<'a> = JoltCpuProver<'a, F, Curve, PCS, Blake2bTranscript>;
 #[cfg(not(any(
     feature = "transcript-poseidon",
     feature = "transcript-keccak",
     feature = "transcript-blake2b"
 )))]
-pub type RV64IMACVerifier<'a> =
-    JoltVerifier<'a, Fr, Bn254Curve, DoryCommitmentScheme, Blake2bTranscript>;
+pub type RV64IMACVerifier<'a> = JoltVerifier<'a, F, Curve, PCS, Blake2bTranscript>;
 #[cfg(not(any(
     feature = "transcript-poseidon",
     feature = "transcript-keccak",
     feature = "transcript-blake2b"
 )))]
-pub type RV64IMACProof = JoltProof<Fr, Bn254Curve, DoryCommitmentScheme, Blake2bTranscript>;
+pub type RV64IMACProof = JoltProof<F, Curve, PCS, Blake2bTranscript>;
 
 #[cfg(all(feature = "prover", feature = "transcript-blake2b"))]
-pub type RV64IMACProver<'a> =
-    JoltCpuProver<'a, Fr, Bn254Curve, DoryCommitmentScheme, Blake2bTranscript>;
+pub type RV64IMACProver<'a> = JoltCpuProver<'a, F, Curve, PCS, Blake2bTranscript>;
 #[cfg(feature = "transcript-blake2b")]
-pub type RV64IMACVerifier<'a> =
-    JoltVerifier<'a, Fr, Bn254Curve, DoryCommitmentScheme, Blake2bTranscript>;
+pub type RV64IMACVerifier<'a> = JoltVerifier<'a, F, Curve, PCS, Blake2bTranscript>;
 #[cfg(feature = "transcript-blake2b")]
-pub type RV64IMACProof = JoltProof<Fr, Bn254Curve, DoryCommitmentScheme, Blake2bTranscript>;
+pub type RV64IMACProof = JoltProof<F, Curve, PCS, Blake2bTranscript>;
 
 pub trait Serializable: CanonicalSerialize + CanonicalDeserialize + Sized {
     /// Gets the byte size of the serialized data
@@ -442,5 +445,6 @@ pub trait Serializable: CanonicalSerialize + CanonicalDeserialize + Sized {
     }
 }
 
+#[cfg(not(feature = "akita-pcs"))]
 impl Serializable for RV64IMACProof {}
 impl Serializable for JoltDevice {}

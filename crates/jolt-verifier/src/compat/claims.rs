@@ -1781,6 +1781,14 @@ fn committed_polynomial(
     match polynomial {
         legacy::CommittedPolynomial::RdInc => native::JoltCommittedPolynomial::RdInc,
         legacy::CommittedPolynomial::RamInc => native::JoltCommittedPolynomial::RamInc,
+        legacy::CommittedPolynomial::RdIncRa(index) => {
+            native::JoltCommittedPolynomial::RdIncRa(index)
+        }
+        legacy::CommittedPolynomial::RdIncMsb => native::JoltCommittedPolynomial::RdIncMsb,
+        legacy::CommittedPolynomial::RamIncRa(index) => {
+            native::JoltCommittedPolynomial::RamIncRa(index)
+        }
+        legacy::CommittedPolynomial::RamIncMsb => native::JoltCommittedPolynomial::RamIncMsb,
         legacy::CommittedPolynomial::InstructionRa(index) => {
             native::JoltCommittedPolynomial::InstructionRa(index)
         }

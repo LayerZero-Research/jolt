@@ -45,7 +45,8 @@
 
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use jolt_core::field::JoltField;
-use jolt_core::poly::commitment::commitment_scheme::CommitmentScheme;
+use jolt_core::poly::commitment::commitment_scheme::{CommitmentScheme, PolynomialBatchSource};
+use jolt_core::poly::commitment::dory::DoryLayout;
 use jolt_core::poly::multilinear_polynomial::MultilinearPolynomial;
 use jolt_core::transcripts::Transcript;
 use jolt_core::utils::errors::ProofVerifyError;
@@ -90,12 +91,14 @@ pub struct AstOpeningHint;
 
 impl CommitmentScheme for AstCommitmentScheme {
     type Field = MleAst;
+    type Config = DoryLayout;
     type ProverSetup = AstProverSetup;
     type VerifierSetup = AstVerifierSetup;
     type Commitment = AstCommitment;
     type Proof = AstProof;
     type BatchedProof = AstBatchedProof;
     type OpeningProofHint = AstOpeningHint;
+    type BatchOpeningHint = Vec<AstOpeningHint>;
 
     fn setup_prover(_max_num_vars: usize) -> Self::ProverSetup {
         panic!("AstCommitmentScheme::setup_prover should never be called during verification")
@@ -105,6 +108,10 @@ impl CommitmentScheme for AstCommitmentScheme {
         AstVerifierSetup
     }
 
+    fn dory_layout(config: &Self::Config) -> Option<DoryLayout> {
+        Some(*config)
+    }
+
     fn commit(
         _poly: &MultilinearPolynomial<Self::Field>,
         _setup: &Self::ProverSetup,
@@ -112,12 +119,12 @@ impl CommitmentScheme for AstCommitmentScheme {
         panic!("AstCommitmentScheme::commit should never be called during verification")
     }
 
-    fn batch_commit<U>(
-        _polys: &[U],
+    fn batch_commit<S>(
+        _source: &S,
         _gens: &Self::ProverSetup,
-    ) -> Vec<(Self::Commitment, Self::OpeningProofHint)>
+    ) -> (Vec<Self::Commitment>, Self::BatchOpeningHint)
     where
-        U: Borrow<MultilinearPolynomial<Self::Field>> + Sync,
+        S: PolynomialBatchSource<Self::Field>,
     {
         panic!("AstCommitmentScheme::batch_commit should never be called during verification")
     }
@@ -156,5 +163,9 @@ impl CommitmentScheme for AstCommitmentScheme {
 
     fn protocol_name() -> &'static [u8] {
         b"AstCommitmentScheme"
+    }
+
+    fn split_batch_hint(batch_hint: &Self::BatchOpeningHint) -> Vec<Self::OpeningProofHint> {
+        batch_hint.clone()
     }
 }

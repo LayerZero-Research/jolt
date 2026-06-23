@@ -41,7 +41,7 @@
 //! - Stage 6b: CycleVariables phase (bind cycle-derived coordinates)
 //! - Stage 7: AddressVariables phase (bind address-derived coordinates)
 
-use crate::curve::JoltCurve;
+use crate::curve::ZkCompatibleCurve;
 use crate::poly::commitment::commitment_scheme::CommitmentScheme;
 use crate::poly::commitment::dory::DoryGlobals;
 #[cfg(not(feature = "zk"))]
@@ -108,7 +108,7 @@ use tracer::JoltDevice;
 
 /// Extract the Clear (non-ZK) proof from a SumcheckInstanceProof enum.
 /// TranspilableVerifier only handles non-ZK proofs; ZK mode uses the main verifier.
-fn extract_clear_proof<F: JoltField, C: JoltCurve<F = F>, T: Transcript>(
+fn extract_clear_proof<F: JoltField, C: ZkCompatibleCurve<F>, T: Transcript>(
     proof: &SumcheckInstanceProof<F, C, T>,
 ) -> &ClearSumcheckProof<F, T> {
     match proof {
@@ -127,7 +127,7 @@ fn extract_clear_proof<F: JoltField, C: JoltCurve<F = F>, T: Transcript>(
 pub struct TranspilableVerifier<
     'a,
     F: JoltField,
-    C: JoltCurve<F = F>,
+    C: ZkCompatibleCurve<F>,
     PCS: CommitmentScheme<Field = F>,
     ProofTranscript: Transcript,
     A: AbstractVerifierOpeningAccumulator<F> = VerifierOpeningAccumulator<F>,
@@ -149,7 +149,7 @@ pub struct TranspilableVerifier<
 impl<
         'a,
         F: JoltField,
-        C: JoltCurve<F = F>,
+        C: ZkCompatibleCurve<F>,
         PCS: CommitmentScheme<Field = F>,
         ProofTranscript: Transcript,
         A: AbstractVerifierOpeningAccumulator<F>,
@@ -333,14 +333,14 @@ impl<
         let _pprof_verify = pprof_scope!("verify");
 
         let preprocessing_digest = self.preprocessing.shared.digest();
-        fiat_shamir_preamble(
+        fiat_shamir_preamble::<PCS>(
             &self.program_io,
             self.proof.ram_K,
             self.proof.trace_length,
             self.preprocessing.shared.program_meta.entry_address,
             &self.proof.rw_config,
             &self.proof.one_hot_config,
-            self.proof.dory_layout,
+            &self.proof.pcs_config,
             &preprocessing_digest,
             &mut self.transcript,
         );
@@ -627,7 +627,7 @@ impl<
             self.one_hot_params.k_chunk,
             self.proof.trace_length,
             self.main_total_vars(),
-            Some(self.proof.dory_layout),
+            PCS::dory_layout(&self.proof.pcs_config),
         );
         let (bytecode_read_raf_params, booleanity_params) = self.verify_stage6a()?;
         self.verify_stage6b(bytecode_read_raf_params, booleanity_params)?;
@@ -656,6 +656,7 @@ impl<
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
+            false,
         );
         let booleanity = BooleanityAddressSumcheckVerifier::new(booleanity_params.clone());
 
@@ -696,6 +697,7 @@ impl<
             self.proof.trace_length,
             &self.opening_accumulator,
             &mut self.transcript,
+            false,
         );
 
         let main_total_vars = self.proof.trace_length.log_2() + self.one_hot_params.log_k_chunk;
@@ -803,6 +805,7 @@ impl<
             &self.one_hot_params,
             &self.opening_accumulator,
             &mut self.transcript,
+            false,
         );
 
         let mut instances: Vec<&dyn SumcheckInstanceVerifier<F, ProofTranscript, A>> =

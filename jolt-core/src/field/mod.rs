@@ -372,4 +372,6 @@ where
 pub mod ark;
 pub mod challenge;
 pub mod folded_accum;
+#[cfg(feature = "akita-pcs")]
+pub mod fp128;
 pub mod tracked_ark;

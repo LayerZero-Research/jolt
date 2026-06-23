@@ -287,6 +287,10 @@ pub enum JoltChallengeId {
 pub enum JoltCommittedPolynomial {
     RdInc,
     RamInc,
+    RdIncRa(usize),
+    RdIncMsb,
+    RamIncRa(usize),
+    RamIncMsb,
     InstructionRa(usize),
     BytecodeRa(usize),
     BytecodeChunk(usize),

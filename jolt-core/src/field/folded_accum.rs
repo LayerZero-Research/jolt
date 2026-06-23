@@ -252,6 +252,7 @@ impl_folded_core_traits!(Folded256MulU128, 6, 6);
 impl_folded_core_traits!(Folded256MulU128Accum, 7, 7);
 impl_folded_core_traits!(Folded256Product, 8, 8);
 impl_folded_core_traits!(Folded256ProductAccum, 8, 9);
+impl_folded_core_traits!(Folded128ProductAccum, 4, 5);
 
 impl_addassign_bigint_trunc!(Folded256MulU64, 4);
 impl_addassign_bigint_trunc!(Folded256MulU128, 4);

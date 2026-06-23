@@ -1,3 +1,5 @@
+#[cfg(feature = "akita-pcs")]
+pub mod akita;
 pub mod commitment_scheme;
 pub mod dory;
 pub mod hyperkzg;
