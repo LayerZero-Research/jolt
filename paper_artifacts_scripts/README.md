@@ -3,7 +3,9 @@
 This folder contains scripts for reproducing the experiments in
 `precommitted-geometry-and-dory-embedding.tex`.
 
-The exact artifact source is the `paper-experiments` branch of this repository.
+The exact artifact source is the
+[`paper-experiments`](https://github.com/LayerZero-Research/jolt/tree/paper-experiments)
+branch of the `LayerZero-Research/jolt` repository.
 The repository is dual licensed under `LICENSE-MIT` and `LICENSE-APACHE` at the
 repository root.
 
