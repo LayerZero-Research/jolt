@@ -1,0 +1,10 @@
+.git
+target
+**/target
+/tmp
+/results
+/paper-artifact-results
+.DS_Store
+paper_artifacts_scripts/output
+*.trace
+*_proofs.bin

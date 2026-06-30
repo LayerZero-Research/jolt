@@ -55,6 +55,8 @@ bin/act
 # Benchmark runs and profiling
 benchmark-runs/
 /perfetto_traces/
+/paper-artifact-results/
+/results/
 *.pb
 *benchmark_results.json
 

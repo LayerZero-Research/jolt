@@ -2,12 +2,16 @@ use jolt_sdk::serialize_and_print_size;
 use std::time::Instant;
 use tracing::info;
 
+fn arg_value(flag: &str) -> Option<String> {
+    std::env::args().skip_while(|arg| arg != flag).nth(1)
+}
+
 pub fn main() {
     tracing_subscriber::fmt::init();
-    let bytecode_chunk = std::env::args()
-        .skip_while(|arg| arg != "--committed-bytecode")
-        .nth(1)
-        .map(|arg| arg.parse().unwrap());
+    let bytecode_chunk = arg_value("--committed-bytecode").map(|arg| arg.parse().unwrap());
+    let runs: usize = arg_value("--runs")
+        .map(|arg| arg.parse().unwrap())
+        .unwrap_or(1);
 
     let save_to_disk = std::env::args().any(|arg| arg == "--save");
 
@@ -50,18 +54,21 @@ pub fn main() {
     guest::trace_fib_to_file(trace_file, 50);
     info!("Trace file written to: {trace_file}.");
 
-    let now = Instant::now();
-    let (output, proof, io_device) = prove_fib(50);
-    info!("Prover runtime: {} s", now.elapsed().as_secs_f64());
+    for run in 1..=runs {
+        info!("artifact_run: {run}/{runs}");
+        let now = Instant::now();
+        let (output, proof, io_device) = prove_fib(50);
+        info!("Prover runtime: {} s", now.elapsed().as_secs_f64());
 
-    if save_to_disk {
-        serialize_and_print_size("Proof", "/tmp/fib_proof.bin", &proof)
-            .expect("Could not serialize proof.");
-        serialize_and_print_size("io_device", "/tmp/fib_io_device.bin", &io_device)
-            .expect("Could not serialize io_device.");
+        if save_to_disk && run == runs {
+            serialize_and_print_size("Proof", "/tmp/fib_proof.bin", &proof)
+                .expect("Could not serialize proof.");
+            serialize_and_print_size("io_device", "/tmp/fib_io_device.bin", &io_device)
+                .expect("Could not serialize io_device.");
+        }
+
+        let is_valid = verify_fib(50, output, io_device.panic, proof);
+        info!("output: {output}");
+        info!("valid: {is_valid}");
     }
-
-    let is_valid = verify_fib(50, output, io_device.panic, proof);
-    info!("output: {output}");
-    info!("valid: {is_valid}");
 }

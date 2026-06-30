@@ -241,7 +241,7 @@ blake3 = { version = "1.5.0" }
 light-poseidon = "0.4"
 digest = "0.10"
 jolt-optimizations = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
-dory = { package = "dory-pcs", path = "/Users/amir.kh/Desktop/north/dory", features = [
+dory = { package = "dory-pcs", version = "0.3.0", features = [
   "backends",
   "cache",
   "disk-persistence",

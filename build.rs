@@ -35,9 +35,11 @@ fn commit_info_from_git() -> Option<CommitInfo> {
 }
 
 fn commit_info() {
-    let Some(git) = commit_info_from_git() else {
-        return;
-    };
+    let git = commit_info_from_git().unwrap_or_else(|| CommitInfo {
+        hash: "unknown".to_string(),
+        short_hash: "unknown".to_string(),
+        date: "unknown".to_string(),
+    });
 
     println!("cargo:rustc-env=GIT_HASH={}", git.hash);
     println!("cargo:rustc-env=GIT_SHORT_HASH={}", git.short_hash);

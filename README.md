@@ -52,6 +52,13 @@ For developers looking to build using Jolt, check out the [Quickstart guide](htt
 
 For developers looking to contribute to Jolt, follow the instructions below.
 
+## Paper Artifact Reproduction
+
+Instructions for reproducing the paper artifact tables are in
+[`paper_artifacts_scripts/README.md`](./paper_artifacts_scripts/README.md).
+That README documents both Docker and native Ubuntu setup paths, including all
+prerequisites and commands for generating the table outputs.
+
 ## Installation
 
 You will need Rust [nightly](./rust-toolchain.toml).

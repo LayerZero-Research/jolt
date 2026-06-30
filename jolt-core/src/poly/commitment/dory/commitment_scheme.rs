@@ -24,7 +24,11 @@ use dory::primitives::{
     poly::Polynomial,
 };
 use rayon::prelude::*;
-use std::borrow::Borrow;
+use std::{
+    borrow::Borrow,
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+};
 use tracing::trace_span;
 
 fn debug_disable_dory_setup_cache() -> bool {
@@ -72,6 +76,11 @@ fn canonical_setup_log_n(max_num_vars: usize) -> usize {
     }
 }
 
+fn dory_setup_cache() -> &'static Mutex<HashMap<usize, ArkworksProverSetup>> {
+    static SETUP_CACHE: OnceLock<Mutex<HashMap<usize, ArkworksProverSetup>>> = OnceLock::new();
+    SETUP_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 pub fn bind_opening_inputs<F: JoltField, ProofTranscript: Transcript>(
     transcript: &mut ProofTranscript,
     opening_point: &[F::Challenge],
@@ -115,10 +124,32 @@ impl CommitmentScheme for DoryCommitmentScheme {
     fn setup_prover(max_num_vars: usize) -> Self::ProverSetup {
         let _span = trace_span!("DoryCommitmentScheme::setup_prover").entered();
         let canonical_max_num_vars = canonical_setup_log_n(max_num_vars);
+        if !debug_disable_dory_setup_cache() {
+            let cached_setup = dory_setup_cache()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(&canonical_max_num_vars)
+                .cloned();
+            if let Some(setup) = cached_setup {
+                #[cfg(not(test))]
+                DoryGlobals::init_prepared_cache(&setup.g1_vec, &setup.g2_vec);
+                return setup;
+            }
+        }
+
         #[cfg(test)]
         DoryGlobals::configure_test_cache_root();
         #[cfg(not(target_arch = "wasm32"))]
-        let setup = ArkworksProverSetup::new_from_urs(canonical_max_num_vars);
+        let setup = {
+            let setup = ArkworksProverSetup::new_from_urs(canonical_max_num_vars);
+            if !debug_disable_dory_setup_cache() {
+                dory_setup_cache()
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .insert(canonical_max_num_vars, setup.clone());
+            }
+            setup
+        };
         #[cfg(target_arch = "wasm32")]
         let setup = ArkworksProverSetup::new(canonical_max_num_vars);
 

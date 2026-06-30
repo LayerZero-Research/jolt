@@ -3,20 +3,23 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-RUNS=10
+RUNS="${RUNS:-10}"
 COMMAND="${1:-}"
 
 usage() {
     cat <<'EOF'
-Usage: bash paper_artifacts_scripts/reproduce_paper_experiments.sh <table-v|recursive|all>
+Usage: bash paper_artifacts_scripts/reproduce_paper_experiments.sh <check|table-v|recursive|all>
 
 Reproduces the experiments from precommitted-geometry-and-dory-embedding.tex:
+  - Environment and release-binary build check.
   - Table V proving-time benchmarks with 10-run trimmed means (paper default).
   - Layout dimension sanity table.
   - Recursive verifier bundle/cycle table.
   - CSV, JSON, Markdown reports and raw logs.
 
 Commands:
+  check        Check prerequisites and build the release binaries used by the
+               artifact script without running the long benchmarks.
   table-v      Run the non-recursive Table V and layout experiments.
   recursive    Run the recursive verifier experiments, including proof generation
                and inner verifier traces.
@@ -27,6 +30,7 @@ Environment:
   The script builds the required release binaries before running benchmarks.
 
 Examples:
+  bash paper_artifacts_scripts/reproduce_paper_experiments.sh check
   bash paper_artifacts_scripts/reproduce_paper_experiments.sh table-v
   bash paper_artifacts_scripts/reproduce_paper_experiments.sh recursive
   bash paper_artifacts_scripts/reproduce_paper_experiments.sh all
@@ -34,7 +38,7 @@ EOF
 }
 
 case "$COMMAND" in
-    table-v|recursive|all)
+    check|table-v|recursive|all)
         ;;
     -h|--help)
         usage
@@ -90,7 +94,9 @@ check_prerequisites() {
 
 build_required_binaries() {
     log "Building required host binaries"
-    cargo build --release -p fibonacci -p sha2-chain -p recursion --bin recursion
+    cargo build --release -p fibonacci
+    cargo build --release -p sha2-chain
+    cargo build --release -p recursion --bin recursion
 }
 
 run_table_v() {
@@ -106,6 +112,7 @@ run_table_v() {
         local envvars="$2"
         shift 2
         local -a cmd=("$@")
+        local log_file="$raw/${label}_runs.log"
         local prove_file="$raw/${label}_prove.txt"
         local s16a_file="$raw/${label}_s16a.txt"
         local s6b_file="$raw/${label}_s6b.txt"
@@ -113,31 +120,59 @@ run_table_v() {
         local s8_file="$raw/${label}_s8.txt"
 
         printf '  %-20s ' "$label"
-        for i in $(seq 1 "$RUNS"); do
-            local out log_file
-            log_file="$raw/${label}_run_${i}.log"
-            if [[ -n "$envvars" ]]; then
-                out=$(env $envvars "${cmd[@]}" 2>&1)
-            else
-                out=$("${cmd[@]}" 2>&1)
-            fi
-            printf '%s\n' "$out" > "$log_file"
-
-            if ! grep -q "valid: true" "$log_file"; then
+        local out
+        if [[ -n "$envvars" ]]; then
+            if ! out=$(env $envvars "${cmd[@]}" --runs "$RUNS" 2>&1); then
+                printf '%s\n' "$out" > "$log_file"
                 echo
-                echo "ERROR: $label run $i did not verify. See $log_file" >&2
+                echo "ERROR: $label failed. See $log_file" >&2
+                exit 1
+            fi
+        else
+            if ! out=$("${cmd[@]}" --runs "$RUNS" 2>&1); then
+                printf '%s\n' "$out" > "$log_file"
+                echo
+                echo "ERROR: $label failed. See $log_file" >&2
+                exit 1
+            fi
+        fi
+        printf '%s\n' "$out" > "$log_file"
+
+        local valid_count
+        valid_count=$(grep -c "valid: true" "$log_file" || true)
+        if [[ "$valid_count" -ne "$RUNS" ]]; then
+            echo
+            echo "ERROR: $label produced $valid_count valid runs, expected $RUNS. See $log_file" >&2
+            exit 1
+        fi
+
+        extract_metric() {
+            local name="$1"
+            local file="$2"
+            local pattern="$3"
+            local sed_expr="$4"
+
+            if ! grep "$pattern" "$log_file" | sed "$sed_expr" > "$file"; then
+                echo
+                echo "ERROR: failed to extract $name for $label. See $log_file" >&2
                 exit 1
             fi
 
-            grep "Prover runtime" "$log_file" | sed 's/.*Prover runtime: //' | sed 's/ s//' >> "$prove_file"
-            local stage_line
-            stage_line=$(grep "stages_1_6a=" "$log_file")
-            echo "$stage_line" | sed 's/.*stages_1_6a=//' | sed 's/ms.*//' >> "$s16a_file"
-            echo "$stage_line" | sed 's/.*stage_6b=//' | sed 's/ms.*//' >> "$s6b_file"
-            echo "$stage_line" | sed 's/.*stage_7=//' | sed 's/ms.*//' >> "$s7_file"
-            echo "$stage_line" | sed 's/.*stage_8=//' | sed 's/ms.*//' >> "$s8_file"
-            printf '%s ' "$i"
-        done
+            local count
+            count=$(wc -l < "$file" | tr -d ' ')
+            if [[ "$count" -ne "$RUNS" ]]; then
+                echo
+                echo "ERROR: $label produced $count $name values, expected $RUNS. See $log_file" >&2
+                exit 1
+            fi
+        }
+
+        extract_metric "prover runtime" "$prove_file" "Prover runtime" 's/.*Prover runtime: //; s/ s//'
+        extract_metric "stages 1-6a" "$s16a_file" "STAGE_TIMES: stages_1_6a=" 's/.*stages_1_6a=//; s/ms.*//'
+        extract_metric "stage 6b" "$s6b_file" "STAGE_TIMES: stages_1_6a=" 's/.*stage_6b=//; s/ms.*//'
+        extract_metric "stage 7" "$s7_file" "STAGE_TIMES: stages_1_6a=" 's/.*stage_7=//; s/ms.*//'
+        extract_metric "stage 8" "$s8_file" "STAGE_TIMES: stages_1_6a=" 's/.*stage_8=//; s/ms.*//'
+        printf '%s ' $(seq 1 "$RUNS")
         echo
     }
 
@@ -220,11 +255,11 @@ def cell(label, base, key, scale=1.0):
     return f"{a:.3f}/{b:.3f} ({pct(a, b):+.0f}%)"
 
 def dims_from_log(label):
-    log = raw / f"{label}_run_1.log"
+    log = raw / f"{label}_runs.log"
     text = log.read_text()
     m = re.search(r"DIMENSIONS: padded_trace=(\d+) \(log_T=(\d+)\), K=(\d+) \(log_K=(\d+)\), native_vars=(\d+), candidates=\[([^\]]*)\], main_total_vars=(\d+)", text)
     if not m:
-        return None
+        raise RuntimeError(f"missing DIMENSIONS line in {log}")
     return {
         "padded_trace": int(m.group(1)),
         "log_T": int(m.group(2)),
@@ -528,6 +563,11 @@ PY
 
 check_prerequisites
 build_required_binaries
+
+if [[ "$COMMAND" == "check" ]]; then
+    log "Environment check complete. Required release binaries built successfully."
+    exit 0
+fi
 
 if [[ "$COMMAND" == "all" || "$COMMAND" == "table-v" ]]; then
     run_table_v

@@ -1,12 +1,16 @@
 use std::time::Instant;
 use tracing::info;
 
+fn arg_value(flag: &str) -> Option<String> {
+    std::env::args().skip_while(|arg| arg != flag).nth(1)
+}
+
 pub fn main() {
     tracing_subscriber::fmt::init();
-    let bytecode_chunk = std::env::args()
-        .skip_while(|arg| arg != "--committed-bytecode")
-        .nth(1)
-        .map(|arg| arg.parse().unwrap());
+    let bytecode_chunk = arg_value("--committed-bytecode").map(|arg| arg.parse().unwrap());
+    let runs: usize = arg_value("--runs")
+        .map(|arg| arg.parse().unwrap())
+        .unwrap_or(1);
 
     let target_dir = "/tmp/jolt-guest-targets";
     let mut program = guest::compile_sha2_chain(target_dir);
@@ -33,19 +37,21 @@ pub fn main() {
     let verify_sha2_chain = guest::build_verifier_sha2_chain(verifier_preprocessing);
 
     let input = [5u8; 32];
-    let iters: u32 = std::env::args()
-        .skip_while(|arg| arg != "--iters")
-        .nth(1)
+    let iters: u32 = arg_value("--iters")
         .map(|arg| arg.parse().unwrap())
         .unwrap_or(1000);
     let native_output = guest::sha2_chain(input, iters);
-    let now = Instant::now();
-    let (output, proof, program_io) = prove_sha2_chain(input, iters);
-    info!("Prover runtime: {} s", now.elapsed().as_secs_f64());
-    let is_valid = verify_sha2_chain(input, iters, output, program_io.panic, proof);
 
-    assert_eq!(output, native_output, "output mismatch");
-    info!("output: {}", hex::encode(output));
-    info!("native_output: {}", hex::encode(native_output));
-    info!("valid: {is_valid}");
+    for run in 1..=runs {
+        info!("artifact_run: {run}/{runs}");
+        let now = Instant::now();
+        let (output, proof, program_io) = prove_sha2_chain(input, iters);
+        info!("Prover runtime: {} s", now.elapsed().as_secs_f64());
+        let is_valid = verify_sha2_chain(input, iters, output, program_io.panic, proof);
+
+        assert_eq!(output, native_output, "output mismatch");
+        info!("output: {}", hex::encode(output));
+        info!("native_output: {}", hex::encode(native_output));
+        info!("valid: {is_valid}");
+    }
 }
