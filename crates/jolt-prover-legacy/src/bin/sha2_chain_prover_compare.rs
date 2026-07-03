@@ -270,7 +270,7 @@ fn measure_akita(target: TraceTarget, bytecode_chunk_count: usize, verify: bool)
         .expect("Akita prover should produce a proof");
     let prove_duration = start.elapsed();
     if verify {
-        jolt_verifier::akita::verify_akita_clear::<AkitaLegacyBlake2bTranscript>(
+        jolt_verifier::verify_akita_clear::<AkitaLegacyBlake2bTranscript>(
             &verifier_preprocessing,
             &program_io,
             &proof,

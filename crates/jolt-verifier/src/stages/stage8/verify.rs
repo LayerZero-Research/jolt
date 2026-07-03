@@ -752,7 +752,7 @@ where
     F: Field,
 {
     let sources = sources.ok_or(VerifierError::MissingOpeningClaim {
-        id: lattice_formulas::unsigned_inc_chunk_opening(0),
+        id: lattice_formulas::unsigned_inc_reconstructed_chunk_opening(0),
     })?;
     let chunk_count =
         lattice_formulas::unsigned_inc_lower_chunk_count(log_k_chunk).ok_or_else(|| {
@@ -776,7 +776,9 @@ where
     let mut entries = Vec::with_capacity(chunk_count + 1);
     for index in 0..chunk_count {
         entries.push(Stage8BatchEntry {
-            id: Stage8OpeningId::from(lattice_formulas::unsigned_inc_chunk_opening(index)),
+            id: Stage8OpeningId::from(lattice_formulas::unsigned_inc_reconstructed_chunk_opening(
+                index,
+            )),
             commitment,
             route: Stage8OpeningRoute::MainBatch,
             opening_claim: sources.chunk_claims.map(|claims| claims[index]),

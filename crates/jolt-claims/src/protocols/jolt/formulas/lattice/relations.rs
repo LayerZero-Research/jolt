@@ -3,7 +3,7 @@ use jolt_field::{FromPrimitiveInt, RingCore};
 use crate::protocols::jolt::{
     IncVirtualizationChallenge, IncVirtualizationPublic, JoltChallengeId, JoltExpr, JoltPublicId,
     JoltRelationClaims, JoltRelationId, UnsignedIncChunkReconstructionChallenge,
-    UnsignedIncChunkReconstructionPublic,
+    UnsignedIncChunkReconstructionPublic, UnsignedIncClaimReductionPublic,
 };
 use crate::{challenge, constant, opening, public};
 
@@ -13,7 +13,7 @@ use super::openings::{
     inc_virtualization_ram_val_check_opening, inc_virtualization_rd_read_write_opening,
     inc_virtualization_rd_val_evaluation_opening, inc_virtualization_store_opening,
     unsigned_inc_chunk_opening, unsigned_inc_chunking, unsigned_inc_msb_opening,
-    unsigned_inc_opening,
+    unsigned_inc_opening, unsigned_inc_reconstructed_chunk_opening,
 };
 
 pub fn inc_virtualization_claim<F>(dimensions: TraceDimensions) -> JoltRelationClaims<F>
@@ -50,7 +50,8 @@ where
     F: RingCore + FromPrimitiveInt,
 {
     let input = opening(inc_virtualization_inc_opening()) + constant(F::from_u128(1u128 << 64));
-    let output = opening(unsigned_inc_opening());
+    let output = unsigned_inc_claim_reduction_public(UnsignedIncClaimReductionPublic::EqInput)
+        * opening(unsigned_inc_opening());
 
     JoltRelationClaims::new(
         JoltRelationId::UnsignedIncClaimReduction,
@@ -58,6 +59,13 @@ where
         input,
         output,
     )
+}
+
+fn unsigned_inc_claim_reduction_public<F>(id: UnsignedIncClaimReductionPublic) -> JoltExpr<F>
+where
+    F: RingCore,
+{
+    public(JoltPublicId::from(id))
 }
 
 pub fn unsigned_inc_msb_booleanity_claim<F>(dimensions: TraceDimensions) -> JoltRelationClaims<F>
@@ -102,7 +110,7 @@ where
         let output_coeff = gamma.clone().pow(2 * index)
             + gamma.clone().pow(2 * index + 1) * eq_booleanity_address.clone()
             + delta.clone() * constant(place) * identity_at_address.clone();
-        output = output + output_coeff * opening(unsigned_inc_chunk_opening(index));
+        output = output + output_coeff * opening(unsigned_inc_reconstructed_chunk_opening(index));
         place *= F::from_u64(chunking.radix);
     }
 

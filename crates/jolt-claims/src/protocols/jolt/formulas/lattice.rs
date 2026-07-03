@@ -29,7 +29,7 @@ pub use openings::{
     inc_virtualization_relation, inc_virtualization_store_opening, unsigned_inc_chunk_opening,
     unsigned_inc_chunk_reconstruction_relation, unsigned_inc_claim_reduction_relation,
     unsigned_inc_input_opening, unsigned_inc_lower_chunk_count, unsigned_inc_msb_opening,
-    unsigned_inc_opening, LatticeFinalOpeningRequirement,
+    unsigned_inc_opening, unsigned_inc_reconstructed_chunk_opening, LatticeFinalOpeningRequirement,
 };
 pub use relations::{
     inc_virtualization_claim, unsigned_inc_chunk_reconstruction_claim,

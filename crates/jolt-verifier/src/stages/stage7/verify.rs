@@ -1368,7 +1368,7 @@ fn verify_unsigned_inc_chunk_reconstruction<F: Field>(
     let expected_output_claim = claim.output.expression().try_evaluate(
         |id| {
             for (index, opening_claim) in output_claims.chunks.iter().enumerate() {
-                if *id == lattice::unsigned_inc_chunk_opening(index) {
+                if *id == lattice::unsigned_inc_reconstructed_chunk_opening(index) {
                     return Ok(*opening_claim);
                 }
             }

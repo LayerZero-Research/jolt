@@ -237,6 +237,20 @@ pub struct AkitaBatchProof {
 }
 
 impl AkitaBatchProof {
+    pub fn serialized(
+        commitment: AkitaCommitment,
+        statement_bridge: Vec<u8>,
+        proof_shape: Vec<u8>,
+        proof: Vec<u8>,
+    ) -> Self {
+        Self {
+            commitment,
+            statement_bridge,
+            proof_shape,
+            proof,
+        }
+    }
+
     pub fn commitment(&self) -> &AkitaCommitment {
         &self.commitment
     }

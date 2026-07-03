@@ -42,6 +42,7 @@ pub mod prover_support {
         AkitaPackingValidityProofArtifacts, AkitaPackingVerifierSetup,
         AkitaPackingWitnessArtifacts, AkitaPrecommittedOpeningInput, AkitaStage8ClearOpeningProofs,
     };
+    pub use crate::akita_witness::JoltPackedWitnessBuilder;
 }
 pub use config::{
     validate_proof_config, validate_protocol_config, AdviceLatticeConfig, FieldInlineLatticeConfig,

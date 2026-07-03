@@ -124,6 +124,8 @@ where
         .ok_or_else(|| VerifierError::FinalOpeningBatchFailed {
             reason: "lattice packing opening artifacts do not carry a lattice payload".to_string(),
         })?;
+    let packed =
+        prove_akita_packing_openings(setup, transcript, artifacts, source, &statement.statement)?;
     let precommitted = prove_akita_precommitted_opening_batches(
         setup,
         transcript,
@@ -131,8 +133,6 @@ where
         &statement.precommitted_statements,
         precommitted_inputs,
     )?;
-    let packed =
-        prove_akita_packing_openings(setup, transcript, artifacts, source, &statement.statement)?;
     Ok(AkitaStage8ClearOpeningProofs {
         packed,
         precommitted,

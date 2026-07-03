@@ -16,28 +16,29 @@ use common::constants::XLEN;
 use jolt_akita::{AkitaCommitment, AkitaField, AkitaProverHint, AkitaScheme, AkitaSetupParams};
 use jolt_claims::protocols::jolt::{
     formulas::{dimensions::TracePolynomialOrder, ra::JoltRaPolynomialLayout},
-    lattice_packed_validity_digest,
+    JoltAdviceKind, JoltPackingFamilyId,
 };
 use jolt_field::FromPrimitiveInt;
 use jolt_openings::{
-    CommitmentScheme as OpeningCommitmentScheme, PackingProverSetup, PackingSetupParams,
-    PackingVerifierSetup,
+    packing_validity_digest, CommitmentScheme as OpeningCommitmentScheme, PackingProverSetup,
+    PackingSetupParams, PackingVerifierSetup, PackingWitnessLayout,
 };
 use jolt_poly::Polynomial;
 use jolt_program::preprocess::ProgramMetadata as VerifierProgramMetadata;
 use jolt_verifier::{
-    akita::{
-        commit_akita_packing_jolt_witness, AkitaCommittedPackedJoltWitness, AkitaJoltProof,
-        AkitaPackingBatchProof, AkitaPackingJoltWitnessInput, AkitaPackingProverSetup,
-        AkitaPackingVerifierSetup, AkitaPrecommittedOpeningInput, AkitaVerifierPreprocessing,
-    },
     config::{IncrementCommitmentMode, JoltProtocolConfig, PcsFamily, ProgramMode},
+    prover_support::{
+        commit_akita_packing_witness, AkitaCommittedPackedJoltWitness, AkitaPackingBatchProof,
+        AkitaPackingProverSetup, AkitaPackingVerifierSetup, AkitaPrecommittedOpeningInput,
+        JoltPackedWitnessBuilder,
+    },
     stages::{
         stage8::{
             derive_lattice_packed_validity_requirements, derive_lattice_packed_witness_layout,
         },
         CommittedProgramSchedule, PrecommittedSchedule,
     },
+    AkitaJoltProof, AkitaVerifierPreprocessing,
     CommittedProgramPreprocessing as VerifierCommittedProgramPreprocessing,
     ProgramPreprocessing as VerifierProgramPreprocessing, VerifierError,
 };
@@ -589,7 +590,10 @@ impl
         )?;
         let opening_inputs = precommitted.opening_inputs();
         let validity = time_akita_phase("prove_packed_validity", || {
-            jolt_verifier::akita::prove_akita_jolt_packed_validity::<AkitaLegacyBlake2bTranscript, _>(
+            jolt_verifier::prover_support::prove_akita_jolt_packed_validity::<
+                AkitaLegacyBlake2bTranscript,
+                _,
+            >(
                 &packed_witness.prover_setup,
                 &precommitted.preprocessing,
                 &public_io,
@@ -600,7 +604,7 @@ impl
             )
         })?;
         time_akita_phase("attach_packed_validity", || {
-            jolt_verifier::akita::attach_akita_packing_validity_proof(&mut proof, validity)
+            jolt_verifier::prover_support::attach_akita_packing_validity_proof(&mut proof, validity)
         })?;
         let AkitaPackedWitnessProverData {
             prover_setup,
@@ -609,8 +613,9 @@ impl
         } = packed_witness;
         let AkitaCommittedPackedJoltWitness { artifacts, witness } = committed;
         let opening_proofs = time_akita_phase("prove_final_openings", || {
-            jolt_verifier::akita::prove_akita_jolt_final_openings_with_precommitted_owned_witness::<
+            jolt_verifier::prover_support::prove_akita_jolt_final_openings_with_precommitted::<
                 AkitaLegacyBlake2bTranscript,
+                _,
             >(
                 &prover_setup,
                 &precommitted.preprocessing,
@@ -618,7 +623,7 @@ impl
                 &proof,
                 None,
                 &artifacts,
-                witness,
+                &witness,
                 &opening_inputs,
             )
         })?;
@@ -641,7 +646,7 @@ fn time_akita_phase<T>(phase: &'static str, f: impl FnOnce() -> T) -> T {
 }
 
 fn packed_witness_commitment(
-    artifacts: &jolt_verifier::akita::AkitaPackingWitnessArtifacts,
+    artifacts: &jolt_verifier::prover_support::AkitaPackingWitnessArtifacts,
 ) -> Result<AkitaCommitment, VerifierError> {
     artifacts
         .payload()
@@ -650,15 +655,12 @@ fn packed_witness_commitment(
 }
 
 fn placeholder_akita_batch_proof(commitment: AkitaCommitment) -> AkitaPackingBatchProof {
-    jolt_openings::PackingBatchProof {
-        reduction: None,
-        native: jolt_akita::AkitaBatchProof::serialized(
-            commitment,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        ),
-    }
+    AkitaPackingBatchProof::direct(jolt_akita::AkitaBatchProof::serialized(
+        commitment,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    ))
 }
 
 #[derive(Clone, Debug)]
@@ -701,8 +703,9 @@ pub struct AkitaOwnedPrecommittedOpening {
 
 impl AkitaOwnedPrecommittedOpening {
     pub fn as_input(&self) -> AkitaPrecommittedOpeningInput<'_> {
+        debug_assert_eq!(self.polynomials.len(), 1);
         AkitaPrecommittedOpeningInput {
-            polynomials: self.polynomials.as_slice(),
+            polynomial: &self.polynomials[0],
             hint: &self.hint,
         }
     }
@@ -793,20 +796,39 @@ where
                 })
                 .collect::<Vec<_>>()
         });
-        let committed = time_akita_phase("commit_packing_jolt_witness", || {
-            commit_akita_packing_jolt_witness(
-                &packed_setup.prover_setup,
-                AkitaPackingJoltWitnessInput {
-                    layout: packed_setup.prover_setup.layout.clone(),
-                    trace_rows: &trace_rows,
-                    log_k_chunk: self.one_hot_params.log_k_chunk,
-                    instruction_lookup_indices: &instruction_lookup_indices,
-                    remapped_ram_addresses: Some(&remapped_ram_addresses),
-                    untrusted_advice: (!self.program_io.untrusted_advice.is_empty())
-                        .then_some(self.program_io.untrusted_advice.as_slice()),
-                },
-            )
+        let witness = time_akita_phase("build_akita_packing_witness", || {
+            let mut builder =
+                JoltPackedWitnessBuilder::new(packed_setup.prover_setup.layout.clone());
+            builder
+                .pack_trace_rows(
+                    &trace_rows,
+                    self.one_hot_params.log_k_chunk,
+                    |row, _| instruction_lookup_indices[row],
+                    |row, _| remapped_ram_addresses[row],
+                )
+                .map_err(|error| {
+                    invalid_akita_prover_config(format!("failed to build Akita witness: {error}"))
+                })?;
+            if let Some(untrusted_advice) = padded_untrusted_advice_bytes(
+                &packed_setup.prover_setup.layout,
+                &self.program_io.untrusted_advice,
+            )? {
+                builder
+                    .pack_untrusted_advice_bytes(&untrusted_advice)
+                    .map_err(|error| {
+                        invalid_akita_prover_config(format!(
+                            "failed to pack untrusted advice bytes: {error}"
+                        ))
+                    })?;
+            }
+            builder.finish().map_err(|error| {
+                invalid_akita_prover_config(format!("failed to finalize Akita witness: {error}"))
+            })
         })?;
+        let artifacts = time_akita_phase("commit_packing_jolt_witness", || {
+            commit_akita_packing_witness(&packed_setup.prover_setup, &witness)
+        })?;
+        let committed = AkitaCommittedPackedJoltWitness { artifacts, witness };
 
         Ok(AkitaPackedWitnessProverData {
             protocol: committed.artifacts.protocol,
@@ -1082,7 +1104,7 @@ fn lattice_layout_derivation_config(
     config.lattice.packed_witness.layout_digest = Some([0; 32]);
     config.lattice.packed_witness.d_pack = Some(0);
     config.lattice.packed_witness.validity_digest = Some([0; 32]);
-    config.lattice.packed_witness.validity_digest = Some(lattice_packed_validity_digest(
+    config.lattice.packed_witness.validity_digest = Some(packing_validity_digest(
         &derive_lattice_packed_validity_requirements(&config, log_k_chunk, precommitted)?,
     ));
     Ok(config)
@@ -1145,7 +1167,7 @@ fn commit_akita_precommitted_polynomial_group(
     setup: &jolt_akita::AkitaProverSetup,
 ) -> Result<AkitaOwnedPrecommittedOpening, VerifierError> {
     let (commitment, hint) =
-        AkitaScheme::commit_group(setup, setup.default_layout_digest, &polynomials).map_err(
+        AkitaScheme::commit_group(setup, setup.default_layout_digest(), &polynomials).map_err(
             |error| VerifierError::FinalOpeningBatchFailed {
                 reason: error.to_string(),
             },
@@ -1155,6 +1177,37 @@ fn commit_akita_precommitted_polynomial_group(
         polynomials,
         hint,
     })
+}
+
+fn padded_untrusted_advice_bytes(
+    layout: &PackingWitnessLayout,
+    bytes: &[u8],
+) -> Result<Option<Vec<u8>>, VerifierError> {
+    let family_id = JoltPackingFamilyId::AdviceBytes {
+        kind: JoltAdviceKind::Untrusted,
+        index: 0,
+    }
+    .into();
+    let Some(family) = layout.family(&family_id) else {
+        if bytes.is_empty() {
+            return Ok(None);
+        }
+        return Err(invalid_akita_prover_config(
+            "untrusted advice bytes were supplied but the packed layout has no matching advice family",
+        ));
+    };
+    let expected = family.domain.rows().map_err(|error| {
+        invalid_akita_prover_config(format!("invalid untrusted advice layout domain: {error}"))
+    })?;
+    if bytes.len() > expected {
+        return Err(invalid_akita_prover_config(format!(
+            "untrusted advice byte length {} exceeds packed layout size {expected}",
+            bytes.len()
+        )));
+    }
+    let mut padded = bytes.to_vec();
+    padded.resize(expected, 0);
+    Ok(Some(padded))
 }
 
 fn verifier_program_metadata(
@@ -1195,6 +1248,14 @@ mod tests {
         },
     };
     use jolt_verifier::JoltProofClaims;
+    use tracing_subscriber::EnvFilter;
+
+    fn init_test_tracing() {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::from_default_env())
+            .with_test_writer()
+            .try_init();
+    }
 
     fn muldiv_program_inputs() -> (host::Program, Vec<u8>) {
         let program = host::Program::new("muldiv-guest");
@@ -1269,7 +1330,7 @@ mod tests {
             payload.d_pack
         );
         assert!(
-            precommitted.preprocessing.pcs_setup.pcs.max_num_vars >= payload.d_pack,
+            precommitted.preprocessing.pcs_setup.pcs.max_num_vars() >= payload.d_pack,
             "Akita setup should cover packed and precommitted opening dimensions"
         );
         assert_eq!(
@@ -1311,6 +1372,7 @@ mod tests {
     #[test]
     #[serial]
     fn muldiv_committed_program_proves_and_verifies_akita() {
+        init_test_tracing();
         DoryGlobals::reset();
         let (mut program, inputs) = muldiv_program_inputs();
         let (bytecode, init_memory_state, _, entry_address) = program.decode();
@@ -1348,7 +1410,7 @@ mod tests {
         let (verifier_preprocessing, proof, _) = prover
             .prove_akita()
             .expect("Akita proof should be produced");
-        jolt_verifier::akita::verify_akita_clear::<AkitaLegacyBlake2bTranscript>(
+        jolt_verifier::verify_akita_clear::<AkitaLegacyBlake2bTranscript>(
             &verifier_preprocessing,
             &io_device,
             &proof,
@@ -1362,7 +1424,7 @@ mod tests {
             panic!("Akita e2e proof should be clear");
         };
         claims.stage7.hamming_weight_claim_reduction.ram_ra[0] += AkitaField::one();
-        jolt_verifier::akita::verify_akita_clear::<AkitaLegacyBlake2bTranscript>(
+        jolt_verifier::verify_akita_clear::<AkitaLegacyBlake2bTranscript>(
             &verifier_preprocessing,
             &io_device,
             &tampered_claim,
@@ -1372,14 +1434,25 @@ mod tests {
         .expect_err("tampered prover-produced Akita opening claim should reject");
 
         let mut tampered_opening = proof.clone();
-        let first_byte = tampered_opening
-            .joint_opening_proof
-            .native
-            .proof
+        let native = tampered_opening.joint_opening_proof.native().clone();
+        let mut proof_bytes = native.proof_bytes().to_vec();
+        let first_byte = proof_bytes
             .first_mut()
             .expect("prover-produced Akita final opening proof should contain proof bytes");
         *first_byte ^= 1;
-        jolt_verifier::akita::verify_akita_clear::<AkitaLegacyBlake2bTranscript>(
+        let tampered_native = jolt_akita::AkitaBatchProof::serialized(
+            native.commitment().clone(),
+            native.statement_bridge().to_vec(),
+            native.proof_shape().to_vec(),
+            proof_bytes,
+        );
+        tampered_opening.joint_opening_proof =
+            if let Some(reduction) = tampered_opening.joint_opening_proof.reduction() {
+                AkitaPackingBatchProof::packed(reduction.clone(), tampered_native)
+            } else {
+                AkitaPackingBatchProof::direct(tampered_native)
+            };
+        jolt_verifier::verify_akita_clear::<AkitaLegacyBlake2bTranscript>(
             &verifier_preprocessing,
             &io_device,
             &tampered_opening,

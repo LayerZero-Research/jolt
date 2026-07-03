@@ -711,7 +711,7 @@ impl<
     )]
     fn absorb_akita_commitments(
         transcript: &mut ProofTranscript,
-        artifacts: &jolt_verifier::akita::AkitaPackingWitnessArtifacts,
+        artifacts: &jolt_verifier::prover_support::AkitaPackingWitnessArtifacts,
     ) {
         Self::absorb_lattice_protocol_header(transcript, &artifacts.protocol);
         let payload = artifacts
@@ -762,12 +762,14 @@ impl<
         commitment: &jolt_akita::AkitaCommitment,
     ) {
         transcript.append_label(b"akita_commitment");
-        transcript.raw_append_bytes(&commitment.layout_digest);
-        transcript.raw_append_u64(commitment.num_vars as u64);
-        transcript.raw_append_u64(commitment.poly_count as u64);
-        transcript
-            .raw_append_label_with_len(b"akita_commitment_bytes", commitment.native.len() as u64);
-        transcript.raw_append_bytes(&commitment.native);
+        transcript.raw_append_bytes(&commitment.layout_digest());
+        transcript.raw_append_u64(commitment.num_vars() as u64);
+        transcript.raw_append_u64(commitment.poly_count() as u64);
+        transcript.raw_append_label_with_len(
+            b"akita_commitment_bytes",
+            commitment.native_bytes().len() as u64,
+        );
+        transcript.raw_append_bytes(commitment.native_bytes());
     }
 
     #[cfg(all(feature = "akita", not(feature = "zk")))]

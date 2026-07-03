@@ -479,7 +479,7 @@ pub(crate) fn akita_proof_parts_into_verifier<FS>(
     >,
     protocol: jolt_verifier::JoltProtocolConfig,
     commitments: CommitmentPayload<jolt_akita::AkitaCommitment>,
-    joint_opening_proof: jolt_verifier::akita::AkitaPackingBatchProof,
+    joint_opening_proof: jolt_verifier::prover_support::AkitaPackingBatchProof,
     untrusted_advice_commitment: Option<jolt_akita::AkitaCommitment>,
 ) -> Result<jolt_verifier::AkitaJoltProof, VerifierError>
 where

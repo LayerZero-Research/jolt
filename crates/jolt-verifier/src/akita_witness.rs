@@ -313,7 +313,6 @@ pub fn build_akita_packing_jolt_witness(
             input.trace_rows.len()
         )));
     }
-
     let mut builder = JoltPackedWitnessBuilder::new(input.layout.clone());
     builder
         .pack_trace_rows(

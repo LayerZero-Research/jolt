@@ -41,6 +41,7 @@ members = [
   "crates/jolt-transcript",
   "crates/jolt-profiling",
   "crates/jolt-field",
+  "crates/jolt-prover-legacy",
   "jolt-core",
   "tracer",
   "common",
@@ -386,10 +387,12 @@ secp256k1 = { version = "0.31", features = ["recovery", "rand"] }
 common = { path = "./common", default-features = false }
 tracer = { path = "./tracer", default-features = false }
 jolt-core = { path = "./jolt-core", default-features = false }
+jolt-prover-legacy = { path = "./crates/jolt-prover-legacy", default-features = false }
 jolt-blindfold = { path = "./crates/jolt-blindfold" }
 jolt-claims = { path = "./crates/jolt-claims" }
 jolt-akita = { path = "./crates/jolt-akita" }
 jolt-crypto = { path = "./crates/jolt-crypto" }
+jolt-dory = { path = "./crates/jolt-dory" }
 jolt-field = { path = "./crates/jolt-field" }
 jolt-openings = { path = "./crates/jolt-openings" }
 jolt-verifier = { path = "./crates/jolt-verifier" }

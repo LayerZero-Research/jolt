@@ -98,6 +98,10 @@ pub fn unsigned_inc_chunk_opening(index: usize) -> JoltOpeningId {
     JoltOpeningId::lattice(JoltRelationId::UnsignedIncClaimReduction, 2 + index)
 }
 
+pub fn unsigned_inc_reconstructed_chunk_opening(index: usize) -> JoltOpeningId {
+    JoltOpeningId::lattice(JoltRelationId::UnsignedIncChunkReconstruction, index)
+}
+
 pub fn unsigned_inc_lower_chunk_count(log_k_chunk: usize) -> Option<usize> {
     Some(unsigned_inc_chunking(log_k_chunk)?.chunk_count)
 }

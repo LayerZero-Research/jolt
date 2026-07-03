@@ -71,6 +71,7 @@ pub use ids::{
     RegistersReadWriteChallenge, RegistersValEvaluationChallenge, SpartanOuterPublic,
     SpartanProductVirtualizationPublic, SpartanShiftChallenge, SpartanShiftPublic,
     UnsignedIncChunkReconstructionChallenge, UnsignedIncChunkReconstructionPublic,
+    UnsignedIncClaimReductionPublic,
 };
 pub use relation::{
     JoltConsistencyClaim, JoltExpr, JoltInputClaimExpression, JoltOutputClaimExpression,
