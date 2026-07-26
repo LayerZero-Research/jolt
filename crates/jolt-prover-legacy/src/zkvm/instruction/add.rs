@@ -39,7 +39,20 @@ impl<const XLEN: usize> LookupQuery<XLEN> for RISCVCycle<ADD> {
     }
 
     fn to_lookup_index(&self) -> u128 {
-        LookupQuery::<XLEN>::to_lookup_operands(self).1
+        let honest = LookupQuery::<XLEN>::to_lookup_operands(self).1;
+        // PoC only (`fp128-forgery-poc`): commit the aliased address `s + p`.
+        // `to_lookup_operands` stays honest on purpose — `RightLookupOperand`
+        // must remain `s` so the R1CS constraint `RightLookupOperand == x + y`
+        // still holds. Only the committed *address* moves.
+        #[cfg(feature = "fp128-forgery-poc")]
+        {
+            use tracer::instruction::fp128_forgery;
+            let (x, y) = LookupQuery::<XLEN>::to_instruction_inputs(self);
+            if fp128_forgery::is_target(x, y as u64) {
+                return fp128_forgery::forged_lookup_index(honest);
+            }
+        }
+        honest
     }
 
     fn to_instruction_inputs(&self) -> (u64, i128) {
@@ -60,6 +73,16 @@ impl<const XLEN: usize> LookupQuery<XLEN> for RISCVCycle<ADD> {
 
     fn to_lookup_output(&self) -> u64 {
         let (x, y) = LookupQuery::<XLEN>::to_instruction_inputs(self);
+        // PoC only (`fp128-forgery-poc`): the table entry at the aliased address
+        // is its low 64 bits. This is what the read leg proves and what the
+        // emulator wrote to `rd`, so `RdWrite == LookupOutput` still holds.
+        #[cfg(feature = "fp128-forgery-poc")]
+        {
+            use tracer::instruction::fp128_forgery;
+            if fp128_forgery::is_target(x, y as u64) {
+                return fp128_forgery::forged_output(x, y as u64);
+            }
+        }
         match XLEN {
             #[cfg(test)]
             8 => (x as u8).overflowing_add(y as u8).0.into(),

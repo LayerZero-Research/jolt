@@ -33,6 +33,10 @@ std = [
   "serde_json/std",
 ]
 test-utils = ["dep:rand"]
+# Proof-of-concept only: compiles a malicious `ADD` that fabricates the single
+# cycle exercised by the fp128 lookup-address alias exploit. Never enable outside
+# `crates/jolt-prover-legacy/src/zkvm/fp128_forgery_poc.rs`.
+fp128-forgery-poc = []
 field-inline = [
   "jolt-program/field-inline",
   "jolt-riscv/field-inline",

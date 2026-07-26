@@ -291,6 +291,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "alias-forgery-guest"
+version = "0.1.0"
+dependencies = [
+ "jolt-sdk",
+]
+
+[[package]]
 name = "aligned-vec"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

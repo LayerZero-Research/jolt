@@ -65,6 +65,9 @@ monitor = ["dep:sysinfo"]
 pprof = ["dep:pprof", "dep:prost"]
 test_incremental = []
 challenge-254-bit = []
+# Proof-of-concept only: enables the malicious lookup-address override exercised
+# by `src/zkvm/fp128_forgery_poc.rs`.
+fp128-forgery-poc = ["tracer/fp128-forgery-poc"]
 field-inline = [
   "jolt-lookup-tables/field-inline",
   "jolt-program/field-inline",

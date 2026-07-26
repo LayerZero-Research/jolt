@@ -235,6 +235,8 @@ pub mod ecall;
 pub mod fence;
 #[cfg(feature = "field-inline")]
 pub mod field_inline;
+#[cfg(feature = "fp128-forgery-poc")]
+pub mod fp128_forgery;
 pub mod inline;
 pub mod jal;
 pub mod jalr;

@@ -60,6 +60,13 @@ pub mod claim_reductions;
 #[cfg(all(feature = "prover", not(feature = "zk")))]
 pub(crate) mod clear_claims;
 pub mod config;
+#[cfg(all(
+    test,
+    feature = "fp128-forgery-poc",
+    feature = "host",
+    not(feature = "zk")
+))]
+mod fp128_forgery_poc;
 pub mod instruction;
 pub mod instruction_lookups;
 pub mod lookup_table;
