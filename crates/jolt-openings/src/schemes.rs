@@ -39,6 +39,30 @@ pub trait GroupSetupMetadata {
     fn one_hot_k(&self) -> usize;
 }
 
+/// One commitment group of a fused multi-group opening, verifier side: its
+/// commitment, its `num_vars` (the slice length it binds of the shared point),
+/// and its claimed evaluations. Groups are in `[precommitteds…, final]` order;
+/// the final (widest) group binds the whole shared point.
+pub struct MultiGroupOpeningClaim<'a, F, C> {
+    pub commitment: &'a C,
+    pub num_vars: usize,
+    pub evaluations: &'a [F],
+}
+
+/// A commitment scheme that can discharge several commitment groups at
+/// prefix/suffix slices of one shared point in a single native opening (a
+/// multi-group root fold). Only schemes with a native group-commitment concept
+/// (Akita) implement this; the generic RLC-based schemes do not.
+pub trait MultiGroupVerify: CommitmentScheme {
+    fn verify_multi_group<T: Transcript<Challenge = Self::Field>>(
+        setup: &Self::VerifierSetup,
+        shared_point: &[Self::Field],
+        groups: &[MultiGroupOpeningClaim<'_, Self::Field, Self::Output>],
+        proof: &Self::Proof,
+        transcript: &mut T,
+    ) -> Result<(), OpeningsError>;
+}
+
 /// Commit to f: F^n -> F, then prove f(r) = v for verifier-chosen r.
 pub trait CommitmentScheme: Commitment {
     type Field: Field;

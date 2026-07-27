@@ -83,7 +83,8 @@ use jolt_verifier::stages::{
 };
 
 use crate::support::akita_fixtures::{
-    akita_advice_case, akita_committed_muldiv_case, akita_muldiv_case, AkitaFixtureCase,
+    akita_advice_case, akita_committed_muldiv_case, akita_fused_untrusted_case, akita_muldiv_case,
+    AkitaFixtureCase,
 };
 use crate::support::assert_rejects;
 
@@ -709,6 +710,7 @@ fn every_commitment_wire_rejects_perturbation() {
         akita_muldiv_case(),
         akita_advice_case(),
         akita_committed_muldiv_case(),
+        akita_fused_untrusted_case(),
     ] {
         sweep_commitment(case, &case.proof.commitments, 6, |commitment| {
             let mut proof = case.proof.clone();
@@ -725,10 +727,43 @@ fn every_commitment_wire_rejects_perturbation() {
             proof
         });
     }
+    let fused = akita_fused_untrusted_case();
+    if let Some(untrusted) = &fused.proof.untrusted_advice_commitment {
+        sweep_commitment(fused, untrusted, 6, |commitment| {
+            let mut proof = fused.proof.clone();
+            proof.untrusted_advice_commitment = Some(commitment);
+            proof
+        });
+    }
 }
 
-/// Proof-shape tampers: a swapped phase proof, dropped reconstruction /
-/// auxiliary proofs, and an auxiliary evaluation offset — each fail-closed.
+#[test]
+fn fused_aux_arity_metadata_rejects() {
+    let case = akita_fused_untrusted_case();
+    let commitment = case
+        .proof
+        .untrusted_advice_commitment
+        .as_ref()
+        .expect("fused fixture carries untrusted advice");
+    let mut value = serde_json::to_value(commitment).expect("commitment serializes");
+    let num_vars = value
+        .get_mut("num_vars")
+        .expect("commitment exposes num_vars");
+    *num_vars =
+        serde_json::Value::from(num_vars.as_u64().expect("num_vars is an unsigned integer") + 1);
+    let commitment = serde_json::from_value(value).expect("metadata-only mutation deserializes");
+    let mut proof = case.proof.clone();
+    proof.untrusted_advice_commitment = Some(commitment);
+    // Commitment metadata is transcript-bound in the preamble, so a real
+    // proof may reject before stage 8. The adapter unit test exercises the
+    // direct boundary and confirms canonical mismatch rejection before native
+    // payload decoding.
+    assert_rejects(case.verify_proof(&proof));
+}
+
+/// Proof-shape tampers: a swapped phase proof, a dropped reconstruction proof,
+/// a dropped per-object opening, and an object-evaluation offset — each
+/// fail-closed.
 #[test]
 fn akita_proof_shape_tampers_reject() {
     let muldiv = akita_muldiv_case();
@@ -741,19 +776,21 @@ fn akita_proof_shape_tampers_reject() {
     proof.stages.reconstruction_sumcheck_proof = None;
     assert_rejects(advice.verify_proof(&proof));
 
+    // Dropping a per-object opening from the joint packed proof breaks the
+    // openings/groups count check.
     let mut proof = advice.proof.clone();
-    proof.joint_opening_proof.auxiliary = None;
+    let _ = proof.joint_opening_proof.openings.pop();
     assert_rejects(advice.verify_proof(&proof));
 
     let committed = akita_committed_muldiv_case();
     let mut proof = committed.proof.clone();
-    proof.joint_opening_proof.auxiliary = None;
+    let _ = proof.joint_opening_proof.openings.pop();
     assert_rejects(committed.verify_proof(&proof));
 
+    // A tampered OneHotTrace evaluation (a leading object) must break the joint
+    // opening now that the trace is reduced together with advice/program.
     let mut proof = committed.proof.clone();
-    if let Some(auxiliary) = proof.joint_opening_proof.auxiliary.as_mut() {
-        auxiliary.evaluations[0] += one();
-    }
+    proof.joint_opening_proof.evaluations[0] += one();
     assert_rejects(committed.verify_proof(&proof));
 }
 

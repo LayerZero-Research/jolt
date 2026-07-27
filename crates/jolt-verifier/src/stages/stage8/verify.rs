@@ -448,7 +448,7 @@ pub fn verify<F, PCS, VC, T, ZkProof>(
 ) -> Result<Stage8Output<F, PCS::Output, VC::Output>, VerifierError>
 where
     F: Field,
-    PCS: CommitmentScheme<Field = F>,
+    PCS: CommitmentScheme<Field = F> + jolt_openings::MultiGroupVerify,
     PCS::Output: Clone + AppendToTranscript + super::OneHotTraceCommitmentMetadata,
     PCS::VerifierSetup: super::OneHotTraceSetupMetadata,
     VC: VectorCommitment<Field = F>,

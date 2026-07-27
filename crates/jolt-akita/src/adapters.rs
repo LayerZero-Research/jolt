@@ -13,7 +13,10 @@ use jolt_field::CanonicalBytes;
 use jolt_openings::{OpeningsError, VerifierOpeningClaim};
 use jolt_poly::{MultilinearPoly, OneHotIndexOrder, OneHotPolynomial, Polynomial};
 use jolt_transcript::{AppendToTranscript, Label, LabelWithCount, Transcript, U64Word};
-use serde::{Deserialize, Serialize};
+use serde::{
+    de::{Error as DeError, SeqAccess, Visitor},
+    Deserialize, Deserializer, Serialize,
+};
 use tracing::info_span;
 
 pub type AkitaField = akita_config::proof_optimized::fp128::Field;
@@ -23,6 +26,11 @@ pub(crate) type AkitaOneHotK256Config = crate::configs::JoltD64OneHotK256;
 pub(crate) const AKITA_D: usize = AkitaConfig::D;
 pub const AKITA_ONE_HOT_K16: usize = 16;
 pub const AKITA_ONE_HOT_K256: usize = 256;
+
+pub(crate) const MAX_PROOF_SHAPE_BYTES: usize = 16 * 1024;
+const MAX_STATEMENT_BRIDGE_BYTES: usize = 1024;
+const MAX_BACKEND_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
+const MAX_HIDING_COMMITMENT_BYTES: usize = 1024;
 
 pub(crate) type AkitaBackendExtField = <AkitaConfig as CommitmentConfig>::ExtField;
 
@@ -46,6 +54,87 @@ pub(crate) type AkitaLayoutDigest = [u8; 32];
 /// Worker stack size for [`with_backend_pool`]. Stacks are lazily committed,
 /// so oversizing costs virtual address space only.
 const BACKEND_WORKER_STACK_BYTES: usize = 64 * 1024 * 1024;
+
+fn deserialize_bounded_bytes<'de, D, const MAX: usize>(
+    deserializer: D,
+    field: &'static str,
+) -> Result<Vec<u8>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct BoundedBytesVisitor<const MAX: usize> {
+        field: &'static str,
+    }
+
+    impl<'de, const MAX: usize> Visitor<'de> for BoundedBytesVisitor<MAX> {
+        type Value = Vec<u8>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(formatter, "{} containing at most {MAX} bytes", self.field)
+        }
+
+        fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            let declared_len = sequence.size_hint();
+            if declared_len.is_some_and(|len| len > MAX) {
+                return Err(A::Error::custom(format!(
+                    "{} declares {} bytes but the protocol cap is {MAX}",
+                    self.field,
+                    declared_len.unwrap_or_default()
+                )));
+            }
+            let mut bytes = Vec::with_capacity(declared_len.unwrap_or_default());
+            while let Some(byte) = sequence.next_element()? {
+                if bytes.len() == MAX {
+                    return Err(A::Error::custom(format!(
+                        "{} exceeds the protocol cap of {MAX} bytes",
+                        self.field
+                    )));
+                }
+                bytes.push(byte);
+            }
+            Ok(bytes)
+        }
+    }
+
+    deserializer.deserialize_seq(BoundedBytesVisitor::<MAX> { field })
+}
+
+fn deserialize_statement_bridge<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_bytes::<D, MAX_STATEMENT_BRIDGE_BYTES>(
+        deserializer,
+        "Akita statement bridge",
+    )
+}
+
+fn deserialize_proof_shape<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_bytes::<D, MAX_PROOF_SHAPE_BYTES>(deserializer, "Akita proof shape")
+}
+
+fn deserialize_backend_payload<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_bytes::<D, MAX_BACKEND_PAYLOAD_BYTES>(deserializer, "Akita backend payload")
+}
+
+fn deserialize_hiding_commitment<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_bytes::<D, MAX_HIDING_COMMITMENT_BYTES>(
+        deserializer,
+        "Akita hiding commitment",
+    )
+}
 
 /// Runs `f` with rayon parallelism on a dedicated pool whose workers have
 /// large stacks.
@@ -391,6 +480,7 @@ pub struct AkitaCommitment {
     /// Field-coefficient count of the serialized backend commitment — the
     /// deserialization context [`akita_types::Commitment`] requires.
     pub(crate) backend_coeff_len: usize,
+    #[serde(deserialize_with = "deserialize_backend_payload")]
     pub(crate) serialized_backend_bytes: Vec<u8>,
 }
 
@@ -476,14 +566,18 @@ impl AppendToTranscript for AkitaCommitment {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AkitaBatchProof {
+    #[serde(deserialize_with = "deserialize_statement_bridge")]
     pub(crate) statement_bridge: Vec<u8>,
+    #[serde(deserialize_with = "deserialize_proof_shape")]
     pub(crate) serialized_akita_proof_shape: Vec<u8>,
+    #[serde(deserialize_with = "deserialize_backend_payload")]
     pub(crate) serialized_akita_proof: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AkitaHidingCommitment {
+    #[serde(deserialize_with = "deserialize_hiding_commitment")]
     pub(crate) eval: Vec<u8>,
 }
 
@@ -855,4 +949,75 @@ where
     let bridge = jolt_transcript.challenge_scalar();
     akita_transcript.append_field(b"jolt_statement_bridge", &bridge);
     bridge.to_bytes_le_vec()
+}
+
+#[cfg(test)]
+mod bounded_deserialization_tests {
+    #![expect(
+        clippy::expect_used,
+        reason = "tests assert successful fixture serialization"
+    )]
+
+    use super::*;
+
+    fn encode_length(length: usize) -> Vec<u8> {
+        bincode::encode_to_vec(length, bincode::config::standard()).expect("encode length")
+    }
+
+    #[test]
+    fn proof_shape_length_rejects_before_reading_payload() {
+        let mut encoded = vec![0];
+        encoded.extend(encode_length(MAX_PROOF_SHAPE_BYTES + 1));
+        let error = bincode::serde::decode_from_slice::<AkitaBatchProof, _>(
+            &encoded,
+            bincode::config::standard(),
+        )
+        .expect_err("oversized declared proof shape must reject");
+        assert!(error.to_string().contains("protocol cap"));
+    }
+
+    #[test]
+    fn backend_proof_length_rejects_before_reading_payload() {
+        let mut encoded = vec![0, 0];
+        encoded.extend(encode_length(MAX_BACKEND_PAYLOAD_BYTES + 1));
+        let error = bincode::serde::decode_from_slice::<AkitaBatchProof, _>(
+            &encoded,
+            bincode::config::standard(),
+        )
+        .expect_err("oversized declared backend proof must reject");
+        assert!(error.to_string().contains("protocol cap"));
+    }
+
+    #[test]
+    fn backend_commitment_length_rejects_before_reading_payload() {
+        let commitment = AkitaCommitment::default();
+        let mut encoded = bincode::serde::encode_to_vec(&commitment, bincode::config::standard())
+            .expect("encode empty commitment");
+        assert_eq!(encoded.pop(), Some(0), "empty payload has a zero length");
+        encoded.extend(encode_length(MAX_BACKEND_PAYLOAD_BYTES + 1));
+        let error = bincode::serde::decode_from_slice::<AkitaCommitment, _>(
+            &encoded,
+            bincode::config::standard(),
+        )
+        .expect_err("oversized declared backend commitment must reject");
+        assert!(error.to_string().contains("protocol cap"));
+    }
+
+    #[test]
+    fn proof_shape_cap_is_inclusive() {
+        let proof = AkitaBatchProof {
+            statement_bridge: Vec::new(),
+            serialized_akita_proof_shape: vec![0; MAX_PROOF_SHAPE_BYTES],
+            serialized_akita_proof: Vec::new(),
+        };
+        let encoded = bincode::serde::encode_to_vec(&proof, bincode::config::standard())
+            .expect("encode boundary proof");
+        let (decoded, consumed) = bincode::serde::decode_from_slice::<AkitaBatchProof, _>(
+            &encoded,
+            bincode::config::standard(),
+        )
+        .expect("shape exactly at the cap must deserialize");
+        assert_eq!(consumed, encoded.len());
+        assert_eq!(decoded, proof);
+    }
 }

@@ -36,8 +36,8 @@ pub use geometry::{
 };
 pub mod strategy;
 pub use packing::{
-    advice_bytes_packing, one_hot_trace_columns, precommitted_packing, OneHotTraceShape,
-    PrecommittedPackingShape,
+    advice_byte_column_one_hot_point, advice_bytes_packing, one_hot_trace_columns,
+    precommitted_packing, OneHotTraceShape, PrecommittedPackingShape,
 };
 pub use strategy::{
     OneHotTraceLayout, OneHotTraceLayoutPlan, OneHotTraceSetupShape, ONE_HOT_TRACE_LAYOUT,

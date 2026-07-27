@@ -64,6 +64,12 @@ pub fn akita_advice_case() -> &'static AkitaFixtureCase {
     CASE.get_or_init(generate_advice)
 }
 
+/// The fused case: proof-carried untrusted advice plus the trace final group.
+pub fn akita_fused_untrusted_case() -> &'static AkitaFixtureCase {
+    static CASE: OnceLock<AkitaFixtureCase> = OnceLock::new();
+    CASE.get_or_init(generate_fused_untrusted)
+}
+
 /// The committed-program case: `ProgramOneHot` as the auxiliary packed object.
 pub fn akita_committed_muldiv_case() -> &'static AkitaFixtureCase {
     static CASE: OnceLock<AkitaFixtureCase> = OnceLock::new();
@@ -154,6 +160,59 @@ fn generate_advice() -> AkitaFixtureCase {
         public_io,
         proof,
         trusted_advice_commitment: Some(trusted_commitment),
+    }
+}
+
+fn generate_fused_untrusted() -> AkitaFixtureCase {
+    let mut program = host::Program::new("untrusted-advice-consumer-guest");
+    let (bytecode, init_memory_state, _, e_entry) = program.decode();
+    let inputs = postcard::to_stdvec(&5u64).expect("serialize inputs");
+    let untrusted_advice = postcard::to_stdvec(&5u64).expect("serialize untrusted");
+    let (_, _, _, io_device) = program.trace(&inputs, &untrusted_advice, &[]);
+
+    let program_data = ProgramPreprocessing::preprocess(bytecode, init_memory_state, e_entry)
+        .expect("program preprocessing");
+    let shared: JoltSharedPreprocessing<AkitaPackedScheme> =
+        JoltSharedPreprocessing::new(program_data, io_device.memory_layout.clone(), 1 << 16);
+    let prover_preprocessing = JoltProverPreprocessing::new(shared);
+    let elf_contents = program.get_elf_contents().expect("elf contents");
+    let mut prover: AkitaPackedProver<'_> = JoltCpuProver::gen_from_elf(
+        &prover_preprocessing,
+        &elf_contents,
+        &inputs,
+        &untrusted_advice,
+        &[],
+        None,
+        None,
+        None,
+    );
+    let forced = jolt_prover_legacy::zkvm::config::OneHotConfig {
+        log_k_chunk: 8,
+        lookups_ra_virtual_log_k_chunk: 32,
+    };
+    prover.one_hot_params = jolt_prover_legacy::zkvm::config::OneHotParams::from_config(
+        &forced,
+        prover_preprocessing.shared.bytecode_size(),
+        prover.one_hot_params.ram_k,
+    );
+    let public_io = prover.program_io.clone();
+    let (object_setup, verifier_setup) =
+        <AkitaScheme as VerifierCommitmentScheme>::setup(prover.one_hot_trace_setup_params())
+            .expect("transparent packed setup");
+    let proof = prover
+        .prove_packed(&object_setup, None, None)
+        .expect("fused packed prover");
+    assert_eq!(
+        proof.joint_opening_proof.openings.len(),
+        1,
+        "fixture must exercise the fused topology"
+    );
+    let preprocessing = akita_verifier_preprocessing(&prover_preprocessing, verifier_setup, None);
+    AkitaFixtureCase {
+        preprocessing,
+        public_io,
+        proof,
+        trusted_advice_commitment: None,
     }
 }
 

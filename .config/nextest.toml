@@ -6,6 +6,10 @@ dory = { max-threads = 1 }
 # ZK verifier fixture tests generate shared temp artifacts and use large stacks;
 # keep them serial to avoid host memory and fixture contention.
 zk-core-fixtures = { max-threads = 1 }
+# Akita e2e tests compile guests into the shared default guest target. Keep
+# cross-process nextest execution serial so one build cannot replace another
+# test's ELF while it is being loaded.
+akita-e2e = { max-threads = 1 }
 
 [[profile.default.overrides]]
 filter = 'test(dory)'
@@ -18,3 +22,7 @@ test-group = 'dory'
 [[profile.default.overrides]]
 filter = 'package(jolt-verifier) and test(zk)'
 test-group = 'zk-core-fixtures'
+
+[[profile.default.overrides]]
+filter = 'package(jolt-prover-legacy) and test(e2e_akita)'
+test-group = 'akita-e2e'

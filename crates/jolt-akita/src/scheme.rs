@@ -219,7 +219,7 @@ impl AkitaScheme {
     /// Wraps a backend commitment and its opening data into the adapter's
     /// commitment/hint pair; the flavor and polynomial count come from the
     /// hint polynomials themselves.
-    fn package_commitment(
+    pub(crate) fn package_commitment(
         layout_digest: AkitaLayoutDigest,
         num_vars: usize,
         backend_commitment: AkitaBackendCommitment,

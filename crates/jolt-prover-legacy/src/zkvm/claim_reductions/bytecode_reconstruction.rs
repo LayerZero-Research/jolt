@@ -12,15 +12,18 @@
 //! over the missing high coordinates. The row point stays FIXED at `r_row`
 //! (no row rounds): each leg's column table is the sub-column pre-bound at
 //! `r_row` — a scatter of `eq(r_row, ·)` over the column's hot cells. A
-//! fully-bound (or 0-round flag) leg keeps contributing through the
-//! zero-extension as `s·(1 − X)` per remaining round, which is exactly the
-//! verifier's `Π (1 − v_i)` zero-pin.
+//! fully-bound leg keeps contributing through the zero-extension as
+//! `s·(1 − X)` per remaining round, which is exactly the verifier's
+//! `Π (1 − v_i)` zero-pin.
 //!
-//! Per chunk (scale `γ^chunk`) the legs are: three register selectors
-//! (own = log2(REGISTER_COUNT)), every circuit/instruction flag and the RAF
-//! flag (own = 0), the lookup-table selector (own = log2 of the padded
-//! table block), and the pc/imm byte decodes (own = `8 + log2(places)`).
-//! Every leg is a product of two multilinears, hence degree 2.
+//! Every sub-column commits into one K=256 row-major one-hot polynomial, so
+//! per chunk (scale `γ^chunk`) the legs are: three register selectors and the
+//! lookup-table selector (own = `BYTE_BITS`, the shared 8-bit one-hot lane —
+//! their narrower 7-/6-bit value sits in the low lane bits, the high lane bits
+//! zero-pinned), every circuit/instruction flag and the RAF flag (own =
+//! `BYTE_BITS`, the column hot at lane 1 with the flag mass, a uniform lane-eq
+//! weight), and the pc/imm byte decodes (own = `8 + log2(places)`). Every leg
+//! is a product of two multilinears, hence degree 2.
 
 use allocative::Allocative;
 #[cfg(feature = "prover")]
@@ -63,6 +66,10 @@ const DEGREE_BOUND: usize = 2;
 /// Byte places of one word lane (the unexpanded pc decomposes into 8 bytes).
 const WORD_BYTES: usize = 8;
 const BYTE_BITS: usize = 8;
+/// Shared one-hot lane width: every sub-column commits into one K=256 poly, so
+/// selector/flag legs bind a full 8-bit lane (their value in the low bits, the
+/// unused high lane bits zero-pinned) instead of their tight 7-/6-/0-bit value.
+const LANE_SIZE: usize = 1 << BYTE_BITS;
 
 #[derive(Allocative, Clone)]
 pub struct BytecodeReconstructionSumcheckParams<F: JoltField> {
@@ -225,7 +232,6 @@ impl<F: JoltField> BytecodeReconstructionSumcheckProver<F> {
         debug_assert_eq!(eq_row.len(), rows);
         let register_count = layout.rs2_start - layout.rs1_start;
         let lookup_count = layout.raf_flag_idx - layout.lookup_start;
-        let lookup_cells = lookup_count.next_power_of_two();
         let imm_limb_bits = params.imm_byte_width.log_2();
         let place_bits = WORD_BYTES.log_2();
 
@@ -276,12 +282,15 @@ impl<F: JoltField> BytecodeReconstructionSumcheckProver<F> {
                 let end = ((chunk + 1) * rows).min(bytecode.len());
                 let chunk_rows = &bytecode[start..end];
 
+                // Selector columns are widened to the shared 8-bit lane
+                // (`LANE_SIZE`); the high lanes past the real value count stay
+                // zero (zero-pinned when bound).
                 let mut reg_columns: [Vec<F>; 3] =
-                    std::array::from_fn(|_| vec![F::zero(); register_count]);
+                    std::array::from_fn(|_| vec![F::zero(); LANE_SIZE]);
                 let mut circuit_flag_values = vec![F::zero(); NUM_CIRCUIT_FLAGS];
                 let mut instruction_flag_values = vec![F::zero(); NUM_INSTRUCTION_FLAGS];
                 let mut raf_value = F::zero();
-                let mut lookup_column = vec![F::zero(); lookup_cells];
+                let mut lookup_column = vec![F::zero(); LANE_SIZE];
                 let mut pc_column = vec![F::zero(); 1 << (BYTE_BITS + place_bits)];
                 let mut imm_column = vec![F::zero(); 1 << (BYTE_BITS + imm_limb_bits)];
                 for row in 0..rows {
@@ -344,25 +353,42 @@ impl<F: JoltField> BytecodeReconstructionSumcheckProver<F> {
                 .into_iter()
                 .enumerate()
                 {
-                    let weight: Vec<F> = (0..register_count)
-                        .map(|register| *gamma * eq_lane[block_start + register])
+                    let weight: Vec<F> = (0..LANE_SIZE)
+                        .map(|register| {
+                            if register < register_count {
+                                *gamma * eq_lane[block_start + register]
+                            } else {
+                                F::zero()
+                            }
+                        })
                         .collect();
                     chunk_legs.push(Leg {
                         polynomial: CommittedPolynomial::BytecodeRegisterSelector(chunk, lane),
-                        own_vars: register_count.log_2(),
+                        own_vars: BYTE_BITS,
                         state: LegState::Active {
                             weight: weight.into(),
                             column: column.clone().into(),
                         },
                     });
                 }
+                // A 0/1 flag commits one-hot at lane 1 (hot iff the flag is set).
+                // Its leg binds the shared 8-bit lane so the leaf lands over
+                // `(lane8 ‖ r_row)`: the column is hot at lane 1 with the flag
+                // mass `Σ_row eq_row·flag(row)`, and the weight is the flag's
+                // lane-eq `γ·eq_lane[flag_lane]` uniformly across lanes (its
+                // bound value is that constant, and lane-1 selection is carried
+                // by the opening, not the weight — see the verifier's
+                // `LaneWeight`).
                 let mut flag_leg = |polynomial: CommittedPolynomial, lane: usize, value: F| {
+                    let weight = vec![*gamma * eq_lane[lane]; LANE_SIZE];
+                    let mut column = vec![F::zero(); LANE_SIZE];
+                    column[1] = value;
                     chunk_legs.push(Leg {
                         polynomial,
-                        own_vars: 0,
-                        state: LegState::Exhausted {
-                            scaled: *gamma * eq_lane[lane] * value,
-                            value,
+                        own_vars: BYTE_BITS,
+                        state: LegState::Active {
+                            weight: weight.into(),
+                            column: column.into(),
                         },
                     });
                 };
@@ -385,7 +411,7 @@ impl<F: JoltField> BytecodeReconstructionSumcheckProver<F> {
                     layout.raf_flag_idx,
                     raf_value,
                 );
-                let weight: Vec<F> = (0..lookup_cells)
+                let weight: Vec<F> = (0..LANE_SIZE)
                     .map(|table| {
                         if table < lookup_count {
                             *gamma * eq_lane[layout.lookup_start + table]
@@ -396,7 +422,7 @@ impl<F: JoltField> BytecodeReconstructionSumcheckProver<F> {
                     .collect();
                 chunk_legs.push(Leg {
                     polynomial: CommittedPolynomial::BytecodeLookupSelector(chunk),
-                    own_vars: lookup_cells.log_2(),
+                    own_vars: BYTE_BITS,
                     state: LegState::Active {
                         weight: weight.into(),
                         column: lookup_column.into(),
@@ -767,7 +793,8 @@ mod tests {
 
         let mut expected = Fr::zero();
         for (chunk, gamma) in params.gamma_powers.iter().enumerate() {
-            let selector_vars = register_count.log_2();
+            // Every selector/flag leg binds the shared 8-bit one-hot lane.
+            let selector_vars = BYTE_BITS;
             for (lane, start) in [
                 (0usize, layout.rs1_start),
                 (1, layout.rs2_start),
@@ -781,23 +808,23 @@ mod tests {
             for flag in 0..NUM_CIRCUIT_FLAGS {
                 expected += *gamma
                     * eq_index(&r_lane, layout.circuit_start + flag)
-                    * zero_pin(0)
+                    * zero_pin(BYTE_BITS)
                     * opening(CommittedPolynomial::BytecodeCircuitFlag(chunk, flag));
             }
             for flag in 0..NUM_INSTRUCTION_FLAGS {
                 expected += *gamma
                     * eq_index(&r_lane, layout.instr_start + flag)
-                    * zero_pin(0)
+                    * zero_pin(BYTE_BITS)
                     * opening(CommittedPolynomial::BytecodeInstructionFlag(chunk, flag));
             }
-            let lookup_vars = lookup_count.next_power_of_two().log_2();
+            let lookup_vars = BYTE_BITS;
             expected += *gamma
                 * selector_block_weight(layout.lookup_start, lookup_vars, lookup_count)
                 * zero_pin(lookup_vars)
                 * opening(CommittedPolynomial::BytecodeLookupSelector(chunk));
             expected += *gamma
                 * eq_index(&r_lane, layout.raf_flag_idx)
-                * zero_pin(0)
+                * zero_pin(BYTE_BITS)
                 * opening(CommittedPolynomial::BytecodeRafFlag(chunk));
             let pc_vars = BYTE_BITS + WORD_BYTES.log_2();
             expected += *gamma

@@ -178,7 +178,7 @@ pub fn verify<F, PCS, VC, T>(
 ) -> Result<(), VerifierError>
 where
     F: Field + AppendToTranscript,
-    PCS: CommitmentScheme<Field = F>,
+    PCS: CommitmentScheme<Field = F> + jolt_openings::MultiGroupVerify,
     PCS::Output: Clone + AppendToTranscript + stage8::OneHotTraceCommitmentMetadata,
     PCS::VerifierSetup: stage8::OneHotTraceSetupMetadata,
     VC: VectorCommitment<Field = F>,
@@ -1307,9 +1307,10 @@ mod tests {
             #[cfg(not(feature = "akita"))]
             joint_opening_proof: (),
             #[cfg(feature = "akita")]
-            joint_opening_proof: crate::proof::AkitaJointOpeningProof {
-                one_hot_trace: (),
-                auxiliary: None,
+            joint_opening_proof: jolt_openings::PackedOpeningProof {
+                round_polynomials: Vec::new(),
+                evaluations: Vec::new(),
+                openings: Vec::new(),
             },
             untrusted_advice_commitment: None,
             claims,

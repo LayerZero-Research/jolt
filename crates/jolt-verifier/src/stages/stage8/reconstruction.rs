@@ -225,10 +225,14 @@ pub struct BytecodeChunkReconstructionInstance<F: Field> {
 
 impl<F: Field> BytecodeChunkReconstructionInstance<F> {
     fn own_vars(&self) -> BytecodeLegVars {
+        // Every sub-column commits into one K=256 one-hot poly, so the
+        // selector, lookup, and 0/1-flag legs all bind the shared `BYTE_BITS`
+        // lane (their narrower value zero-pinned in the high lane bits).
         BytecodeLegVars {
             total: SymbolicSumcheck::rounds(&self.symbolic),
-            selector: REGISTER_ADDRESS_BITS,
-            lookup: (BYTECODE_LANE_LAYOUT.raf_flag_idx - BYTECODE_LANE_LAYOUT.lookup_start).log_2(),
+            selector: BYTE_BITS,
+            lookup: BYTE_BITS,
+            flag: BYTE_BITS,
             pc: BYTE_BITS + 8usize.log_2(),
             imm: BYTE_BITS + self.dimensions.imm_byte_width.log_2(),
         }
@@ -239,6 +243,7 @@ struct BytecodeLegVars {
     total: usize,
     selector: usize,
     lookup: usize,
+    flag: usize,
     pc: usize,
     imm: usize,
 }
@@ -274,10 +279,10 @@ impl<F: Field> ConcreteSumcheck<F> for BytecodeChunkReconstructionInstance<F> {
         let leg = |own: usize| [vars.leg_point(&bound, own), self.r_row.as_slice()].concat();
         Ok(BytecodeChunkReconstructionOutputClaims {
             register_selectors: vec![leg(vars.selector); chunks * BytecodeRegisterLane::ALL.len()],
-            circuit_flags: vec![self.r_row.clone(); chunks * jolt_riscv::NUM_CIRCUIT_FLAGS],
-            instruction_flags: vec![self.r_row.clone(); chunks * jolt_riscv::NUM_INSTRUCTION_FLAGS],
+            circuit_flags: vec![leg(vars.flag); chunks * jolt_riscv::NUM_CIRCUIT_FLAGS],
+            instruction_flags: vec![leg(vars.flag); chunks * jolt_riscv::NUM_INSTRUCTION_FLAGS],
             lookup_selectors: vec![leg(vars.lookup); chunks],
-            raf_flags: vec![self.r_row.clone(); chunks],
+            raf_flags: vec![leg(vars.flag); chunks],
             pc_bytes: vec![leg(vars.pc); chunks],
             imm_bytes: vec![leg(vars.imm); chunks],
         })
@@ -327,7 +332,11 @@ impl<F: Field> ConcreteSumcheck<F> for BytecodeChunkReconstructionInstance<F> {
                 ) * vars.zero_pin(bound, vars.selector)
             }
             BytecodeChunkReconstructionPublic::LaneWeight(lane) => {
-                eq_index_msb::<F>(&self.r_lane, *lane as u128) * vars.zero_pin(bound, 0)
+                // The flag column is hot at lane 1: the lane-1 selection rides
+                // in the opening (`eq(leg_point, 1) · flag_mass`), so the public
+                // weight is the plain lane-eq with the flag leg's high rounds
+                // zero-pinned.
+                eq_index_msb::<F>(&self.r_lane, *lane as u128) * vars.zero_pin(bound, vars.flag)
             }
             BytecodeChunkReconstructionPublic::LookupSelectorWeight => {
                 selector_block_weight(

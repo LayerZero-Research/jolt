@@ -10,7 +10,8 @@ use std::collections::BTreeMap;
 use jolt_claims::protocols::jolt::geometry::dimensions::JoltFormulaDimensions;
 use jolt_claims::protocols::jolt::lattice::geometry::word_byte_num_vars;
 use jolt_claims::protocols::jolt::lattice::packing::{
-    advice_bytes_packing, precommitted_packing, OneHotTraceShape, PrecommittedPackingShape,
+    advice_byte_column_one_hot_point, advice_bytes_packing, precommitted_packing, OneHotTraceShape,
+    PrecommittedPackingShape,
 };
 use jolt_claims::protocols::jolt::lattice::strategy::{
     OneHotTraceLayoutPlan, ONE_HOT_TRACE_LAYOUT,
@@ -20,8 +21,9 @@ use jolt_claims::protocols::jolt::{
 };
 use jolt_field::{Field, FixedByteSize};
 use jolt_openings::{
-    verify_packed_openings, CommitmentScheme, EvaluationClaim, PackedObjectGroup,
-    PackedVerifierObject, PrefixPackedStatement, PrefixPacking,
+    fused_stage8_open_eligible, verify_packed_openings, verify_packed_reduction, CommitmentScheme,
+    EvaluationClaim, MultiGroupOpeningClaim, MultiGroupVerify, PackedObjectGroup,
+    PackedOpeningProof, PackedVerifierObject, PrefixPackedStatement, PrefixPacking,
 };
 use jolt_poly::Point;
 use jolt_transcript::{AppendToTranscript, Transcript};
@@ -75,16 +77,65 @@ where
             "OneHotTrace commitment/setup arity must equal canonical arity {column_arity}"
         )));
     }
+    // The commitment carries exactly the trace columns; the shared setup's poly
+    // capacity may exceed that when it also backs precommitted auxiliary groups
+    // for a fused multi-group root fold (the trace column count plus one slot
+    // per aux group), so the setup bound is `>=`, not `==`.
     if commitment.poly_count() != column_count
-        || setup.max_num_polys_per_commitment_group() != column_count
+        || setup.max_num_polys_per_commitment_group() < column_count
     {
         return Err(batch_failed(format!(
-            "OneHotTrace commitment/setup column count must equal canonical count {column_count}"
+            "OneHotTrace commitment column count must equal canonical count {column_count} and the setup must support at least that many"
         )));
     }
     if setup.default_layout_digest() != canonical_digest {
         return Err(batch_failed(
             "OneHotTrace verifier setup has a noncanonical layout digest",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_fused_aux_metadata<C, S>(
+    commitment: &C,
+    setup: &S,
+    canonical_num_vars: usize,
+    one_hot_k: usize,
+) -> Result<(), VerifierError>
+where
+    C: OneHotTraceCommitmentMetadata,
+    S: OneHotTraceSetupMetadata,
+{
+    if !commitment.is_one_hot_backend() {
+        return Err(batch_failed(
+            "fused auxiliary commitment must use Akita's one-hot backend",
+        ));
+    }
+    if commitment.one_hot_k() != one_hot_k || setup.one_hot_k() != one_hot_k {
+        return Err(batch_failed(format!(
+            "fused auxiliary commitment/setup one-hot chunk size must equal canonical K={one_hot_k}"
+        )));
+    }
+    if commitment.layout_digest() != setup.default_layout_digest() {
+        return Err(batch_failed(
+            "fused auxiliary commitment has a noncanonical layout digest",
+        ));
+    }
+    if commitment.num_vars() != canonical_num_vars {
+        return Err(batch_failed(format!(
+            "fused auxiliary commitment arity {} does not equal canonical packed arity {canonical_num_vars}",
+            commitment.num_vars()
+        )));
+    }
+    if commitment.poly_count() != 1 {
+        return Err(batch_failed(format!(
+            "fused auxiliary commitment must contain exactly one polynomial, got {}",
+            commitment.poly_count()
+        )));
+    }
+    if canonical_num_vars > setup.max_num_vars() || setup.max_num_polys_per_commitment_group() < 1 {
+        return Err(batch_failed(
+            "fused auxiliary commitment exceeds the shared verifier setup",
         ));
     }
     Ok(())
@@ -148,13 +199,13 @@ pub fn verify<PCS, VC, T>(
     one_hot_trace_commitment: &PCS::Output,
     untrusted_advice_commitment: Option<&PCS::Output>,
     trusted_advice_commitment: Option<&PCS::Output>,
-    proof: &crate::proof::AkitaJointOpeningProof<PCS::Field, PCS::Proof>,
+    proof: &PackedOpeningProof<PCS::Field, PCS::Proof>,
     transcript: &mut T,
     stage7: &Stage7ClearOutput<PCS::Field>,
     reconstruction: &ReconstructionClearOutput<PCS::Field>,
 ) -> Result<(), VerifierError>
 where
-    PCS: CommitmentScheme,
+    PCS: CommitmentScheme + MultiGroupVerify,
     PCS::Output: Clone + AppendToTranscript + OneHotTraceCommitmentMetadata,
     PCS::VerifierSetup: OneHotTraceSetupMetadata,
     VC: jolt_crypto::VectorCommitment<Field = PCS::Field>,
@@ -214,22 +265,13 @@ where
         evaluations.push(claim.value);
     }
     let common_point = common_point.ok_or_else(|| batch_failed("OneHotTrace has no columns"))?;
-    PCS::verify_batch(
-        one_hot_trace_commitment,
-        &common_point,
-        &evaluations,
-        &proof.one_hot_trace,
-        &preprocessing.pcs_setup,
-        transcript,
-    )
-    .map_err(opening_failed)?;
 
-    let mut packings = Vec::new();
-    let mut commitments = Vec::new();
-    let mut setups = Vec::new();
-    let mut groups = Vec::new();
-
-    if let Some((packing, commitment, setup)) = advice_object::<PCS>(
+    // Resolve advice objects and their canonical public packings before choosing
+    // topology. Commitment metadata is never an input to the fused gate.
+    let program_present = preprocessing.program.committed().is_some()
+        || reconstruction.output_points.bytecode.is_some();
+    let mut advice_objects = Vec::new();
+    if let Some(object) = advice_object::<PCS>(
         reconstruction
             .output_points
             .untrusted_advice
@@ -239,12 +281,9 @@ where
         preprocessing.untrusted_advice_setup.as_ref(),
         JoltAdviceKind::Untrusted,
     )? {
-        groups.push(PackedObjectGroup::singleton(packings.len()));
-        packings.push(packing);
-        commitments.push(commitment);
-        setups.push(setup);
+        advice_objects.push((JoltAdviceKind::Untrusted, object));
     }
-    if let Some((packing, commitment, setup)) = advice_object::<PCS>(
+    if let Some(object) = advice_object::<PCS>(
         reconstruction
             .output_points
             .trusted_advice
@@ -254,9 +293,74 @@ where
         preprocessing.trusted_advice_setup.as_ref(),
         JoltAdviceKind::Trusted,
     )? {
+        advice_objects.push((JoltAdviceKind::Trusted, object));
+    }
+    let aux_num_vars: Vec<usize> = advice_objects
+        .iter()
+        .map(|(_, (packing, _, _))| packing.packed_num_vars)
+        .collect();
+    let trusted_advice_present = advice_objects
+        .iter()
+        .any(|(kind, _)| *kind == JoltAdviceKind::Trusted);
+    let fallback_topology_present = program_present || trusted_advice_present;
+    if fused_stage8_open_eligible(
+        chunk_width,
+        common_point.len(),
+        fallback_topology_present,
+        &aux_num_vars,
+    ) {
+        if preprocessing.pcs_setup.max_num_polys_per_commitment_group()
+            < columns.len() + advice_objects.len()
+        {
+            return Err(batch_failed(
+                "shared verifier setup cannot contain every fused commitment polynomial",
+            ));
+        }
+        for (_, (packing, commitment, _)) in &advice_objects {
+            validate_fused_aux_metadata(
+                *commitment,
+                &preprocessing.pcs_setup,
+                packing.packed_num_vars,
+                1 << chunk_width,
+            )?;
+        }
+        return verify_fused(
+            &plan,
+            preprocessing,
+            one_hot_trace_commitment,
+            &advice_objects,
+            &common_point,
+            &evaluations,
+            proof,
+            transcript,
+            &leaves,
+        );
+    }
+
+    // The trace group leads (widest object → binds the whole reduced point);
+    // advice/program follow as suffix-binding singletons. Trace objects are
+    // identity-packed one-hot columns, each carrying the trace commitment and a
+    // single claim at the shared point, mirroring the prover's construction.
+    let mut packings: Vec<PrefixPacking<JoltCommittedPolynomial>> = Vec::new();
+    let mut setups: Vec<&PCS::VerifierSetup> = Vec::new();
+    let mut groups = Vec::new();
+
+    groups.push(PackedObjectGroup {
+        start: 0,
+        len: columns.len(),
+    });
+    for column in columns {
+        packings.push(PrefixPacking::new([(*column, common_point.len())]).map_err(batch_failed)?);
+        setups.push(&preprocessing.pcs_setup);
+    }
+    let trace_object_count = columns.len();
+
+    // Auxiliary commitments, aligned with the packings pushed after the trace.
+    let mut aux_commitments = Vec::new();
+    for (_, (packing, commitment, setup)) in advice_objects {
         groups.push(PackedObjectGroup::singleton(packings.len()));
         packings.push(packing);
-        commitments.push(commitment);
+        aux_commitments.push(commitment);
         setups.push(setup);
     }
     match (
@@ -297,7 +401,7 @@ where
                 })
                 .map_err(batch_failed)?,
             );
-            commitments.push(&committed.program_one_hot_commitment);
+            aux_commitments.push(&committed.program_one_hot_commitment);
             setups.push(setup);
         }
         (None, None) => {}
@@ -313,12 +417,19 @@ where
         }
     }
 
-    // Auxiliary objects retain their own logical leaf points and packings.
-    let statements = packings
-        .iter()
-        .zip(&commitments)
-        .map(|(packing, commitment)| object_statement(packing, (*commitment).clone(), &leaves))
-        .collect::<Result<Vec<_>, _>>()?;
+    // Statements: the trace columns claim at the shared point under the trace
+    // commitment; the auxiliary objects retain their own logical leaf points.
+    let mut statements = Vec::with_capacity(packings.len());
+    for (column, value) in columns.iter().zip(&evaluations) {
+        statements.push(PrefixPackedStatement::new(
+            one_hot_trace_commitment.clone(),
+            vec![(*column, EvaluationClaim::new(common_point.clone(), *value))],
+        ));
+    }
+    for (packing, commitment) in packings[trace_object_count..].iter().zip(&aux_commitments) {
+        statements.push(object_statement(packing, (*commitment).clone(), &leaves)?);
+    }
+
     let objects: Vec<PackedVerifierObject<'_, PCS, JoltCommittedPolynomial>> = packings
         .iter()
         .zip(&statements)
@@ -330,14 +441,125 @@ where
         })
         .collect();
 
-    match (&proof.auxiliary, objects.is_empty()) {
-        (None, true) => Ok(()),
-        (Some(auxiliary), false) => {
-            verify_packed_openings(&objects, &groups, auxiliary, transcript).map_err(opening_failed)
-        }
-        (None, false) => Err(batch_failed("missing auxiliary packed opening proof")),
-        (Some(_), true) => Err(batch_failed("unexpected auxiliary packed opening proof")),
+    verify_packed_openings(&objects, &groups, proof, transcript).map_err(opening_failed)
+}
+
+/// Verifier mirror of the prover's fused stage-8 open: reduce the advice groups
+/// and the trace columns together to one shared point `r*` (object order
+/// `[aux…, trace]`), then check the single native multi-group root fold that
+/// discharges every group at prefix/suffix slices of `r*`. The trace is the
+/// final (widest) group and binds the whole point.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the fused open resolves the trace and advice objects plus their shared inputs here in one place"
+)]
+fn verify_fused<PCS, VC, T>(
+    plan: &OneHotTraceLayoutPlan,
+    preprocessing: &crate::preprocessing::JoltVerifierPreprocessing<PCS, VC>,
+    one_hot_trace_commitment: &PCS::Output,
+    aux: &[(JoltAdviceKind, ResolvedObject<'_, PCS>)],
+    common_point: &[PCS::Field],
+    trace_evaluations: &[PCS::Field],
+    proof: &PackedOpeningProof<PCS::Field, PCS::Proof>,
+    transcript: &mut T,
+    leaves: &BTreeMap<JoltCommittedPolynomial, EvaluationClaim<PCS::Field>>,
+) -> Result<(), VerifierError>
+where
+    PCS: CommitmentScheme + MultiGroupVerify,
+    PCS::Output: Clone + AppendToTranscript + OneHotTraceCommitmentMetadata,
+    PCS::VerifierSetup: OneHotTraceSetupMetadata,
+    VC: jolt_crypto::VectorCommitment<Field = PCS::Field>,
+    T: Transcript<Challenge = PCS::Field>,
+{
+    let columns = &plan.columns;
+    let n_trace = columns.len();
+    let n_aux = aux.len();
+    if proof.openings.len() != 1 {
+        return Err(batch_failed(format!(
+            "fused packed opening must carry exactly one native opening, got {}",
+            proof.openings.len()
+        )));
     }
+    if proof.evaluations.len() != n_trace + n_aux {
+        return Err(batch_failed(format!(
+            "fused packed opening expects {} evaluations, got {}",
+            n_trace + n_aux,
+            proof.evaluations.len()
+        )));
+    }
+
+    // Advice objects use the same canonical packings that selected the gate.
+    let mut aux_statements = Vec::with_capacity(n_aux);
+    for (_, (packing, commitment, _)) in aux {
+        let statement = object_statement(packing, (*commitment).clone(), leaves)?;
+        aux_statements.push(statement);
+    }
+
+    let trace_packings: Vec<PrefixPacking<JoltCommittedPolynomial>> = columns
+        .iter()
+        .map(|column| PrefixPacking::new([(*column, common_point.len())]).map_err(batch_failed))
+        .collect::<Result<_, _>>()?;
+    let trace_statements: Vec<
+        PrefixPackedStatement<PCS::Field, JoltCommittedPolynomial, PCS::Output>,
+    > = columns
+        .iter()
+        .zip(trace_evaluations)
+        .map(|(column, value)| {
+            PrefixPackedStatement::new(
+                one_hot_trace_commitment.clone(),
+                vec![(*column, EvaluationClaim::new(common_point.to_vec(), *value))],
+            )
+        })
+        .collect();
+
+    // Object order [aux…, trace] mirrors the prover.
+    let mut objects: Vec<PackedVerifierObject<'_, PCS, JoltCommittedPolynomial>> =
+        Vec::with_capacity(n_trace + n_aux);
+    for ((_, (packing, _, _)), statement) in aux.iter().zip(&aux_statements) {
+        objects.push(PackedVerifierObject {
+            packing,
+            statement,
+            setup: &preprocessing.pcs_setup,
+        });
+    }
+    for (packing, statement) in trace_packings.iter().zip(&trace_statements) {
+        objects.push(PackedVerifierObject {
+            packing,
+            statement,
+            setup: &preprocessing.pcs_setup,
+        });
+    }
+
+    let shared_point = verify_packed_reduction::<PCS, JoltCommittedPolynomial, T>(
+        &objects,
+        &proof.round_polynomials,
+        &proof.evaluations,
+        transcript,
+    )
+    .map_err(opening_failed)?;
+    drop(objects);
+
+    let mut groups = Vec::with_capacity(n_aux + 1);
+    for (index, (_, (packing, commitment, _))) in aux.iter().enumerate() {
+        groups.push(MultiGroupOpeningClaim {
+            commitment: *commitment,
+            num_vars: packing.packed_num_vars,
+            evaluations: std::slice::from_ref(&proof.evaluations[index]),
+        });
+    }
+    groups.push(MultiGroupOpeningClaim {
+        commitment: one_hot_trace_commitment,
+        num_vars: common_point.len(),
+        evaluations: &proof.evaluations[n_aux..n_aux + n_trace],
+    });
+    PCS::verify_multi_group(
+        &preprocessing.pcs_setup,
+        &shared_point,
+        &groups,
+        &proof.openings[0],
+        transcript,
+    )
+    .map_err(opening_failed)
 }
 
 /// Assembles one object's statement: each of its packing's canonical columns
@@ -445,7 +667,10 @@ fn leaf_claims<F: Field>(
         insert(
             &mut leaves,
             Poly::UntrustedAdviceBytes,
-            leaf(values.bytes, &points.bytes),
+            leaf(
+                values.bytes,
+                &advice_byte_column_one_hot_point(&points.bytes),
+            ),
         );
     }
     if let Some((values, points)) = reconstruction
@@ -457,7 +682,10 @@ fn leaf_claims<F: Field>(
         insert(
             &mut leaves,
             Poly::TrustedAdviceBytes,
-            leaf(values.bytes, &points.bytes),
+            leaf(
+                values.bytes,
+                &advice_byte_column_one_hot_point(&points.bytes),
+            ),
         );
     }
     if let Some((values, points)) = reconstruction
@@ -469,13 +697,19 @@ fn leaf_claims<F: Field>(
         insert(
             &mut leaves,
             Poly::ProgramImageBytes,
-            leaf(values.bytes, &points.bytes),
+            leaf(
+                values.bytes,
+                &advice_byte_column_one_hot_point(&points.bytes),
+            ),
         );
     }
 
     // The bytecode leaf keys are read off the canonical cell order jolt-claims
     // pins (`leaves()` pairs one-for-one with `opening_order`), instead of
-    // re-deriving the chunk/lane index arithmetic here.
+    // re-deriving the chunk/lane index arithmetic here. Each reconstruction
+    // leaf point carries the one-hot lane block leading; relabel it into the
+    // lane-low commitment layout the program poly is committed under, exactly
+    // as the advice leaves above.
     if let Some((values, points)) = reconstruction
         .output_values
         .bytecode
@@ -490,7 +724,11 @@ fn leaf_claims<F: Field>(
             else {
                 continue;
             };
-            insert(&mut leaves, polynomial, leaf(*value, point));
+            insert(
+                &mut leaves,
+                polynomial,
+                leaf(*value, &advice_byte_column_one_hot_point(point)),
+            );
         }
     }
 
@@ -501,11 +739,9 @@ fn leaf_claims<F: Field>(
 #[expect(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use jolt_claims::protocols::jolt::geometry::claim_reductions::bytecode::{
-        committed_lane_vars, BYTECODE_LANE_LAYOUT,
-    };
-    use jolt_claims::protocols::jolt::geometry::dimensions::REGISTER_ADDRESS_BITS;
+    use jolt_claims::protocols::jolt::geometry::claim_reductions::bytecode::committed_lane_vars;
     use jolt_claims::protocols::jolt::geometry::ra::JoltRaPolynomialLayout;
+    use jolt_claims::protocols::jolt::lattice::geometry::BYTE_BITS;
     use jolt_claims::protocols::jolt::lattice::relations::advice_reconstruction::{
         TrustedAdviceReconstructionOutputClaims, UntrustedAdviceReconstructionOutputClaims,
     };
@@ -714,18 +950,15 @@ mod tests {
             pc_bytes: (0..BYTECODE_CHUNKS).map(|i| fr(920 + i as u64)).collect(),
             imm_bytes: (0..BYTECODE_CHUNKS).map(|i| fr(930 + i as u64)).collect(),
         };
-        let lookup_arity = (BYTECODE_LANE_LAYOUT.raf_flag_idx - BYTECODE_LANE_LAYOUT.lookup_start)
-            .log_2()
-            + LOG_BYTECODE_ROWS;
+        // Every selector/flag leaf carries the shared 8-bit one-hot lane block
+        // (leading, before the lane-low relabel) plus the row point.
+        let lane_row_arity = BYTE_BITS + LOG_BYTECODE_ROWS;
         let bytecode_points = BytecodeChunkReconstructionOutputClaims {
-            register_selectors: vec![point(REGISTER_ADDRESS_BITS + LOG_BYTECODE_ROWS); selectors],
-            circuit_flags: vec![point(LOG_BYTECODE_ROWS); BYTECODE_CHUNKS * NUM_CIRCUIT_FLAGS],
-            instruction_flags: vec![
-                point(LOG_BYTECODE_ROWS);
-                BYTECODE_CHUNKS * NUM_INSTRUCTION_FLAGS
-            ],
-            lookup_selectors: vec![point(lookup_arity); BYTECODE_CHUNKS],
-            raf_flags: vec![point(LOG_BYTECODE_ROWS); BYTECODE_CHUNKS],
+            register_selectors: vec![point(lane_row_arity); selectors],
+            circuit_flags: vec![point(lane_row_arity); BYTECODE_CHUNKS * NUM_CIRCUIT_FLAGS],
+            instruction_flags: vec![point(lane_row_arity); BYTECODE_CHUNKS * NUM_INSTRUCTION_FLAGS],
+            lookup_selectors: vec![point(lane_row_arity); BYTECODE_CHUNKS],
+            raf_flags: vec![point(lane_row_arity); BYTECODE_CHUNKS],
             pc_bytes: vec![point(word_byte_num_vars(LOG_BYTECODE_ROWS)); BYTECODE_CHUNKS],
             imm_bytes: vec![
                 point(

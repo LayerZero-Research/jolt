@@ -29,6 +29,7 @@ serde = { workspace = true, features = ["derive"] }
 tracing.workspace = true
 
 [dev-dependencies]
+bincode.workspace = true
 criterion = { workspace = true }
 jolt-dory = { workspace = true }
 jolt-profiling = { path = "../jolt-profiling" }

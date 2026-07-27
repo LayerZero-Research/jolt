@@ -17,10 +17,12 @@
 //! [`byte_decode_weight`](super::super::geometry::byte_decode_weight)).
 //!
 //! One sumcheck over the widest byte-lane `(byte ‖ place)` variables, row
-//! point fixed at `r_row`; the narrower legs bind only their own suffix
-//! rounds and the flag lanes none at all (mixed-count legs are precedented by the
-//! lattice booleanity's msb). Every leg is at most a product of two
-//! multilinears per bound variable, hence degree 2.
+//! point fixed at `r_row`; the narrower legs bind only their own suffix rounds
+//! (register/lookup selectors and 0/1 flags each bind the shared 8-bit one-hot
+//! lane, their value/lane-1 in the low bits and the high lane bits zero-pinned;
+//! mixed-count legs are precedented by the lattice booleanity's msb). Every
+//! leg is at most a product of two multilinears per bound variable, hence
+//! degree 2.
 
 use jolt_field::RingCore;
 use jolt_poly::math::Math;
@@ -236,8 +238,9 @@ impl SymbolicSumcheck for BytecodeChunkReconstruction {
         JoltRelationId::BytecodeChunkReconstruction
     }
 
-    /// The widest byte lane's `(byte ‖ place)` variable count; narrower legs join in
-    /// their suffix rounds, the flag legs only at the final claim.
+    /// The widest byte lane's `(byte ‖ place)` variable count; narrower legs —
+    /// including the 8-bit-lane selectors and flags — join in their suffix
+    /// rounds.
     fn rounds(&self) -> usize {
         BYTE_BITS + WORD_BYTES.log_2().max(self.shape.imm_byte_width.log_2())
     }

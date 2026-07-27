@@ -8,9 +8,10 @@ mod support;
 
 use jolt_akita::{AkitaCommitment, AkitaField, AkitaNativeBatching, AkitaScheme};
 use jolt_openings::{
-    prove_packed_openings, verify_packed_openings, BatchOpeningScheme, CommitmentScheme,
-    EvaluationClaim, OpeningsError, PackedObjectGroup, PackedOpeningProof, PackedProverGroup,
-    PackedProverObject, PackedVerifierObject, PrefixPackedStatement, PrefixPacking,
+    prove_packed_openings, recover_packed_reduction_point, verify_packed_openings,
+    BatchOpeningScheme, CommitmentScheme, EvaluationClaim, OpeningsError, PackedObjectGroup,
+    PackedOpeningProof, PackedProverGroup, PackedProverObject, PackedVerifierObject,
+    PrefixPackedStatement, PrefixPacking,
 };
 use jolt_poly::{MultilinearPoly, OneHotPolynomial, Polynomial};
 use jolt_transcript::{Blake2bTranscript, Transcript};
@@ -445,13 +446,18 @@ fn akita_joint_packed_openings_roundtrip_across_two_objects() {
 
 #[test]
 fn akita_packing_and_native_batching_can_coexist_for_same_logical_claims() {
-    let poly_a = polynomial(13, 1);
-    let poly_b = polynomial(13, 20);
-    let logical_point: Vec<_> = (0..13).map(|i| f(2 + 3 * i)).collect();
+    // A 2-polynomial native group must fold at least twice, which the akita
+    // planner can only schedule above a config-dependent arity floor (13 is
+    // singleton-only). 16 is the smallest 2-poly group arity the fp128-D64
+    // planner schedules.
+    const NV: usize = 16;
+    let poly_a = polynomial(NV, 1);
+    let poly_b = polynomial(NV, 20);
+    let logical_point: Vec<_> = (0..NV as u64).map(|i| f(2 + 3 * i)).collect();
     let eval_a = poly_a.evaluate(&logical_point);
     let eval_b = poly_b.evaluate(&logical_point);
 
-    let (native_prover_setup, native_verifier_setup) = setup_for(13, 2, layout(7));
+    let (native_prover_setup, native_verifier_setup) = setup_for(NV, 2, layout(7));
     let (native_commitment, native_hint) = AkitaScheme::commit_group(
         &native_prover_setup,
         layout(7),
@@ -671,5 +677,215 @@ fn akita_grouped_one_hot_members_open_in_one_batch() {
         )
         .is_err(),
         "a lying member claim must break the joint reduction"
+    );
+}
+
+/// The exact shape roadmap step 4b relies on: an N-member one-hot group (the
+/// trace) reduced *together with* a smaller packed singleton (advice/program)
+/// through one joint reduction to a single shared point `r*`. The group is the
+/// widest object so it binds the whole point; the singleton pads the leading
+/// rounds and binds a suffix slice. The group opens through `open_batch`, the
+/// singleton through `open`. The value invariant `W_k(slice_k) == evaluations[k]`
+/// is checked directly against the recovered `r*`, independently of the native
+/// PCS.
+#[test]
+fn akita_grouped_one_hot_group_with_singleton_shares_one_reduction_point() {
+    const K: usize = 256;
+    const LABEL: &[u8] = b"akita-group-plus-singleton";
+    let member_ids = [PackedId::NarrowA, PackedId::NarrowB, PackedId::Medium];
+    // 64 rows × K=256 → 14-variable columns. The trace group is the widest
+    // object (setup arity floors out below 13, so the padding singleton must sit
+    // at 13 and the trace above it).
+    let members: Vec<OneHotPolynomial> = (0..3u64)
+        .map(|member| {
+            let indices = (0..64u64)
+                .map(|row| {
+                    if (row + member) % 7 == 0 {
+                        None
+                    } else {
+                        Some(((row * 11 + member * 3) % K as u64) as u8)
+                    }
+                })
+                .collect();
+            OneHotPolynomial::new(K, indices)
+        })
+        .collect();
+    let trace_num_vars = members[0].num_vars();
+
+    // Advice/program-shaped singleton: a narrower packed object that pads the
+    // leading reduction rounds and binds a suffix of `r*`.
+    let singleton_num_vars = trace_num_vars - 1;
+    let singleton_poly = polynomial(singleton_num_vars, 500);
+    let singleton_packing =
+        PrefixPacking::new([(PackedId::Wide, singleton_num_vars)]).expect("identity packing");
+
+    let (group_prover, group_verifier) = setup_for(trace_num_vars, member_ids.len(), layout(9));
+    let (singleton_prover, singleton_verifier) = packed_setup(singleton_num_vars, layout(7));
+    let (group_commitment, group_hint) =
+        AkitaScheme::commit_one_hot_group(&group_prover, layout(9), &members)
+            .expect("one-hot group should commit");
+    let (singleton_commitment, singleton_hint) =
+        AkitaScheme::commit(&singleton_poly, &singleton_prover).unwrap();
+
+    let trace_packings: Vec<PrefixPacking<PackedId>> = member_ids
+        .iter()
+        .map(|id| PrefixPacking::new([(*id, trace_num_vars)]).expect("identity packing"))
+        .collect();
+    let trace_points: Vec<Vec<AkitaField>> = (0..members.len())
+        .map(|member| {
+            (0..trace_num_vars)
+                .map(|var| f(7 + 3 * member as u64 + var as u64))
+                .collect()
+        })
+        .collect();
+    let trace_statements: Vec<PackedStatement> = member_ids
+        .iter()
+        .zip(&members)
+        .zip(&trace_points)
+        .map(|((id, member), point)| {
+            PrefixPackedStatement::new(
+                group_commitment.clone(),
+                vec![(
+                    *id,
+                    EvaluationClaim::new(
+                        point.clone(),
+                        MultilinearPoly::<AkitaField>::evaluate(member, point),
+                    ),
+                )],
+            )
+        })
+        .collect();
+
+    let singleton_point: Vec<AkitaField> = (0..singleton_num_vars)
+        .map(|var| f(101 + 5 * var as u64))
+        .collect();
+    let singleton_statement = PrefixPackedStatement::new(
+        singleton_commitment,
+        vec![(
+            PackedId::Wide,
+            EvaluationClaim::new(
+                singleton_point.clone(),
+                singleton_poly.evaluate(&singleton_point),
+            ),
+        )],
+    );
+
+    // Object order: trace group first (widest, binds the whole point), then the
+    // singleton — mirrored on the verifier because group order is transcript-bound.
+    let prover_objects: Vec<PackedProverObject<'_, AkitaScheme, PackedId>> = (0..members.len())
+        .map(|member| PackedProverObject {
+            packing: &trace_packings[member],
+            statement: &trace_statements[member],
+            polynomial: &members[member],
+            setup: &group_prover,
+        })
+        .chain(std::iter::once(PackedProverObject {
+            packing: &singleton_packing,
+            statement: &singleton_statement,
+            polynomial: &singleton_poly,
+            setup: &singleton_prover,
+        }))
+        .collect();
+    let prover_groups = vec![
+        PackedProverGroup {
+            start: 0,
+            len: members.len(),
+            hint: Some(group_hint),
+        },
+        PackedProverGroup::singleton(members.len(), Some(singleton_hint)),
+    ];
+
+    let mut prover_transcript = Blake2bTranscript::new(LABEL);
+    let proof = prove_packed_openings::<AkitaScheme, PackedId, _>(
+        prover_objects,
+        prover_groups,
+        &mut prover_transcript,
+    )
+    .expect("grouped-plus-singleton packed opening should prove");
+    assert_eq!(proof.evaluations.len(), members.len() + 1);
+    assert_eq!(proof.openings.len(), 2);
+
+    let verifier_objects: Vec<PackedVerifierObject<'_, AkitaScheme, PackedId>> = (0..members.len())
+        .map(|member| PackedVerifierObject {
+            packing: &trace_packings[member],
+            statement: &trace_statements[member],
+            setup: &group_verifier,
+        })
+        .chain(std::iter::once(PackedVerifierObject {
+            packing: &singleton_packing,
+            statement: &singleton_statement,
+            setup: &singleton_verifier,
+        }))
+        .collect();
+    let groups = [
+        PackedObjectGroup {
+            start: 0,
+            len: members.len(),
+        },
+        PackedObjectGroup::singleton(members.len()),
+    ];
+
+    let mut verifier_transcript = Blake2bTranscript::new(LABEL);
+    verify_packed_openings::<AkitaScheme, PackedId, _>(
+        &verifier_objects,
+        &groups,
+        &proof,
+        &mut verifier_transcript,
+    )
+    .expect("grouped-plus-singleton packed opening should verify");
+    assert_eq!(prover_transcript.state(), verifier_transcript.state());
+
+    // Value invariant, checked independently of the native PCS: recover the
+    // shared reduction point and confirm every object's claimed evaluation is
+    // its witness bound at the object's slice of `r*`.
+    let mut recovery_transcript = Blake2bTranscript::new(LABEL);
+    let point = recover_packed_reduction_point::<AkitaScheme, PackedId, _>(
+        &verifier_objects,
+        &proof.round_polynomials,
+        &mut recovery_transcript,
+    )
+    .expect("reduction point should recover");
+    assert_eq!(point.len(), trace_num_vars);
+    for (member, column) in members.iter().enumerate() {
+        // padding == 0: the widest objects bind the whole point.
+        assert_eq!(
+            MultilinearPoly::<AkitaField>::evaluate(column, &point),
+            proof.evaluations[member],
+            "trace member {member} claim must equal its witness at r*"
+        );
+    }
+    let singleton_slice = &point[trace_num_vars - singleton_num_vars..];
+    assert_eq!(
+        singleton_poly.evaluate(singleton_slice),
+        proof.evaluations[members.len()],
+        "singleton claim must equal its witness at the r* suffix"
+    );
+
+    let mut tampered_singleton = proof.clone();
+    tampered_singleton.evaluations[members.len()] += f(1);
+    let mut transcript = Blake2bTranscript::new(LABEL);
+    assert!(
+        verify_packed_openings::<AkitaScheme, PackedId, _>(
+            &verifier_objects,
+            &groups,
+            &tampered_singleton,
+            &mut transcript,
+        )
+        .is_err(),
+        "a corrupted singleton evaluation must reject"
+    );
+
+    let mut tampered_member = proof.clone();
+    tampered_member.evaluations[0] += f(1);
+    let mut transcript = Blake2bTranscript::new(LABEL);
+    assert!(
+        verify_packed_openings::<AkitaScheme, PackedId, _>(
+            &verifier_objects,
+            &groups,
+            &tampered_member,
+            &mut transcript,
+        )
+        .is_err(),
+        "a corrupted group-member evaluation must reject"
     );
 }
