@@ -1,10 +1,9 @@
 //! Akita verifier fixture cases: real packed-prover artifacts backing the
 //! fixture-driven tamper/soundness tests on the akita path.
 //!
-//! Unlike the Dory fixtures there is no disk cache: the transparent akita
-//! setup would have to be re-derived at load anyway, so each case is
-//! generated once per test binary (`OnceLock`) and shared across every
-//! tamper application.
+//! These cases are not disk-cached: the transparent akita setup would have to
+//! be re-derived at load anyway, so each case is generated once per test binary
+//! (`OnceLock`) and shared across every tamper application.
 
 #![expect(
     clippy::expect_used,
@@ -58,7 +57,8 @@ pub fn akita_muldiv_case() -> &'static AkitaFixtureCase {
 }
 
 /// The advice case: both advice kinds, three commitment objects
-/// (`OneHotTrace`, `UntrustedAdviceOneHot`, `TrustedAdviceOneHot`) and an auxiliary joint opening.
+/// (`OneHotTrace`, `UntrustedAdviceOneHot`, `TrustedAdviceOneHot`) discharged
+/// by the per-group topology (trusted advice is fallback-only).
 pub fn akita_advice_case() -> &'static AkitaFixtureCase {
     static CASE: OnceLock<AkitaFixtureCase> = OnceLock::new();
     CASE.get_or_init(generate_advice)
@@ -117,7 +117,7 @@ fn generate_muldiv() -> AkitaFixtureCase {
 fn generate_advice() -> AkitaFixtureCase {
     // The purpose-built advice guest asserts `trusted + untrusted == public`
     // (7 + 5 == 12), exercising both advice kinds without any exotic inline
-    // instruction (unlike the merkle example, which fails Jolt expansion).
+    // instruction.
     let mut program = host::Program::new("advice-consumer-guest");
     let (bytecode, init_memory_state, _, e_entry) = program.decode();
     let inputs = postcard::to_stdvec(&12u64).expect("serialize inputs");
@@ -186,6 +186,12 @@ fn generate_fused_untrusted() -> AkitaFixtureCase {
         None,
         None,
     );
+    // The fused gate holds only at `log_k_chunk == AKITA_FUSED_LOG_K_CHUNK`
+    // (8), and `OneHotConfig::new` picks 8 only from
+    // `ONEHOT_CHUNK_THRESHOLD_LOG_T` upwards: this short fixture trace defaults
+    // to 4 and misses the gate. These two literals are the large-trace default
+    // config (`log_k_chunk = 8`, `lookups_ra_virtual_log_k_chunk = LOG_K / 4`),
+    // forced onto a short trace so it commits at K=2^8.
     let forced = jolt_prover_legacy::zkvm::config::OneHotConfig {
         log_k_chunk: 8,
         lookups_ra_virtual_log_k_chunk: 32,

@@ -42,20 +42,20 @@ mod jolt_fp128_d64_onehot_k16;
 )]
 mod jolt_fp128_d64_onehot_k256;
 
-/// The K=16 `OneHotTrace` catalog.
-pub fn jolt_fp128_d64_onehot_k16_table() -> Option<GeneratedScheduleTable> {
-    Some(GeneratedScheduleTable {
+/// Covers the K=16 regime, `log_T < 25` (column arity `4 + log_T`).
+pub fn jolt_fp128_d64_onehot_k16_table() -> GeneratedScheduleTable {
+    GeneratedScheduleTable {
         entries: jolt_fp128_d64_onehot_k16::JOLT_FP128_D64_ONEHOT_K16_SCHEDULES,
         identity: jolt_fp128_d64_onehot_k16::CATALOG_IDENTITY,
-    })
+    }
 }
 
-/// The K=256 large-trace `OneHotTrace` catalog.
-pub fn jolt_fp128_d64_onehot_k256_table() -> Option<GeneratedScheduleTable> {
-    Some(GeneratedScheduleTable {
+/// Covers the K=256 regime, `log_T >= 25` (column arity `8 + log_T`).
+pub fn jolt_fp128_d64_onehot_k256_table() -> GeneratedScheduleTable {
+    GeneratedScheduleTable {
         entries: jolt_fp128_d64_onehot_k256::JOLT_FP128_D64_ONEHOT_K256_SCHEDULES,
         identity: jolt_fp128_d64_onehot_k256::CATALOG_IDENTITY,
-    })
+    }
 }
 
 /// Emit-spec construction shared by the `gen_jolt_schedules` binary and the

@@ -166,9 +166,11 @@ where
 }
 
 /// The Akita verification path: the same stage spine, with the reconstruction
-/// phase producing auxiliary leaves, a native same-point OneHotTrace opening,
-/// and separate packed openings for auxiliary objects in place of the
-/// homomorphic RLC batch. No homomorphism bounds and no ZK tail.
+/// phase producing auxiliary leaves and one joint packed claim reduction — over
+/// the OneHotTrace columns together with the advice/program objects — in place
+/// of the homomorphic RLC batch. That reduction is discharged either by a single
+/// fused multi-group root fold or by one native opening per group. No
+/// homomorphism bounds and no ZK tail.
 #[cfg(feature = "akita")]
 pub fn verify<F, PCS, VC, T>(
     preprocessing: &JoltVerifierPreprocessing<PCS, VC>,

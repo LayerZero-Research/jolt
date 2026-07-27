@@ -20,7 +20,9 @@ use crate::{
 
 use super::instruction::{CircuitFlags, LookupQuery};
 
-#[derive(Hash, PartialEq, Eq, Copy, Clone, Debug, PartialOrd, Ord, Allocative)]
+#[derive(
+    Hash, PartialEq, Eq, Copy, Clone, Debug, PartialOrd, Ord, Allocative, strum_macros::EnumCount,
+)]
 pub enum CommittedPolynomial {
     /*  Twist/Shout witnesses */
     /// Inc polynomial for the registers instance of Twist
@@ -315,7 +317,9 @@ impl CommittedPolynomial {
     }
 }
 
-#[derive(Hash, PartialEq, Eq, Copy, Clone, Debug, PartialOrd, Ord, Allocative)]
+#[derive(
+    Hash, PartialEq, Eq, Copy, Clone, Debug, PartialOrd, Ord, Allocative, strum_macros::EnumCount,
+)]
 pub enum VirtualPolynomial {
     PC,
     UnexpandedPC,

@@ -46,10 +46,10 @@ mod schemes;
 pub use claims::{EvaluationClaim, VerifierOpeningClaim, ZkEvaluationClaim};
 pub use error::OpeningsError;
 pub use packing::{
-    fused_stage8_open_eligible, prove_packed_openings, recover_packed_reduction_point,
-    reduce_packed_openings, verify_packed_openings, verify_packed_reduction, PackedObjectGroup,
-    PackedOpeningProof, PackedPolynomial, PackedProverGroup, PackedProverObject, PackedReduction,
-    PackedVerifierObject, PrefixPackedStatement, PrefixPacking, PrefixSlot,
+    fused_stage8_open_eligible, prove_packed_openings, reduce_packed_openings,
+    verify_packed_openings, verify_packed_reduction, PackedObjectGroup, PackedOpeningProof,
+    PackedPolynomial, PackedProverGroup, PackedProverObject, PackedReduction, PackedVerifierObject,
+    PrefixPackedStatement, PrefixPacking, PrefixSlot, AKITA_FUSED_LOG_K_CHUNK,
     AKITA_MIN_MULTI_GROUP_VARS,
 };
 

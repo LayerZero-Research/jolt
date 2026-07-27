@@ -2,10 +2,11 @@
 use crate::poly::opening_proof::OpeningId;
 #[cfg(feature = "zk")]
 use crate::zkvm::stage8_opening_ids;
+#[cfg(not(feature = "akita"))]
+use std::collections::HashMap;
 #[cfg(all(not(target_arch = "wasm32"), not(feature = "akita")))]
 use std::time::Instant;
 use std::{
-    collections::HashMap,
     fs::File,
     io::{Read, Write},
     path::Path,
@@ -16,6 +17,7 @@ use std::{
 use crate::poly::commitment::dory::bind_opening_inputs;
 #[cfg(feature = "zk")]
 use crate::poly::commitment::dory::bind_opening_inputs_zk;
+#[cfg(not(feature = "akita"))]
 use crate::poly::commitment::dory::DoryContext;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 
@@ -35,10 +37,7 @@ use crate::{
     field::JoltField,
     guest,
     poly::{
-        commitment::{
-            commitment_scheme::{StreamingCommitmentScheme, ZkEvalCommitment},
-            dory::{DoryGlobals, DoryLayout},
-        },
+        commitment::commitment_scheme::{StreamingCommitmentScheme, ZkEvalCommitment},
         multilinear_polynomial::MultilinearPolynomial,
         opening_proof::ProverOpeningAccumulator,
     },
@@ -63,7 +62,7 @@ use crate::{
         instruction_lookups::read_raf_checking::InstructionReadRafSumcheckParams,
         ram::{
             output_check::OutputSumcheckParams,
-            populate_memory_states, prover_accumulate_program_image,
+            prover_accumulate_program_image,
             raf_evaluation::RafEvaluationSumcheckParams,
             read_write_checking::RamReadWriteCheckingParams,
             val_check::{RamValCheckSumcheckParams, RamValCheckSumcheckProver},
@@ -81,7 +80,6 @@ use crate::{
             },
             shift::ShiftSumcheckParams,
         },
-        witness::all_committed_polynomials,
     },
 };
 use crate::{
@@ -104,12 +102,22 @@ use crate::{
             product::ProductVirtualRemainderProver,
             shift::ShiftSumcheckProver,
         },
-        witness::CommittedPolynomial,
+    },
+};
+#[cfg(not(feature = "akita"))]
+use crate::{
+    poly::commitment::dory::{DoryGlobals, DoryLayout},
+    zkvm::{
+        ram::populate_memory_states,
+        witness::{all_committed_polynomials, CommittedPolynomial},
     },
 };
 
-// Consumed only by the base stage-6a..8 pipeline; the akita build proves
-// through the packed path (packed.rs) instead.
+// One PIOP per compiled binary: everything gated `not(feature = "akita")` in
+// this file — these imports, `prove`, and the stage-6a..8 assemblies — is the
+// base (Dory) pipeline. The akita build proves through the packed path in
+// `packed.rs`, whose lattice read-raf stages need the fused-inc deltas the
+// base assemblies do not produce.
 #[cfg(not(feature = "akita"))]
 use crate::{
     poly::{
@@ -158,11 +166,12 @@ use crate::{
 #[cfg(feature = "allocative")]
 use allocative::FlameGraphBuilder;
 use common::jolt_device::MemoryConfig;
+#[cfg(not(feature = "akita"))]
 use itertools::{zip_eq, Itertools};
 use rayon::prelude::*;
-use tracer::{
-    emulator::memory::Memory, instruction::Cycle, ChunksIterator, JoltDevice, LazyTraceIterator,
-};
+#[cfg(not(feature = "akita"))]
+use tracer::ChunksIterator;
+use tracer::{emulator::memory::Memory, instruction::Cycle, JoltDevice, LazyTraceIterator};
 
 use crate::curve::JoltCurve;
 #[cfg(feature = "zk")]
@@ -310,6 +319,7 @@ impl<
         )
     }
 
+    #[cfg(not(feature = "akita"))]
     #[inline]
     fn main_total_vars(&self) -> usize {
         let trace_log_t = self.trace.len().log_2();
@@ -597,8 +607,6 @@ impl<
         (proof, debug_info)
     }
 
-    // The akita build replaces this with the packed prove path (the base
-    // proof shape does not exist under that feature).
     #[cfg(not(feature = "akita"))]
     #[expect(
         clippy::type_complexity,
@@ -686,6 +694,7 @@ impl<
     }
 
     #[tracing::instrument(skip_all, name = "generate_and_commit_witness_polynomials")]
+    #[cfg(not(feature = "akita"))]
     fn generate_and_commit_witness_polynomials(
         &mut self,
     ) -> (
@@ -804,6 +813,7 @@ impl<
         (commitments, hint_map)
     }
 
+    #[cfg(not(feature = "akita"))]
     fn generate_and_commit_untrusted_advice(&mut self) -> Option<PCS::Commitment> {
         if self.program_io.untrusted_advice.is_empty() {
             return None;
@@ -838,6 +848,7 @@ impl<
         Some(commitment)
     }
 
+    #[cfg(not(feature = "akita"))]
     fn generate_and_commit_trusted_advice(&mut self) {
         if self.program_io.trusted_advice.is_empty() {
             return;
@@ -1249,10 +1260,6 @@ impl<
         (sumcheck_proof, r_stage5)
     }
 
-    // The stage-6a..8 assemblies below are the base pipeline only: the akita
-    // build proves through the packed path (`prove_stage6a_lattice` and
-    // friends in packed.rs), which supplies the fused-inc deltas the lattice
-    // read-raf stages require.
     #[cfg(not(feature = "akita"))]
     #[tracing::instrument(skip_all)]
     fn prove_stage6a(
@@ -2430,7 +2437,11 @@ fn compute_final_opening_point<F: JoltField>(
         let dominant = opening_candidates
             .iter()
             .find(|(_, point)| point.r.len() == max_len)
-            .expect("at least one dominant precommitted candidate expected");
+            .ok_or_else(|| {
+                ProofVerifyError::DoryError(
+                    "no precommitted anchor attains the dominant dimensionality".to_string(),
+                )
+            })?;
         for (name, point) in opening_candidates
             .iter()
             .filter(|(_, point)| point.r.len() == max_len)
@@ -2742,9 +2753,8 @@ impl<F: JoltField, C: JoltCurve<F = F>, PCS: CommitmentScheme<Field = F>> Serial
 {
 }
 
-// The base e2e/unit suite exercises the base prove pipeline, which does not
-// exist under the akita feature (one PIOP per binary); the akita tests land
-// with the packed prove path.
+// This suite exercises the base prove pipeline, which does not exist under
+// the akita feature; the packed path has its own suite in `packed.rs`.
 #[cfg(all(test, not(feature = "akita")))]
 mod tests {
     // Force-link inline crates so their `inventory::submit!` entries are retained by the linker.
@@ -3445,117 +3455,6 @@ mod tests {
             .prove()
             .expect("prover should produce verifier-native proof");
         verify_verifier_proof(&prover_preprocessing, jolt_proof, io_device, None);
-    }
-
-    /// Timed sha2-chain prove+verify over the base Dory stack — the
-    /// comparison twin of `sha2_chain_akita_perf` (`PERF_LOG_T` selects the
-    /// padded trace target, default 2^20). Ignored: release-only perf
-    /// harness, run explicitly and never concurrently with other jobs.
-    #[test]
-    #[ignore = "release-only perf harness"]
-    #[serial]
-    fn sha2_chain_dory_perf() {
-        use std::time::Instant;
-
-        const CYCLES_PER_SHA256: f64 = 3396.0;
-        let log_t: usize = std::env::var("PERF_LOG_T")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(20);
-        let max_trace = 1usize << log_t;
-        let iters = std::cmp::max(1, (max_trace as f64 * 0.9 / CYCLES_PER_SHA256) as u32);
-        let inputs = [
-            postcard::to_stdvec(&[5u8; 32]).unwrap(),
-            postcard::to_stdvec(&iters).unwrap(),
-        ]
-        .concat();
-        // PERF_TRACE=1 dumps a Perfetto (chrome) trace of the run to the
-        // repo-root benchmark-runs/perfetto_traces/ directory.
-        let _trace_guard = std::env::var("PERF_TRACE").ok().map(|_| {
-            use tracing_subscriber::prelude::*;
-            let dir = format!(
-                "{}/../../benchmark-runs/perfetto_traces",
-                env!("CARGO_MANIFEST_DIR")
-            );
-            std::fs::create_dir_all(&dir).ok();
-            let (chrome_layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
-                .include_args(true)
-                .file(format!("{dir}/sha2-2exp{log_t}-dory.json"))
-                .build();
-            tracing_subscriber::registry().with(chrome_layer).init();
-            guard
-        });
-
-        eprintln!("sha2-chain: {iters} iterations, target 2^{log_t}");
-
-        DoryGlobals::reset();
-        let mut program = host::Program::new("sha2-chain-guest");
-        let (bytecode, init_memory_state, _, e_entry) = program.decode();
-        let (_, _, _, io_device) = program.trace(&inputs, &[], &[]);
-        let (shared_preprocessing, _program_data) = test_shared_preprocessing(
-            bytecode,
-            init_memory_state,
-            e_entry,
-            io_device.memory_layout.clone(),
-            max_trace,
-        )
-        .unwrap();
-        let setup_start = Instant::now();
-        let prover_preprocessing = JoltProverPreprocessing::new(shared_preprocessing);
-        eprintln!("dory prover preprocessing: {:.2?}", setup_start.elapsed());
-        // `DoryCommitmentScheme::setup_prover` initializes this in production,
-        // but deliberately skips it in test binaries because unrelated tests
-        // construct differently-sized setups in one process. This isolated
-        // release harness must mirror the production verifier configuration.
-        let pairing_cache_start = Instant::now();
-        DoryGlobals::init_prepared_cache(
-            &prover_preprocessing.generators.g1_vec,
-            &prover_preprocessing.generators.g2_vec,
-        );
-        eprintln!(
-            "dory prepared-pairing cache: {:.2?}",
-            pairing_cache_start.elapsed()
-        );
-        let elf_contents_opt = program.get_elf_contents();
-        let elf_contents = elf_contents_opt.as_deref().expect("elf contents is None");
-        let prover = RV64IMACProver::gen_from_elf(
-            &prover_preprocessing,
-            elf_contents,
-            &inputs,
-            &[],
-            &[],
-            None,
-            None,
-            None,
-        );
-        eprintln!(
-            "trace length: {} (padded 2^{})",
-            prover.trace.len(),
-            prover.trace.len().next_power_of_two().ilog2()
-        );
-        let io_device = prover.program_io.clone();
-        let prove_start = Instant::now();
-        let (proof, _) = prover.prove().expect("dory prover should produce a proof");
-        eprintln!("dory prove: {:.2?}", prove_start.elapsed());
-        eprintln!(
-            "dory proof size (postcard): {} bytes",
-            postcard::to_stdvec(&proof).unwrap().len()
-        );
-        let verifier_preprocessing_start = Instant::now();
-        let verifier_preprocessing = verifier_preprocessing_from_prover(&prover_preprocessing);
-        eprintln!(
-            "dory verifier preprocessing: {:.2?}",
-            verifier_preprocessing_start.elapsed()
-        );
-        let verify_start = Instant::now();
-        jolt_verifier::verify::<
-            jolt_field::Fr,
-            jolt_dory::DoryScheme,
-            jolt_crypto::Pedersen<jolt_crypto::Bn254G1>,
-            jolt_transcript::LegacyBlake2bTranscript<jolt_field::Fr>,
-        >(&verifier_preprocessing, &io_device, &proof, None)
-        .expect("canonical verifier rejected prover-native proof");
-        eprintln!("dory verify: {:.2?}", verify_start.elapsed());
     }
 
     #[test]

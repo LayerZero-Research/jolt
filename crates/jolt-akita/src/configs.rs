@@ -21,7 +21,16 @@ use akita_types::{
 /// `Some` means the requested maximum shape itself is catalog-backed. Smaller
 /// catalog rows are included because setup matrices are shared prefix views
 /// and planned footprints are not monotone in either layout dimension.
-fn catalog_setup_envelope<Cfg: CommitmentConfig>(
+///
+/// WARNING: the catalog holds single-group rows only, but the shared trace setup
+/// also backs the precommitted groups of a fused multi-group root fold (see
+/// [`crate::multi_group`]), whose schedule this table cannot model. Sizing from
+/// catalog rows alone could therefore land *below* the fold's requirement and
+/// fail closed with `InvalidSetup` at prove time. The result is floored at the
+/// base preset's own envelope so the catalog can only ever widen the setup,
+/// never narrow it. Over-sizing is free: matrices are seeded from a flat index,
+/// so a shorter setup is a prefix of a longer one and commitments are unchanged.
+fn catalog_setup_envelope<Cfg: CommitmentConfig, Base: CommitmentConfig>(
     table: GeneratedScheduleTable,
     max_num_vars: usize,
     max_num_batched_polys: usize,
@@ -35,7 +44,7 @@ fn catalog_setup_envelope<Cfg: CommitmentConfig>(
         return Ok(None);
     }
 
-    let mut envelope = SetupMatrixEnvelope::minimum();
+    let mut envelope = Base::max_setup_matrix_size(max_num_vars, max_num_batched_polys)?;
     for entry in table.entries.iter().filter(|entry| {
         entry.root.precommitted_groups.is_empty()
             && entry.root.final_group.layout.num_vars() <= max_num_vars
@@ -52,9 +61,11 @@ fn catalog_setup_envelope<Cfg: CommitmentConfig>(
 
 /// Delegates a [`CommitmentConfig`] to an upstream preset, overriding its
 /// schedule catalog and catalog-backed setup sizing. `get_params_for_prove`
-/// re-derives the single-group lookup key through the public layout API;
-/// multi-group layouts (never produced by Jolt's shapes) fall back to the base
-/// preset's DP planning.
+/// re-derives the single-group lookup key through the public layout API and
+/// resolves it against the checked-in catalog. The fused stage-8 root fold
+/// (see [`crate::multi_group`]) submits a multi-group layout, which the
+/// catalogs do not cover, so every fused prove falls back to the base preset's
+/// DP planning.
 macro_rules! delegate_preset {
     ($(#[$doc:meta])* $name:ident, $base:ty, $catalog:expr) => {
         $(#[$doc])*
@@ -100,14 +111,12 @@ macro_rules! delegate_preset {
                         "max_num_batched_polys must be at least 1".to_string(),
                     ));
                 }
-                if let Some(table) = $catalog {
-                    if let Some(envelope) = catalog_setup_envelope::<Self>(
-                        table,
-                        max_num_vars,
-                        max_num_batched_polys,
-                    )? {
-                        return Ok(envelope);
-                    }
+                if let Some(envelope) = catalog_setup_envelope::<Self, $base>(
+                    $catalog,
+                    max_num_vars,
+                    max_num_batched_polys,
+                )? {
+                    return Ok(envelope);
                 }
                 <$base>::max_setup_matrix_size(max_num_vars, max_num_batched_polys)
             }
@@ -133,7 +142,7 @@ macro_rules! delegate_preset {
             }
 
             fn schedule_catalog() -> Option<akita_planner::GeneratedScheduleTable> {
-                $catalog
+                Some($catalog)
             }
 
             fn get_params_for_prove(
@@ -174,16 +183,47 @@ delegate_preset!(
 mod tests {
     use super::*;
 
+    type K16Base = akita_config::proof_optimized::fp128::D64OneHotK16;
+    type K256Base = akita_config::proof_optimized::fp128::D64OneHot;
+
     #[test]
     fn production_one_hot_trace_shapes_use_catalog_setup_sizing() {
-        let k16 = crate::schedules::jolt_fp128_d64_onehot_k16_table().unwrap();
-        assert!(catalog_setup_envelope::<JoltD64OneHotK16>(k16, 28, 81)
-            .unwrap()
-            .is_some());
+        let k16 = crate::schedules::jolt_fp128_d64_onehot_k16_table();
+        assert!(
+            catalog_setup_envelope::<JoltD64OneHotK16, K16Base>(k16, 28, 81)
+                .unwrap()
+                .is_some()
+        );
 
-        let k256 = crate::schedules::jolt_fp128_d64_onehot_k256_table().unwrap();
-        assert!(catalog_setup_envelope::<JoltD64OneHotK256>(k256, 38, 41)
-            .unwrap()
-            .is_some());
+        let k256 = crate::schedules::jolt_fp128_d64_onehot_k256_table();
+        assert!(
+            catalog_setup_envelope::<JoltD64OneHotK256, K256Base>(k256, 38, 41)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    /// The shared trace setup also backs the precommitted groups of a fused
+    /// multi-group root fold, whose schedule the single-group catalog cannot
+    /// model. Sizing from catalog rows alone could land below the fold's
+    /// requirement, so the catalog path must never size under the base preset.
+    #[test]
+    fn catalog_sizing_never_undercuts_the_base_preset() {
+        for (num_vars, num_polys) in [(28usize, 81usize), (24, 49), (20, 1)] {
+            let table = crate::schedules::jolt_fp128_d64_onehot_k16_table();
+            let Some(envelope) =
+                catalog_setup_envelope::<JoltD64OneHotK16, K16Base>(table, num_vars, num_polys)
+                    .unwrap()
+            else {
+                continue;
+            };
+            let base = K16Base::max_setup_matrix_size(num_vars, num_polys).unwrap();
+            assert!(
+                envelope.max_setup_len >= base.max_setup_len,
+                "catalog sized {} below the base preset's {} at ({num_vars}, {num_polys})",
+                envelope.max_setup_len,
+                base.max_setup_len,
+            );
+        }
     }
 }

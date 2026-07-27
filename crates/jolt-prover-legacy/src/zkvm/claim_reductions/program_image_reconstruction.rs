@@ -132,7 +132,15 @@ impl<F: JoltField> ProgramImageReconstructionSumcheckProver<F> {
         let word_vars = params.r_word.r.len();
         let limb_bits = WORD_BYTES.log_2();
         let cell_vars = word_byte_num_vars(0);
-        debug_assert!(image_words.len() <= 1 << word_vars);
+        // The scatter below only reads word indices inside the domain, so an
+        // overlong image would silently build a column that disagrees with
+        // the commitment.
+        assert!(
+            image_words.len() <= 1 << word_vars,
+            "program image has {} words but the reconstruction domain holds {}",
+            image_words.len(),
+            1usize << word_vars
+        );
 
         // Zero-padded words scatter byte 0 (the witness encodes padding as
         // symbol-0 hot), so the column matches the committed one exactly.

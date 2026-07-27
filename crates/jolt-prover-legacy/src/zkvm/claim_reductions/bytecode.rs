@@ -296,9 +296,9 @@ impl<F: JoltField> BytecodeClaimReductionProver<F> {
         self.core.params()
     }
 
-    /// See `PrecommittedProver::boost_scale_pow_2`: compensates a batch
+    /// See [`PrecommittedProver::boost_scale_pow_2`]: compensates a batch
     /// wider than this phase's alignment window (the packed stage-7 batch is
-    /// chunk-reconstruction-sized).
+    /// address-reduction-sized).
     pub fn boost_scale_pow_2(&mut self, exponent: usize) {
         self.core.boost_scale_pow_2(exponent);
     }

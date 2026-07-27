@@ -218,7 +218,15 @@ impl<F: JoltField> UntrustedAdviceReconstructionSumcheckProver<F> {
         let word_vars = params.word_vars;
         let limb_bits = WORD_BYTES.log_2();
         let cell_vars = word_byte_num_vars(word_vars);
-        debug_assert!(words.len() <= 1 << word_vars);
+        // The scatter below only reads word indices inside the domain, so an
+        // overlong input would silently build a column that disagrees with
+        // the commitment.
+        assert!(
+            words.len() <= 1 << word_vars,
+            "untrusted advice has {} words but the reconstruction domain holds {}",
+            words.len(),
+            1usize << word_vars
+        );
         debug_assert_eq!(cell_vars, BYTE_BITS + limb_bits + word_vars);
 
         // Rows past `words.len()` encode byte 0 hot, matching the committed
@@ -278,7 +286,6 @@ impl<F: JoltField> UntrustedAdviceReconstructionSumcheckProver<F> {
         else {
             unreachable!("the transition fires exactly once, at the end of the row rounds");
         };
-        debug_assert_eq!(rows.len(), 1);
         let e_row = eq_row.final_sumcheck_claim();
         let p_row = pw_row.final_sumcheck_claim();
         let mut bytes = vec![F::zero(); 1 << BYTE_BITS];
@@ -532,7 +539,13 @@ impl<F: JoltField> TrustedAdviceReconstructionSumcheckProver<F> {
         let word_vars = params.word_vars;
         let limb_bits = WORD_BYTES.log_2();
         let cell_vars = word_byte_num_vars(0);
-        debug_assert!(words.len() <= 1 << word_vars);
+        // As above: word indices past the domain are never scattered.
+        assert!(
+            words.len() <= 1 << word_vars,
+            "trusted advice has {} words but the reconstruction domain holds {}",
+            words.len(),
+            1usize << word_vars
+        );
         debug_assert_eq!(params.r_word.r.len(), word_vars);
 
         // Zero-padded words scatter byte 0 (the witness encodes padding as
@@ -747,9 +760,9 @@ mod tests {
         assert_eq!(bytes_claim, direct, "byte opening must decode the column");
     }
 
-    /// The dense cell-domain tables the prover materialized before the
-    /// factored rewrite — kept as a reference oracle: the factored prover
-    /// must produce identical round polynomials and final opening claim.
+    /// A straightforward dense materialization of the cell-domain tables,
+    /// used as the reference oracle: the factored prover must produce
+    /// identical round polynomials and final opening claim.
     struct DenseReference {
         bytes: MultilinearPolynomial<Fr>,
         k_bool: MultilinearPolynomial<Fr>,

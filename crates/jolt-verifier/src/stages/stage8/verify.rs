@@ -465,8 +465,8 @@ where
         stage7.clear()?,
     )?;
 
-    // OneHotTrace then opens natively at its shared point; reconstruction leaves are
-    // discharged by separate auxiliary packed openings.
+    // The trace columns and the reconstruction leaves' objects then reduce
+    // together to one shared point, discharged natively.
     super::packed::verify(
         formula_dimensions,
         proof.one_hot_config,

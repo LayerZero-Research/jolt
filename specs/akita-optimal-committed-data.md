@@ -14,9 +14,7 @@
 Working note for co-designing the OneHotTrace commitment format with the akita
 backend (local checkout at `../akita`, baseline upstream `33169b8d`). The
 question: what is the cheapest sound way to commit and open Jolt's packed
-one-hot witness data? This is the canonical record of the investigation —
-it supersedes the leads section of
-`specs/akita-perf-plan.md`.
+one-hot witness data? This is the canonical record of the investigation.
 
 ## How we got here (measured trajectory, sha2-chain 2^20)
 

@@ -1,9 +1,18 @@
 //! The Akita final opening.
 //!
-//! `OneHotTrace` is one native group of uniform one-hot columns, all opened
-//! directly at one canonical point. Optional advice and committed-program
-//! objects have distinct domains and are discharged separately through
-//! [`jolt_openings::verify_packed_openings`].
+//! Every committed object — the `OneHotTrace` columns plus the optional advice
+//! and committed-program objects — joins one packed claim reduction to a single
+//! shared point `r*`, each object binding the suffix of `r*` its packed arity
+//! covers. Two topologies discharge that reduction, selected from public shapes
+//! alone by [`jolt_openings::fused_stage8_open_eligible`] so prover and verifier
+//! agree without a proof flag:
+//!
+//! - the fused multi-group root fold ([`verify_fused`]): one native opening
+//!   discharging the advice groups as precommitteds and the trace as the final
+//!   (widest) group;
+//! - the per-group opens ([`jolt_openings::verify_packed_openings`]): one native
+//!   opening per group — the trace columns as one group, each auxiliary object
+//!   as a singleton against its own shape-exact setup.
 
 use std::collections::BTreeMap;
 
@@ -24,6 +33,7 @@ use jolt_openings::{
     fused_stage8_open_eligible, verify_packed_openings, verify_packed_reduction, CommitmentScheme,
     EvaluationClaim, MultiGroupOpeningClaim, MultiGroupVerify, PackedObjectGroup,
     PackedOpeningProof, PackedVerifierObject, PrefixPackedStatement, PrefixPacking,
+    AKITA_FUSED_LOG_K_CHUNK,
 };
 use jolt_poly::Point;
 use jolt_transcript::{AppendToTranscript, Transcript};
@@ -96,7 +106,15 @@ where
     Ok(())
 }
 
-fn validate_fused_aux_metadata<C, S>(
+/// Pins one auxiliary object's commitment to the setup it will be opened
+/// under, before any proof-controlled backend payload is decoded: Akita's
+/// one-hot backend at `one_hot_k`, the setup's canonical layout digest, and
+/// exactly one polynomial at the canonical packed arity the public packing
+/// fixes. Both topologies enforce this — the fused fold against the shared
+/// trace setup, the per-group opens against each object's shape-exact setup —
+/// because [`jolt_openings::verify_packed_openings`] branches its point
+/// ordering on the commitment's declared backend flavor.
+fn validate_aux_metadata<C, S>(
     commitment: &C,
     setup: &S,
     canonical_num_vars: usize,
@@ -108,34 +126,34 @@ where
 {
     if !commitment.is_one_hot_backend() {
         return Err(batch_failed(
-            "fused auxiliary commitment must use Akita's one-hot backend",
+            "auxiliary commitment must use Akita's one-hot backend",
         ));
     }
     if commitment.one_hot_k() != one_hot_k || setup.one_hot_k() != one_hot_k {
         return Err(batch_failed(format!(
-            "fused auxiliary commitment/setup one-hot chunk size must equal canonical K={one_hot_k}"
+            "auxiliary commitment/setup one-hot chunk size must equal canonical K={one_hot_k}"
         )));
     }
     if commitment.layout_digest() != setup.default_layout_digest() {
         return Err(batch_failed(
-            "fused auxiliary commitment has a noncanonical layout digest",
+            "auxiliary commitment has a noncanonical layout digest",
         ));
     }
     if commitment.num_vars() != canonical_num_vars {
         return Err(batch_failed(format!(
-            "fused auxiliary commitment arity {} does not equal canonical packed arity {canonical_num_vars}",
+            "auxiliary commitment arity {} does not equal canonical packed arity {canonical_num_vars}",
             commitment.num_vars()
         )));
     }
     if commitment.poly_count() != 1 {
         return Err(batch_failed(format!(
-            "fused auxiliary commitment must contain exactly one polynomial, got {}",
+            "auxiliary commitment must contain exactly one polynomial, got {}",
             commitment.poly_count()
         )));
     }
     if canonical_num_vars > setup.max_num_vars() || setup.max_num_polys_per_commitment_group() < 1 {
         return Err(batch_failed(
-            "fused auxiliary commitment exceeds the shared verifier setup",
+            "auxiliary commitment exceeds its verifier setup",
         ));
     }
     Ok(())
@@ -211,13 +229,8 @@ where
     VC: jolt_crypto::VectorCommitment<Field = PCS::Field>,
     T: Transcript<Challenge = PCS::Field>,
 {
-    // Per-object packings, commitments, and setups in canonical object order:
-    // `OneHotTrace` is one native group of uniform one-hot columns, followed
-    // by the optional auxiliary commitment objects. The shared layout is the
-    // same one the prover committed under.
-    // Optional objects join exactly when their reconstruction outputs exist;
-    // presence must agree with the proof/preprocessing commitment slots.
     let chunk_width = one_hot_config.committed_chunk_bits();
+    let one_hot_k = 1 << chunk_width;
     let one_hot_trace_shape = OneHotTraceShape {
         ra_layout: formula_dimensions.ra_layout,
         log_t: formula_dimensions.trace.log_t(),
@@ -239,7 +252,7 @@ where
         canonical_digest,
         *column_arity,
         columns.len(),
-        1 << chunk_width,
+        one_hot_k,
     )?;
     let leaves = leaf_claims(stage7, reconstruction);
     let mut common_point: Option<Vec<PCS::Field>> = None;
@@ -266,8 +279,9 @@ where
     }
     let common_point = common_point.ok_or_else(|| batch_failed("OneHotTrace has no columns"))?;
 
-    // Resolve advice objects and their canonical public packings before choosing
-    // topology. Commitment metadata is never an input to the fused gate.
+    // Commitment metadata is never an input to the fused gate. Optional objects
+    // join exactly when their reconstruction outputs exist; presence must agree
+    // with the proof/preprocessing commitment slots.
     let program_present = preprocessing.program.committed().is_some()
         || reconstruction.output_points.bytecode.is_some();
     let mut advice_objects = Vec::new();
@@ -303,6 +317,36 @@ where
         .iter()
         .any(|(kind, _)| *kind == JoltAdviceKind::Trusted);
     let fallback_topology_present = program_present || trusted_advice_present;
+
+    // Trace objects are identity-packed one-hot columns, each carrying the trace
+    // commitment and a single claim at the shared point, mirroring the prover's
+    // construction. Both topologies open them the same way.
+    let trace_packings: Vec<PrefixPacking<JoltCommittedPolynomial>> = columns
+        .iter()
+        .map(|column| PrefixPacking::new([(*column, common_point.len())]).map_err(batch_failed))
+        .collect::<Result<_, _>>()?;
+    let trace_statements: Vec<
+        PrefixPackedStatement<PCS::Field, JoltCommittedPolynomial, PCS::Output>,
+    > = columns
+        .iter()
+        .zip(&evaluations)
+        .map(|(column, value)| {
+            PrefixPackedStatement::new(
+                one_hot_trace_commitment.clone(),
+                vec![(*column, EvaluationClaim::new(common_point.clone(), *value))],
+            )
+        })
+        .collect();
+    // Advice objects keep the same canonical packings that fed `aux_num_vars`
+    // into the gate, so whichever topology it selects opens the shapes it chose
+    // between.
+    let advice_statements = advice_objects
+        .iter()
+        .map(|(_, (packing, commitment, _))| {
+            object_statement(packing, (*commitment).clone(), &leaves)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
     if fused_stage8_open_eligible(
         chunk_width,
         common_point.len(),
@@ -316,54 +360,58 @@ where
                 "shared verifier setup cannot contain every fused commitment polynomial",
             ));
         }
+        // Every fused group is discharged against the shared trace setup, so the
+        // advice objects are pinned to it rather than to their own. The gate
+        // holds only at `AKITA_FUSED_LOG_K_CHUNK`, the one chunk width the fused
+        // precommit configuration is defined for.
         for (_, (packing, commitment, _)) in &advice_objects {
-            validate_fused_aux_metadata(
+            validate_aux_metadata(
                 *commitment,
                 &preprocessing.pcs_setup,
                 packing.packed_num_vars,
-                1 << chunk_width,
+                1 << AKITA_FUSED_LOG_K_CHUNK,
             )?;
         }
-        return verify_fused(
-            &plan,
-            preprocessing,
-            one_hot_trace_commitment,
-            &advice_objects,
-            &common_point,
-            &evaluations,
+        let aux_objects: Vec<PackedVerifierObject<'_, PCS, JoltCommittedPolynomial>> =
+            advice_objects
+                .iter()
+                .zip(&advice_statements)
+                .map(|((_, (packing, _, _)), statement)| PackedVerifierObject {
+                    packing,
+                    statement,
+                    setup: &preprocessing.pcs_setup,
+                })
+                .collect();
+        let trace_objects: Vec<PackedVerifierObject<'_, PCS, JoltCommittedPolynomial>> =
+            trace_packings
+                .iter()
+                .zip(&trace_statements)
+                .map(|(packing, statement)| PackedVerifierObject {
+                    packing,
+                    statement,
+                    setup: &preprocessing.pcs_setup,
+                })
+                .collect();
+        return verify_fused::<PCS, T>(
+            &aux_objects,
+            &trace_objects,
+            &preprocessing.pcs_setup,
             proof,
             transcript,
-            &leaves,
         );
     }
 
-    // The trace group leads (widest object → binds the whole reduced point);
-    // advice/program follow as suffix-binding singletons. Trace objects are
-    // identity-packed one-hot columns, each carrying the trace commitment and a
-    // single claim at the shared point, mirroring the prover's construction.
-    let mut packings: Vec<PrefixPacking<JoltCommittedPolynomial>> = Vec::new();
-    let mut setups: Vec<&PCS::VerifierSetup> = Vec::new();
-    let mut groups = Vec::new();
-
-    groups.push(PackedObjectGroup {
-        start: 0,
-        len: columns.len(),
-    });
-    for column in columns {
-        packings.push(PrefixPacking::new([(*column, common_point.len())]).map_err(batch_failed)?);
-        setups.push(&preprocessing.pcs_setup);
+    // Each auxiliary object is discharged against its own shape-exact setup, so
+    // it is pinned to that setup instead of the shared trace one.
+    for (_, (packing, commitment, setup)) in &advice_objects {
+        validate_aux_metadata(
+            *commitment,
+            *setup,
+            packing.packed_num_vars,
+            setup.one_hot_k(),
+        )?;
     }
-    let trace_object_count = columns.len();
-
-    // Auxiliary commitments, aligned with the packings pushed after the trace.
-    let mut aux_commitments = Vec::new();
-    for (_, (packing, commitment, setup)) in advice_objects {
-        groups.push(PackedObjectGroup::singleton(packings.len()));
-        packings.push(packing);
-        aux_commitments.push(commitment);
-        setups.push(setup);
-    }
-    match (
+    let program_object = match (
         reconstruction.output_points.bytecode.as_ref(),
         preprocessing.program.committed(),
     ) {
@@ -391,20 +439,23 @@ where
                 .as_ref()
                 .map(|points| leaf_word_vars(points.bytes.len()))
                 .transpose()?;
-            groups.push(PackedObjectGroup::singleton(packings.len()));
-            packings.push(
-                precommitted_packing(&PrecommittedPackingShape {
-                    bytecode_chunks: committed.bytecode_chunk_count(),
-                    log_bytecode_rows,
-                    imm_byte_width: <PCS::Field as FixedByteSize>::NUM_BYTES,
-                    program_image_log_words,
-                })
-                .map_err(batch_failed)?,
-            );
-            aux_commitments.push(&committed.program_one_hot_commitment);
-            setups.push(setup);
+            let packing = precommitted_packing(&PrecommittedPackingShape {
+                bytecode_chunks: committed.bytecode_chunk_count(),
+                log_bytecode_rows,
+                imm_byte_width: <PCS::Field as FixedByteSize>::NUM_BYTES,
+                program_image_log_words,
+            })
+            .map_err(batch_failed)?;
+            let commitment = &committed.program_one_hot_commitment;
+            validate_aux_metadata(
+                commitment,
+                setup,
+                packing.packed_num_vars,
+                setup.one_hot_k(),
+            )?;
+            Some((packing, commitment, setup))
         }
-        (None, None) => {}
+        (None, None) => None,
         (Some(_), None) => {
             return Err(batch_failed(
                 "program reconstruction leaves without a ProgramOneHot commitment",
@@ -415,31 +466,44 @@ where
                 "ProgramOneHot commitment supplied without program reconstruction leaves",
             ));
         }
-    }
+    };
+    let program_statement = program_object
+        .as_ref()
+        .map(|(packing, commitment, _)| object_statement(packing, (*commitment).clone(), &leaves))
+        .transpose()?;
 
-    // Statements: the trace columns claim at the shared point under the trace
-    // commitment; the auxiliary objects retain their own logical leaf points.
-    let mut statements = Vec::with_capacity(packings.len());
-    for (column, value) in columns.iter().zip(&evaluations) {
-        statements.push(PrefixPackedStatement::new(
-            one_hot_trace_commitment.clone(),
-            vec![(*column, EvaluationClaim::new(common_point.clone(), *value))],
-        ));
-    }
-    for (packing, commitment) in packings[trace_object_count..].iter().zip(&aux_commitments) {
-        statements.push(object_statement(packing, (*commitment).clone(), &leaves)?);
-    }
-
-    let objects: Vec<PackedVerifierObject<'_, PCS, JoltCommittedPolynomial>> = packings
-        .iter()
-        .zip(&statements)
-        .zip(setups)
-        .map(|((packing, statement), setup)| PackedVerifierObject {
+    // The trace group leads (widest object → binds the whole reduced point);
+    // advice/program follow as suffix-binding singletons retaining their own
+    // logical leaf points.
+    let mut objects: Vec<PackedVerifierObject<'_, PCS, JoltCommittedPolynomial>> =
+        Vec::with_capacity(trace_packings.len() + advice_objects.len() + 1);
+    let mut groups = vec![PackedObjectGroup {
+        start: 0,
+        len: trace_packings.len(),
+    }];
+    for (packing, statement) in trace_packings.iter().zip(&trace_statements) {
+        objects.push(PackedVerifierObject {
             packing,
             statement,
-            setup,
-        })
-        .collect();
+            setup: &preprocessing.pcs_setup,
+        });
+    }
+    for ((_, (packing, _, setup)), statement) in advice_objects.iter().zip(&advice_statements) {
+        groups.push(PackedObjectGroup::singleton(objects.len()));
+        objects.push(PackedVerifierObject {
+            packing,
+            statement,
+            setup: *setup,
+        });
+    }
+    if let (Some((packing, _, setup)), Some(statement)) = (&program_object, &program_statement) {
+        groups.push(PackedObjectGroup::singleton(objects.len()));
+        objects.push(PackedVerifierObject {
+            packing,
+            statement,
+            setup: *setup,
+        });
+    }
 
     verify_packed_openings(&objects, &groups, proof, transcript).map_err(opening_failed)
 }
@@ -449,31 +513,24 @@ where
 /// `[aux…, trace]`), then check the single native multi-group root fold that
 /// discharges every group at prefix/suffix slices of `r*`. The trace is the
 /// final (widest) group and binds the whole point.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the fused open resolves the trace and advice objects plus their shared inputs here in one place"
-)]
-fn verify_fused<PCS, VC, T>(
-    plan: &OneHotTraceLayoutPlan,
-    preprocessing: &crate::preprocessing::JoltVerifierPreprocessing<PCS, VC>,
-    one_hot_trace_commitment: &PCS::Output,
-    aux: &[(JoltAdviceKind, ResolvedObject<'_, PCS>)],
-    common_point: &[PCS::Field],
-    trace_evaluations: &[PCS::Field],
+fn verify_fused<PCS, T>(
+    aux: &[PackedVerifierObject<'_, PCS, JoltCommittedPolynomial>],
+    trace: &[PackedVerifierObject<'_, PCS, JoltCommittedPolynomial>],
+    setup: &PCS::VerifierSetup,
     proof: &PackedOpeningProof<PCS::Field, PCS::Proof>,
     transcript: &mut T,
-    leaves: &BTreeMap<JoltCommittedPolynomial, EvaluationClaim<PCS::Field>>,
 ) -> Result<(), VerifierError>
 where
     PCS: CommitmentScheme + MultiGroupVerify,
     PCS::Output: Clone + AppendToTranscript + OneHotTraceCommitmentMetadata,
     PCS::VerifierSetup: OneHotTraceSetupMetadata,
-    VC: jolt_crypto::VectorCommitment<Field = PCS::Field>,
     T: Transcript<Challenge = PCS::Field>,
 {
-    let columns = &plan.columns;
-    let n_trace = columns.len();
+    let n_trace = trace.len();
     let n_aux = aux.len();
+    let trace_group = trace
+        .first()
+        .ok_or_else(|| batch_failed("fused packed opening has no OneHotTrace columns"))?;
     if proof.openings.len() != 1 {
         return Err(batch_failed(format!(
             "fused packed opening must carry exactly one native opening, got {}",
@@ -488,47 +545,16 @@ where
         )));
     }
 
-    // Advice objects use the same canonical packings that selected the gate.
-    let mut aux_statements = Vec::with_capacity(n_aux);
-    for (_, (packing, commitment, _)) in aux {
-        let statement = object_statement(packing, (*commitment).clone(), leaves)?;
-        aux_statements.push(statement);
-    }
-
-    let trace_packings: Vec<PrefixPacking<JoltCommittedPolynomial>> = columns
+    // Object order [aux…, trace] mirrors the prover.
+    let objects: Vec<PackedVerifierObject<'_, PCS, JoltCommittedPolynomial>> = aux
         .iter()
-        .map(|column| PrefixPacking::new([(*column, common_point.len())]).map_err(batch_failed))
-        .collect::<Result<_, _>>()?;
-    let trace_statements: Vec<
-        PrefixPackedStatement<PCS::Field, JoltCommittedPolynomial, PCS::Output>,
-    > = columns
-        .iter()
-        .zip(trace_evaluations)
-        .map(|(column, value)| {
-            PrefixPackedStatement::new(
-                one_hot_trace_commitment.clone(),
-                vec![(*column, EvaluationClaim::new(common_point.to_vec(), *value))],
-            )
+        .chain(trace)
+        .map(|object| PackedVerifierObject {
+            packing: object.packing,
+            statement: object.statement,
+            setup: object.setup,
         })
         .collect();
-
-    // Object order [aux…, trace] mirrors the prover.
-    let mut objects: Vec<PackedVerifierObject<'_, PCS, JoltCommittedPolynomial>> =
-        Vec::with_capacity(n_trace + n_aux);
-    for ((_, (packing, _, _)), statement) in aux.iter().zip(&aux_statements) {
-        objects.push(PackedVerifierObject {
-            packing,
-            statement,
-            setup: &preprocessing.pcs_setup,
-        });
-    }
-    for (packing, statement) in trace_packings.iter().zip(&trace_statements) {
-        objects.push(PackedVerifierObject {
-            packing,
-            statement,
-            setup: &preprocessing.pcs_setup,
-        });
-    }
 
     let shared_point = verify_packed_reduction::<PCS, JoltCommittedPolynomial, T>(
         &objects,
@@ -537,23 +563,22 @@ where
         transcript,
     )
     .map_err(opening_failed)?;
-    drop(objects);
 
     let mut groups = Vec::with_capacity(n_aux + 1);
-    for (index, (_, (packing, commitment, _))) in aux.iter().enumerate() {
+    for (index, object) in aux.iter().enumerate() {
         groups.push(MultiGroupOpeningClaim {
-            commitment: *commitment,
-            num_vars: packing.packed_num_vars,
+            commitment: &object.statement.commitment,
+            num_vars: object.packing.packed_num_vars,
             evaluations: std::slice::from_ref(&proof.evaluations[index]),
         });
     }
     groups.push(MultiGroupOpeningClaim {
-        commitment: one_hot_trace_commitment,
-        num_vars: common_point.len(),
+        commitment: &trace_group.statement.commitment,
+        num_vars: trace_group.packing.packed_num_vars,
         evaluations: &proof.evaluations[n_aux..n_aux + n_trace],
     });
     PCS::verify_multi_group(
-        &preprocessing.pcs_setup,
+        setup,
         &shared_point,
         &groups,
         &proof.openings[0],
@@ -869,6 +894,22 @@ mod tests {
                 validate_one_hot_trace_metadata(&invalid, &setup, digest, 12, 17, 256).is_err()
             );
         }
+        // A setup wider than the trace is legal (it also backs the fused aux
+        // groups), so only a capacity below the column count is rejected.
+        assert!(
+            validate_one_hot_trace_metadata(
+                &commitment,
+                &SetupMetadata {
+                    poly_count: 18,
+                    ..setup
+                },
+                digest,
+                12,
+                17,
+                256
+            )
+            .is_ok()
+        );
         for invalid in [
             SetupMetadata {
                 digest: [9; 32],
@@ -879,7 +920,7 @@ mod tests {
                 ..setup
             },
             SetupMetadata {
-                poly_count: 18,
+                poly_count: 16,
                 ..setup
             },
             SetupMetadata {
@@ -891,6 +932,90 @@ mod tests {
                 validate_one_hot_trace_metadata(&commitment, &invalid, digest, 12, 17, 256)
                     .is_err()
             );
+        }
+    }
+
+    /// Both stage-8 topologies gate auxiliary objects on the same metadata,
+    /// differing only in the setup they are pinned to: the fused fold shares
+    /// the trace setup (whose capacity exceeds the object), the per-group opens
+    /// use a shape-exact per-object setup. Neither may admit a dense-backend,
+    /// off-digest, multi-polynomial, or off-arity commitment.
+    #[test]
+    fn auxiliary_metadata_is_enforced_on_both_topologies() {
+        const AUX_VARS: usize = 16;
+        let digest = [7; 32];
+        let commitment = CommitmentMetadata {
+            one_hot: true,
+            digest,
+            num_vars: AUX_VARS,
+            poly_count: 1,
+            one_hot_k: 256,
+        };
+        // The fused fold shares the trace setup: wider and multi-polynomial.
+        let fused_setup = SetupMetadata {
+            digest,
+            num_vars: 19,
+            poly_count: 17,
+            one_hot_k: 256,
+        };
+        // The per-group open uses the object's own shape-exact setup.
+        let per_group_setup = SetupMetadata {
+            digest,
+            num_vars: AUX_VARS,
+            poly_count: 1,
+            one_hot_k: 256,
+        };
+        for setup in [fused_setup, per_group_setup] {
+            assert!(validate_aux_metadata(&commitment, &setup, AUX_VARS, 256).is_ok());
+
+            for invalid in [
+                CommitmentMetadata {
+                    one_hot: false,
+                    ..commitment
+                },
+                CommitmentMetadata {
+                    digest: [8; 32],
+                    ..commitment
+                },
+                CommitmentMetadata {
+                    num_vars: AUX_VARS + 1,
+                    ..commitment
+                },
+                CommitmentMetadata {
+                    num_vars: AUX_VARS - 1,
+                    ..commitment
+                },
+                CommitmentMetadata {
+                    poly_count: 2,
+                    ..commitment
+                },
+                CommitmentMetadata {
+                    one_hot_k: 16,
+                    ..commitment
+                },
+            ] {
+                assert!(validate_aux_metadata(&invalid, &setup, AUX_VARS, 256).is_err());
+            }
+            for invalid in [
+                SetupMetadata {
+                    digest: [9; 32],
+                    ..setup
+                },
+                SetupMetadata {
+                    one_hot_k: 16,
+                    ..setup
+                },
+                SetupMetadata {
+                    num_vars: AUX_VARS - 1,
+                    ..setup
+                },
+                SetupMetadata {
+                    poly_count: 0,
+                    ..setup
+                },
+            ] {
+                assert!(validate_aux_metadata(&commitment, &invalid, AUX_VARS, 256).is_err());
+            }
         }
     }
 

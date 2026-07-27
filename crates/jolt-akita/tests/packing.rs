@@ -8,10 +8,10 @@ mod support;
 
 use jolt_akita::{AkitaCommitment, AkitaField, AkitaNativeBatching, AkitaScheme};
 use jolt_openings::{
-    prove_packed_openings, recover_packed_reduction_point, verify_packed_openings,
-    BatchOpeningScheme, CommitmentScheme, EvaluationClaim, OpeningsError, PackedObjectGroup,
-    PackedOpeningProof, PackedProverGroup, PackedProverObject, PackedVerifierObject,
-    PrefixPackedStatement, PrefixPacking,
+    prove_packed_openings, verify_packed_openings, verify_packed_reduction, BatchOpeningScheme,
+    CommitmentScheme, EvaluationClaim, OpeningsError, PackedObjectGroup, PackedOpeningProof,
+    PackedProverGroup, PackedProverObject, PackedVerifierObject, PrefixPackedStatement,
+    PrefixPacking,
 };
 use jolt_poly::{MultilinearPoly, OneHotPolynomial, Polynomial};
 use jolt_transcript::{Blake2bTranscript, Transcript};
@@ -835,13 +835,15 @@ fn akita_grouped_one_hot_group_with_singleton_shares_one_reduction_point() {
     .expect("grouped-plus-singleton packed opening should verify");
     assert_eq!(prover_transcript.state(), verifier_transcript.state());
 
-    // Value invariant, checked independently of the native PCS: recover the
-    // shared reduction point and confirm every object's claimed evaluation is
-    // its witness bound at the object's slice of `r*`.
+    // Value invariant, checked independently of the native PCS: replay the
+    // reduction on a fresh transcript to recover the shared point and confirm
+    // every object's claimed evaluation is its witness bound at that object's
+    // slice of `r*`.
     let mut recovery_transcript = Blake2bTranscript::new(LABEL);
-    let point = recover_packed_reduction_point::<AkitaScheme, PackedId, _>(
+    let point = verify_packed_reduction::<AkitaScheme, PackedId, _>(
         &verifier_objects,
         &proof.round_polynomials,
+        &proof.evaluations,
         &mut recovery_transcript,
     )
     .expect("reduction point should recover");

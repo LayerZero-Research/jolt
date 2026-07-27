@@ -38,3 +38,7 @@ serde_json = { workspace = true, features = ["std"] }
 [[bench]]
 name = "akita_paths"
 harness = false
+
+[[bench]]
+name = "flavor_bench"
+harness = false

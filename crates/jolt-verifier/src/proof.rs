@@ -28,10 +28,8 @@ pub type ProofCommitments<PCS> = <PCS as Commitment>::Output;
 /// opening proof at the unified point.
 #[cfg(not(feature = "akita"))]
 pub type JointOpeningProof<PCS> = <PCS as CommitmentScheme>::Proof;
-/// On the `akita` build every committed group — the `OneHotTrace` columns plus
-/// any advice/program objects — is reduced to one shared point and discharged
-/// by a single joint packed opening: the trace is the widest group (it binds
-/// the whole point), the auxiliary objects bind suffix slices.
+/// The final-opening discharge on the `akita` build: the joint packed opening
+/// of every committed object, reduced to one shared point.
 #[cfg(feature = "akita")]
 pub type JointOpeningProof<PCS> = jolt_openings::PackedOpeningProof<
     <PCS as CommitmentScheme>::Field,

@@ -12,9 +12,16 @@
 //!   — layout digest, declared dimensions, backend flavor, backend bytes — is
 //!   perturbed; a deserialization failure or a verifier rejection both count.
 //! - Proof-shape tampers ([`akita_proof_shape_tampers_reject`],
-//!   [`akita_advice_commitment_presence_rejects`]): dropped reconstruction /
-//!   auxiliary proofs, a swapped phase proof, an auxiliary evaluation offset,
-//!   and an absent trusted-advice commitment.
+//!   [`akita_advice_commitment_presence_rejects`]): a dropped reconstruction
+//!   proof, a swapped phase proof, a dropped per-group opening, a trace
+//!   evaluation offset, and an absent trusted-advice commitment.
+//!
+//! Both stage-8 topologies are covered: the per-group opens by the muldiv,
+//! advice, and committed-program cases, the fused multi-group root fold by the
+//! fused untrusted-advice case. The metadata gate each topology applies to its
+//! auxiliary objects is unit-tested at its own boundary in
+//! `stages::stage8::packed` — its inputs are transcript-bound here, so a
+//! fixture-level mutation rejects upstream of the gate.
 //!
 //! Together these are the active coverage behind the akita
 //! `TamperCoverage::Active` manifest entries.
@@ -88,8 +95,8 @@ use crate::support::akita_fixtures::{
 };
 use crate::support::assert_rejects;
 
-/// The single packed `OneHotTrace` commitment object type (also the advice object
-/// type): the concrete `Commitment::Output` of the akita scheme.
+/// The akita scheme's `Commitment::Output`, shared by the `OneHotTrace` and
+/// advice objects.
 type AkitaCommitment = <AkitaScheme as jolt_crypto::Commitment>::Output;
 
 fn one() -> AkitaField {
@@ -737,30 +744,6 @@ fn every_commitment_wire_rejects_perturbation() {
     }
 }
 
-#[test]
-fn fused_aux_arity_metadata_rejects() {
-    let case = akita_fused_untrusted_case();
-    let commitment = case
-        .proof
-        .untrusted_advice_commitment
-        .as_ref()
-        .expect("fused fixture carries untrusted advice");
-    let mut value = serde_json::to_value(commitment).expect("commitment serializes");
-    let num_vars = value
-        .get_mut("num_vars")
-        .expect("commitment exposes num_vars");
-    *num_vars =
-        serde_json::Value::from(num_vars.as_u64().expect("num_vars is an unsigned integer") + 1);
-    let commitment = serde_json::from_value(value).expect("metadata-only mutation deserializes");
-    let mut proof = case.proof.clone();
-    proof.untrusted_advice_commitment = Some(commitment);
-    // Commitment metadata is transcript-bound in the preamble, so a real
-    // proof may reject before stage 8. The adapter unit test exercises the
-    // direct boundary and confirms canonical mismatch rejection before native
-    // payload decoding.
-    assert_rejects(case.verify_proof(&proof));
-}
-
 /// Proof-shape tampers: a swapped phase proof, a dropped reconstruction proof,
 /// a dropped per-object opening, and an object-evaluation offset — each
 /// fail-closed.
@@ -787,8 +770,8 @@ fn akita_proof_shape_tampers_reject() {
     let _ = proof.joint_opening_proof.openings.pop();
     assert_rejects(committed.verify_proof(&proof));
 
-    // A tampered OneHotTrace evaluation (a leading object) must break the joint
-    // opening now that the trace is reduced together with advice/program.
+    // The trace reduces together with advice/program, so a tampered OneHotTrace
+    // evaluation (a leading object) breaks the joint opening.
     let mut proof = committed.proof.clone();
     proof.joint_opening_proof.evaluations[0] += one();
     assert_rejects(committed.verify_proof(&proof));

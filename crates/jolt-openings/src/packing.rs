@@ -79,7 +79,9 @@
 //! sizes — e.g. one per trust domain — with no homomorphism available to
 //! combine them. [`prove_packed_openings`]/[`verify_packed_openings`] settle
 //! all of them with ONE reduction sumcheck plus one native PCS opening per
-//! object. After each object's within-object batching above (its `α` powers),
+//! object *group* (the fused stage-8 path goes further: one native multi-group
+//! opening for every group at once).
+//! After each object's within-object batching above (its `α` powers),
 //! the verifier draws one cross-object coefficient `β_k` per object and runs
 //! a single `n_max`-round sumcheck for
 //!
@@ -967,6 +969,11 @@ where
 /// per-group joint reduction. Prover and verifier gate on this identically.
 pub const AKITA_MIN_MULTI_GROUP_VARS: usize = 16;
 
+/// The one-hot chunk width (`K = 2^8`) whose Akita precommit configuration the
+/// fused stage-8 multi-group root fold is defined for. Any other width falls
+/// back to the per-group joint reduction.
+pub const AKITA_FUSED_LOG_K_CHUNK: usize = 8;
+
 /// Whether Jolt's stage-8 opening fuses into one native multi-group root fold
 /// (the advice groups as precommitteds, the trace as the final group) versus
 /// the per-group joint reduction. Decided from public shapes alone so the
@@ -983,7 +990,7 @@ pub fn fused_stage8_open_eligible(
     fallback_topology_present: bool,
     aux_num_vars: &[usize],
 ) -> bool {
-    log_k_chunk == 8
+    log_k_chunk == AKITA_FUSED_LOG_K_CHUNK
         && !fallback_topology_present
         && !aux_num_vars.is_empty()
         && trace_num_vars >= AKITA_MIN_MULTI_GROUP_VARS
@@ -1004,14 +1011,31 @@ pub struct PackedReduction<F> {
     pub evaluations: Vec<F>,
 }
 
+/// Per-object sumcheck state: dense β-and-α-scaled selector/witness tables for
+/// arbitrary witnesses, or the sparse round stepper for unit-sparse (one-hot)
+/// witnesses — same field values, no `2^n` materialization.
+enum ObjectState<'a, F: Field> {
+    Dense {
+        selector: Polynomial<F>,
+        witness: Polynomial<F>,
+    },
+    Sparse(SparseReductionInstance<'a, F>),
+}
+
+/// An [`ObjectState`] plus the rounds to wait before the object's variables
+/// bind and its total `Σ_z E(z)·W(z)` (the constant while padded).
+struct ObjectProver<'a, F: Field> {
+    state: ObjectState<'a, F>,
+    padding_rounds: usize,
+    total: F,
+}
+
 /// Runs the joint claim-reduction sumcheck across all packed objects, reducing
 /// every object's per-slot logical claims to one evaluation of its packed
-/// polynomial at a slice of a single fresh shared point `r*`. Absorbs the
-/// objects' statements, draws the batching challenges, proves the reduction
-/// rounds, and appends each object's reduced `EvaluationClaim` — exactly the
-/// transcript sequence the verifier replays via [`verify_packed_reduction`].
-/// The caller then discharges the reduced claims: per-group native opens
-/// ([`prove_packed_openings`]) or one fused native multi-group open.
+/// polynomial at a slice of a single fresh shared point `r*`: object `k`'s
+/// claim lands at the suffix `point[point.len() - packed_num_vars_k ..]` (the
+/// widest object binds the whole point). Writes exactly the transcript sequence
+/// the verifier replays via [`verify_packed_reduction`].
 pub fn reduce_packed_openings<PCS, Id, T>(
     objects: &[PackedProverObject<'_, PCS, Id>],
     transcript: &mut T,
@@ -1047,18 +1071,6 @@ where
         .max()
         .unwrap_or(0);
 
-    enum ObjectState<'a, F: Field> {
-        Dense {
-            selector: Polynomial<F>,
-            witness: Polynomial<F>,
-        },
-        Sparse(SparseReductionInstance<'a, F>),
-    }
-    struct ObjectProver<'a, F: Field> {
-        state: ObjectState<'a, F>,
-        padding_rounds: usize,
-        total: F,
-    }
     let construction_span = tracing::info_span!("reduce_packed_openings::build_tables").entered();
     let mut tables = prepared
         .iter()
@@ -1068,6 +1080,10 @@ where
         .map(|(((statement, alpha), coefficient), object)| {
             let scaled_alpha: Vec<PCS::Field> =
                 alpha.iter().map(|alpha| *alpha * *coefficient).collect();
+            // `Σ_z E(z)·W(z)` over honest tables is exactly the (β-scaled)
+            // batched claim — O(claims), not an O(2^n) dot product. A false
+            // claimed value still fails verification at the object's first
+            // bound round.
             let total = statement.batched_claim(&scaled_alpha);
             let padding_rounds = max_num_vars - object.packing.packed_num_vars;
             let state = if object.polynomial.is_one_hot() {
@@ -1105,6 +1121,8 @@ where
         let mut quadratic = PCS::Field::from_u64(0);
         for table in &mut tables {
             if table.padding_rounds > round {
+                // Still padded: constant in the bound variable, halving each
+                // padding round.
                 let constant = table.total.mul_pow_2(table.padding_rounds - round - 1);
                 eval_zero += constant;
                 eval_one += constant;
@@ -1180,145 +1198,15 @@ where
     }
     let spans: Vec<PackedObjectGroup> = groups.iter().map(PackedProverGroup::span).collect();
     validate_groups(&spans, objects.len())?;
-    let prepared = objects
-        .iter()
-        .map(|object| object.packing.prepare_statement(object.statement))
-        .collect::<Result<Vec<_>, _>>()?;
-    for object in &objects {
-        if object.polynomial.num_vars() != object.packing.packed_num_vars {
-            return Err(OpeningsError::InvalidBatch(format!(
-                "packed polynomial has {} variables but its prefix packing has {}",
-                object.polynomial.num_vars(),
-                object.packing.packed_num_vars
-            )));
-        }
-    }
-    let (alphas, coefficients) = packed_opening_challenges(&prepared, transcript);
-    let max_num_vars = objects
-        .iter()
-        .map(|object| object.packing.packed_num_vars)
-        .max()
-        .unwrap_or(0);
+    let PackedReduction {
+        round_polynomials,
+        point,
+        evaluations,
+    } = reduce_packed_openings(&objects, transcript)?;
 
-    // Per-object sumcheck state: dense β-and-α-scaled selector/witness tables
-    // for arbitrary witnesses, or the sparse round stepper for unit-sparse
-    // (one-hot) witnesses — same field values, no `2^n` materialization —
-    // plus the rounds to wait before the object's variables bind and its
-    // total `Σ_z E(z)·W(z)` (the constant while padded).
-    enum ObjectState<'a, F: Field> {
-        Dense {
-            selector: Polynomial<F>,
-            witness: Polynomial<F>,
-        },
-        Sparse(SparseReductionInstance<'a, F>),
-    }
-    struct ObjectProver<'a, F: Field> {
-        state: ObjectState<'a, F>,
-        padding_rounds: usize,
-        total: F,
-    }
-    let construction_span = tracing::info_span!("prove_packed_openings::build_tables").entered();
-    let mut tables = prepared
-        .iter()
-        .zip(&alphas)
-        .zip(&coefficients)
-        .zip(&objects)
-        .map(|(((statement, alpha), coefficient), object)| {
-            let scaled_alpha: Vec<PCS::Field> =
-                alpha.iter().map(|alpha| *alpha * *coefficient).collect();
-            // `Σ_z E(z)·W(z)` over honest tables is exactly the (β-scaled)
-            // batched claim — O(claims), not an O(2^n) dot product. A false
-            // claimed value still fails verification at the object's first
-            // bound round.
-            let total = statement.batched_claim(&scaled_alpha);
-            let padding_rounds = max_num_vars - object.packing.packed_num_vars;
-            let state = if object.polynomial.is_one_hot() {
-                let mut positions =
-                    Vec::with_capacity(object.polynomial.one_hot_indices().map_or(0, <[_]>::len));
-                object
-                    .polynomial
-                    .for_each_one(&mut |position| positions.push(position));
-                ObjectState::Sparse(SparseReductionInstance::new(
-                    statement,
-                    &scaled_alpha,
-                    positions,
-                ))
-            } else {
-                ObjectState::Dense {
-                    selector: Polynomial::new(statement.selector_table(&scaled_alpha)),
-                    witness: Polynomial::new(object.polynomial.to_dense().into_owned()),
-                }
-            };
-            ObjectProver {
-                state,
-                padding_rounds,
-                total,
-            }
-        })
-        .collect::<Vec<_>>();
-
-    drop(construction_span);
-
-    let rounds_span = tracing::info_span!("prove_packed_openings::rounds").entered();
-    let mut round_polynomials = Vec::with_capacity(max_num_vars);
-    let mut point: Vec<PCS::Field> = Vec::with_capacity(max_num_vars);
-    for round in 0..max_num_vars {
-        let mut eval_zero = PCS::Field::from_u64(0);
-        let mut eval_one = PCS::Field::from_u64(0);
-        let mut quadratic = PCS::Field::from_u64(0);
-        for table in &mut tables {
-            if table.padding_rounds > round {
-                // Still padded: constant in the bound variable, halving each
-                // padding round.
-                let constant = table.total.mul_pow_2(table.padding_rounds - round - 1);
-                eval_zero += constant;
-                eval_one += constant;
-                continue;
-            }
-            let [object_zero, object_one, object_quadratic] = match &mut table.state {
-                ObjectState::Dense { selector, witness } => {
-                    let half = selector.evaluations().len() / 2;
-                    let (selector_low, selector_high) = selector.evaluations().split_at(half);
-                    let (witness_low, witness_high) = witness.evaluations().split_at(half);
-                    dense_round_evaluations(selector_low, selector_high, witness_low, witness_high)
-                }
-                ObjectState::Sparse(instance) => instance.round_evaluations(),
-            };
-            eval_zero += object_zero;
-            eval_one += object_one;
-            quadratic += object_quadratic;
-        }
-        let coefficients = [eval_zero, eval_one - eval_zero - quadratic, quadratic];
-        append_round_polynomial(&coefficients, transcript);
-        let challenge: PCS::Field = transcript.challenge_scalar();
-        point.push(challenge);
-        for table in &mut tables {
-            if table.padding_rounds <= round {
-                match &mut table.state {
-                    ObjectState::Dense { selector, witness } => {
-                        selector.bind(challenge);
-                        witness.bind(challenge);
-                    }
-                    ObjectState::Sparse(instance) => instance.bind(challenge),
-                }
-            }
-        }
-        round_polynomials.push(coefficients);
-    }
-
-    drop(rounds_span);
-
-    let evaluations: Vec<PCS::Field> = tables
-        .iter()
-        .map(|table| match &table.state {
-            ObjectState::Dense { witness, .. } => witness.evaluations()[0],
-            ObjectState::Sparse(instance) => instance.final_eval(),
-        })
-        .collect();
-    for (table, evaluation) in tables.iter().zip(&evaluations) {
-        let suffix = &point[table.padding_rounds..];
-        EvaluationClaim::new(suffix.to_vec(), *evaluation).append_to_transcript(transcript);
-    }
+    // Object `k` sat out the leading `point.len() - packed_num_vars_k` rounds,
+    // so its opening slice is that suffix of the shared point.
+    let padding_rounds = |index: usize| point.len() - objects[index].packing.packed_num_vars;
     let mut openings = Vec::with_capacity(groups.len());
     for group in groups {
         let members = group.start..group.start + group.len;
@@ -1326,7 +1214,7 @@ where
             let object = &objects[group.start];
             openings.push(PCS::open(
                 object.polynomial,
-                &point[tables[group.start].padding_rounds..],
+                &point[padding_rounds(group.start)..],
                 evaluations[group.start],
                 object.setup,
                 group.hint,
@@ -1334,10 +1222,10 @@ where
             )?);
             continue;
         }
-        let padding = tables[group.start].padding_rounds;
+        let padding = padding_rounds(group.start);
         if members
             .clone()
-            .any(|index| tables[index].padding_rounds != padding)
+            .any(|index| padding_rounds(index) != padding)
         {
             return Err(OpeningsError::InvalidBatch(
                 "packed object group members must share one opening point arity".to_owned(),
@@ -1397,59 +1285,17 @@ where
             groups.len()
         )));
     }
-    let prepared = objects
-        .iter()
-        .map(|object| object.packing.prepare_statement(object.statement))
-        .collect::<Result<Vec<_>, _>>()?;
-    let (alphas, coefficients) = packed_opening_challenges(&prepared, transcript);
-    let max_num_vars = objects
-        .iter()
-        .map(|object| object.packing.packed_num_vars)
-        .max()
-        .unwrap_or(0);
-
-    // Each object's batched claim joins scaled by 2^(padding rounds): its
-    // integrand is constant in the leading variables it does not use.
-    let input_claim = prepared
-        .iter()
-        .zip(&alphas)
-        .zip(&coefficients)
-        .zip(objects)
-        .fold(
-            PCS::Field::from_u64(0),
-            |acc, (((statement, alpha), coefficient), object)| {
-                let padding = max_num_vars - object.packing.packed_num_vars;
-                acc + *coefficient * statement.batched_claim(alpha).mul_pow_2(padding)
-            },
-        );
-    let (point, final_claim) = verify_reduction_sumcheck(
+    let point = verify_packed_reduction::<PCS, Id, T>(
+        objects,
         &proof.round_polynomials,
-        max_num_vars,
-        input_claim,
+        &proof.evaluations,
         transcript,
     )?;
-
-    // Absorb each object's claimed evaluation at its suffix point, then check
-    // the reduced claim `Σ_k β_k · E_k(suffix_k) · W_k(suffix_k)`.
-    let mut expected_final_claim = PCS::Field::from_u64(0);
-    for (((statement, alpha), coefficient), (object, evaluation)) in prepared
-        .iter()
-        .zip(&alphas)
-        .zip(&coefficients)
-        .zip(objects.iter().zip(&proof.evaluations))
-    {
-        let suffix = &point[max_num_vars - object.packing.packed_num_vars..];
-        EvaluationClaim::new(suffix.to_vec(), *evaluation).append_to_transcript(transcript);
-        expected_final_claim += *coefficient * statement.selector_eval(alpha, suffix) * *evaluation;
-    }
-    if final_claim != expected_final_claim {
-        return Err(OpeningsError::VerificationFailed);
-    }
 
     for (group, opening) in groups.iter().zip(&proof.openings) {
         let members = group.start..group.start + group.len;
         let first = &objects[group.start];
-        let suffix = &point[max_num_vars - first.packing.packed_num_vars..];
+        let suffix = &point[point.len() - first.packing.packed_num_vars..];
         if group.len == 1 {
             PCS::verify(
                 &first.statement.commitment,
@@ -1481,13 +1327,9 @@ where
     Ok(())
 }
 
-/// Verifier counterpart of [`reduce_packed_openings`]: replays the joint
-/// claim-reduction sumcheck, checks the reduced claim against the objects'
-/// batched selector·evaluation, appends each object's reduced `EvaluationClaim`
-/// (same transcript sequence the prover wrote), and returns the shared reduced
-/// point `r*`. The caller then discharges the reduced claims: per-group native
-/// verifies ([`verify_packed_openings`]) or one fused native multi-group verify.
-/// Object `k`'s slice is `point[point.len() - packed_num_vars_k ..]`.
+/// Verifier counterpart of [`reduce_packed_openings`]: replays the reduction,
+/// checks the reduced claim, and returns the shared point `r*` — object `k`'s
+/// claim sits at the suffix `point[point.len() - packed_num_vars_k ..]`.
 pub fn verify_packed_reduction<PCS, Id, T>(
     objects: &[PackedVerifierObject<'_, PCS, Id>],
     round_polynomials: &[[PCS::Field; 3]],
@@ -1522,6 +1364,9 @@ where
         .map(|object| object.packing.packed_num_vars)
         .max()
         .unwrap_or(0);
+
+    // Each object's batched claim joins scaled by 2^(padding rounds): its
+    // integrand is constant in the leading variables it does not use.
     let input_claim = prepared
         .iter()
         .zip(&alphas)
@@ -1537,6 +1382,8 @@ where
     let (point, final_claim) =
         verify_reduction_sumcheck(round_polynomials, max_num_vars, input_claim, transcript)?;
 
+    // Absorb each object's claimed evaluation at its suffix point, then check
+    // the reduced claim `Σ_k β_k · E_k(suffix_k) · W_k(suffix_k)`.
     let mut expected_final_claim = PCS::Field::from_u64(0);
     for (((statement, alpha), coefficient), (object, evaluation)) in prepared
         .iter()
@@ -1551,60 +1398,6 @@ where
     if final_claim != expected_final_claim {
         return Err(OpeningsError::VerificationFailed);
     }
-    Ok(point)
-}
-
-/// Re-derives the shared reduction point `r*` of a packed opening by replaying
-/// the verifier's Fiat-Shamir over the reduction only — the objects' statements,
-/// the batching challenges, and the round polynomials — stopping before the
-/// per-group native opens (so it draws no opening-proof challenges).
-///
-/// `r*` pins every object's opening slice: object `k`'s claim lives at the
-/// suffix `point[max_num_vars - packed_num_vars_k ..]`. Exposed so a fused
-/// multi-group open can bind the reduced point, and so callers can check the
-/// value invariant `W_k(slice_k) == evaluations[k]` independently of the native
-/// PCS. The input-claim fold mirrors [`verify_packed_openings`]; keep the two in
-/// sync.
-pub fn recover_packed_reduction_point<PCS, Id, T>(
-    objects: &[PackedVerifierObject<'_, PCS, Id>],
-    round_polynomials: &[[PCS::Field; 3]],
-    transcript: &mut T,
-) -> Result<Vec<PCS::Field>, OpeningsError>
-where
-    PCS: CommitmentScheme,
-    PCS::Output: AppendToTranscript,
-    Id: Clone + Debug + Ord,
-    T: Transcript<Challenge = PCS::Field>,
-{
-    if objects.is_empty() {
-        return Err(OpeningsError::InvalidBatch(
-            "packed opening requires at least one object".to_owned(),
-        ));
-    }
-    let prepared = objects
-        .iter()
-        .map(|object| object.packing.prepare_statement(object.statement))
-        .collect::<Result<Vec<_>, _>>()?;
-    let (alphas, coefficients) = packed_opening_challenges(&prepared, transcript);
-    let max_num_vars = objects
-        .iter()
-        .map(|object| object.packing.packed_num_vars)
-        .max()
-        .unwrap_or(0);
-    let input_claim = prepared
-        .iter()
-        .zip(&alphas)
-        .zip(&coefficients)
-        .zip(objects)
-        .fold(
-            PCS::Field::from_u64(0),
-            |acc, (((statement, alpha), coefficient), object)| {
-                let padding = max_num_vars - object.packing.packed_num_vars;
-                acc + *coefficient * statement.batched_claim(alpha).mul_pow_2(padding)
-            },
-        );
-    let (point, _final_claim) =
-        verify_reduction_sumcheck(round_polynomials, max_num_vars, input_claim, transcript)?;
     Ok(point)
 }
 

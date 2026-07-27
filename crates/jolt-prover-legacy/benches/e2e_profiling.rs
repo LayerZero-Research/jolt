@@ -1,18 +1,15 @@
-#[cfg(not(feature = "akita"))]
+#[cfg(feature = "akita")]
+use jolt_openings::CommitmentScheme;
 use jolt_prover_legacy::host;
-#[cfg(not(feature = "akita"))]
 use jolt_prover_legacy::zkvm::preprocessing::JoltSharedPreprocessing;
-#[cfg(not(feature = "akita"))]
 use jolt_prover_legacy::zkvm::program::ProgramPreprocessing;
 #[cfg(not(feature = "akita"))]
 use jolt_prover_legacy::zkvm::proof::verifier_preprocessing_from_prover;
-#[cfg(not(feature = "akita"))]
 use jolt_prover_legacy::zkvm::prover::JoltProverPreprocessing;
 #[cfg(not(feature = "akita"))]
 use jolt_prover_legacy::zkvm::RV64IMACProver;
 use std::fs;
 use std::io::Write;
-#[cfg(not(feature = "akita"))]
 use std::time::Instant;
 
 // Empirically measured cycles per operation for RV64IMAC
@@ -205,10 +202,84 @@ pub fn master_benchmark(
 
 #[cfg(feature = "akita")]
 fn prove_example(
-    _example_name: &str,
-    _serialized_input: Vec<u8>,
+    example_name: &str,
+    serialized_input: Vec<u8>,
 ) -> Vec<(tracing::Span, Box<dyn FnOnce()>)> {
-    unimplemented!("akita profiling arrives with the packed prove path")
+    let (_, trace, _, _) = host::Program::new(example_name).trace(&serialized_input, &[], &[]);
+    let padded_trace_len = (trace.len() + 1).next_power_of_two();
+    drop(trace);
+
+    let example_name = example_name.to_string();
+    let task = move || {
+        akita_prove_and_verify(&example_name, &serialized_input, padded_trace_len);
+    };
+
+    vec![(
+        tracing::info_span!("Example_E2E"),
+        Box::new(task) as Box<dyn FnOnce()>,
+    )]
+}
+
+/// Runs the packed (Akita) prove + verify end to end, returning the prove
+/// duration. Proof size is not reported: the fp128 lattice field carries no
+/// serde impl, so `JoltProof` is not serializable on this axis.
+#[cfg(feature = "akita")]
+fn akita_prove_and_verify(
+    example_name: &str,
+    serialized_input: &[u8],
+    max_trace_length: usize,
+) -> std::time::Duration {
+    use jolt_prover_legacy::zkvm::packed::{
+        akita_verifier_preprocessing, AkitaField, AkitaPackedProver, AkitaPackedScheme,
+        AkitaScheme, AkitaTranscript, AkitaVc,
+    };
+
+    let mut program = host::Program::new(example_name);
+    let (bytecode, init_memory_state, _, e_entry) = program.decode();
+    let (_, _, _, io_device) = program.trace(serialized_input, &[], &[]);
+    let program_data =
+        ProgramPreprocessing::preprocess(bytecode, init_memory_state, e_entry).unwrap();
+    let shared: JoltSharedPreprocessing<AkitaPackedScheme> = JoltSharedPreprocessing::new(
+        program_data,
+        io_device.memory_layout.clone(),
+        max_trace_length,
+    );
+    let prover_preprocessing = JoltProverPreprocessing::new(shared);
+    let elf_contents_opt = program.get_elf_contents();
+    let elf_contents = elf_contents_opt.as_deref().expect("elf contents is None");
+
+    let span = tracing::info_span!("E2E").entered();
+    let prover = AkitaPackedProver::gen_from_elf(
+        &prover_preprocessing,
+        elf_contents,
+        serialized_input,
+        &[],
+        &[],
+        None,
+        None,
+        None,
+    );
+    let program_io = prover.program_io.clone();
+    let (object_setup, verifier_setup) =
+        <AkitaScheme as CommitmentScheme>::setup(prover.one_hot_trace_setup_params()).unwrap();
+    let now = Instant::now();
+    let proof = prover
+        .prove_packed(&object_setup, None, None)
+        .expect("packed prover should produce a verifier-native proof");
+    let prove_duration = now.elapsed();
+    drop(span);
+
+    let verifier_preprocessing =
+        akita_verifier_preprocessing(&prover_preprocessing, verifier_setup, None);
+    jolt_verifier::verify::<AkitaField, AkitaScheme, AkitaVc, AkitaTranscript>(
+        &verifier_preprocessing,
+        &program_io,
+        &proof,
+        None,
+    )
+    .expect("packed verifier should accept the packed proof");
+
+    prove_duration
 }
 
 #[cfg(not(feature = "akita"))]
@@ -270,13 +341,26 @@ fn prove_example(
 
 #[cfg(feature = "akita")]
 fn prove_example_with_trace(
-    _example_name: &str,
-    _serialized_input: Vec<u8>,
-    _max_trace_length: usize,
+    example_name: &str,
+    serialized_input: Vec<u8>,
+    max_trace_length: usize,
     _bench_name: &str,
     _scale: usize,
 ) -> (std::time::Duration, usize, usize, usize) {
-    unimplemented!("akita profiling arrives with the packed prove path")
+    let (_, trace, _, _) = host::Program::new(example_name).trace(&serialized_input, &[], &[]);
+    let trace_length = trace.len();
+    assert!(
+        trace_length.next_power_of_two() <= max_trace_length,
+        "Trace is longer than expected"
+    );
+    drop(trace);
+
+    let prove_duration = akita_prove_and_verify(
+        example_name,
+        &serialized_input,
+        trace_length.next_power_of_two(),
+    );
+    (prove_duration, 0, 0, trace_length)
 }
 
 #[cfg(not(feature = "akita"))]

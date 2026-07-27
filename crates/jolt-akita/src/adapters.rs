@@ -1,17 +1,16 @@
 use std::{collections::BTreeSet, fmt, io::Cursor, sync::Arc, sync::OnceLock};
 
 use akita_config::CommitmentConfig;
-use akita_pcs::{AkitaCommitmentScheme, AkitaDeserialize, AkitaSerialize};
+use akita_pcs::{AkitaCommitmentScheme, AkitaDeserialize, AkitaSerialize, AkitaTranscript};
 use akita_prover::{CpuBackend, CpuPreparedSetup, DensePoly, OneHotPoly, SparseRingPoly};
-use akita_transcript::Transcript as AkitaBackendTranscript;
 use akita_types::{
     AkitaBatchedProof as AkitaBackendBatchProof, AkitaBatchedProofShape,
     AkitaCommitmentHint as AkitaBackendCommitmentHint,
     AkitaVerifierSetup as AkitaBackendVerifierSetup, Commitment as AkitaBackendRingCommitment,
 };
-use jolt_field::CanonicalBytes;
+use jolt_field::{CanonicalBytes, FixedByteSize};
 use jolt_openings::{OpeningsError, VerifierOpeningClaim};
-use jolt_poly::{MultilinearPoly, OneHotIndexOrder, OneHotPolynomial, Polynomial};
+use jolt_poly::{MultilinearPoly, OneHotIndexOrder, Polynomial};
 use jolt_transcript::{AppendToTranscript, Label, LabelWithCount, Transcript, U64Word};
 use serde::{
     de::{Error as DeError, SeqAccess, Visitor},
@@ -27,9 +26,25 @@ pub(crate) const AKITA_D: usize = AkitaConfig::D;
 pub const AKITA_ONE_HOT_K16: usize = 16;
 pub const AKITA_ONE_HOT_K256: usize = 256;
 
+/// Akita's transcript sponge panics on session labels longer than this, and
+/// [`bridge_jolt_statement_challenge`] appends [`BRIDGE_BYTES`] to every label.
+pub(crate) const MAX_AKITA_SESSION_LABEL_BYTES: usize = 64;
+pub(crate) const BRIDGE_BYTES: usize = <AkitaField as FixedByteSize>::NUM_BYTES;
+
+/// Serialized proof-shape blob cap. Honest shapes are a few hundred bytes (a
+/// handful of fold levels, each a few dozen words); this leaves two orders of
+/// magnitude of margin while keeping worst-case shape-blob deserialization
+/// allocations trivial.
 pub(crate) const MAX_PROOF_SHAPE_BYTES: usize = 16 * 1024;
+/// The bridge is one serialized field element ([`BRIDGE_BYTES`]); the cap is
+/// two orders of magnitude above that.
 const MAX_STATEMENT_BRIDGE_BYTES: usize = 1024;
+/// Covers both the serialized backend commitment and the batched proof body.
+/// Trace-scale one-hot proofs run to a few MiB, so this is roughly an order of
+/// magnitude of headroom while still bounding a forged length.
 const MAX_BACKEND_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
+/// Holds one serialized evaluation ([`BRIDGE_BYTES`] again); same two orders of
+/// magnitude of margin as the statement bridge.
 const MAX_HIDING_COMMITMENT_BYTES: usize = 1024;
 
 pub(crate) type AkitaBackendExtField = <AkitaConfig as CommitmentConfig>::ExtField;
@@ -54,6 +69,11 @@ pub(crate) type AkitaLayoutDigest = [u8; 32];
 /// Worker stack size for [`with_backend_pool`]. Stacks are lazily committed,
 /// so oversizing costs virtual address space only.
 const BACKEND_WORKER_STACK_BYTES: usize = 64 * 1024 * 1024;
+
+/// Pre-allocation ceiling for length-prefixed byte fields, mirroring serde's own
+/// `size_hint::cautious` policy: a decode that will fail must not first reserve
+/// the protocol cap.
+const PREALLOC_FLOOR_BYTES: usize = 4096;
 
 fn deserialize_bounded_bytes<'de, D, const MAX: usize>(
     deserializer: D,
@@ -85,7 +105,11 @@ where
                     declared_len.unwrap_or_default()
                 )));
             }
-            let mut bytes = Vec::with_capacity(declared_len.unwrap_or_default());
+            // WARNING: `size_hint` is the attacker's declared length. Reserving it
+            // outright would let a 5-byte input reserve the whole cap, so grow from
+            // a fixed floor instead and let the push loop enforce `MAX`.
+            let mut bytes =
+                Vec::with_capacity(declared_len.unwrap_or_default().min(PREALLOC_FLOOR_BYTES));
             while let Some(byte) = sequence.next_element()? {
                 if bytes.len() == MAX {
                     return Err(A::Error::custom(format!(
@@ -172,10 +196,6 @@ pub struct AkitaSetupParams {
     /// dense-flavor setup for the same shape is large and slow, and a packed
     /// one-hot commitment object never touches it.
     pub(crate) one_hot_only: bool,
-    /// When set, only the dense flavor's backend setup is built — the one-hot
-    /// flavor dominates the setup cost (~30x the dense flavor at advice
-    /// shapes), and a sparse-unit or dense commitment object never touches it.
-    pub(crate) dense_only: bool,
 }
 
 impl AkitaSetupParams {
@@ -190,7 +210,6 @@ impl AkitaSetupParams {
             default_layout_digest,
             one_hot_k: AKITA_ONE_HOT_K256,
             one_hot_only: false,
-            dense_only: false,
         }
     }
 
@@ -209,26 +228,6 @@ impl AkitaSetupParams {
             default_layout_digest,
             one_hot_k,
             one_hot_only: true,
-            dense_only: false,
-        }
-    }
-
-    /// Setup parameters for a commitment object that only ever commits and
-    /// opens through the dense flavor (sparse-unit or dense polynomials, e.g.
-    /// the advice byte columns and the precommitted program): skips building
-    /// the one-hot backend setup of the same shape.
-    pub fn dense_only(
-        max_num_vars: usize,
-        max_num_polys_per_commitment_group: usize,
-        default_layout_digest: AkitaLayoutDigest,
-    ) -> Self {
-        Self {
-            max_num_vars,
-            max_num_polys_per_commitment_group,
-            default_layout_digest,
-            one_hot_k: AKITA_ONE_HOT_K256,
-            one_hot_only: false,
-            dense_only: true,
         }
     }
 
@@ -442,14 +441,40 @@ pub(crate) fn append_batch_statement<T: Transcript>(
     commitment: &AkitaCommitment,
     point: &[AkitaField],
 ) {
-    transcript.append(&Label(b"akita_batch_statement"));
-    commitment.append_to_transcript(transcript);
-    transcript.append_values(b"akita_pcs_point", point);
-    transcript.append(&LabelWithCount(b"akita_claims", statement.len() as u64));
+    append_batch_statement_header(transcript, commitment, point, statement.len());
     for claim in statement {
         claim.commitment.append_to_transcript(transcript);
         claim.evaluation.value.append_to_transcript(transcript);
     }
+}
+
+/// [`append_batch_statement`] for a group whose claims all carry the same
+/// commitment and point: emits exactly the same bytes without materializing
+/// the per-claim [`VerifierOpeningClaim`]s (each of which would clone
+/// `commitment`, byte payload included, once per evaluation).
+pub(crate) fn append_batch_statement_values<T: Transcript>(
+    transcript: &mut T,
+    commitment: &AkitaCommitment,
+    point: &[AkitaField],
+    evaluations: &[AkitaField],
+) {
+    append_batch_statement_header(transcript, commitment, point, evaluations.len());
+    for value in evaluations {
+        commitment.append_to_transcript(transcript);
+        value.append_to_transcript(transcript);
+    }
+}
+
+fn append_batch_statement_header<T: Transcript>(
+    transcript: &mut T,
+    commitment: &AkitaCommitment,
+    point: &[AkitaField],
+    claim_count: usize,
+) {
+    transcript.append(&Label(b"akita_batch_statement"));
+    commitment.append_to_transcript(transcript);
+    transcript.append_values(b"akita_pcs_point", point);
+    transcript.append(&LabelWithCount(b"akita_claims", claim_count as u64));
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -704,19 +729,6 @@ where
         .map_err(akita_error)
 }
 
-pub(crate) fn owned_one_hot_polynomial(
-    polynomial: OneHotPolynomial,
-    one_hot_k: usize,
-) -> Result<AkitaBackendOneHotPoly, OpeningsError> {
-    if polynomial.k() != one_hot_k || polynomial.index_order() != OneHotIndexOrder::RowMajor {
-        return Err(invalid_batch(format!(
-            "Akita owned one-hot polynomial requires row-major K={one_hot_k}"
-        )));
-    }
-    let _ = validate_one_hot_k(one_hot_k)?;
-    AkitaBackendOneHotPoly::new(one_hot_k, AKITA_D, polynomial.into_indices()).map_err(akita_error)
-}
-
 pub(crate) fn validate_one_hot_k(one_hot_k: usize) -> Result<usize, OpeningsError> {
     match one_hot_k {
         AKITA_ONE_HOT_K16 => Ok(4),
@@ -737,7 +749,9 @@ pub(crate) fn one_hot_setup_prover(
         AKITA_ONE_HOT_K256 => {
             AkitaOneHotK256BackendScheme::setup_prover(max_num_vars, max_num_polys)
         }
-        _ => unreachable!("one-hot K is validated before backend setup"),
+        _ => Err(akita_pcs::AkitaError::InvalidSetup(format!(
+            "Akita one-hot chunk size must be 16 or 256, got {one_hot_k}"
+        ))),
     })
 }
 
@@ -801,8 +815,7 @@ pub(crate) fn sparse_unit_polynomial(
         })
 }
 
-#[doc(hidden)]
-pub fn jolt_to_akita_index(num_vars: usize, index: usize) -> usize {
+pub(crate) fn jolt_to_akita_index(num_vars: usize, index: usize) -> usize {
     if num_vars == 0 {
         return index;
     }
@@ -939,16 +952,131 @@ impl AppendToTranscript for AkitaBatchProof {
     }
 }
 
+/// Opens a fresh Akita transcript bound to everything Jolt has observed, and
+/// returns it alongside the bridge bytes carried in the proof.
+///
+/// WARNING: the bridge has to travel inside the *session label*. Akita's
+/// `batched_prove`/`batched_verify` call `bind_instance_bytes` before their
+/// first absorb, which rebuilds the sponge from scratch; only the session tag
+/// survives that rebind, so a bridge merely absorbed into the transcript would
+/// be silently discarded and bind nothing.
 pub(crate) fn bridge_jolt_statement_challenge<T>(
     jolt_transcript: &mut T,
-    akita_transcript: &mut impl AkitaBackendTranscript<AkitaField>,
-) -> Vec<u8>
+    session_label: &[u8],
+) -> (AkitaTranscript<AkitaField>, Vec<u8>)
 where
     T: Transcript<Challenge = AkitaField>,
 {
-    let bridge = jolt_transcript.challenge_scalar();
-    akita_transcript.append_field(b"jolt_statement_bridge", &bridge);
-    bridge.to_bytes_le_vec()
+    let bridge = jolt_transcript.challenge_scalar().to_bytes_le_vec();
+    let mut label = Vec::with_capacity(session_label.len() + bridge.len());
+    label.extend_from_slice(session_label);
+    label.extend_from_slice(&bridge);
+    (AkitaTranscript::new(&label), bridge)
+}
+
+#[cfg(test)]
+mod batch_statement_tests {
+    use super::*;
+    use jolt_openings::EvaluationClaim;
+    use jolt_transcript::Blake2bTranscript;
+
+    /// The fused multi-group path binds a shared-commitment group through
+    /// [`append_batch_statement_values`]; the single-group path still walks
+    /// materialized claims. The two must be byte-identical or a fused proof and
+    /// its verifier would diverge from the single-group Fiat-Shamir domain.
+    #[test]
+    fn value_and_claim_bindings_are_byte_identical() {
+        let commitment = AkitaCommitment {
+            backend_flavor: AkitaBackendFlavor::OneHot,
+            layout_digest: [3; 32],
+            num_vars: 5,
+            poly_count: 3,
+            one_hot_k: AKITA_ONE_HOT_K256,
+            backend_coeff_len: 17,
+            serialized_backend_bytes: vec![1, 2, 3, 4, 5],
+        };
+        let point: Vec<AkitaField> = (0..5).map(AkitaField::from_u64).collect();
+        let evaluations: Vec<AkitaField> = (10..13).map(AkitaField::from_u64).collect();
+        let statement: Vec<_> = evaluations
+            .iter()
+            .map(|value| VerifierOpeningClaim {
+                commitment: commitment.clone(),
+                evaluation: EvaluationClaim::new(point.clone(), *value),
+            })
+            .collect();
+
+        let mut claims_transcript = Blake2bTranscript::<AkitaField>::new(b"batch-statement");
+        append_batch_statement(&mut claims_transcript, &statement, &commitment, &point);
+
+        let mut values_transcript = Blake2bTranscript::<AkitaField>::new(b"batch-statement");
+        append_batch_statement_values(&mut values_transcript, &commitment, &point, &evaluations);
+
+        assert_eq!(claims_transcript.state(), values_transcript.state());
+    }
+}
+
+#[cfg(test)]
+mod statement_bridge_tests {
+    use super::*;
+    use akita_transcript::Transcript as AkitaBackendTranscript;
+    use jolt_transcript::Blake2bTranscript;
+
+    /// Squeezes a challenge the way `batched_prove` does: rebind to the instance
+    /// descriptor first, then absorb. Anything bound before the rebind is only
+    /// observable here if it survived it.
+    fn challenge_after_instance_rebind(mut akita: AkitaTranscript<AkitaField>) -> Vec<u8> {
+        akita.bind_instance_bytes(b"akita/instance-descriptor");
+        akita.challenge_bytes(b"probe", 32)
+    }
+
+    #[test]
+    fn bridge_survives_the_instance_rebind() {
+        let mut left = Blake2bTranscript::new(b"bridge-test");
+        left.append(&U64Word(1));
+        let (left_akita, left_bridge) = bridge_jolt_statement_challenge(&mut left, b"label");
+
+        let mut right = Blake2bTranscript::new(b"bridge-test");
+        right.append(&U64Word(2));
+        let (right_akita, right_bridge) = bridge_jolt_statement_challenge(&mut right, b"label");
+
+        assert_ne!(left_bridge, right_bridge, "distinct Jolt states must bridge");
+        assert_ne!(
+            challenge_after_instance_rebind(left_akita),
+            challenge_after_instance_rebind(right_akita),
+            "the bridge must still steer Akita's challenges after bind_instance_bytes; \
+             absorbing it into the transcript instead of the session label loses it"
+        );
+    }
+
+    #[test]
+    fn equal_jolt_states_bridge_identically() {
+        let mut left = Blake2bTranscript::new(b"bridge-test");
+        left.append(&U64Word(7));
+        let (left_akita, left_bridge) = bridge_jolt_statement_challenge(&mut left, b"label");
+
+        let mut right = Blake2bTranscript::new(b"bridge-test");
+        right.append(&U64Word(7));
+        let (right_akita, right_bridge) = bridge_jolt_statement_challenge(&mut right, b"label");
+
+        assert_eq!(left_bridge, right_bridge);
+        assert_eq!(
+            challenge_after_instance_rebind(left_akita),
+            challenge_after_instance_rebind(right_akita),
+        );
+    }
+
+    #[test]
+    fn session_labels_domain_separate() {
+        let bridged = |label: &[u8]| {
+            let mut jolt = Blake2bTranscript::new(b"bridge-test");
+            jolt.append(&U64Word(1));
+            challenge_after_instance_rebind(bridge_jolt_statement_challenge(&mut jolt, label).0)
+        };
+        assert_ne!(
+            bridged(b"jolt-akita/batch"),
+            bridged(b"jolt-akita/multi-group-batch"),
+        );
+    }
 }
 
 #[cfg(test)]

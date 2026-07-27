@@ -34,6 +34,12 @@ use crate::adapters::{
     AKITA_ONE_HOT_K16, AKITA_ONE_HOT_K256,
 };
 
+const SINGLE_GROUP_LABEL: &[u8] = b"jolt-akita/batch";
+const _: () = assert!(
+    SINGLE_GROUP_LABEL.len() + crate::adapters::BRIDGE_BYTES
+        <= crate::adapters::MAX_AKITA_SESSION_LABEL_BYTES
+);
+
 /// Marker adapter selecting Akita's native batched opening as the Jolt batch
 /// opening protocol.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -163,6 +169,9 @@ fn validate_witness(
 /// Binds the verifier setup and statement into Jolt's transcript, then bridges
 /// a Jolt challenge into a fresh Akita transcript so the backend proof is
 /// bound to everything Jolt observed.
+///
+/// The bridge is folded into the Akita session label rather than absorbed —
+/// see [`bridge_jolt_statement_challenge`] for why.
 fn bind_statement_transcripts<T>(
     transcript: &mut T,
     verifier_setup: &AkitaVerifierSetup,
@@ -178,12 +187,8 @@ where
         append_verifier_setup(transcript, verifier_setup, commitment.backend_flavor);
         append_batch_statement(transcript, statement, commitment, point);
     }
-    let mut akita_transcript = AkitaTranscript::<AkitaField>::new(b"jolt-akita/batch");
-    let statement_bridge = {
-        let _span = info_span!("AkitaNativeBatching::bridge_transcripts").entered();
-        bridge_jolt_statement_challenge(transcript, &mut akita_transcript)
-    };
-    (akita_transcript, statement_bridge)
+    let _span = info_span!("AkitaNativeBatching::bridge_transcripts").entered();
+    bridge_jolt_statement_challenge(transcript, SINGLE_GROUP_LABEL)
 }
 
 /// Assembles the single-group opening data handed to Akita's native batched
@@ -206,9 +211,10 @@ fn single_group_batch<'a, P>(
     ProverOpeningData::new(claims, vec![backend_hint], vec![polynomials]).map_err(akita_error)
 }
 
-/// Dense-flavor batched prove shared by the dense and sparse-unit paths —
-/// they differ only in the backend polynomial type, whose opening-view trait
-/// chain is too deep to name generically, hence a macro.
+/// Dense-flavor batched prove shared by the dense and sparse-unit paths. They
+/// differ only in the backend polynomial type; naming that type generically
+/// would mean restating its whole opening-view trait chain at every call site,
+/// so the body is shared textually instead.
 macro_rules! prove_dense_backend {
     ($setup:expr, $point:expr, $evaluations:expr, $polynomials:expr, $commitment:expr, $hint:expr, $transcript:expr) => {{
         let claims = single_group_batch($point, $evaluations, $polynomials, $commitment, $hint)?;
@@ -425,32 +431,40 @@ impl BatchOpeningScheme for AkitaNativeBatching {
         )
         .map_err(akita_error)?;
         let claims = OpeningClaims::from_groups(backend_point, vec![group]).map_err(akita_error)?;
+        // `setup.one_hot_k` reaches the verifier through serde, so an unknown K
+        // is an untrusted input here, not an invariant violation.
         with_backend_pool(|| match commitment.backend_flavor {
-            AkitaBackendFlavor::Dense => AkitaBackendScheme::batched_verify(
+            AkitaBackendFlavor::Dense => Some(AkitaBackendScheme::batched_verify(
                 &backend_proof,
                 backend_verifier,
                 &mut akita_transcript,
                 claims,
                 BasisMode::Lagrange,
-            ),
+            )),
             AkitaBackendFlavor::OneHot => match setup.one_hot_k {
-                AKITA_ONE_HOT_K16 => AkitaOneHotK16BackendScheme::batched_verify(
+                AKITA_ONE_HOT_K16 => Some(AkitaOneHotK16BackendScheme::batched_verify(
                     &backend_proof,
                     backend_verifier,
                     &mut akita_transcript,
                     claims,
                     BasisMode::Lagrange,
-                ),
-                AKITA_ONE_HOT_K256 => AkitaOneHotK256BackendScheme::batched_verify(
+                )),
+                AKITA_ONE_HOT_K256 => Some(AkitaOneHotK256BackendScheme::batched_verify(
                     &backend_proof,
                     backend_verifier,
                     &mut akita_transcript,
                     claims,
                     BasisMode::Lagrange,
-                ),
-                _ => unreachable!("one-hot K is validated during setup"),
+                )),
+                _ => None,
             },
         })
+        .ok_or_else(|| {
+            invalid_batch(format!(
+                "Akita one-hot chunk size must be 16 or 256, got {}",
+                setup.one_hot_k
+            ))
+        })?
         .map_err(|_| OpeningsError::VerificationFailed)
     }
 }

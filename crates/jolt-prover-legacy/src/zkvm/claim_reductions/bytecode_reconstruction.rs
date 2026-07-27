@@ -197,7 +197,6 @@ enum LegState<F: JoltField> {
 struct Leg<F: JoltField> {
     polynomial: CommittedPolynomial,
     own_vars: usize,
-    /// `γ^chunk` — folded into the weight table (and the exhausted scalar).
     #[allocative(skip)]
     state: LegState<F>,
 }
@@ -255,8 +254,13 @@ impl<F: JoltField> BytecodeReconstructionSumcheckProver<F> {
             value
                 .serialize_compressed(&mut bytes)
                 .expect("field element serialization is infallible for Vec sinks");
-            debug_assert!(
-                bytes[params.imm_byte_width..].iter().all(|byte| *byte == 0),
+            // Truncating a nonzero high byte would decode a different
+            // immediate than the committed witness, so this must hold in
+            // release too (`assemble_precommitted_witness` rejects the same
+            // shape with an error on the commit path).
+            assert!(
+                bytes.len() >= params.imm_byte_width
+                    && bytes[params.imm_byte_width..].iter().all(|byte| *byte == 0),
                 "imm must fit the canonical {}-byte lane",
                 params.imm_byte_width
             );
@@ -269,10 +273,8 @@ impl<F: JoltField> BytecodeReconstructionSumcheckProver<F> {
         let imm_kernel = byte_kernel(imm_limb_bits);
 
         // One fused sweep per chunk fills every leg's accumulator in a single
-        // pass over the instruction rows (the per-leg passes re-streamed the
-        // bytecode ~40x); chunks are independent and build in parallel. Each
-        // destination sees the same addends in the same row order as the
-        // per-leg passes did, so every sum is unchanged.
+        // pass over the instruction rows; chunks are independent and build in
+        // parallel.
         let legs: Vec<Leg<F>> = params
             .gamma_powers
             .par_iter()

@@ -30,9 +30,14 @@ use jolt_openings::OpeningsError;
 /// far below 64 for any representable witness.
 const MAX_SUMCHECK_ROUNDS: usize = 64;
 
-/// Per-round compact coefficient counts are `degree`-sized; every sumcheck in
+/// Per-round compact coefficient counts are `degree`-sized. Every sumcheck in
 /// the batched protocol has degree <= 4 (stage-1 tree arities, degree-3
-/// stage-2, degree-2 reductions).
+/// stage-2, degree-2 reductions), but the stage-1 and stage-2 shapes are
+/// checked *exactly* against the schedule above; this cap only guards the
+/// extension-opening reduction, whose degree the guard cannot re-derive. It is
+/// therefore set at 2x the honest bound so an upstream reduction-degree change
+/// does not silently reject honest proofs. Even at the cap the reserve is
+/// `MAX_SUMCHECK_ROUNDS * MAX_ROUND_DEGREE` field elements, which is trivial.
 const MAX_ROUND_DEGREE: usize = 8;
 
 /// Extension-opening partials are one short vector of basis-conversion

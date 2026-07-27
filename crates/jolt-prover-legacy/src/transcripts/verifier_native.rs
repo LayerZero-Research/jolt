@@ -1,16 +1,15 @@
 //! The legacy [`Transcript`] vocabulary implemented directly over the
 //! verifier-native [`jolt_transcript::LegacyBlake2bTranscript`], so the
-//! packed (Akita) prover drives **one digest engine** end to end: the legacy
+//! packed (Akita) prover drives one digest engine end to end: the legacy
 //! stage provers and the verifier-native helpers (`absorb_packed_commitment`,
 //! `PackedBatch::prove_batch`) append to the very same transcript object,
-//! with no state conversions anywhere (spec: jolt-verifier-akita, "Phase
-//! B.1 — transcript unification").
+//! with no state conversions anywhere.
 //!
 //! Byte compatibility with [`super::Blake2bTranscript`] holds because every
 //! method below reproduces its framing verbatim over the shared raw
 //! absorb/squeeze primitives, and both engines chain
 //! `H(state ‖ 28 zero bytes ‖ n_rounds_be ‖ payload)` — pinned by the
-//! parity test at the bottom of this file.
+//! `legacy_and_verifier_native_engines_stay_byte_identical` test below.
 
 use jolt_field::TranscriptChallenge;
 use jolt_transcript::{LegacyBlake2bTranscript, Transcript as VerifierTranscript};
@@ -129,10 +128,10 @@ mod tests {
         );
     }
 
-    /// The vocabulary-parity probe (spec: jolt-verifier-akita, phase B.1
-    /// gate): one mixed absorb/squeeze sequence driven through the legacy
-    /// `Blake2bTranscript` and through this adapter, asserting identical
-    /// states after every operation — including a segment where the adapter
+    /// The vocabulary-parity probe: one mixed absorb/squeeze sequence driven
+    /// through the legacy `Blake2bTranscript` and through this adapter,
+    /// asserting identical states after every operation — including a
+    /// segment where the adapter
     /// is driven through the *verifier-native* vocabulary, the interop the
     /// packed prover relies on in place of state handoffs.
     #[test]

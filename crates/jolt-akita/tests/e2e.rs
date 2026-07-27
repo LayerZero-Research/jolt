@@ -1,8 +1,5 @@
 #![expect(clippy::expect_used, reason = "tests assert successful proof setup")]
-#![expect(
-    clippy::unwrap_used,
-    reason = "benchmarks and tests unwrap successful PCS operations"
-)]
+#![expect(clippy::unwrap_used, reason = "tests unwrap successful PCS operations")]
 
 mod support;
 

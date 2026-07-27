@@ -7,7 +7,7 @@
 //! `batched_prove`/`batched_verify` over one multi-group root commitment,
 //! rather than one native open per group.
 //!
-//! The native contract (verified against akita `scheme/tests/onehot.rs`):
+//! The native contract:
 //!
 //! - Precommitted groups are committed under
 //!   [`akita_config::PrecommittedCommitmentConfig`], which freezes each group's
@@ -35,7 +35,7 @@ use jolt_transcript::Transcript;
 use tracing::info_span;
 
 use crate::adapters::{
-    akita_error, append_batch_statement, append_verifier_setup, backend_stack,
+    akita_error, append_batch_statement_values, append_verifier_setup, backend_stack,
     bridge_jolt_statement_challenge, commit_failed, invalid_batch, one_hot_polynomial,
     prove_failed, reverse_point, serialize_akita, with_backend_pool, AkitaBackendCommitment,
     AkitaBackendHint, AkitaBackendOneHotPoly, AkitaBatchProof, AkitaCommitment, AkitaField,
@@ -53,6 +53,10 @@ type PrecommittedOneHotK256Scheme =
 /// the single-group `jolt-akita/batch` so a single-group and a multi-group
 /// opening never share a Fiat-Shamir domain.
 const MULTI_GROUP_LABEL: &[u8] = b"jolt-akita/multi-group-batch";
+const _: () = assert!(
+    MULTI_GROUP_LABEL.len() + crate::adapters::BRIDGE_BYTES
+        <= crate::adapters::MAX_AKITA_SESSION_LABEL_BYTES
+);
 
 /// Validates and converts a group's one-hot columns to the backend
 /// representation, returning `(num_vars, backend_polynomials)`.
@@ -162,9 +166,7 @@ pub fn commit_final_one_hot_group(
 }
 
 /// Wraps a one-hot backend commitment and its opening data into the adapter's
-/// commitment/hint pair. Mirrors `AkitaScheme::package_commitment` for the
-/// one-hot flavor (kept here so the crate's private packaging stays one place
-/// per module; both derive the flavor/count from the hint polynomials).
+/// commitment/hint pair.
 fn package_one_hot_commitment(
     layout_digest: AkitaLayoutDigest,
     num_vars: usize,
@@ -200,6 +202,9 @@ pub struct MultiGroupVerifierGroup<'a> {
 /// in group order, then bridges one Jolt challenge into a fresh Akita
 /// transcript so the single fused backend proof is bound to everything Jolt
 /// observed. Prover and verifier call this identically.
+///
+/// The bridge is folded into the Akita session label rather than absorbed —
+/// see [`bridge_jolt_statement_challenge`] for why.
 fn bind_multi_group_transcripts<T>(
     transcript: &mut T,
     verifier_setup: &AkitaVerifierSetup,
@@ -218,38 +223,30 @@ where
             crate::adapters::AkitaBackendFlavor::OneHot,
         );
         for (commitment, evaluations) in group_commitments.iter().zip(group_evaluations) {
-            let statement: Vec<_> = evaluations
-                .iter()
-                .map(|value| jolt_openings::VerifierOpeningClaim {
-                    commitment: (*commitment).clone(),
-                    evaluation: jolt_openings::EvaluationClaim::new(shared_point.to_vec(), *value),
-                })
-                .collect();
-            append_batch_statement(transcript, &statement, commitment, shared_point);
+            append_batch_statement_values(transcript, commitment, shared_point, evaluations);
         }
     }
-    let mut akita_transcript = AkitaTranscript::<AkitaField>::new(MULTI_GROUP_LABEL);
-    let statement_bridge = bridge_jolt_statement_challenge(transcript, &mut akita_transcript);
-    (akita_transcript, statement_bridge)
+    bridge_jolt_statement_challenge(transcript, MULTI_GROUP_LABEL)
 }
 
-/// Validates the group shapes shared by the prove and verify paths: nonempty,
-/// canonical order (precommitteds narrower, final group last and widest), and
-/// the final group spanning the whole shared point.
+/// Validates the group shapes shared by the prove and verify paths: at least
+/// two groups, the last one spanning the whole shared point, and no earlier
+/// group wider than it. Equal widths pass and the precommitteds are not
+/// ordered among themselves — their order is fixed by the caller and bound
+/// into the transcript, not checked here.
 fn validate_group_shapes(
     group_num_vars: &[usize],
     shared_point_len: usize,
 ) -> Result<(), OpeningsError> {
-    let Some((final_num_vars, precommitted)) = group_num_vars.split_last() else {
-        return Err(invalid_batch(
-            "Akita multi-group opening requires at least one commitment group",
-        ));
+    let Some((final_num_vars, precommitted)) = group_num_vars
+        .split_last()
+        .filter(|(_, precommitted)| !precommitted.is_empty())
+    else {
+        return Err(invalid_batch(format!(
+            "Akita multi-group opening requires at least two commitment groups, got {}",
+            group_num_vars.len()
+        )));
     };
-    if precommitted.is_empty() {
-        return Err(invalid_batch(
-            "Akita multi-group opening requires at least two commitment groups",
-        ));
-    }
     if *final_num_vars != shared_point_len {
         return Err(invalid_batch(format!(
             "Akita final group has {final_num_vars} variables but the shared point has {shared_point_len}"
@@ -265,35 +262,61 @@ fn validate_group_shapes(
     Ok(())
 }
 
-fn validate_prover_group(
-    setup: &AkitaProverSetup,
-    group: &MultiGroupProverGroup,
+/// The per-group checks both sides run: the claim's arity and evaluation count
+/// agree with the commitment metadata, the commitment is a canonical K=256
+/// one-hot object under this setup's layout digest, and the group fits the
+/// setup envelope. Prover and verifier derive their envelopes from the same
+/// [`AkitaVerifierSetup`], so an accepted prove implies an accepted verify.
+fn validate_group_metadata(
+    setup: &AkitaVerifierSetup,
+    commitment: &AkitaCommitment,
+    num_vars: usize,
+    evaluation_count: usize,
 ) -> Result<(), OpeningsError> {
-    if group.hint.commitment != group.commitment {
-        return Err(invalid_batch(
-            "Akita prover hint does not match the multi-group statement commitment",
-        ));
-    }
-    if group.num_vars != group.commitment.num_vars {
+    if num_vars != commitment.num_vars {
         return Err(invalid_batch(format!(
-            "Akita multi-group claim has {} variables but its commitment has {}",
-            group.num_vars, group.commitment.num_vars
+            "Akita multi-group claim has {num_vars} variables but its commitment has {}",
+            commitment.num_vars
         )));
     }
-    if group.commitment.backend_flavor != crate::adapters::AkitaBackendFlavor::OneHot
-        || group.commitment.one_hot_k != AKITA_ONE_HOT_K256
-        || group.commitment.layout_digest != setup.default_layout_digest()
+    if evaluation_count != commitment.poly_count {
+        return Err(invalid_batch(format!(
+            "Akita multi-group claim has {evaluation_count} evaluations for {} commitment slots",
+            commitment.poly_count
+        )));
+    }
+    if commitment.backend_flavor != crate::adapters::AkitaBackendFlavor::OneHot
+        || commitment.one_hot_k != AKITA_ONE_HOT_K256
+        || commitment.layout_digest != setup.default_layout_digest()
     {
         return Err(invalid_batch(
             "Akita multi-group claim requires a canonical K=256 one-hot commitment",
         ));
     }
-    if group.evaluations.len() != group.commitment.poly_count {
-        return Err(invalid_batch(format!(
-            "Akita multi-group claim has {} evaluations for {} commitment slots",
-            group.evaluations.len(),
-            group.commitment.poly_count
-        )));
+    if num_vars > setup.max_num_vars()
+        || commitment.poly_count > setup.max_num_polys_per_commitment_group()
+    {
+        return Err(invalid_batch(
+            "Akita multi-group claim exceeds the setup envelope",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_prover_group(
+    setup: &AkitaProverSetup,
+    group: &MultiGroupProverGroup,
+) -> Result<(), OpeningsError> {
+    validate_group_metadata(
+        &setup.verifier,
+        &group.commitment,
+        group.num_vars,
+        group.evaluations.len(),
+    )?;
+    if group.hint.commitment != group.commitment {
+        return Err(invalid_batch(
+            "Akita prover hint does not match the multi-group statement commitment",
+        ));
     }
     let AkitaHintPolynomials::OneHot(polynomials) = &group.hint.polynomials else {
         return Err(invalid_batch(
@@ -319,39 +342,28 @@ fn validate_prover_group(
     Ok(())
 }
 
-fn validate_verifier_group(
-    setup: &AkitaVerifierSetup,
-    group: &MultiGroupVerifierGroup<'_>,
-) -> Result<(), OpeningsError> {
-    if group.num_vars != group.commitment.num_vars {
-        return Err(invalid_batch(format!(
-            "Akita multi-group claim has {} variables but its commitment has {}",
-            group.num_vars, group.commitment.num_vars
-        )));
-    }
-    if group.evaluations.len() != group.commitment.poly_count {
-        return Err(invalid_batch(format!(
-            "Akita multi-group claim has {} evaluations for {} commitment slots",
-            group.evaluations.len(),
-            group.commitment.poly_count
-        )));
-    }
-    if group.commitment.backend_flavor != crate::adapters::AkitaBackendFlavor::OneHot
-        || group.commitment.one_hot_k != AKITA_ONE_HOT_K256
-        || group.commitment.layout_digest != setup.default_layout_digest()
-    {
-        return Err(invalid_batch(
-            "Akita multi-group claim requires a canonical K=256 one-hot commitment",
-        ));
-    }
-    if group.num_vars > setup.max_num_vars()
-        || group.commitment.poly_count > setup.max_num_polys_per_commitment_group()
-    {
-        return Err(invalid_batch(
-            "Akita multi-group claim exceeds the verifier setup",
-        ));
-    }
-    Ok(())
+/// Builds the backend's per-group claim list. Every group binds a *prefix* of
+/// the `point_len` backend coordinates: Jolt binds a narrower group at a
+/// suffix of `r*`, and the one-hot backend reverses the whole point, so
+/// `reverse(r*)[..nv] == reverse(r*[pad..])`. Shared by prove (owned backend
+/// commitments) and verify (borrowed ones).
+fn prefix_group_claims<'a, C>(
+    group_num_vars: &[usize],
+    point_len: usize,
+    groups: impl IntoIterator<Item = (Vec<AkitaField>, C)>,
+) -> Result<Vec<PolynomialGroupClaims<'a, AkitaField, C>>, OpeningsError> {
+    group_num_vars
+        .iter()
+        .zip(groups)
+        .map(|(num_vars, (evaluations, commitment))| {
+            PolynomialGroupClaims::new(
+                PointVariableSelection::prefix(*num_vars, point_len).map_err(akita_error)?,
+                evaluations,
+                commitment,
+            )
+            .map_err(akita_error)
+        })
+        .collect()
 }
 
 /// Proves a fused multi-group opening: one native `batched_prove` over all
@@ -416,22 +428,11 @@ where
     );
 
     let backend_point = reverse_point(shared_point);
-    let point_len = backend_point.len();
-    let mut prover_groups = Vec::with_capacity(backend_commitments.len());
-    for ((commitment, num_vars), evals) in backend_commitments
-        .into_iter()
-        .zip(&group_num_vars)
-        .zip(&evaluations)
-    {
-        prover_groups.push(
-            PolynomialGroupClaims::new(
-                PointVariableSelection::prefix(*num_vars, point_len).map_err(akita_error)?,
-                evals.clone(),
-                commitment,
-            )
-            .map_err(akita_error)?,
-        );
-    }
+    let prover_groups = prefix_group_claims(
+        &group_num_vars,
+        backend_point.len(),
+        evaluations.into_iter().zip(backend_commitments),
+    )?;
     let claims = OpeningClaims::from_groups(backend_point, prover_groups).map_err(akita_error)?;
 
     let poly_refs_per_group: Vec<Vec<&AkitaBackendOneHotPoly>> = hint_polys
@@ -474,7 +475,8 @@ where
 
 /// Verifies a fused multi-group opening. Mirrors [`multi_group_prove_one_hot`]:
 /// same group order, same transcript bridge, one native `batched_verify`.
-pub fn multi_group_verify_one_hot<T>(
+/// Reached from outside the crate through the [`MultiGroupVerify`] impl below.
+pub(crate) fn multi_group_verify_one_hot<T>(
     setup: &AkitaVerifierSetup,
     shared_point: &[AkitaField],
     groups: &[MultiGroupVerifierGroup<'_>],
@@ -487,7 +489,12 @@ where
     let group_num_vars: Vec<usize> = groups.iter().map(|group| group.num_vars).collect();
     validate_group_shapes(&group_num_vars, shared_point.len())?;
     for group in groups {
-        validate_verifier_group(setup, group)?;
+        validate_group_metadata(
+            setup,
+            group.commitment,
+            group.num_vars,
+            group.evaluations.len(),
+        )?;
     }
 
     let backend_point = reverse_point(shared_point);
@@ -518,20 +525,14 @@ where
     }
     transcript.append(proof);
 
-    let point_len = backend_point.len();
-    let mut verifier_groups = Vec::with_capacity(groups.len());
-    for ((group, commitment), num_vars) in
-        groups.iter().zip(&backend_commitments).zip(&group_num_vars)
-    {
-        verifier_groups.push(
-            PolynomialGroupClaims::new(
-                PointVariableSelection::prefix(*num_vars, point_len).map_err(akita_error)?,
-                group.evaluations.to_vec(),
-                commitment,
-            )
-            .map_err(akita_error)?,
-        );
-    }
+    let verifier_groups = prefix_group_claims(
+        &group_num_vars,
+        backend_point.len(),
+        groups
+            .iter()
+            .map(|group| group.evaluations.to_vec())
+            .zip(&backend_commitments),
+    )?;
     let claims = OpeningClaims::from_groups(backend_point, verifier_groups).map_err(akita_error)?;
 
     let backend_verifier = setup.backend_verifier(crate::adapters::AkitaBackendFlavor::OneHot)?;
@@ -605,16 +606,19 @@ mod tests {
         setup
     }
 
-    /// The go/no-go gate for the fused prover: two narrower precommitted
-    /// one-hot groups (advice-like, program-like) plus a wider trace-like final
-    /// group, all committed under one shared setup, open through a single
-    /// native multi-group `batched_prove`/`batched_verify` at one shared point.
+    /// Covers the fused path end to end at Jolt's group shape: two narrower
+    /// precommitted one-hot groups (advice-like, program-like) plus a wider
+    /// trace-like final group, all committed under one shared setup, open
+    /// through a single native multi-group `batched_prove`/`batched_verify` at
+    /// one shared point. Also covers the rejections the prover and verifier owe
+    /// that opening: mismatched and wrong-arity hints, tampered commitment
+    /// metadata, a commitment honestly generated at the wrong arity, and a
+    /// tampered evaluation.
     #[test]
     fn jolt_shaped_multi_group_root_round_trips() {
         // Trace-like final group: wider than both precommitteds. Akita's
         // planner has no multi-fold schedule below ~16 one-hot variables, so
-        // every group here sits at or above that floor (the user's
-        // "bigger trace" guidance).
+        // every group here sits at or above that floor.
         const FINAL_LOG_ROWS: usize = 11; // 11 + 8 = 19 vars
         const TRACE_COLUMNS: usize = 3;
         // Advice-like (1 poly) and program-like (1 poly), both narrower.
@@ -884,12 +888,11 @@ mod tests {
             "an honestly generated commitment at the wrong arity must reject"
         );
 
-        // Decisive architectural check: is a precommit commitment independent of
-        // the shared setup size (given a sufficiently large setup)? If a group
-        // committed under a *larger* setup equals the same group committed under
-        // the shared setup, the program commitment can be produced at
-        // preprocessing under a fixed "large enough" setup instead of the
-        // trace-length-dependent shared setup.
+        // A precommit commitment is independent of the shared setup size, as
+        // long as the setup is large enough to hold the group. That is what
+        // lets the program commitment be produced once at preprocessing under a
+        // fixed "large enough" setup and still match a prove-time re-commit
+        // under the trace-length-dependent shared setup.
         let larger_setup = shared_setup(final_num_vars + 2, total_polys + 3);
         let (advice_larger_commitment, _, _) = commit_precommitted_one_hot_group(
             &larger_setup,

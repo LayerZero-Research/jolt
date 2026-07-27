@@ -11,20 +11,20 @@ use jolt_akita::schedules::emit::{
 use jolt_akita::schedules::{jolt_fp128_d64_onehot_k16_table, jolt_fp128_d64_onehot_k256_table};
 use jolt_akita::PolynomialGroupLayout;
 
-/// Every reachable key is either in its checked-in table or is an explicit,
-/// reviewed planner-DP fallback. This keeps catalog misses visible without
-/// pretending the currently unschedulable `(16, 81)` K=16 shape has a generated
-/// entry. Identity validity is exercised by every Akita e2e.
+/// Pins the set of reachable keys that miss their checked-in table and so fall
+/// back to planner DP at setup. Today that set is exactly the `(16, 81)` K=16
+/// shape, which the planner cannot schedule. Every other reachable key must be
+/// catalogued. Identity validity is exercised by every Akita e2e.
 #[test]
 fn catalogs_cover_every_reachable_one_hot_trace_shape() {
     for (table, num_polys, num_vars) in [
         (
-            jolt_fp128_d64_onehot_k16_table().expect("K16 catalog is checked in"),
+            jolt_fp128_d64_onehot_k16_table(),
             K16_NUM_POLYS,
             K16_NUM_VARS,
         ),
         (
-            jolt_fp128_d64_onehot_k256_table().expect("K256 catalog is checked in"),
+            jolt_fp128_d64_onehot_k256_table(),
             K256_NUM_POLYS,
             K256_NUM_VARS,
         ),

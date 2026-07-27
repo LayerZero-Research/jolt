@@ -4,8 +4,11 @@
 //! - Address phase (`log_k_chunk` rounds)
 //! - Cycle phase (`log_t` rounds)
 //!
-//! Both phases still batch all three families together (InstructionRA, BytecodeRA, RAMRA),
-//! so they share the same `r_address` and `r_cycle`, matching what Stage 7 claim reductions expect.
+//! Both phases batch every RA family together (InstructionRA, BytecodeRA,
+//! RAMRA — plus, on the lattice/packed path, the fused-increment chunk columns
+//! and the increment MSB column; see [`lattice_booleanity_params`]), so they
+//! share the same `r_address` and `r_cycle`, matching what Stage 7 claim
+//! reductions expect.
 //!
 //! ## Sumcheck Relation
 //!
@@ -896,16 +899,23 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
         let quadratic_coeffs: [F; DEGREE_BOUND - 1] = self
             .D
             .par_fold_out_in_unreduced::<{ DEGREE_BOUND - 1 }>(&|j_prime| {
+                // Accumulate in unreduced form to minimize per-term reductions.
                 let mut acc_c = F::UnreducedProductAccum::zero();
                 let mut acc_e = F::UnreducedProductAccum::zero();
                 for i in 0..num_base {
                     let h_0 = self.H.get_bound_coeff(i, 2 * j_prime);
                     let h_1 = self.H.get_bound_coeff(i, 2 * j_prime + 1);
                     let b = h_1 - h_0;
+                    // Phase-2 optimization: H is pre-scaled by rho_i = gamma^i, so gamma^{2i}
+                    // factors are already accounted for:
+                    //   gamma^{2i}*h0*(h0-1) = (rho*h0) * (rho*h0 - rho)
+                    //   gamma^{2i}*b*b       = (rho*b) * (rho*b)
                     let rho = self.gamma_powers[i];
                     acc_c += h_0.mul_to_product_accum(h_0 - rho);
                     acc_e += b.mul_to_product_accum(b);
                 }
+                // The fused-inc chunk columns continue the same gamma ladder
+                // past the base families, pre-scaled the same way.
                 for (index, chunk) in self.chunk_h.iter().enumerate() {
                     let h_0 = chunk.get_bound_coeff(2 * j_prime);
                     let h_1 = chunk.get_bound_coeff(2 * j_prime + 1);
@@ -919,6 +929,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
                     F::reduce_product_accum(acc_e),
                 ]
             });
+        // previous_claim is s(0)+s(1) of the scaled polynomial; divide out eq_r_r to get inner claim
         let adjusted_claim = previous_claim * self.eq_r_r.inverse().unwrap();
         let gruen_poly =
             self.D

@@ -17,100 +17,6 @@ use crate::zkvm::instruction::{
 use crate::zkvm::lookup_table::LookupTables;
 use common::constants::XLEN;
 
-/// Sparse unit-valued multilinear polynomial: value `1` at each listed
-/// position, `0` everywhere else — the witness form of a packed one-hot
-/// commitment. The union of one-hot columns scattered into prefix slots is
-/// exactly a set of unit positions over the packed domain, so it advertises
-/// the `MultilinearPoly` unit-sparse contract (`is_one_hot`/`for_each_one`)
-/// without `OneHotPolynomial`'s per-row structure.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SparseUnitPolynomial<F> {
-    num_vars: usize,
-    one_positions: Vec<usize>,
-    _field: core::marker::PhantomData<F>,
-}
-
-impl<F: jolt_field::Field> SparseUnitPolynomial<F> {
-    /// Sorts the positions ascending once here — the invariant
-    /// `for_each_row`'s row scan and `for_each_one`'s yield order rely on.
-    /// Duplicates are neither deduplicated nor rejected.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a position lies outside the `2^num_vars` domain.
-    #[must_use]
-    pub fn new(num_vars: usize, mut one_positions: Vec<usize>) -> Self {
-        assert!(
-            one_positions
-                .iter()
-                .all(|position| position >> num_vars == 0),
-            "one position outside the 2^{num_vars} domain"
-        );
-        one_positions.sort_unstable();
-        Self {
-            num_vars,
-            one_positions,
-            _field: core::marker::PhantomData,
-        }
-    }
-
-    #[must_use]
-    pub fn one_positions(&self) -> &[usize] {
-        &self.one_positions
-    }
-}
-
-impl<F: jolt_field::Field> jolt_poly::MultilinearPoly<F> for SparseUnitPolynomial<F> {
-    fn num_vars(&self) -> usize {
-        self.num_vars
-    }
-
-    fn evaluate(&self, point: &[F]) -> F {
-        assert_eq!(point.len(), self.num_vars);
-        self.one_positions
-            .iter()
-            .map(|position| {
-                point.iter().enumerate().fold(F::one(), |acc, (bit, r)| {
-                    // Big-endian: point[0] is the most significant bit.
-                    if (position >> (self.num_vars - 1 - bit)) & 1 == 1 {
-                        acc * *r
-                    } else {
-                        acc * (F::one() - *r)
-                    }
-                })
-            })
-            .sum()
-    }
-
-    fn for_each_row(&self, sigma: usize, f: &mut dyn FnMut(usize, &[F])) {
-        let row_len = 1usize << sigma;
-        let num_rows = 1usize << (self.num_vars - sigma);
-        let mut row = vec![F::zero(); row_len];
-        let mut next = self.one_positions.iter().peekable();
-        for row_index in 0..num_rows {
-            row.fill(F::zero());
-            while let Some(&&position) = next.peek() {
-                if position >> sigma != row_index {
-                    break;
-                }
-                row[position & (row_len - 1)] = F::one();
-                let _ = next.next();
-            }
-            f(row_index, &row);
-        }
-    }
-
-    fn is_one_hot(&self) -> bool {
-        true
-    }
-
-    fn for_each_one(&self, f: &mut dyn FnMut(usize)) {
-        for position in &self.one_positions {
-            f(*position);
-        }
-    }
-}
-
 /// The per-cycle fused increment stream: the RAM delta on store cycles, the
 /// rd delta otherwise. Padding cycles carry `delta = 0`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,24 +52,31 @@ impl FusedIncValue {
         // into a sequence whose RAM-writing step is a plain store). A
         // violation means an instruction shape the fused encoding cannot
         // represent — fail here, not with an opaque sumcheck mismatch.
-        debug_assert_eq!(
+        assert_eq!(
             store,
             matches!(cycle.ram_access(), tracer::instruction::RAMAccess::Write(_)),
             "Store circuit flag disagrees with the cycle's RAM-write access: {cycle:?}"
         );
-        debug_assert!(
+        assert!(
             if store { rd_delta == 0 } else { ram_delta == 0 },
             "cycle increments both RAM and rd; the fused inc encoding cannot represent it: {cycle:?}"
         );
         let delta = if store { ram_delta } else { rd_delta };
+        // `shifted` masks to the low 64 bits, so an out-of-range delta would
+        // commit a value the verifier reconstructs differently. Checked once
+        // per cycle here rather than on every `shifted` call.
+        assert!(
+            delta.unsigned_abs() < 1u128 << UNSIGNED_INC_BITS,
+            "fused inc delta {delta} exceeds the {UNSIGNED_INC_BITS}-bit encoding: {cycle:?}"
+        );
         (Self { delta }, store)
     }
 
     /// The shifted unsigned encoding `2^64 + delta`: the MSB and low-64-bit
     /// chunks. Padding (`delta = 0`) encodes as MSB hot with every chunk at
-    /// hot lane zero.
+    /// hot lane zero. `delta`'s range is checked once per cycle in
+    /// [`from_cycle_with_store`](Self::from_cycle_with_store).
     fn shifted(self) -> u128 {
-        debug_assert!(self.delta.unsigned_abs() < 1u128 << UNSIGNED_INC_BITS);
         (self.delta + (1i128 << UNSIGNED_INC_BITS)) as u128
     }
 
@@ -304,7 +217,13 @@ pub fn assemble_precommitted_witness<F: JoltField>(
                 let words = program_image_words
                     .ok_or_else(|| "program image words missing for ProgramOneHot".to_string())?;
                 let word_vars = slot.num_vars - BYTE_BITS - WORD_BYTES.log_2();
-                debug_assert!(words.len() <= 1 << word_vars);
+                if words.len() > 1 << word_vars {
+                    return Err(format!(
+                        "program image has {} words but the packed slot holds {}",
+                        words.len(),
+                        1usize << word_vars
+                    ));
+                }
                 for limb in 0..WORD_BYTES {
                     for word_index in 0..(1usize << word_vars) {
                         let byte = words
@@ -373,27 +292,6 @@ mod tests {
         for index in 0..chunking().chunk_count() {
             assert_eq!(padding.chunk_hot_lane_bits(LOG_K_CHUNK, index), 0);
         }
-    }
-
-    #[test]
-    fn sparse_unit_positions_sort_ascending_on_construction() {
-        use jolt_field::{Fr, FromPrimitiveInt};
-        use jolt_poly::MultilinearPoly;
-
-        let poly = SparseUnitPolynomial::<Fr>::new(4, vec![9, 2, 11, 0, 2]);
-        assert_eq!(poly.one_positions(), [0, 2, 2, 9, 11]);
-
-        let mut yielded = Vec::new();
-        poly.for_each_one(&mut |position| yielded.push(position));
-        assert_eq!(yielded, [0, 2, 2, 9, 11]);
-
-        let mut rows = vec![Vec::new(); 4];
-        poly.for_each_row(2, &mut |row_index, row| rows[row_index] = row.to_vec());
-        let expected = |bits: [u64; 4]| bits.map(Fr::from_u64);
-        assert_eq!(rows[0], expected([1, 0, 1, 0]));
-        assert_eq!(rows[1], expected([0, 0, 0, 0]));
-        assert_eq!(rows[2], expected([0, 1, 0, 1]));
-        assert_eq!(rows[3], expected([0, 0, 0, 0]));
     }
 }
 
