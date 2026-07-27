@@ -896,20 +896,18 @@ mod tests {
         }
         // A setup wider than the trace is legal (it also backs the fused aux
         // groups), so only a capacity below the column count is rejected.
-        assert!(
-            validate_one_hot_trace_metadata(
-                &commitment,
-                &SetupMetadata {
-                    poly_count: 18,
-                    ..setup
-                },
-                digest,
-                12,
-                17,
-                256
-            )
-            .is_ok()
-        );
+        assert!(validate_one_hot_trace_metadata(
+            &commitment,
+            &SetupMetadata {
+                poly_count: 18,
+                ..setup
+            },
+            digest,
+            12,
+            17,
+            256
+        )
+        .is_ok());
         for invalid in [
             SetupMetadata {
                 digest: [9; 32],

@@ -1039,7 +1039,10 @@ mod statement_bridge_tests {
         right.append(&U64Word(2));
         let (right_akita, right_bridge) = bridge_jolt_statement_challenge(&mut right, b"label");
 
-        assert_ne!(left_bridge, right_bridge, "distinct Jolt states must bridge");
+        assert_ne!(
+            left_bridge, right_bridge,
+            "distinct Jolt states must bridge"
+        );
         assert_ne!(
             challenge_after_instance_rebind(left_akita),
             challenge_after_instance_rebind(right_akita),
