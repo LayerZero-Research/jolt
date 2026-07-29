@@ -1,10 +1,9 @@
 //! Akita verifier fixture cases: real packed-prover artifacts backing the
 //! fixture-driven tamper/soundness tests on the akita path.
 //!
-//! Unlike the Dory fixtures there is no disk cache: the transparent akita
-//! setup would have to be re-derived at load anyway, so each case is
-//! generated once per test binary (`OnceLock`) and shared across every
-//! tamper application.
+//! These cases are not disk-cached: the transparent akita setup would have to
+//! be re-derived at load anyway, so each case is generated once per test binary
+//! (`OnceLock`) and shared across every tamper application.
 
 #![expect(
     clippy::expect_used,
@@ -58,10 +57,17 @@ pub fn akita_muldiv_case() -> &'static AkitaFixtureCase {
 }
 
 /// The advice case: both advice kinds, three commitment objects
-/// (`OneHotTrace`, `UntrustedAdviceOneHot`, `TrustedAdviceOneHot`) and an auxiliary joint opening.
+/// (`OneHotTrace`, `UntrustedAdviceOneHot`, `TrustedAdviceOneHot`) discharged
+/// by the per-group topology (trusted advice is fallback-only).
 pub fn akita_advice_case() -> &'static AkitaFixtureCase {
     static CASE: OnceLock<AkitaFixtureCase> = OnceLock::new();
     CASE.get_or_init(generate_advice)
+}
+
+/// The fused case: proof-carried untrusted advice plus the trace final group.
+pub fn akita_fused_untrusted_case() -> &'static AkitaFixtureCase {
+    static CASE: OnceLock<AkitaFixtureCase> = OnceLock::new();
+    CASE.get_or_init(generate_fused_untrusted)
 }
 
 /// The committed-program case: `ProgramOneHot` as the auxiliary packed object.
@@ -111,7 +117,7 @@ fn generate_muldiv() -> AkitaFixtureCase {
 fn generate_advice() -> AkitaFixtureCase {
     // The purpose-built advice guest asserts `trusted + untrusted == public`
     // (7 + 5 == 12), exercising both advice kinds without any exotic inline
-    // instruction (unlike the merkle example, which fails Jolt expansion).
+    // instruction.
     let mut program = host::Program::new("advice-consumer-guest");
     let (bytecode, init_memory_state, _, e_entry) = program.decode();
     let inputs = postcard::to_stdvec(&12u64).expect("serialize inputs");
@@ -154,6 +160,65 @@ fn generate_advice() -> AkitaFixtureCase {
         public_io,
         proof,
         trusted_advice_commitment: Some(trusted_commitment),
+    }
+}
+
+fn generate_fused_untrusted() -> AkitaFixtureCase {
+    let mut program = host::Program::new("untrusted-advice-consumer-guest");
+    let (bytecode, init_memory_state, _, e_entry) = program.decode();
+    let inputs = postcard::to_stdvec(&5u64).expect("serialize inputs");
+    let untrusted_advice = postcard::to_stdvec(&5u64).expect("serialize untrusted");
+    let (_, _, _, io_device) = program.trace(&inputs, &untrusted_advice, &[]);
+
+    let program_data = ProgramPreprocessing::preprocess(bytecode, init_memory_state, e_entry)
+        .expect("program preprocessing");
+    let shared: JoltSharedPreprocessing<AkitaPackedScheme> =
+        JoltSharedPreprocessing::new(program_data, io_device.memory_layout.clone(), 1 << 16);
+    let prover_preprocessing = JoltProverPreprocessing::new(shared);
+    let elf_contents = program.get_elf_contents().expect("elf contents");
+    let mut prover: AkitaPackedProver<'_> = JoltCpuProver::gen_from_elf(
+        &prover_preprocessing,
+        &elf_contents,
+        &inputs,
+        &untrusted_advice,
+        &[],
+        None,
+        None,
+        None,
+    );
+    // The fused gate holds only at `log_k_chunk == AKITA_FUSED_LOG_K_CHUNK`
+    // (8), and `OneHotConfig::new` picks 8 only from
+    // `ONEHOT_CHUNK_THRESHOLD_LOG_T` upwards: this short fixture trace defaults
+    // to 4 and misses the gate. These two literals are the large-trace default
+    // config (`log_k_chunk = 8`, `lookups_ra_virtual_log_k_chunk = LOG_K / 4`),
+    // forced onto a short trace so it commits at K=2^8.
+    let forced = jolt_prover_legacy::zkvm::config::OneHotConfig {
+        log_k_chunk: 8,
+        lookups_ra_virtual_log_k_chunk: 32,
+    };
+    prover.one_hot_params = jolt_prover_legacy::zkvm::config::OneHotParams::from_config(
+        &forced,
+        prover_preprocessing.shared.bytecode_size(),
+        prover.one_hot_params.ram_k,
+    );
+    let public_io = prover.program_io.clone();
+    let (object_setup, verifier_setup) =
+        <AkitaScheme as VerifierCommitmentScheme>::setup(prover.one_hot_trace_setup_params())
+            .expect("transparent packed setup");
+    let proof = prover
+        .prove_packed(&object_setup, None, None)
+        .expect("fused packed prover");
+    assert_eq!(
+        proof.joint_opening_proof.openings.len(),
+        1,
+        "fixture must exercise the fused topology"
+    );
+    let preprocessing = akita_verifier_preprocessing(&prover_preprocessing, verifier_setup, None);
+    AkitaFixtureCase {
+        preprocessing,
+        public_io,
+        proof,
+        trusted_advice_commitment: None,
     }
 }
 

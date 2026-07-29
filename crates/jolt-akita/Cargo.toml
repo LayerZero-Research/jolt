@@ -29,6 +29,7 @@ serde = { workspace = true, features = ["derive"] }
 tracing.workspace = true
 
 [dev-dependencies]
+bincode.workspace = true
 criterion = { workspace = true }
 jolt-dory = { workspace = true }
 jolt-profiling = { path = "../jolt-profiling" }
@@ -36,4 +37,8 @@ serde_json = { workspace = true, features = ["std"] }
 
 [[bench]]
 name = "akita_paths"
+harness = false
+
+[[bench]]
+name = "flavor_bench"
 harness = false

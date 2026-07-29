@@ -170,8 +170,8 @@ pub struct OneHotConfig {
 }
 
 impl OneHotConfig {
-    /// Create a OneHotConfig with default values based on trace length.
-    ///
+    /// Chunk widths are chosen from the trace length: traces at or above
+    /// [`ONEHOT_CHUNK_THRESHOLD_LOG_T`] use the wider 8-bit chunking.
     pub fn new(log_T: usize) -> Self {
         let large = log_T >= ONEHOT_CHUNK_THRESHOLD_LOG_T;
         let log_k_chunk = if large { 8 } else { 4 };

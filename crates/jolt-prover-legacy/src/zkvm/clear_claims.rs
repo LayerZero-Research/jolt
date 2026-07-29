@@ -471,17 +471,15 @@ fn bytecode_val_stage_claims_from_openings<F: Field>(
     {
         return Ok(Vec::new());
     }
-    // Five staged vals in base mode, six on the packed path (the store
-    // stage); the verifier's count validation enforces the mode.
-    let mut stage_claims =
-        Vec::with_capacity(bytecode_claim_reduction::NUM_BYTECODE_VAL_STAGES + 1);
-    for stage in 0.. {
-        let Some(opening_claim) =
-            claims.get(bytecode_claim_reduction::bytecode_val_stage_opening(stage))
-        else {
-            break;
-        };
-        stage_claims.push(opening_claim);
+    // Once stage 0 is present the reduction ran, so every stage of the active
+    // mode must be. `NUM_BYTECODE_VAL_STAGES` is itself cfg-selected (five
+    // base flag stages, six on the packed path — the extra `OpFlags(Store)`
+    // stage), so the bound needs no cfg here.
+    let num_stages = bytecode_claim_reduction::NUM_BYTECODE_VAL_STAGES;
+    let mut stage_claims = Vec::with_capacity(num_stages);
+    for stage in 0..num_stages {
+        stage_claims
+            .push(claims.require(bytecode_claim_reduction::bytecode_val_stage_opening(stage))?);
     }
     Ok(stage_claims)
 }

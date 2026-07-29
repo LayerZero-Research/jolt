@@ -113,6 +113,46 @@ pub trait CommitmentScheme: Commitment {
     }
 }
 
+/// One commitment group of a fused multi-group opening, verifier side: its
+/// commitment, its `num_vars` (the slice length it binds of the shared point),
+/// and its claimed evaluations. Groups are in `[precommitteds…, final]` order;
+/// the final (widest) group binds the whole shared point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MultiGroupOpeningClaim<'a, F, C> {
+    pub commitment: &'a C,
+    pub num_vars: usize,
+    pub evaluations: &'a [F],
+}
+
+/// A commitment scheme that can discharge several commitment groups at
+/// prefix/suffix slices of one shared point in a single native opening (a
+/// multi-group root fold). Only schemes with a native group-commitment concept
+/// (Akita) implement this; the generic RLC-based schemes do not.
+pub trait MultiGroupVerify: CommitmentScheme {
+    /// Verifies one native fold discharging every group in `groups` against
+    /// `shared_point`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpeningsError`] if the fold does not verify, and callers must
+    /// uphold the layout `groups` is read under — an implementation is free to
+    /// reject, but not obliged to detect, a violation:
+    ///
+    /// - `groups` is non-empty and ordered `[precommitteds…, final]`, the final
+    ///   (widest) group last;
+    /// - the final group's `num_vars == shared_point.len()`, so it binds the
+    ///   whole point;
+    /// - no precommitted group is wider than the final group; each binds the
+    ///   `num_vars`-length suffix of `shared_point`.
+    fn verify_multi_group<T: Transcript<Challenge = Self::Field>>(
+        setup: &Self::VerifierSetup,
+        shared_point: &[Self::Field],
+        groups: &[MultiGroupOpeningClaim<'_, Self::Field, Self::Output>],
+        proof: &Self::Proof,
+        transcript: &mut T,
+    ) -> Result<(), OpeningsError>;
+}
+
 /// C = Σ s_i · C_i.
 pub trait AdditivelyHomomorphic: CommitmentScheme
 where

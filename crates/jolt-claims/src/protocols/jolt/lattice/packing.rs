@@ -4,16 +4,13 @@
 //! assignment within auxiliary advice and committed-program objects. `OneHotTrace`
 //! is not prefix-packed: [`one_hot_trace_columns`] returns its exact ordered columns.
 
-use jolt_lookup_tables::{LookupTableKind, XLEN};
 use jolt_openings::PrefixPacking;
-use jolt_poly::math::Math;
 use jolt_riscv::{NUM_CIRCUIT_FLAGS, NUM_INSTRUCTION_FLAGS};
 
-use super::super::geometry::dimensions::REGISTER_ADDRESS_BITS;
 use super::super::geometry::ra::JoltRaPolynomialLayout;
 use super::super::{BytecodeRegisterLane, JoltAdviceKind, JoltCommittedPolynomial};
 use super::geometry::{
-    byte_num_vars, word_byte_num_vars, LatticeGeometryError, UnsignedIncChunking,
+    byte_num_vars, word_byte_num_vars, LatticeGeometryError, UnsignedIncChunking, BYTE_BITS,
 };
 
 /// Shape of the per-proof `OneHotTrace`: the canonical committed Jolt data —
@@ -79,38 +76,71 @@ pub fn advice_bytes_packing(
     )])?)
 }
 
+/// Permutes a one-hot column's opening point from the reconstruction
+/// cell-domain order (the `BYTE_BITS` one-hot lane coordinates most-significant,
+/// e.g. advice `(byte ‖ limb ‖ word)` or a program `(lane8 ‖ row)`) into the
+/// row-major one-hot commitment order (lane coordinates least-significant,
+/// e.g. `(limb ‖ word ‖ byte)` / `(row ‖ lane8)`).
+///
+/// Every packed byte/lane column is committed as a row-major one-hot
+/// polynomial whose hot lane sits in the low `BYTE_BITS` coordinates, while its
+/// reconstruction sumcheck produces the leaf opening point with the lane block
+/// leading (the widened selectors/flags and the byte lanes alike). So both the
+/// packed prover's statement and the verifier's leaf claim relabel the point
+/// through this pure coordinate permutation — moving the leading `BYTE_BITS`
+/// lane coordinates to the tail — so the claimed value matches the one-hot
+/// commitment. This is the advice/program analogue of `strategy::column_point`
+/// for the trace one-hot columns.
+pub fn advice_byte_column_one_hot_point<F: Clone>(cell_point: &[F]) -> Vec<F> {
+    let split = BYTE_BITS.min(cell_point.len());
+    let (byte_lanes, row) = cell_point.split_at(split);
+    let mut point = row.to_vec();
+    point.extend_from_slice(byte_lanes);
+    point
+}
+
 fn precommitted_polynomials(
     shape: &PrecommittedPackingShape,
 ) -> Result<Vec<(JoltCommittedPolynomial, usize)>, LatticeGeometryError> {
     let log_rows = shape.log_bytecode_rows;
-    let selector_vars = REGISTER_ADDRESS_BITS + log_rows;
-    let lookup_vars = LookupTableKind::<XLEN>::COUNT.log_2() + log_rows;
+    // Every bytecode sub-column commits into one K=256 row-major one-hot
+    // polynomial, so each occupies a `BYTE_BITS`-wide lane block (the low
+    // one-hot coordinates) over its `log_rows` position rows: register/lookup
+    // selectors are widened up to the shared 8-bit lane (their 7-/6-bit value
+    // sits in the low bits, the high lane bits zero-pinned), and 0/1 flags
+    // become an 8-bit lane hot at lane 1. The pc/imm byte columns already
+    // carry an 8-bit byte lane. Opening points are relabeled into this
+    // lane-low commitment layout via `advice_byte_column_one_hot_point`.
+    let lane_row_vars = BYTE_BITS + log_rows;
 
     let mut polynomials = Vec::new();
     for chunk in 0..shape.bytecode_chunks {
         polynomials.extend(BytecodeRegisterLane::ALL.into_iter().map(|lane| {
             (
                 JoltCommittedPolynomial::BytecodeRegisterSelector { chunk, lane },
-                selector_vars,
+                lane_row_vars,
             )
         }));
         polynomials.extend((0..NUM_CIRCUIT_FLAGS).map(|flag| {
             (
                 JoltCommittedPolynomial::BytecodeCircuitFlag { chunk, flag },
-                log_rows,
+                lane_row_vars,
             )
         }));
         polynomials.extend((0..NUM_INSTRUCTION_FLAGS).map(|flag| {
             (
                 JoltCommittedPolynomial::BytecodeInstructionFlag { chunk, flag },
-                log_rows,
+                lane_row_vars,
             )
         }));
         polynomials.push((
             JoltCommittedPolynomial::BytecodeLookupSelector { chunk },
-            lookup_vars,
+            lane_row_vars,
         ));
-        polynomials.push((JoltCommittedPolynomial::BytecodeRafFlag { chunk }, log_rows));
+        polynomials.push((
+            JoltCommittedPolynomial::BytecodeRafFlag { chunk },
+            lane_row_vars,
+        ));
         polynomials.push((
             JoltCommittedPolynomial::BytecodeUnexpandedPcBytes { chunk },
             word_byte_num_vars(log_rows),
@@ -202,11 +232,11 @@ mod tests {
                 lane: BytecodeRegisterLane::Rd,
             }]
                 .num_vars,
-            REGISTER_ADDRESS_BITS + 6,
+            BYTE_BITS + 6,
         );
         assert_eq!(
             packing[&JoltCommittedPolynomial::BytecodeCircuitFlag { chunk: 0, flag: 0 }].num_vars,
-            6
+            BYTE_BITS + 6
         );
         assert_eq!(
             packing[&JoltCommittedPolynomial::BytecodeUnexpandedPcBytes { chunk: 1 }].num_vars,

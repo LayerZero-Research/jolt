@@ -1,4 +1,4 @@
-#[cfg(not(feature = "zk"))]
+#[cfg(all(not(feature = "zk"), not(feature = "akita")))]
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 
@@ -8,30 +8,36 @@ use ark_serialize::{
 use num::FromPrimitive;
 use strum::EnumCount;
 
-#[cfg(not(feature = "zk"))]
+#[cfg(all(not(feature = "zk"), not(feature = "akita")))]
 use crate::poly::opening_proof::{OpeningPoint, Openings};
 #[cfg(feature = "zk")]
 use crate::subprotocols::blindfold::BlindFoldProof;
+#[cfg(not(feature = "akita"))]
 use crate::{
-    curve::JoltCurve,
-    field::JoltField,
+    curve::JoltCurve, field::JoltField, poly::commitment::commitment_scheme::CommitmentScheme,
+};
+use crate::{
     poly::{
-        commitment::{commitment_scheme::CommitmentScheme, dory::DoryLayout},
+        commitment::dory::DoryLayout,
         opening_proof::{OpeningId, PolynomialId, SumcheckId},
     },
+    zkvm::{
+        instruction::{CircuitFlags, InstructionFlags},
+        witness::{CommittedPolynomial, VirtualPolynomial},
+    },
 };
+#[cfg(not(feature = "akita"))]
 use crate::{
     subprotocols::{
         sumcheck::SumcheckInstanceProof, univariate_skip::UniSkipFirstRoundProofVariant,
     },
     transcripts::Transcript,
-    zkvm::{
-        config::{OneHotConfig, ReadWriteConfig},
-        instruction::{CircuitFlags, InstructionFlags},
-        witness::{CommittedPolynomial, VirtualPolynomial},
-    },
+    zkvm::config::{OneHotConfig, ReadWriteConfig},
 };
 
+/// The base (Dory) prove path's proof payload. The akita path emits the
+/// verifier-native `JoltProof` directly and never builds these parts.
+#[cfg(not(feature = "akita"))]
 pub(crate) struct JoltProofParts<
     F: JoltField,
     C: JoltCurve<F = F>,
@@ -62,10 +68,10 @@ pub(crate) struct JoltProofParts<
     pub dory_layout: DoryLayout,
 }
 
-#[cfg(not(feature = "zk"))]
+#[cfg(all(not(feature = "zk"), not(feature = "akita")))]
 pub(crate) struct ProverOpeningClaims<F: JoltField>(pub Openings<F>);
 
-#[cfg(not(feature = "zk"))]
+#[cfg(all(not(feature = "zk"), not(feature = "akita")))]
 impl<F: JoltField> CanonicalSerialize for ProverOpeningClaims<F> {
     fn serialize_with_mode<W: Write>(
         &self,
@@ -90,14 +96,14 @@ impl<F: JoltField> CanonicalSerialize for ProverOpeningClaims<F> {
     }
 }
 
-#[cfg(not(feature = "zk"))]
+#[cfg(all(not(feature = "zk"), not(feature = "akita")))]
 impl<F: JoltField> Valid for ProverOpeningClaims<F> {
     fn check(&self) -> Result<(), SerializationError> {
         Ok(())
     }
 }
 
-#[cfg(not(feature = "zk"))]
+#[cfg(all(not(feature = "zk"), not(feature = "akita")))]
 impl<F: JoltField> CanonicalDeserialize for ProverOpeningClaims<F> {
     fn deserialize_with_mode<R: Read>(
         mut reader: R,
@@ -250,75 +256,65 @@ impl CanonicalDeserialize for OpeningId {
     }
 }
 
-impl CanonicalSerialize for CommittedPolynomial {
-    fn serialize_with_mode<W: Write>(
-        &self,
-        mut writer: W,
-        compress: Compress,
-    ) -> Result<(), SerializationError> {
+/// Wire tags for [`CommittedPolynomial`]. The encode, decode and size paths all
+/// read this one table, so a tag can never mean two things.
+mod committed_tag {
+    pub const RD_INC: u8 = 0;
+    pub const RAM_INC: u8 = 1;
+    pub const INSTRUCTION_RA: u8 = 2;
+    pub const BYTECODE_RA: u8 = 3;
+    pub const RAM_RA: u8 = 4;
+    pub const TRUSTED_ADVICE: u8 = 5;
+    pub const UNTRUSTED_ADVICE: u8 = 6;
+    pub const BYTECODE_CHUNK: u8 = 7;
+    pub const PROGRAM_IMAGE_INIT: u8 = 8;
+    pub const UNSIGNED_INC_CHUNK: u8 = 9;
+    pub const UNSIGNED_INC_MSB: u8 = 10;
+    pub const BYTECODE_REGISTER_SELECTOR: u8 = 11;
+    pub const BYTECODE_CIRCUIT_FLAG: u8 = 12;
+    pub const BYTECODE_INSTRUCTION_FLAG: u8 = 13;
+    pub const BYTECODE_LOOKUP_SELECTOR: u8 = 14;
+    pub const BYTECODE_RAF_FLAG: u8 = 15;
+    pub const BYTECODE_UNEXPANDED_PC_BYTES: u8 = 16;
+    pub const BYTECODE_IMM_BYTES: u8 = 17;
+    pub const PROGRAM_IMAGE_BYTES: u8 = 18;
+}
+
+/// A `usize` index that does not fit the one-byte wire field.
+fn index_out_of_range() -> SerializationError {
+    SerializationError::InvalidData
+}
+
+impl CommittedPolynomial {
+    /// The variant's wire tag. Exhaustive, so a new variant is a compile error.
+    const fn wire_tag(&self) -> u8 {
+        use committed_tag as tag;
         match self {
-            Self::RdInc => 0u8.serialize_with_mode(writer, compress),
-            Self::RamInc => 1u8.serialize_with_mode(writer, compress),
-            Self::InstructionRa(i) => {
-                2u8.serialize_with_mode(&mut writer, compress)?;
-                (u8::try_from(*i).unwrap()).serialize_with_mode(writer, compress)
-            }
-            Self::BytecodeRa(i) => {
-                3u8.serialize_with_mode(&mut writer, compress)?;
-                (u8::try_from(*i).unwrap()).serialize_with_mode(writer, compress)
-            }
-            Self::RamRa(i) => {
-                4u8.serialize_with_mode(&mut writer, compress)?;
-                (u8::try_from(*i).unwrap()).serialize_with_mode(writer, compress)
-            }
-            Self::TrustedAdvice => 5u8.serialize_with_mode(writer, compress),
-            Self::UntrustedAdvice => 6u8.serialize_with_mode(writer, compress),
-            Self::BytecodeChunk(i) => {
-                7u8.serialize_with_mode(&mut writer, compress)?;
-                (u8::try_from(*i).unwrap()).serialize_with_mode(writer, compress)
-            }
-            Self::ProgramImageInit => 8u8.serialize_with_mode(writer, compress),
-            Self::UnsignedIncChunk(i) => {
-                9u8.serialize_with_mode(&mut writer, compress)?;
-                (u8::try_from(*i).unwrap()).serialize_with_mode(writer, compress)
-            }
-            Self::UnsignedIncMsb => 10u8.serialize_with_mode(writer, compress),
-            Self::BytecodeRegisterSelector(chunk, lane) => {
-                11u8.serialize_with_mode(&mut writer, compress)?;
-                (u8::try_from(*chunk).unwrap()).serialize_with_mode(&mut writer, compress)?;
-                (u8::try_from(*lane).unwrap()).serialize_with_mode(writer, compress)
-            }
-            Self::BytecodeCircuitFlag(chunk, flag) => {
-                12u8.serialize_with_mode(&mut writer, compress)?;
-                (u8::try_from(*chunk).unwrap()).serialize_with_mode(&mut writer, compress)?;
-                (u8::try_from(*flag).unwrap()).serialize_with_mode(writer, compress)
-            }
-            Self::BytecodeInstructionFlag(chunk, flag) => {
-                13u8.serialize_with_mode(&mut writer, compress)?;
-                (u8::try_from(*chunk).unwrap()).serialize_with_mode(&mut writer, compress)?;
-                (u8::try_from(*flag).unwrap()).serialize_with_mode(writer, compress)
-            }
-            Self::BytecodeLookupSelector(chunk) => {
-                14u8.serialize_with_mode(&mut writer, compress)?;
-                (u8::try_from(*chunk).unwrap()).serialize_with_mode(writer, compress)
-            }
-            Self::BytecodeRafFlag(chunk) => {
-                15u8.serialize_with_mode(&mut writer, compress)?;
-                (u8::try_from(*chunk).unwrap()).serialize_with_mode(writer, compress)
-            }
-            Self::BytecodeUnexpandedPcBytes(chunk) => {
-                16u8.serialize_with_mode(&mut writer, compress)?;
-                (u8::try_from(*chunk).unwrap()).serialize_with_mode(writer, compress)
-            }
-            Self::BytecodeImmBytes(chunk) => {
-                17u8.serialize_with_mode(&mut writer, compress)?;
-                (u8::try_from(*chunk).unwrap()).serialize_with_mode(writer, compress)
-            }
-            Self::ProgramImageBytes => 18u8.serialize_with_mode(writer, compress),
+            Self::RdInc => tag::RD_INC,
+            Self::RamInc => tag::RAM_INC,
+            Self::InstructionRa(_) => tag::INSTRUCTION_RA,
+            Self::BytecodeRa(_) => tag::BYTECODE_RA,
+            Self::RamRa(_) => tag::RAM_RA,
+            Self::TrustedAdvice => tag::TRUSTED_ADVICE,
+            Self::UntrustedAdvice => tag::UNTRUSTED_ADVICE,
+            Self::BytecodeChunk(_) => tag::BYTECODE_CHUNK,
+            Self::ProgramImageInit => tag::PROGRAM_IMAGE_INIT,
+            Self::UnsignedIncChunk(_) => tag::UNSIGNED_INC_CHUNK,
+            Self::UnsignedIncMsb => tag::UNSIGNED_INC_MSB,
+            Self::BytecodeRegisterSelector(..) => tag::BYTECODE_REGISTER_SELECTOR,
+            Self::BytecodeCircuitFlag(..) => tag::BYTECODE_CIRCUIT_FLAG,
+            Self::BytecodeInstructionFlag(..) => tag::BYTECODE_INSTRUCTION_FLAG,
+            Self::BytecodeLookupSelector(_) => tag::BYTECODE_LOOKUP_SELECTOR,
+            Self::BytecodeRafFlag(_) => tag::BYTECODE_RAF_FLAG,
+            Self::BytecodeUnexpandedPcBytes(_) => tag::BYTECODE_UNEXPANDED_PC_BYTES,
+            Self::BytecodeImmBytes(_) => tag::BYTECODE_IMM_BYTES,
+            Self::ProgramImageBytes => tag::PROGRAM_IMAGE_BYTES,
         }
     }
 
-    fn serialized_size(&self, _compress: Compress) -> usize {
+    /// The index fields written after the tag, in wire order. The returned
+    /// length is the payload byte count `serialized_size` reports.
+    fn wire_fields(&self) -> ([usize; 2], usize) {
         match self {
             Self::RdInc
             | Self::RamInc
@@ -326,20 +322,42 @@ impl CanonicalSerialize for CommittedPolynomial {
             | Self::UntrustedAdvice
             | Self::ProgramImageInit
             | Self::UnsignedIncMsb
-            | Self::ProgramImageBytes => 1,
-            Self::InstructionRa(_)
-            | Self::BytecodeRa(_)
-            | Self::RamRa(_)
-            | Self::BytecodeChunk(_)
-            | Self::UnsignedIncChunk(_)
-            | Self::BytecodeLookupSelector(_)
-            | Self::BytecodeRafFlag(_)
-            | Self::BytecodeUnexpandedPcBytes(_)
-            | Self::BytecodeImmBytes(_) => 2,
-            Self::BytecodeRegisterSelector(..)
-            | Self::BytecodeCircuitFlag(..)
-            | Self::BytecodeInstructionFlag(..) => 3,
+            | Self::ProgramImageBytes => ([0, 0], 0),
+            Self::InstructionRa(i)
+            | Self::BytecodeRa(i)
+            | Self::RamRa(i)
+            | Self::BytecodeChunk(i)
+            | Self::UnsignedIncChunk(i)
+            | Self::BytecodeLookupSelector(i)
+            | Self::BytecodeRafFlag(i)
+            | Self::BytecodeUnexpandedPcBytes(i)
+            | Self::BytecodeImmBytes(i) => ([*i, 0], 1),
+            Self::BytecodeRegisterSelector(first, second)
+            | Self::BytecodeCircuitFlag(first, second)
+            | Self::BytecodeInstructionFlag(first, second) => ([*first, *second], 2),
         }
+    }
+}
+
+impl CanonicalSerialize for CommittedPolynomial {
+    fn serialize_with_mode<W: Write>(
+        &self,
+        mut writer: W,
+        compress: Compress,
+    ) -> Result<(), SerializationError> {
+        self.wire_tag().serialize_with_mode(&mut writer, compress)?;
+        let (fields, count) = self.wire_fields();
+        for field in &fields[..count] {
+            u8::try_from(*field)
+                .map_err(|_| index_out_of_range())?
+                .serialize_with_mode(&mut writer, compress)?;
+        }
+        Ok(())
+    }
+
+    fn serialized_size(&self, compress: Compress) -> usize {
+        let (_, count) = self.wire_fields();
+        self.wire_tag().serialized_size(compress) + count
     }
 }
 
@@ -355,69 +373,44 @@ impl CanonicalDeserialize for CommittedPolynomial {
         compress: Compress,
         validate: Validate,
     ) -> Result<Self, SerializationError> {
-        Ok(
-            match u8::deserialize_with_mode(&mut reader, compress, validate)? {
-                0 => Self::RdInc,
-                1 => Self::RamInc,
-                2 => {
-                    let i = u8::deserialize_with_mode(reader, compress, validate)?;
-                    Self::InstructionRa(i as usize)
-                }
-                3 => {
-                    let i = u8::deserialize_with_mode(reader, compress, validate)?;
-                    Self::BytecodeRa(i as usize)
-                }
-                4 => {
-                    let i = u8::deserialize_with_mode(reader, compress, validate)?;
-                    Self::RamRa(i as usize)
-                }
-                5 => Self::TrustedAdvice,
-                6 => Self::UntrustedAdvice,
-                7 => {
-                    let i = u8::deserialize_with_mode(reader, compress, validate)?;
-                    Self::BytecodeChunk(i as usize)
-                }
-                8 => Self::ProgramImageInit,
-                9 => {
-                    let i = u8::deserialize_with_mode(reader, compress, validate)?;
-                    Self::UnsignedIncChunk(i as usize)
-                }
-                10 => Self::UnsignedIncMsb,
-                11 => {
-                    let chunk = u8::deserialize_with_mode(&mut reader, compress, validate)?;
-                    let lane = u8::deserialize_with_mode(reader, compress, validate)?;
-                    Self::BytecodeRegisterSelector(chunk as usize, lane as usize)
-                }
-                12 => {
-                    let chunk = u8::deserialize_with_mode(&mut reader, compress, validate)?;
-                    let flag = u8::deserialize_with_mode(reader, compress, validate)?;
-                    Self::BytecodeCircuitFlag(chunk as usize, flag as usize)
-                }
-                13 => {
-                    let chunk = u8::deserialize_with_mode(&mut reader, compress, validate)?;
-                    let flag = u8::deserialize_with_mode(reader, compress, validate)?;
-                    Self::BytecodeInstructionFlag(chunk as usize, flag as usize)
-                }
-                14 => {
-                    let chunk = u8::deserialize_with_mode(reader, compress, validate)?;
-                    Self::BytecodeLookupSelector(chunk as usize)
-                }
-                15 => {
-                    let chunk = u8::deserialize_with_mode(reader, compress, validate)?;
-                    Self::BytecodeRafFlag(chunk as usize)
-                }
-                16 => {
-                    let chunk = u8::deserialize_with_mode(reader, compress, validate)?;
-                    Self::BytecodeUnexpandedPcBytes(chunk as usize)
-                }
-                17 => {
-                    let chunk = u8::deserialize_with_mode(reader, compress, validate)?;
-                    Self::BytecodeImmBytes(chunk as usize)
-                }
-                18 => Self::ProgramImageBytes,
-                _ => return Err(SerializationError::InvalidData),
-            },
-        )
+        use committed_tag as tag;
+        let tag_byte = u8::deserialize_with_mode(&mut reader, compress, validate)?;
+        let field = |reader: &mut R| -> Result<usize, SerializationError> {
+            u8::deserialize_with_mode(reader, compress, validate).map(usize::from)
+        };
+        Ok(match tag_byte {
+            tag::RD_INC => Self::RdInc,
+            tag::RAM_INC => Self::RamInc,
+            tag::INSTRUCTION_RA => Self::InstructionRa(field(&mut reader)?),
+            tag::BYTECODE_RA => Self::BytecodeRa(field(&mut reader)?),
+            tag::RAM_RA => Self::RamRa(field(&mut reader)?),
+            tag::TRUSTED_ADVICE => Self::TrustedAdvice,
+            tag::UNTRUSTED_ADVICE => Self::UntrustedAdvice,
+            tag::BYTECODE_CHUNK => Self::BytecodeChunk(field(&mut reader)?),
+            tag::PROGRAM_IMAGE_INIT => Self::ProgramImageInit,
+            tag::UNSIGNED_INC_CHUNK => Self::UnsignedIncChunk(field(&mut reader)?),
+            tag::UNSIGNED_INC_MSB => Self::UnsignedIncMsb,
+            tag::BYTECODE_REGISTER_SELECTOR => {
+                let chunk = field(&mut reader)?;
+                Self::BytecodeRegisterSelector(chunk, field(&mut reader)?)
+            }
+            tag::BYTECODE_CIRCUIT_FLAG => {
+                let chunk = field(&mut reader)?;
+                Self::BytecodeCircuitFlag(chunk, field(&mut reader)?)
+            }
+            tag::BYTECODE_INSTRUCTION_FLAG => {
+                let chunk = field(&mut reader)?;
+                Self::BytecodeInstructionFlag(chunk, field(&mut reader)?)
+            }
+            tag::BYTECODE_LOOKUP_SELECTOR => Self::BytecodeLookupSelector(field(&mut reader)?),
+            tag::BYTECODE_RAF_FLAG => Self::BytecodeRafFlag(field(&mut reader)?),
+            tag::BYTECODE_UNEXPANDED_PC_BYTES => {
+                Self::BytecodeUnexpandedPcBytes(field(&mut reader)?)
+            }
+            tag::BYTECODE_IMM_BYTES => Self::BytecodeImmBytes(field(&mut reader)?),
+            tag::PROGRAM_IMAGE_BYTES => Self::ProgramImageBytes,
+            _ => return Err(SerializationError::InvalidData),
+        })
     }
 }
 
@@ -455,7 +448,9 @@ impl CanonicalSerialize for VirtualPolynomial {
             Self::InstructionRafFlag => 24u8.serialize_with_mode(&mut writer, compress),
             Self::InstructionRa(i) => {
                 25u8.serialize_with_mode(&mut writer, compress)?;
-                (u8::try_from(*i).unwrap()).serialize_with_mode(&mut writer, compress)
+                u8::try_from(*i)
+                    .map_err(|_| index_out_of_range())?
+                    .serialize_with_mode(&mut writer, compress)
             }
             Self::RegistersVal => 26u8.serialize_with_mode(&mut writer, compress),
             Self::RamAddress => 27u8.serialize_with_mode(&mut writer, compress),
@@ -469,21 +464,29 @@ impl CanonicalSerialize for VirtualPolynomial {
             Self::UnivariateSkip => 35u8.serialize_with_mode(&mut writer, compress),
             Self::OpFlags(flags) => {
                 36u8.serialize_with_mode(&mut writer, compress)?;
-                (u8::try_from(*flags as usize).unwrap()).serialize_with_mode(&mut writer, compress)
+                u8::try_from(*flags as usize)
+                    .map_err(|_| index_out_of_range())?
+                    .serialize_with_mode(&mut writer, compress)
             }
             Self::InstructionFlags(flags) => {
                 37u8.serialize_with_mode(&mut writer, compress)?;
-                (u8::try_from(*flags as usize).unwrap()).serialize_with_mode(&mut writer, compress)
+                u8::try_from(*flags as usize)
+                    .map_err(|_| index_out_of_range())?
+                    .serialize_with_mode(&mut writer, compress)
             }
             Self::LookupTableFlag(flag) => {
                 38u8.serialize_with_mode(&mut writer, compress)?;
-                (u8::try_from(*flag).unwrap()).serialize_with_mode(&mut writer, compress)
+                u8::try_from(*flag)
+                    .map_err(|_| index_out_of_range())?
+                    .serialize_with_mode(&mut writer, compress)
             }
             Self::BytecodeReadRafAddrClaim => 39u8.serialize_with_mode(&mut writer, compress),
             Self::BooleanityAddrClaim => 40u8.serialize_with_mode(&mut writer, compress),
             Self::BytecodeValClaim(i) => {
                 41u8.serialize_with_mode(&mut writer, compress)?;
-                (u8::try_from(*i).unwrap()).serialize_with_mode(&mut writer, compress)
+                u8::try_from(*i)
+                    .map_err(|_| index_out_of_range())?
+                    .serialize_with_mode(&mut writer, compress)
             }
             Self::BytecodeClaimReductionIntermediate => {
                 42u8.serialize_with_mode(&mut writer, compress)
@@ -651,9 +654,9 @@ mod tests {
         assert_eq!(&decoded, value);
     }
 
-    /// One instance of every variant. The exhaustive match below makes adding
-    /// a `CommittedPolynomial` variant without extending this list a compile
-    /// error.
+    /// One instance of every variant. The exhaustive match makes a new
+    /// `CommittedPolynomial` variant a compile error here, and the count
+    /// assertion makes it a test failure until the list below covers it too.
     fn all_committed() -> Vec<CommittedPolynomial> {
         fn coverage_witness(polynomial: CommittedPolynomial) {
             match polynomial {
@@ -700,10 +703,15 @@ mod tests {
             CommittedPolynomial::ProgramImageBytes,
         ];
         all.iter().copied().for_each(coverage_witness);
+        assert_eq!(
+            all.len(),
+            <CommittedPolynomial as strum::EnumCount>::COUNT,
+            "every CommittedPolynomial variant needs a round-trip representative"
+        );
         all
     }
 
-    /// One instance of every variant, same compile-time coverage pattern as
+    /// One instance of every variant, same coverage pattern as
     /// [`all_committed`].
     fn all_virtual() -> Vec<VirtualPolynomial> {
         fn coverage_witness(polynomial: VirtualPolynomial) {
@@ -803,6 +811,11 @@ mod tests {
             VirtualPolynomial::FusedInc,
         ];
         all.iter().copied().for_each(coverage_witness);
+        assert_eq!(
+            all.len(),
+            <VirtualPolynomial as strum::EnumCount>::COUNT,
+            "every VirtualPolynomial variant needs a round-trip representative"
+        );
         all
     }
 

@@ -448,7 +448,7 @@ pub fn verify<F, PCS, VC, T, ZkProof>(
 ) -> Result<Stage8Output<F, PCS::Output, VC::Output>, VerifierError>
 where
     F: Field,
-    PCS: CommitmentScheme<Field = F>,
+    PCS: CommitmentScheme<Field = F> + jolt_openings::MultiGroupVerify,
     PCS::Output: Clone + AppendToTranscript + super::OneHotTraceCommitmentMetadata,
     PCS::VerifierSetup: super::OneHotTraceSetupMetadata,
     VC: VectorCommitment<Field = F>,
@@ -465,8 +465,8 @@ where
         stage7.clear()?,
     )?;
 
-    // OneHotTrace then opens natively at its shared point; reconstruction leaves are
-    // discharged by separate auxiliary packed openings.
+    // The trace columns and the reconstruction leaves' objects then reduce
+    // together to one shared point, discharged natively.
     super::packed::verify(
         formula_dimensions,
         proof.one_hot_config,

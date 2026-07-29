@@ -6,6 +6,7 @@
 
 #[cfg(not(any(feature = "zk", feature = "akita")))]
 use crate::zkvm::clear_claims::build_clear_claims;
+use jolt_verifier::proof::JoltProof;
 pub use jolt_verifier::VerifierError;
 #[cfg(not(feature = "akita"))]
 use jolt_verifier::{
@@ -13,9 +14,10 @@ use jolt_verifier::{
     preprocessing::CommittedProgramPreprocessing,
     proof::{JoltCommitments, JoltProofClaims, JoltStageProofs},
 };
+#[cfg(not(feature = "akita"))]
 use jolt_verifier::{
     preprocessing::{JoltVerifierPreprocessing, ProgramPreprocessing},
-    proof::{JoltProof, TracePolynomialOrder},
+    proof::TracePolynomialOrder,
 };
 
 #[cfg(not(feature = "zk"))]
@@ -35,6 +37,7 @@ use jolt_field::{Field as VerifierFieldTrait, Fr as VerifierFr};
 use jolt_lookup_tables::XLEN as RISCV_XLEN;
 use jolt_openings::CommitmentScheme as VerifierCommitmentScheme;
 use jolt_poly::{CompressedPoly, UnivariatePoly};
+#[cfg(not(feature = "akita"))]
 use jolt_program::preprocess::JoltProgramPreprocessing;
 #[cfg(not(feature = "akita"))]
 use jolt_program::preprocess::ProgramMetadata;
@@ -44,31 +47,35 @@ use jolt_sumcheck::{
 };
 
 #[cfg(not(feature = "akita"))]
+use crate::zkvm::preprocessing::BlindfoldSetup;
+#[cfg(not(feature = "akita"))]
 use crate::zkvm::proof_parts::JoltProofParts as ProverProofParts;
 use crate::{
     curve::{Bn254Curve, JoltCurve},
     field::JoltField,
     poly::commitment::{
-        commitment_scheme::{CommitmentScheme, ZkEvalCommitment},
-        dory::{
-            ArkGT as ProverDoryCommitment, DoryCommitmentScheme, DoryLayout as ProverDoryLayout,
-        },
+        commitment_scheme::CommitmentScheme,
+        dory::{ArkGT as ProverDoryCommitment, DoryCommitmentScheme},
     },
     subprotocols::{
         sumcheck::SumcheckInstanceProof, univariate_skip::UniSkipFirstRoundProofVariant,
     },
     transcripts::Transcript,
-    zkvm::{
-        config::{OneHotConfig as ProverOneHotConfig, ReadWriteConfig as ProverReadWriteConfig},
-        preprocessing::{BlindfoldSetup, JoltSharedPreprocessing},
-        program::ProgramPreprocessing as ProverProgramPreprocessing,
-        prover::JoltProverPreprocessing,
-    },
+    zkvm::config::{OneHotConfig as ProverOneHotConfig, ReadWriteConfig as ProverReadWriteConfig},
 };
 #[cfg(feature = "zk")]
 use crate::{
     poly::commitment::hyrax::HyraxOpeningProof, poly::unipoly::CompressedUniPoly,
     subprotocols::blindfold::BlindFoldProof as ProverBlindFoldProof,
+};
+#[cfg(not(feature = "akita"))]
+use crate::{
+    poly::commitment::{commitment_scheme::ZkEvalCommitment, dory::DoryLayout as ProverDoryLayout},
+    zkvm::{
+        preprocessing::JoltSharedPreprocessing,
+        program::ProgramPreprocessing as ProverProgramPreprocessing,
+        prover::JoltProverPreprocessing,
+    },
 };
 #[cfg(not(feature = "zk"))]
 use crate::{
@@ -173,6 +180,11 @@ impl ProofCurve<crate::ark_bn254::Fr> for Bn254Curve {
     }
 }
 
+/// Base (Dory) verifier preprocessing. The packed path builds its own through
+/// `packed::akita_verifier_preprocessing`, which additionally takes the
+/// `ProgramOneHot` commitment that committed-program mode needs and that a
+/// `JoltSharedPreprocessing` does not carry.
+#[cfg(not(feature = "akita"))]
 fn verifier_preprocessing_from_parts<F, C, PCS>(
     shared: &JoltSharedPreprocessing<PCS>,
     generators: PCS::VerifierSetup,
@@ -194,6 +206,7 @@ where
     )
 }
 
+#[cfg(not(feature = "akita"))]
 fn verifier_program_from_shared<F, PCS>(
     shared: &JoltSharedPreprocessing<PCS>,
 ) -> ProgramPreprocessing<<PCS as ProofCommitmentScheme<F>>::VerifierPcs>
@@ -237,15 +250,12 @@ where
                 ),
             })
         }
-        // The packed committed-program preprocessing (one ProgramOneHot commitment
-        // plus its chunk count) is assembled by the akita prove path.
-        #[cfg(feature = "akita")]
-        ProverProgramPreprocessing::Committed(_) => {
-            unimplemented!("packed committed-program preprocessing lands with the akita prove path")
-        }
     }
 }
 
+/// See `verifier_preprocessing_from_parts`. Not available on the packed axis;
+/// use `packed::akita_verifier_preprocessing` instead.
+#[cfg(not(feature = "akita"))]
 pub fn verifier_preprocessing_from_shared<F, C, PCS>(
     shared: JoltSharedPreprocessing<PCS>,
     generators: PCS::VerifierSetup,
@@ -262,6 +272,9 @@ where
     verifier_preprocessing_from_parts(&shared, generators, blindfold_setup.as_ref())
 }
 
+/// See `verifier_preprocessing_from_parts`. Not available on the packed axis;
+/// use `packed::akita_verifier_preprocessing` instead.
+#[cfg(not(feature = "akita"))]
 pub fn verifier_preprocessing_from_prover<F, C, PCS>(
     preprocessing: &JoltProverPreprocessing<F, C, PCS>,
 ) -> JoltVerifierPreprocessing<
@@ -282,7 +295,7 @@ where
     verifier_preprocessing_from_parts(&preprocessing.shared, generators, blindfold_setup.as_ref())
 }
 
-#[cfg(not(feature = "zk"))]
+#[cfg(all(not(feature = "zk"), not(feature = "akita")))]
 fn convert_vc_setup<F, C>(
     _blindfold_setup: Option<&BlindfoldSetup<C>>,
 ) -> Option<<C::VerifierVectorCommitment as VerifierVectorCommitment>::Setup>
@@ -328,6 +341,7 @@ pub(crate) fn convert_one_hot_config(config: ProverOneHotConfig) -> JoltOneHotCo
     }
 }
 
+#[cfg(not(feature = "akita"))]
 fn convert_trace_polynomial_order(layout: ProverDoryLayout) -> TracePolynomialOrder {
     match layout {
         ProverDoryLayout::CycleMajor => TracePolynomialOrder::CycleMajor,
@@ -362,6 +376,7 @@ where
     commitments_from_proof_payload_order(commitments, instruction_ra_count, ram_ra_count)
 }
 
+#[cfg(not(feature = "akita"))]
 fn ceil_log_2(value: usize) -> usize {
     if value <= 1 {
         0

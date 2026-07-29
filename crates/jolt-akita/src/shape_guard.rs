@@ -15,29 +15,29 @@ use akita_config::effective_batched_schedule;
 use akita_types::{
     sumcheck_rounds, CommittedGroupParams, DigitRangePlan, ExtensionOpeningReductionShape,
     FoldSchedule, LevelProofShape, NextWitnessBindingShape, OpeningClaimsLayout,
-    RecursiveFoldParams, TerminalLevelProofShape,
+    PolynomialGroupLayout, RecursiveFoldParams, TerminalLevelProofShape,
 };
 
 use crate::adapters::{
     deserialize_akita, invalid_batch, AkitaBackendCommitment, AkitaBackendFlavor,
     AkitaBackendProof, AkitaBackendProofShape, AkitaBatchProof, AkitaCommitment, AkitaConfig,
     AkitaField, AkitaOneHotK16Config, AkitaOneHotK256Config, AKITA_ONE_HOT_K16, AKITA_ONE_HOT_K256,
+    MAX_PROOF_SHAPE_BYTES,
 };
 use jolt_openings::OpeningsError;
-
-/// Serialized proof-shape blob cap. Honest shapes are a few hundred bytes (a
-/// handful of fold levels, each a few dozen words); this leaves two orders of
-/// magnitude of margin while keeping worst-case shape-blob deserialization
-/// allocations trivial.
-const MAX_PROOF_SHAPE_BYTES: usize = 16 * 1024;
 
 /// Fold sumcheck round counts are `log2(ring_dim) + log2(witness columns)`,
 /// far below 64 for any representable witness.
 const MAX_SUMCHECK_ROUNDS: usize = 64;
 
-/// Per-round compact coefficient counts are `degree`-sized; every sumcheck in
+/// Per-round compact coefficient counts are `degree`-sized. Every sumcheck in
 /// the batched protocol has degree <= 4 (stage-1 tree arities, degree-3
-/// stage-2, degree-2 reductions).
+/// stage-2, degree-2 reductions), but the stage-1 and stage-2 shapes are
+/// checked *exactly* against the schedule above; this cap only guards the
+/// extension-opening reduction, whose degree the guard cannot re-derive. It is
+/// therefore set at 2x the honest bound so an upstream reduction-degree change
+/// does not silently reject honest proofs. Even at the cap the reserve is
+/// `MAX_SUMCHECK_ROUNDS * MAX_ROUND_DEGREE` field elements, which is trivial.
 const MAX_ROUND_DEGREE: usize = 8;
 
 /// Extension-opening partials are one short vector of basis-conversion
@@ -82,6 +82,101 @@ pub(crate) fn deserialize_checked_backend_payload(
     let backend_proof =
         deserialize_akita::<AkitaBackendProof>(&proof.serialized_akita_proof, &proof_shape)?;
     Ok((backend_commitment, backend_proof))
+}
+
+/// Multi-group counterpart of [`deserialize_checked_backend_payload`] for the
+/// fused native root fold. `group_num_vars` / `group_poly_counts` are in the
+/// canonical `[precommitteds…, final]` order (final group last, widest). All
+/// groups are one-hot K=256.
+///
+/// Bounds every prover-controlled length before allocation: each group's
+/// commitment byte buffer must match its declared coefficient count exactly (so
+/// the deserializer reserves only the bytes supplied), and the proof shape blob
+/// is capped and validated against the resolved multi-group schedule before the
+/// proof body is read. The opening's soundness (right commitments/evaluations)
+/// is enforced downstream by `batched_verify`.
+pub(crate) fn deserialize_checked_multi_group_payload(
+    group_commitments: &[&AkitaCommitment],
+    group_num_vars: &[usize],
+    group_poly_counts: &[usize],
+    proof: &AkitaBatchProof,
+    backend_point: &[AkitaField],
+) -> Result<(Vec<AkitaBackendCommitment>, AkitaBackendProof), OpeningsError> {
+    if group_commitments.len() < 2
+        || group_num_vars.len() != group_commitments.len()
+        || group_poly_counts.len() != group_commitments.len()
+    {
+        return Err(invalid_batch(
+            "Akita multi-group payload requires aligned metadata for at least two groups",
+        ));
+    }
+    let layout = multi_group_layout(group_num_vars, group_poly_counts)?;
+    let schedule = effective_batched_schedule::<AkitaOneHotK256Config>(&layout, backend_point)
+        .map_err(|err| {
+            invalid_batch(format!(
+                "Akita multi-group schedule resolution failed: {err}"
+            ))
+        })?;
+
+    let elem_bytes = field_elem_bytes();
+    let mut backend_commitments = Vec::with_capacity(group_commitments.len());
+    for commitment in group_commitments {
+        if commitment.backend_flavor != AkitaBackendFlavor::OneHot
+            || commitment.one_hot_k != AKITA_ONE_HOT_K256
+        {
+            return Err(invalid_batch(
+                "Akita multi-group opening requires K=256 one-hot commitments",
+            ));
+        }
+        let expected_bytes = commitment
+            .backend_coeff_len
+            .checked_mul(elem_bytes)
+            .ok_or_else(|| invalid_batch("Akita commitment byte size overflows"))?;
+        if commitment.serialized_backend_bytes.len() != expected_bytes {
+            return Err(invalid_batch(format!(
+                "Akita commitment has {} serialized bytes but {} coefficients require {expected_bytes}",
+                commitment.serialized_backend_bytes.len(),
+                commitment.backend_coeff_len
+            )));
+        }
+        backend_commitments.push(deserialize_akita::<AkitaBackendCommitment>(
+            &commitment.serialized_backend_bytes,
+            &commitment.backend_coeff_len,
+        )?);
+    }
+
+    if proof.serialized_akita_proof_shape.len() > MAX_PROOF_SHAPE_BYTES {
+        return Err(invalid_batch(format!(
+            "Akita proof shape blob is {} bytes but the protocol cap is {MAX_PROOF_SHAPE_BYTES}",
+            proof.serialized_akita_proof_shape.len()
+        )));
+    }
+    let proof_shape =
+        deserialize_akita::<AkitaBackendProofShape>(&proof.serialized_akita_proof_shape, &())?;
+    validate_proof_shape(&proof_shape, &schedule)?;
+    let backend_proof =
+        deserialize_akita::<AkitaBackendProof>(&proof.serialized_akita_proof, &proof_shape)?;
+    Ok((backend_commitments, backend_proof))
+}
+
+/// Builds the multi-group opening layout in `[precommitteds…, final]` order.
+fn multi_group_layout(
+    group_num_vars: &[usize],
+    group_poly_counts: &[usize],
+) -> Result<OpeningClaimsLayout, OpeningsError> {
+    let ((final_num_vars, precommitted_num_vars), (final_polys, precommitted_polys)) =
+        group_num_vars
+            .split_last()
+            .zip(group_poly_counts.split_last())
+            .ok_or_else(|| invalid_batch("Akita multi-group layout needs at least one group"))?;
+    let precommitteds: Vec<PolynomialGroupLayout> = precommitted_num_vars
+        .iter()
+        .zip(precommitted_polys)
+        .map(|(num_vars, polys)| PolynomialGroupLayout::new(*num_vars, *polys))
+        .collect();
+    let final_group = PolynomialGroupLayout::new(*final_num_vars, *final_polys);
+    OpeningClaimsLayout::from_root_groups(&precommitteds, final_group)
+        .map_err(|err| invalid_batch(format!("Akita multi-group layout is invalid: {err}")))
 }
 
 /// Resolves the same schedule the backend verifier will replay for this
@@ -349,6 +444,18 @@ mod tests {
         }
     }
 
+    fn one_hot_commitment(num_vars: usize) -> AkitaCommitment {
+        AkitaCommitment {
+            backend_flavor: AkitaBackendFlavor::OneHot,
+            layout_digest: [7; 32],
+            num_vars,
+            poly_count: 1,
+            one_hot_k: AKITA_ONE_HOT_K256,
+            backend_coeff_len: 0,
+            serialized_backend_bytes: Vec::new(),
+        }
+    }
+
     fn point(num_vars: usize) -> Vec<AkitaField> {
         (0..num_vars as u64).map(AkitaField::from_u64).collect()
     }
@@ -407,7 +514,7 @@ mod tests {
 
     #[test]
     fn forged_commitment_coeff_len_rejects_before_deserialization() {
-        let num_vars = 13;
+        let num_vars = 16;
         let point = point(num_vars);
         let mut commitment = dense_commitment(num_vars, 2);
         // A honest-shape claim would be a few thousand coefficients; forge the
@@ -428,7 +535,7 @@ mod tests {
 
     #[test]
     fn commitment_byte_length_must_match_coeff_len() {
-        let num_vars = 13;
+        let num_vars = 16;
         let point = point(num_vars);
         let layout = OpeningClaimsLayout::new(num_vars, 2).expect("layout");
         let mut commitment = dense_commitment(num_vars, 2);
@@ -449,8 +556,33 @@ mod tests {
     }
 
     #[test]
+    fn multi_group_commitment_byte_size_overflow_rejects() {
+        let mut precommitted = one_hot_commitment(16);
+        precommitted.backend_coeff_len = usize::MAX;
+        let final_group = one_hot_commitment(19);
+        let commitments = [&precommitted, &final_group];
+        let proof = AkitaBatchProof {
+            statement_bridge: Vec::new(),
+            serialized_akita_proof_shape: Vec::new(),
+            serialized_akita_proof: Vec::new(),
+        };
+        let err = deserialize_checked_multi_group_payload(
+            &commitments,
+            &[16, 19],
+            &[1, 1],
+            &proof,
+            &point(19),
+        )
+        .expect_err("overflowing commitment byte size must reject");
+        assert!(
+            err.to_string().contains("overflows"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn oversized_proof_shape_blob_rejects() {
-        let num_vars = 13;
+        let num_vars = 16;
         let point = point(num_vars);
         let layout = OpeningClaimsLayout::new(num_vars, 2).expect("layout");
         let mut commitment = dense_commitment(num_vars, 2);
@@ -473,7 +605,7 @@ mod tests {
 
     #[test]
     fn scheduled_shape_passes_validation() {
-        let num_vars = 13;
+        let num_vars = 16;
         let point = point(num_vars);
         let layout = OpeningClaimsLayout::new(num_vars, 2).expect("layout");
         let commitment = dense_commitment(num_vars, 2);
@@ -484,7 +616,7 @@ mod tests {
 
     #[test]
     fn forged_shape_counts_reject_against_schedule() {
-        let num_vars = 13;
+        let num_vars = 16;
         let point = point(num_vars);
         let layout = OpeningClaimsLayout::new(num_vars, 2).expect("layout");
         let mut commitment = dense_commitment(num_vars, 2);
@@ -513,7 +645,7 @@ mod tests {
 
     #[test]
     fn forged_terminal_payload_budget_rejects_against_schedule() {
-        let num_vars = 13;
+        let num_vars = 16;
         let point = point(num_vars);
         let layout = OpeningClaimsLayout::new(num_vars, 2).expect("layout");
         let commitment = dense_commitment(num_vars, 2);

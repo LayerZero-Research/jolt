@@ -9,36 +9,46 @@ use jolt_akita::schedules::emit::{
     family_specs, keys, K16_NUM_POLYS, K16_NUM_VARS, K256_NUM_POLYS, K256_NUM_VARS,
 };
 use jolt_akita::schedules::{jolt_fp128_d64_onehot_k16_table, jolt_fp128_d64_onehot_k256_table};
+use jolt_akita::PolynomialGroupLayout;
 
-/// Every key of a family grid resolves from its checked-in table (binary
-/// lookup over sorted entries) — no planner-DP fallback for reachable
-/// `OneHotTrace` shapes. Identity validity is exercised by every akita e2e (an
-/// identity mismatch hard-errors instead of falling back).
+/// Pins the set of reachable keys that miss their checked-in table and so fall
+/// back to planner DP at setup. Today that set is exactly the `(16, 81)` K=16
+/// shape, which the planner cannot schedule. Every other reachable key must be
+/// catalogued. Identity validity is exercised by every Akita e2e.
 #[test]
 fn catalogs_cover_every_reachable_one_hot_trace_shape() {
     for (table, num_polys, num_vars) in [
         (
-            jolt_fp128_d64_onehot_k16_table().expect("K16 catalog is checked in"),
+            jolt_fp128_d64_onehot_k16_table(),
             K16_NUM_POLYS,
             K16_NUM_VARS,
         ),
         (
-            jolt_fp128_d64_onehot_k256_table().expect("K256 catalog is checked in"),
+            jolt_fp128_d64_onehot_k256_table(),
             K256_NUM_POLYS,
             K256_NUM_VARS,
         ),
     ] {
         let grid = keys(num_polys, num_vars);
         assert!(!grid.is_empty());
-        for key in grid {
-            assert!(
-                table.entries.iter().any(|entry| {
-                    entry.root.final_group.layout == key
+        let missing: Vec<_> = grid
+            .into_iter()
+            .filter(|key| {
+                !table.entries.iter().any(|entry| {
+                    entry.root.final_group.layout == *key
                         && entry.root.precommitted_groups.is_empty()
-                }),
-                "missing catalog entry for {key:?}"
-            );
-        }
+                })
+            })
+            .collect();
+        let expected_missing = if num_vars == K16_NUM_VARS {
+            vec![PolynomialGroupLayout::new(16, 81)]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(
+            missing, expected_missing,
+            "reachable catalog misses changed; generate a schedule or review the explicit DP fallback set"
+        );
         assert_eq!(
             table.identity.key_count,
             table.entries.len(),

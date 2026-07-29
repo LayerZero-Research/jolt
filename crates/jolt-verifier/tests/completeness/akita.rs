@@ -6,7 +6,7 @@
 )]
 
 use crate::support::akita_fixtures::{
-    akita_advice_case, akita_committed_muldiv_case, akita_muldiv_case,
+    akita_advice_case, akita_committed_muldiv_case, akita_fused_untrusted_case, akita_muldiv_case,
 };
 
 #[test]
@@ -24,4 +24,13 @@ fn akita_committed_muldiv_fixture_verifies() {
     akita_committed_muldiv_case()
         .verify()
         .expect("committed case verifies");
+}
+
+/// The fused topology's honest proof. Without this, every fused tamper test
+/// would still pass if the fixture were rejected for an unrelated reason.
+#[test]
+fn akita_fused_untrusted_fixture_verifies() {
+    akita_fused_untrusted_case()
+        .verify()
+        .expect("fused case verifies");
 }

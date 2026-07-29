@@ -12,9 +12,16 @@
 //!   — layout digest, declared dimensions, backend flavor, backend bytes — is
 //!   perturbed; a deserialization failure or a verifier rejection both count.
 //! - Proof-shape tampers ([`akita_proof_shape_tampers_reject`],
-//!   [`akita_advice_commitment_presence_rejects`]): dropped reconstruction /
-//!   auxiliary proofs, a swapped phase proof, an auxiliary evaluation offset,
-//!   and an absent trusted-advice commitment.
+//!   [`akita_advice_commitment_presence_rejects`]): a dropped reconstruction
+//!   proof, a swapped phase proof, a dropped per-group opening, a trace
+//!   evaluation offset, and an absent trusted-advice commitment.
+//!
+//! Both stage-8 topologies are covered: the per-group opens by the muldiv,
+//! advice, and committed-program cases, the fused multi-group root fold by the
+//! fused untrusted-advice case. The metadata gate each topology applies to its
+//! auxiliary objects is unit-tested at its own boundary in
+//! `stages::stage8::packed` — its inputs are transcript-bound here, so a
+//! fixture-level mutation rejects upstream of the gate.
 //!
 //! Together these are the active coverage behind the akita
 //! `TamperCoverage::Active` manifest entries.
@@ -83,12 +90,13 @@ use jolt_verifier::stages::{
 };
 
 use crate::support::akita_fixtures::{
-    akita_advice_case, akita_committed_muldiv_case, akita_muldiv_case, AkitaFixtureCase,
+    akita_advice_case, akita_committed_muldiv_case, akita_fused_untrusted_case, akita_muldiv_case,
+    AkitaFixtureCase,
 };
 use crate::support::assert_rejects;
 
-/// The single packed `OneHotTrace` commitment object type (also the advice object
-/// type): the concrete `Commitment::Output` of the akita scheme.
+/// The akita scheme's `Commitment::Output`, shared by the `OneHotTrace` and
+/// advice objects.
 type AkitaCommitment = <AkitaScheme as jolt_crypto::Commitment>::Output;
 
 fn one() -> AkitaField {
@@ -709,6 +717,7 @@ fn every_commitment_wire_rejects_perturbation() {
         akita_muldiv_case(),
         akita_advice_case(),
         akita_committed_muldiv_case(),
+        akita_fused_untrusted_case(),
     ] {
         sweep_commitment(case, &case.proof.commitments, 6, |commitment| {
             let mut proof = case.proof.clone();
@@ -725,10 +734,19 @@ fn every_commitment_wire_rejects_perturbation() {
             proof
         });
     }
+    let fused = akita_fused_untrusted_case();
+    if let Some(untrusted) = &fused.proof.untrusted_advice_commitment {
+        sweep_commitment(fused, untrusted, 6, |commitment| {
+            let mut proof = fused.proof.clone();
+            proof.untrusted_advice_commitment = Some(commitment);
+            proof
+        });
+    }
 }
 
-/// Proof-shape tampers: a swapped phase proof, dropped reconstruction /
-/// auxiliary proofs, and an auxiliary evaluation offset — each fail-closed.
+/// Proof-shape tampers: a swapped phase proof, a dropped reconstruction proof,
+/// a dropped per-object opening, and an object-evaluation offset — each
+/// fail-closed.
 #[test]
 fn akita_proof_shape_tampers_reject() {
     let muldiv = akita_muldiv_case();
@@ -741,19 +759,21 @@ fn akita_proof_shape_tampers_reject() {
     proof.stages.reconstruction_sumcheck_proof = None;
     assert_rejects(advice.verify_proof(&proof));
 
+    // Dropping a per-object opening from the joint packed proof breaks the
+    // openings/groups count check.
     let mut proof = advice.proof.clone();
-    proof.joint_opening_proof.auxiliary = None;
+    let _ = proof.joint_opening_proof.openings.pop();
     assert_rejects(advice.verify_proof(&proof));
 
     let committed = akita_committed_muldiv_case();
     let mut proof = committed.proof.clone();
-    proof.joint_opening_proof.auxiliary = None;
+    let _ = proof.joint_opening_proof.openings.pop();
     assert_rejects(committed.verify_proof(&proof));
 
+    // The trace reduces together with advice/program, so a tampered OneHotTrace
+    // evaluation (a leading object) breaks the joint opening.
     let mut proof = committed.proof.clone();
-    if let Some(auxiliary) = proof.joint_opening_proof.auxiliary.as_mut() {
-        auxiliary.evaluations[0] += one();
-    }
+    proof.joint_opening_proof.evaluations[0] += one();
     assert_rejects(committed.verify_proof(&proof));
 }
 

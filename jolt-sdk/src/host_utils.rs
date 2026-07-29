@@ -76,6 +76,12 @@ pub type JoltProof = RV64IMACProof;
 pub type VerifierTrustedAdviceCommitment = jolt_dory::DoryCommitment;
 
 #[cfg(any(feature = "host", feature = "guest-verifier"))]
+/// Maximum encoded size accepted by [`deserialize_verifier_object`]. Verifier
+/// entry points should use this bounded ingress API rather than invoking a serde
+/// codec directly on untrusted proof bytes.
+pub const MAX_SERIALIZED_VERIFIER_OBJECT_BYTES: usize = 256 * 1024 * 1024;
+
+#[cfg(any(feature = "host", feature = "guest-verifier"))]
 pub fn serialize_verifier_object<T: serde::Serialize>(
     item: &T,
 ) -> Result<Vec<u8>, bincode::error::EncodeError> {
@@ -86,6 +92,12 @@ pub fn serialize_verifier_object<T: serde::Serialize>(
 pub fn deserialize_verifier_object<T: serde::de::DeserializeOwned>(
     bytes: &[u8],
 ) -> Result<T, bincode::error::DecodeError> {
+    if bytes.len() > MAX_SERIALIZED_VERIFIER_OBJECT_BYTES {
+        return Err(bincode::error::DecodeError::OtherString(format!(
+            "serialized verifier object is {} bytes but the ingress cap is {MAX_SERIALIZED_VERIFIER_OBJECT_BYTES}",
+            bytes.len()
+        )));
+    }
     let (value, consumed) = bincode::serde::decode_from_slice(bytes, bincode::config::standard())?;
     if consumed == bytes.len() {
         Ok(value)

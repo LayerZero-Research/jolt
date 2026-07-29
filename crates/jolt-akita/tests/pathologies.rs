@@ -2,10 +2,7 @@
     clippy::expect_used,
     reason = "tests assert successful proof and serialization setup"
 )]
-#![expect(
-    clippy::unwrap_used,
-    reason = "benchmarks and tests unwrap successful PCS operations"
-)]
+#![expect(clippy::unwrap_used, reason = "tests unwrap successful PCS operations")]
 
 mod support;
 
@@ -220,23 +217,15 @@ fn akita_forged_shape_metadata_rejects_before_shape_backed_allocation() {
 
     // An oversized proof-shape blob must be rejected by the protocol cap
     // before shape deserialization ever runs.
-    let mut oversized = proof.clone();
-    let mut value = serde_json::to_value(&oversized).expect("proof should serialize");
+    let mut value = serde_json::to_value(&proof).expect("proof should serialize");
     *value
         .get_mut("serialized_akita_proof_shape")
         .expect("proof should expose the shape blob") =
         serde_json::to_value(vec![0u8; 64 * 1024]).expect("blob should serialize");
-    oversized = serde_json::from_value(value).expect("oversized proof should deserialize");
-    let mut transcript = Blake2bTranscript::new(b"akita-forged-metadata");
-    let err = <AkitaNativeBatching as BatchOpeningScheme>::verify_batch(
-        &verifier_setup,
-        &statement,
-        &oversized,
-        &mut transcript,
-    )
-    .expect_err("oversized shape blob should reject");
+    let err = serde_json::from_value::<jolt_akita::AkitaBatchProof>(value)
+        .expect_err("oversized shape blob should reject during outer deserialization");
     assert!(
-        matches!(&err, OpeningsError::InvalidBatch(message) if message.contains("protocol cap")),
+        err.to_string().contains("protocol cap"),
         "expected the shape-blob cap rejection, got: {err}"
     );
 }
@@ -268,8 +257,8 @@ fn akita_native_batching_rejects_corrupted_proof_payloads() {
 #[test]
 fn akita_zk_interfaces_are_explicitly_unsupported() {
     let (prover_setup, verifier_setup) = native_setup();
-    let poly = polynomial(13, 1);
-    let point: Vec<_> = (0..13).map(|i| f(2 + 3 * i)).collect();
+    let poly = polynomial(16, 1);
+    let point: Vec<_> = (0..16).map(|i| f(2 + 3 * i)).collect();
     let eval = poly.evaluate(&point);
     let (commitment, hint) = AkitaScheme::commit_zk(&poly, &prover_setup).unwrap();
 
@@ -323,9 +312,9 @@ fn native_proof_fixture(
     label: &'static [u8],
 ) -> (VerifierSetup, AkitaNativeBatchStatement, AkitaBatchProof) {
     let (prover_setup, verifier_setup) = native_setup();
-    let poly_a = polynomial(13, 1);
-    let poly_b = polynomial(13, 20);
-    let point: Vec<_> = (0..13).map(|i| f(2 + 3 * i)).collect();
+    let poly_a = polynomial(16, 1);
+    let poly_b = polynomial(16, 20);
+    let point: Vec<_> = (0..16).map(|i| f(2 + 3 * i)).collect();
     let eval_a = poly_a.evaluate(&point);
     let eval_b = poly_b.evaluate(&point);
     let (commitment, hint) =
