@@ -68,11 +68,13 @@ use crate::zkvm::claim_reductions::{
     TrustedAdviceReconstructionSumcheckParams, TrustedAdviceReconstructionSumcheckProver,
     UntrustedAdviceReconstructionSumcheckParams, UntrustedAdviceReconstructionSumcheckProver,
 };
+use crate::zkvm::config::OneHotParams;
 use crate::zkvm::fiat_shamir_preamble;
 use crate::zkvm::instruction_lookups::ra_virtual::{
     InstructionRaSumcheckParams, InstructionRaSumcheckProver as LookupsRaSumcheckProver,
 };
 use crate::zkvm::packed_witness::{FusedIncValue, SparseUnitPolynomial, UNSIGNED_INC_BITS};
+use crate::zkvm::program::FullProgramPreprocessing;
 use crate::zkvm::prover::JoltCpuProver;
 use crate::zkvm::ram::hamming_booleanity::{
     HammingBooleanitySumcheckParams, HammingBooleanitySumcheckProver,
@@ -80,6 +82,8 @@ use crate::zkvm::ram::hamming_booleanity::{
 use crate::zkvm::ram::populate_memory_states;
 use crate::zkvm::ram::ra_virtual::{RamRaVirtualParams, RamRaVirtualSumcheckProver};
 use crate::zkvm::witness::CommittedPolynomial;
+use common::jolt_device::MemoryLayout;
+use tracer::instruction::Cycle;
 
 pub type AkitaField = jolt_akita::AkitaField;
 pub type AkitaScheme = jolt_akita::AkitaScheme;
@@ -619,142 +623,247 @@ pub fn shared_preprocessing_with_program_one_hot(
     Ok((shared, prover_data, program_one_hot))
 }
 
+/// The RA polynomial layout implied by the one-hot parameters.
+pub fn ra_layout(params: &OneHotParams) -> JoltRaPolynomialLayout {
+    JoltRaPolynomialLayout::new(params.instruction_d, params.bytecode_d, params.ram_d)
+        .expect("Jolt always commits at least one RA polynomial")
+}
+
+/// The shape of the native `OneHotTrace` commitment group.
+pub fn one_hot_trace_shape(trace_len: usize, params: &OneHotParams) -> OneHotTraceShape {
+    OneHotTraceShape {
+        ra_layout: ra_layout(params),
+        log_t: trace_len.log_2(),
+        log_k_chunk: params.log_k_chunk,
+    }
+}
+
+/// Akita setup parameters sized to the native `OneHotTrace` group of
+/// uniform one-hot columns.
+pub fn one_hot_trace_setup_params(
+    trace_len: usize,
+    params: &OneHotParams,
+) -> jolt_akita::AkitaSetupParams {
+    let shape = one_hot_trace_shape(trace_len, params);
+    let setup_shape = ONE_HOT_TRACE_LAYOUT
+        .setup_shape(&shape)
+        .expect("canonical OneHotTrace layout must exist");
+    let layout_digest = ONE_HOT_TRACE_LAYOUT
+        .layout_digest(&shape)
+        .expect("canonical OneHotTrace layout digest must exist");
+    jolt_akita::AkitaSetupParams::one_hot_only(
+        setup_shape.num_vars,
+        setup_shape.num_polys,
+        layout_digest,
+        1 << params.log_k_chunk,
+    )
+}
+
+/// The per-cycle fused increments, shared by the inc-column witness
+/// build and OneHotTrace assembly.
+pub fn fused_inc_values(trace: &[Cycle]) -> Vec<FusedIncValue> {
+    use rayon::prelude::*;
+
+    trace.par_iter().map(FusedIncValue::from_cycle).collect()
+}
+
+/// The unsigned-inc one-hot lane columns plus the signed fused deltas.
+pub fn fused_inc_columns(fused_cycles: &[FusedIncValue], params: &OneHotParams) -> FusedIncColumns {
+    use rayon::prelude::*;
+    use std::sync::Arc;
+
+    let chunk_count = UNSIGNED_INC_BITS / params.log_k_chunk;
+    let width = params.log_k_chunk;
+    let one_hot: Vec<Arc<Vec<Option<u8>>>> = (0..chunk_count)
+        .map(|index| {
+            Arc::new(
+                fused_cycles
+                    .par_iter()
+                    .map(|cycle| Some(cycle.chunk_hot_lane_bits(width, index) as u8))
+                    .collect(),
+            )
+        })
+        .chain(core::iter::once(Arc::new(
+            fused_cycles
+                .par_iter()
+                .map(|cycle| Some(u8::from(cycle.msb())))
+                .collect(),
+        )))
+        .collect();
+    let fused: Vec<i128> = fused_cycles.par_iter().map(|cycle| cycle.delta).collect();
+    FusedIncColumns { one_hot, fused }
+}
+
+/// Builds the native `OneHotTrace` columns from compact per-cycle source
+/// data. Each returned index buffer is handed to Akita by ownership, so
+/// there is no witness clone at the PCS boundary.
+#[tracing::instrument(skip_all, name = "assemble_one_hot_trace")]
+pub fn assemble_one_hot_trace(
+    plan: &OneHotTraceLayoutPlan,
+    fused_inc: &[FusedIncValue],
+    trace: &[Cycle],
+    params: &OneHotParams,
+    program: &FullProgramPreprocessing,
+    memory_layout: &MemoryLayout,
+) -> Vec<OneHotPolynomial> {
+    use crate::zkvm::instruction::LookupQuery;
+    use crate::zkvm::ram::remap_address;
+    use common::constants::XLEN;
+    use rayon::prelude::*;
+
+    let cycle_data = trace
+        .par_iter()
+        .map(|cycle| {
+            (
+                LookupQuery::<XLEN>::to_lookup_index(cycle),
+                program.get_pc(cycle),
+                remap_address(cycle.ram_access().address() as u64, memory_layout),
+            )
+        })
+        .collect::<Vec<_>>();
+    let k = 1usize << params.log_k_chunk;
+    plan.columns
+        .par_iter()
+        .map(|polynomial| {
+            let indices = cycle_data
+                .iter()
+                .zip(fused_inc)
+                .map(|((lookup_index, pc, ram_address), inc)| {
+                    let hot = match polynomial {
+                        JoltCommittedPolynomial::InstructionRa(index) => {
+                            Some(params.lookup_index_chunk(*lookup_index, *index) as usize)
+                        }
+                        JoltCommittedPolynomial::BytecodeRa(index) => {
+                            Some(params.bytecode_pc_chunk(*pc, *index) as usize)
+                        }
+                        JoltCommittedPolynomial::RamRa(index) => (*ram_address)
+                            .map(|address| params.ram_address_chunk(address, *index) as usize),
+                        JoltCommittedPolynomial::UnsignedIncChunk(index) => {
+                            Some(inc.chunk_hot_lane_bits(params.log_k_chunk, *index))
+                        }
+                        JoltCommittedPolynomial::UnsignedIncMsb => Some(usize::from(inc.msb())),
+                        _ => unreachable!("OneHotTrace plan contains only canonical columns"),
+                    };
+                    hot.map(|hot| {
+                        u8::try_from(hot).expect("OneHotTrace K is at most the u8 lane domain")
+                    })
+                })
+                .collect();
+            OneHotPolynomial::new(k, indices)
+        })
+        .collect()
+}
+
+/// The `(polynomial, relation)` pair holding a semantic column's final
+/// claim on the accumulator. This covers `OneHotTrace` columns and
+/// `ProgramOneHot` sub-columns (their variant sets are disjoint).
+pub fn leaf_source(
+    polynomial: JoltCommittedPolynomial,
+) -> Result<(CommittedPolynomial, SumcheckId), VerifierError> {
+    Ok(match polynomial {
+        JoltCommittedPolynomial::BytecodeRegisterSelector { chunk, lane } => {
+            let lane = match lane {
+                BytecodeRegisterLane::Rs1 => 0,
+                BytecodeRegisterLane::Rs2 => 1,
+                BytecodeRegisterLane::Rd => 2,
+            };
+            (
+                CommittedPolynomial::BytecodeRegisterSelector(chunk, lane),
+                SumcheckId::BytecodeChunkReconstruction,
+            )
+        }
+        JoltCommittedPolynomial::BytecodeCircuitFlag { chunk, flag } => (
+            CommittedPolynomial::BytecodeCircuitFlag(chunk, flag),
+            SumcheckId::BytecodeChunkReconstruction,
+        ),
+        JoltCommittedPolynomial::BytecodeInstructionFlag { chunk, flag } => (
+            CommittedPolynomial::BytecodeInstructionFlag(chunk, flag),
+            SumcheckId::BytecodeChunkReconstruction,
+        ),
+        JoltCommittedPolynomial::BytecodeLookupSelector { chunk } => (
+            CommittedPolynomial::BytecodeLookupSelector(chunk),
+            SumcheckId::BytecodeChunkReconstruction,
+        ),
+        JoltCommittedPolynomial::BytecodeRafFlag { chunk } => (
+            CommittedPolynomial::BytecodeRafFlag(chunk),
+            SumcheckId::BytecodeChunkReconstruction,
+        ),
+        JoltCommittedPolynomial::BytecodeUnexpandedPcBytes { chunk } => (
+            CommittedPolynomial::BytecodeUnexpandedPcBytes(chunk),
+            SumcheckId::BytecodeChunkReconstruction,
+        ),
+        JoltCommittedPolynomial::BytecodeImmBytes { chunk } => (
+            CommittedPolynomial::BytecodeImmBytes(chunk),
+            SumcheckId::BytecodeChunkReconstruction,
+        ),
+        JoltCommittedPolynomial::ProgramImageBytes => (
+            CommittedPolynomial::ProgramImageBytes,
+            SumcheckId::ProgramImageReconstruction,
+        ),
+
+        JoltCommittedPolynomial::InstructionRa(index) => (
+            CommittedPolynomial::InstructionRa(index),
+            SumcheckId::HammingWeightClaimReduction,
+        ),
+        JoltCommittedPolynomial::BytecodeRa(index) => (
+            CommittedPolynomial::BytecodeRa(index),
+            SumcheckId::HammingWeightClaimReduction,
+        ),
+        JoltCommittedPolynomial::RamRa(index) => (
+            CommittedPolynomial::RamRa(index),
+            SumcheckId::HammingWeightClaimReduction,
+        ),
+        JoltCommittedPolynomial::UnsignedIncChunk(index) => (
+            CommittedPolynomial::UnsignedIncChunk(index),
+            SumcheckId::HammingWeightClaimReduction,
+        ),
+        JoltCommittedPolynomial::UnsignedIncMsb => (
+            CommittedPolynomial::UnsignedIncMsb,
+            SumcheckId::HammingWeightClaimReduction,
+        ),
+        other => {
+            return Err(VerifierError::FinalOpeningBatchFailed {
+                reason: format!("polynomial {other:?} is not a per-proof packed column"),
+            })
+        }
+    })
+}
+
 /// The packed prover pinned to the Akita stack.
 pub type AkitaPackedProver<'a> =
     JoltCpuProver<'a, AkitaFp128, AkitaNoCurve, AkitaPackedScheme, AkitaTranscript>;
 
 impl AkitaPackedProver<'_> {
-    /// Akita setup parameters sized to the native `OneHotTrace` group of
-    /// uniform one-hot columns.
+    /// [`one_hot_trace_setup_params`] for this prover's trace and parameters.
     pub fn one_hot_trace_setup_params(&self) -> jolt_akita::AkitaSetupParams {
-        let one_hot_trace_shape = self.one_hot_trace_shape();
-        let shape = ONE_HOT_TRACE_LAYOUT
-            .setup_shape(&one_hot_trace_shape)
-            .expect("canonical OneHotTrace layout must exist");
-        let layout_digest = ONE_HOT_TRACE_LAYOUT
-            .layout_digest(&one_hot_trace_shape)
-            .expect("canonical OneHotTrace layout digest must exist");
-        jolt_akita::AkitaSetupParams::one_hot_only(
-            shape.num_vars,
-            shape.num_polys,
-            layout_digest,
-            1 << self.one_hot_params.log_k_chunk,
-        )
+        one_hot_trace_setup_params(self.trace.len(), &self.one_hot_params)
     }
 
     fn one_hot_trace_shape(&self) -> OneHotTraceShape {
-        OneHotTraceShape {
-            ra_layout: self.ra_layout(),
-            log_t: self.trace.len().log_2(),
-            log_k_chunk: self.one_hot_params.log_k_chunk,
-        }
+        one_hot_trace_shape(self.trace.len(), &self.one_hot_params)
     }
 
-    fn ra_layout(&self) -> JoltRaPolynomialLayout {
-        JoltRaPolynomialLayout::new(
-            self.one_hot_params.instruction_d,
-            self.one_hot_params.bytecode_d,
-            self.one_hot_params.ram_d,
-        )
-        .expect("Jolt always commits at least one RA polynomial")
-    }
-
-    /// Builds the native `OneHotTrace` columns from compact per-cycle source
-    /// data. Each returned index buffer is handed to Akita by ownership, so
-    /// there is no witness clone at the PCS boundary.
-    #[tracing::instrument(skip_all, name = "assemble_one_hot_trace")]
     fn assemble_one_hot_trace(
         &self,
         plan: &OneHotTraceLayoutPlan,
         fused_inc: &[FusedIncValue],
     ) -> Vec<OneHotPolynomial> {
-        use crate::zkvm::instruction::LookupQuery;
-        use crate::zkvm::ram::remap_address;
-        use common::constants::XLEN;
-        use rayon::prelude::*;
-
-        let params = &self.one_hot_params;
-        let trace = &self.trace;
-        let program = self.preprocessing.materialized_program();
-        let memory_layout = &self.preprocessing.shared.memory_layout;
-        let cycle_data = trace
-            .par_iter()
-            .map(|cycle| {
-                (
-                    LookupQuery::<XLEN>::to_lookup_index(cycle),
-                    program.get_pc(cycle),
-                    remap_address(cycle.ram_access().address() as u64, memory_layout),
-                )
-            })
-            .collect::<Vec<_>>();
-        let k = 1usize << params.log_k_chunk;
-        plan.columns
-            .par_iter()
-            .map(|polynomial| {
-                let indices = cycle_data
-                    .iter()
-                    .zip(fused_inc)
-                    .map(|((lookup_index, pc, ram_address), inc)| {
-                        let hot = match polynomial {
-                            JoltCommittedPolynomial::InstructionRa(index) => {
-                                Some(params.lookup_index_chunk(*lookup_index, *index) as usize)
-                            }
-                            JoltCommittedPolynomial::BytecodeRa(index) => {
-                                Some(params.bytecode_pc_chunk(*pc, *index) as usize)
-                            }
-                            JoltCommittedPolynomial::RamRa(index) => (*ram_address)
-                                .map(|address| params.ram_address_chunk(address, *index) as usize),
-                            JoltCommittedPolynomial::UnsignedIncChunk(index) => {
-                                Some(inc.chunk_hot_lane_bits(params.log_k_chunk, *index))
-                            }
-                            JoltCommittedPolynomial::UnsignedIncMsb => Some(usize::from(inc.msb())),
-                            _ => unreachable!("OneHotTrace plan contains only canonical columns"),
-                        };
-                        hot.map(|hot| {
-                            u8::try_from(hot).expect("OneHotTrace K is at most the u8 lane domain")
-                        })
-                    })
-                    .collect();
-                OneHotPolynomial::new(k, indices)
-            })
-            .collect()
+        assemble_one_hot_trace(
+            plan,
+            fused_inc,
+            &self.trace,
+            &self.one_hot_params,
+            self.preprocessing.materialized_program(),
+            &self.preprocessing.shared.memory_layout,
+        )
     }
 
-    /// The per-cycle fused increments, shared by the inc-column witness
-    /// build and OneHotTrace assembly.
     fn fused_inc_values(&self) -> Vec<FusedIncValue> {
-        use rayon::prelude::*;
-
-        self.trace
-            .par_iter()
-            .map(FusedIncValue::from_cycle)
-            .collect()
+        fused_inc_values(&self.trace)
     }
 
     fn fused_inc_columns(&self, fused_cycles: &[FusedIncValue]) -> FusedIncColumns {
-        use rayon::prelude::*;
-        use std::sync::Arc;
-
-        let chunk_count = UNSIGNED_INC_BITS / self.one_hot_params.log_k_chunk;
-        let width = self.one_hot_params.log_k_chunk;
-        let one_hot: Vec<Arc<Vec<Option<u8>>>> = (0..chunk_count)
-            .map(|index| {
-                Arc::new(
-                    fused_cycles
-                        .par_iter()
-                        .map(|cycle| Some(cycle.chunk_hot_lane_bits(width, index) as u8))
-                        .collect(),
-                )
-            })
-            .chain(core::iter::once(Arc::new(
-                fused_cycles
-                    .par_iter()
-                    .map(|cycle| Some(u8::from(cycle.msb())))
-                    .collect(),
-            )))
-            .collect();
-        let fused: Vec<i128> = fused_cycles.par_iter().map(|cycle| cycle.delta).collect();
-        FusedIncColumns { one_hot, fused }
+        fused_inc_columns(fused_cycles, &self.one_hot_params)
     }
 
     /// Builds and commits the untrusted-advice byte one-hot column (`UntrustedAdviceOneHot`).
@@ -1222,88 +1331,13 @@ impl AkitaPackedProver<'_> {
         Some(proof)
     }
 
-    /// The `(polynomial, relation)` pair holding a semantic column's final
-    /// claim on the accumulator. This covers `OneHotTrace` columns and
-    /// `ProgramOneHot` sub-columns (their variant sets are disjoint).
-    fn leaf_source(
-        polynomial: JoltCommittedPolynomial,
-    ) -> Result<(CommittedPolynomial, SumcheckId), VerifierError> {
-        Ok(match polynomial {
-            JoltCommittedPolynomial::BytecodeRegisterSelector { chunk, lane } => {
-                let lane = match lane {
-                    BytecodeRegisterLane::Rs1 => 0,
-                    BytecodeRegisterLane::Rs2 => 1,
-                    BytecodeRegisterLane::Rd => 2,
-                };
-                (
-                    CommittedPolynomial::BytecodeRegisterSelector(chunk, lane),
-                    SumcheckId::BytecodeChunkReconstruction,
-                )
-            }
-            JoltCommittedPolynomial::BytecodeCircuitFlag { chunk, flag } => (
-                CommittedPolynomial::BytecodeCircuitFlag(chunk, flag),
-                SumcheckId::BytecodeChunkReconstruction,
-            ),
-            JoltCommittedPolynomial::BytecodeInstructionFlag { chunk, flag } => (
-                CommittedPolynomial::BytecodeInstructionFlag(chunk, flag),
-                SumcheckId::BytecodeChunkReconstruction,
-            ),
-            JoltCommittedPolynomial::BytecodeLookupSelector { chunk } => (
-                CommittedPolynomial::BytecodeLookupSelector(chunk),
-                SumcheckId::BytecodeChunkReconstruction,
-            ),
-            JoltCommittedPolynomial::BytecodeRafFlag { chunk } => (
-                CommittedPolynomial::BytecodeRafFlag(chunk),
-                SumcheckId::BytecodeChunkReconstruction,
-            ),
-            JoltCommittedPolynomial::BytecodeUnexpandedPcBytes { chunk } => (
-                CommittedPolynomial::BytecodeUnexpandedPcBytes(chunk),
-                SumcheckId::BytecodeChunkReconstruction,
-            ),
-            JoltCommittedPolynomial::BytecodeImmBytes { chunk } => (
-                CommittedPolynomial::BytecodeImmBytes(chunk),
-                SumcheckId::BytecodeChunkReconstruction,
-            ),
-            JoltCommittedPolynomial::ProgramImageBytes => (
-                CommittedPolynomial::ProgramImageBytes,
-                SumcheckId::ProgramImageReconstruction,
-            ),
-
-            JoltCommittedPolynomial::InstructionRa(index) => (
-                CommittedPolynomial::InstructionRa(index),
-                SumcheckId::HammingWeightClaimReduction,
-            ),
-            JoltCommittedPolynomial::BytecodeRa(index) => (
-                CommittedPolynomial::BytecodeRa(index),
-                SumcheckId::HammingWeightClaimReduction,
-            ),
-            JoltCommittedPolynomial::RamRa(index) => (
-                CommittedPolynomial::RamRa(index),
-                SumcheckId::HammingWeightClaimReduction,
-            ),
-            JoltCommittedPolynomial::UnsignedIncChunk(index) => (
-                CommittedPolynomial::UnsignedIncChunk(index),
-                SumcheckId::HammingWeightClaimReduction,
-            ),
-            JoltCommittedPolynomial::UnsignedIncMsb => (
-                CommittedPolynomial::UnsignedIncMsb,
-                SumcheckId::HammingWeightClaimReduction,
-            ),
-            other => {
-                return Err(VerifierError::FinalOpeningBatchFailed {
-                    reason: format!("polynomial {other:?} is not a per-proof packed column"),
-                })
-            }
-        })
-    }
-
     /// A packed column's final claim from the accumulator, with the
     /// challenge coordinates unwrapped to verifier-field values.
     fn resolve_leaf_claim(
         &self,
         polynomial: JoltCommittedPolynomial,
     ) -> Result<(Vec<AkitaField>, AkitaField), VerifierError> {
-        let (legacy, sumcheck) = Self::leaf_source(polynomial)?;
+        let (legacy, sumcheck) = leaf_source(polynomial)?;
         let (point, value) = self
             .opening_accumulator
             .try_get_committed_polynomial_opening(legacy, sumcheck)
@@ -1363,7 +1397,7 @@ impl AkitaPackedProver<'_> {
             precommitted_packing(&object.shape).map_err(|error| batch_failed(error.to_string()))?;
         let mut claims = Vec::new();
         for (polynomial, _slot) in &packing {
-            let (legacy, sumcheck) = Self::leaf_source(*polynomial)?;
+            let (legacy, sumcheck) = leaf_source(*polynomial)?;
             let (point, value) = self
                 .opening_accumulator
                 .try_get_committed_polynomial_opening(legacy, sumcheck)

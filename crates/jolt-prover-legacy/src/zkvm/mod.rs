@@ -58,7 +58,7 @@ use tracer::JoltDevice;
 pub mod bytecode;
 pub mod claim_reductions;
 #[cfg(all(feature = "prover", not(feature = "zk")))]
-pub(crate) mod clear_claims;
+pub mod clear_claims;
 pub mod config;
 pub mod instruction;
 pub mod instruction_lookups;
@@ -79,14 +79,7 @@ pub mod program;
 )]
 pub mod proof;
 #[cfg(feature = "prover")]
-#[cfg_attr(
-    feature = "akita",
-    expect(
-        dead_code,
-        reason = "proof-parts containers are consumed again once the akita prove path lands"
-    )
-)]
-pub(crate) mod proof_parts;
+pub mod proof_parts;
 #[cfg(feature = "prover")]
 #[cfg_attr(
     feature = "akita",

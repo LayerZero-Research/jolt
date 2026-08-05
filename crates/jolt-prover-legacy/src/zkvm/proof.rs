@@ -312,7 +312,7 @@ where
     ))
 }
 
-pub(crate) fn convert_read_write_config(config: ProverReadWriteConfig) -> JoltReadWriteConfig {
+pub fn convert_read_write_config(config: ProverReadWriteConfig) -> JoltReadWriteConfig {
     JoltReadWriteConfig {
         ram_rw_phase1_num_rounds: config.ram_rw_phase1_num_rounds,
         ram_rw_phase2_num_rounds: config.ram_rw_phase2_num_rounds,
@@ -321,7 +321,7 @@ pub(crate) fn convert_read_write_config(config: ProverReadWriteConfig) -> JoltRe
     }
 }
 
-pub(crate) fn convert_one_hot_config(config: ProverOneHotConfig) -> JoltOneHotConfig {
+pub fn convert_one_hot_config(config: ProverOneHotConfig) -> JoltOneHotConfig {
     JoltOneHotConfig {
         log_k_chunk: config.log_k_chunk,
         lookups_ra_virtual_log_k_chunk: config.lookups_ra_virtual_log_k_chunk,
@@ -416,9 +416,9 @@ fn commitments_from_proof_payload_order<C>(
 #[cfg(not(any(feature = "zk", feature = "akita")))]
 #[expect(
     clippy::type_complexity,
-    reason = "private converter returns the verifier-native proof with projected backend types"
+    reason = "converter returns the verifier-native proof with projected backend types"
 )]
-pub(crate) fn proof_parts_into_verifier<F, C, PCS, FS>(
+pub fn proof_parts_into_verifier<F, C, PCS, FS>(
     proof: ProverProofParts<F, C, PCS, FS>,
 ) -> Result<
     JoltProof<
@@ -472,9 +472,9 @@ where
 #[cfg(feature = "zk")]
 #[expect(
     clippy::type_complexity,
-    reason = "private converter returns the verifier-native proof with projected backend types"
+    reason = "converter returns the verifier-native proof with projected backend types"
 )]
-pub(crate) fn proof_parts_into_verifier<F, C, PCS, FS>(
+pub fn proof_parts_into_verifier<F, C, PCS, FS>(
     proof: ProverProofParts<F, C, PCS, FS>,
 ) -> Result<
     JoltProof<
@@ -524,7 +524,7 @@ where
     })
 }
 
-pub(crate) fn convert_uniskip<F, C, FS>(
+pub fn convert_uniskip<F, C, FS>(
     proof: UniSkipFirstRoundProofVariant<F, C, FS>,
 ) -> SumcheckProof<F::VerifierField, C::VerifierRoundCommitment>
 where
@@ -548,7 +548,7 @@ where
     }
 }
 
-pub(crate) fn convert_sumcheck<F, C, FS>(
+pub fn convert_sumcheck<F, C, FS>(
     proof: SumcheckInstanceProof<F, C, FS>,
 ) -> SumcheckProof<F::VerifierField, C::VerifierRoundCommitment>
 where
@@ -772,7 +772,7 @@ where
 }
 
 #[cfg(not(feature = "zk"))]
-pub(crate) fn convert_opening_id(id: prover_opening::OpeningId) -> JoltOpeningId {
+pub fn convert_opening_id(id: prover_opening::OpeningId) -> JoltOpeningId {
     match id {
         prover_opening::OpeningId::Polynomial(poly, sumcheck) => {
             JoltOpeningId::polynomial(convert_polynomial_id(poly), convert_sumcheck_id(sumcheck))
