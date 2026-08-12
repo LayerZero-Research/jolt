@@ -1020,7 +1020,7 @@ mod muldiv {
         }
 
         let chaos_proof =
-            jolt_prover::prove::<Fr, DoryScheme, Pedersen<Bn254G1>, Blake2bTranscript, _>(
+            jolt_prover::dory::prove::<Fr, DoryScheme, Pedersen<Bn254G1>, Blake2bTranscript, _>(
                 &chaos_backend,
                 &prover_preprocessing,
                 &config,
@@ -1838,7 +1838,11 @@ mod advice_committed {
     }
 }
 
-#[cfg(all(feature = "prover-fixtures", not(feature = "zk")))]
+#[cfg(all(
+    feature = "prover-fixtures",
+    not(feature = "akita"),
+    not(feature = "zk")
+))]
 #[expect(clippy::expect_used)]
 mod inline_sha3 {
     // Anchor the Keccak inline registration into this test binary.
@@ -1935,15 +1939,16 @@ mod inline_sha3 {
         };
 
         let backend = JoltBackend::<Fr, DoryScheme>::optimized();
-        let proof = jolt_prover::prove::<Fr, DoryScheme, Pedersen<Bn254G1>, Blake2bTranscript, _>(
-            &backend,
-            &prover_preprocessing,
-            &config,
-            None,
-            witness,
-            &public_io,
-        )
-        .expect("modular prove");
+        let proof =
+            jolt_prover::dory::prove::<Fr, DoryScheme, Pedersen<Bn254G1>, Blake2bTranscript, _>(
+                &backend,
+                &prover_preprocessing,
+                &config,
+                None,
+                witness,
+                &public_io,
+            )
+            .expect("modular prove");
         assert_eq!(proof, legacy_proof, "assembled proof diverged from legacy");
         support::verify_modular(&prover_preprocessing.verifier, &public_io, &proof, None);
     }

@@ -112,6 +112,7 @@ where
         Self {
             base: JoltBackend {
                 commit: Box::new(PackedCommitStub),
+                round_scheduler: Box::new(ReferenceBackend),
                 spartan_outer_uniskip: Box::new(ReferenceBackend),
                 spartan_outer_remainder: Box::new(jolt_kernels::reference::spartan_outer::ReferenceOuterRemainder),
                 spartan_product_uniskip: Box::new(ReferenceBackend),
