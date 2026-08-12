@@ -79,6 +79,12 @@ jobs:
         run: cargo clippy -p jolt-verifier --all-targets --features akita,prover-fixtures
       - name: cargo clippy -p jolt-prover-legacy --features akita
         run: cargo clippy -p jolt-prover-legacy --all-targets --features akita
+      # The modular prover's packed (Akita) path: lint alone and with
+      # prover-fixtures so the acceptance suites keep compiling.
+      - name: cargo clippy -p jolt-prover --features akita
+        run: cargo clippy -p jolt-prover --all-targets --features akita
+      - name: cargo clippy -p jolt-prover --features akita,prover-fixtures
+        run: cargo clippy -p jolt-prover --all-targets --features akita,prover-fixtures
       # The profiling feature gates the profile harness bin and smoke test.
       # The smoke test cannot RUN in CI yet (reference-backend memory — see
       # the NOTE above the legacy test jobs), but everything behind the
@@ -87,6 +93,12 @@ jobs:
         run: cargo clippy -p jolt-prover --all-targets --features profiling
       - name: cargo clippy -p jolt-prover --features profiling,allocative
         run: cargo clippy -p jolt-prover --all-targets --features profiling,allocative
+      # The packed profile harness: the same bin/smoke test driving
+      # akita::prove. Lint both flamegraph modes, like the Dory pair above.
+      - name: cargo clippy -p jolt-prover --features akita,profiling
+        run: cargo clippy -p jolt-prover --all-targets --features akita,profiling
+      - name: cargo clippy -p jolt-prover --features akita,profiling,allocative
+        run: cargo clippy -p jolt-prover --all-targets --features akita,profiling,allocative
       # The field-inline feature is not enabled by host/zk/default, so the
       # workspace-wide invocations above never build it. Lint the crates that
       # define it explicitly so the feature keeps compiling.
@@ -327,6 +339,11 @@ jobs:
       # Akita lattice PCS (the release-only perf harness stays ignored).
       - name: Run jolt-prover-legacy tests with akita feature
         run: cargo nextest run --cargo-profile ci -p jolt-prover-legacy --features akita
+      # The MODULAR packed-prover acceptance suites: the five e2e analogs
+      # (with live tampers) plus the four byte-diff ratchets asserting
+      # wire-for-wire equality with the legacy packed prover.
+      - name: Run jolt-prover tests with akita feature
+        run: cargo nextest run --cargo-profile ci -p jolt-prover --features akita,prover-fixtures
 
   # NOTE: the profiling smoke test (`cargo nextest run -p jolt-prover
   # --features profiling -E 'binary(profiling_smoke)'`) is deliberately not
@@ -404,9 +421,9 @@ jobs:
         run: |
           COMMIT_HASH=$(git rev-parse HEAD)
           # Pin jolt-sdk in the host Cargo.toml
-          sed -i 's|jolt-sdk = { git = "https://github.com/a16z/jolt", features = \["host"\] }|jolt-sdk = { git = "https://github.com/a16z/jolt", rev = "'$COMMIT_HASH'", features = ["host"] }|' sample_project/Cargo.toml
+          sed -i "s|jolt-sdk = { git = \"https://github.com/a16z/jolt\", features = \\[\"host\"\\] }|jolt-sdk = { git = \"${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}\", rev = \"${COMMIT_HASH}\", features = [\"host\"] }|" sample_project/Cargo.toml
           # Pin jolt-sdk in the guest Cargo.toml
-          sed -i 's|jolt = { package = "jolt-sdk", git = "https://github.com/a16z/jolt" }|jolt = { package = "jolt-sdk", git = "https://github.com/a16z/jolt", rev = "'$COMMIT_HASH'" }|' sample_project/guest/Cargo.toml
+          sed -i "s|jolt = { package = \"jolt-sdk\", git = \"https://github.com/a16z/jolt\" }|jolt = { package = \"jolt-sdk\", git = \"${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}\", rev = \"${COMMIT_HASH}\" }|" sample_project/guest/Cargo.toml
 
       - name: Make sure the generated code runs
         working-directory: ./sample_project
@@ -453,8 +470,8 @@ jobs:
       - name: Pin jolt-sdk to current commit
         run: |
           COMMIT_HASH=$(git rev-parse HEAD)
-          sed -i 's|jolt-sdk = { git = "https://github.com/a16z/jolt", features = \["host"\] }|jolt-sdk = { git = "https://github.com/a16z/jolt", rev = "'$COMMIT_HASH'", features = ["host"] }|' sample_project/Cargo.toml
-          sed -i 's|jolt = { package = "jolt-sdk", git = "https://github.com/a16z/jolt" }|jolt = { package = "jolt-sdk", git = "https://github.com/a16z/jolt", rev = "'$COMMIT_HASH'" }|' sample_project/guest/Cargo.toml
+          sed -i "s|jolt-sdk = { git = \"https://github.com/a16z/jolt\", features = \\[\"host\"\\] }|jolt-sdk = { git = \"${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}\", rev = \"${COMMIT_HASH}\", features = [\"host\"] }|" sample_project/Cargo.toml
+          sed -i "s|jolt = { package = \"jolt-sdk\", git = \"https://github.com/a16z/jolt\" }|jolt = { package = \"jolt-sdk\", git = \"${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}\", rev = \"${COMMIT_HASH}\" }|" sample_project/guest/Cargo.toml
 
       - name: Set up prover and verifier scripts
         run: |
