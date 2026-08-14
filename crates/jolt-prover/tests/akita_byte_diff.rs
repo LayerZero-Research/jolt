@@ -374,7 +374,7 @@ mod advice_consumer {
     use jolt_prover::JoltProverPreprocessing;
     use jolt_prover_legacy::host;
     use jolt_prover_legacy::zkvm::packed::{
-        akita_verifier_preprocessing, commit_trusted_advice_one_hot, AkitaField, AkitaPackedProver,
+        akita_verifier_preprocessing, commit_trusted_advice_dense, AkitaField, AkitaPackedProver,
         AkitaPackedScheme, AkitaScheme, AkitaTranscript, AkitaVc,
     };
     use jolt_prover_legacy::zkvm::preprocessing::JoltSharedPreprocessing;
@@ -387,7 +387,7 @@ mod advice_consumer {
 
     /// Prove the advice-consumer guest (trusted AND untrusted advice) over
     /// the packed stack with both provers — three commitment objects
-    /// (`OneHotTrace`, `UntrustedAdviceOneHot`, `TrustedAdviceOneHot`), the
+    /// (`OneHotTrace`, `UntrustedAdvice`, `TrustedAdvice`), the
     /// trusted object committed once at preprocessing time and shared by
     /// both sides; assert wire-for-wire equality and verify the modular
     /// proof against the trusted commitment.
@@ -408,7 +408,7 @@ mod advice_consumer {
             support::MAX_PADDED_TRACE_LENGTH,
         );
         let legacy_preprocessing = LegacyProverPreprocessing::new(shared);
-        let trusted_object = commit_trusted_advice_one_hot(
+        let trusted_object = commit_trusted_advice_dense(
             &trusted_advice,
             guest.io_device.memory_layout.max_trusted_advice_size as usize,
         )

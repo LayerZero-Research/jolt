@@ -13,13 +13,14 @@
 //! witnesses.
 
 use jolt_claims::protocols::jolt::lattice::{OneHotTraceShape, ONE_HOT_TRACE_LAYOUT};
-use jolt_claims::protocols::jolt::JoltRelationId;
+use jolt_claims::protocols::jolt::{JoltAdviceKind, JoltRelationId};
 use jolt_crypto::VectorCommitment;
 use jolt_field::Field;
 use jolt_openings::CommitmentScheme;
 use jolt_poly::MultilinearPoly;
 use jolt_transcript::{AppendToTranscript, Transcript};
 use jolt_verifier::proof::AkitaJointOpeningProof;
+use jolt_verifier::stages::stage6b::outputs::Stage6bClearOutput;
 use jolt_verifier::stages::stage7::outputs::Stage7ClearOutput;
 use jolt_verifier::stages::stage8::packed::{
     leaf_claims, object_leaf_claims, one_hot_trace_packed_claims,
@@ -27,7 +28,7 @@ use jolt_verifier::stages::stage8::packed::{
 use jolt_verifier::stages::stage8::reconstruction::ReconstructionClearOutput;
 use jolt_verifier::{CheckedInputs, VerifierError};
 
-use super::witness::{AdviceOneHot, ProgramOneHot};
+use super::witness::{DenseAdviceObject, ProgramOneHot};
 use crate::{JoltProverPreprocessing, ProverConfig, ProverError};
 
 fn batch_failed<F: Field>(reason: impl ToString) -> ProverError<F> {
@@ -48,9 +49,10 @@ pub fn prove_stage8<F, PCS, VC, T>(
     config: &ProverConfig,
     preprocessing: &JoltProverPreprocessing<PCS, VC>,
     one_hot_trace_hint: PCS::OpeningHint,
-    untrusted_advice: Option<&AdviceOneHot<PCS>>,
-    trusted_advice: Option<&AdviceOneHot<PCS>>,
+    untrusted_advice: Option<&DenseAdviceObject<PCS>>,
+    trusted_advice: Option<&DenseAdviceObject<PCS>>,
     program: Option<&ProgramOneHot<PCS>>,
+    stage6b: &Stage6bClearOutput<F>,
     stage7: &Stage7ClearOutput<F>,
     reconstruction: &ReconstructionClearOutput<F>,
     transcript: &mut T,
@@ -80,7 +82,7 @@ where
 
     // Every packed column's single leaf claim, resolved exactly as the
     // verifier resolves them.
-    let leaves = leaf_claims(stage7, reconstruction);
+    let leaves = leaf_claims(&checked.precommitted, stage6b, stage7, reconstruction)?;
 
     // OneHotTrace: assemble the shared-point packed statement, reduce it to
     // one physical claim on the transcript, and open it natively from the
@@ -134,14 +136,24 @@ where
     };
 
     let mut auxiliary = Vec::new();
-    for object in [untrusted_advice, trusted_advice].into_iter().flatten() {
-        auxiliary.push(open_object(
-            &object.plan,
-            &object.byte_column,
-            &object.setup,
-            object.hint.clone(),
-            transcript,
-        )?);
+    for (kind, object) in [
+        (JoltAdviceKind::Untrusted, untrusted_advice),
+        (JoltAdviceKind::Trusted, trusted_advice),
+    ]
+    .into_iter()
+    .filter_map(|(kind, object)| object.map(|object| (kind, object)))
+    {
+        auxiliary.push(
+            tracing::info_span!("akita_dense_advice_open", kind = ?kind).in_scope(|| {
+                open_object(
+                    &object.plan,
+                    &object.polynomial,
+                    &object.setup,
+                    object.hint.clone(),
+                    transcript,
+                )
+            })?,
+        );
     }
     if let Some(program) = program {
         for object in &program.objects {

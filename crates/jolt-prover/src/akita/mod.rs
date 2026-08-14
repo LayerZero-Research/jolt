@@ -28,7 +28,6 @@ use jolt_transcript::{AppendToTranscript, Transcript};
 use jolt_verifier::proof::JoltProof;
 use jolt_verifier::stages::stage8::reconstruction::{
     BytecodeChunkReconstructionInstance, ProgramImageReconstructionInstance,
-    TrustedAdviceReconstructionInstance, UntrustedAdviceReconstructionInstance,
 };
 use jolt_witness::JoltWitnessPlane;
 
@@ -64,10 +63,6 @@ where
 {
     /// The shared stage 1–7 slot registry (naive-served).
     pub base: JoltBackend<F, PCS>,
-    pub untrusted_advice_reconstruction:
-        Box<dyn PrepareKernel<F, UntrustedAdviceReconstructionInstance<F>>>,
-    pub trusted_advice_reconstruction:
-        Box<dyn PrepareKernel<F, TrustedAdviceReconstructionInstance<F>>>,
     pub bytecode_reconstruction: Box<dyn PrepareKernel<F, BytecodeChunkReconstructionInstance<F>>>,
     pub program_image_reconstruction:
         Box<dyn PrepareKernel<F, ProgramImageReconstructionInstance<F>>>,
@@ -106,7 +101,7 @@ where
         _setup: &PCS::ProverSetup,
     ) -> Result<jolt_kernels::WitnessCommitment<PCS>, jolt_kernels::KernelError<F>> {
         Err(jolt_kernels::KernelError::Unsupported {
-            reason: "the packed (Akita) path commits advice byte one-hot objects in stage 0; \
+            reason: "the packed (Akita) path commits dense advice objects outside this seam; \
                      the streaming advice-commit slot is unreachable",
         })
     }
@@ -124,10 +119,6 @@ where
     /// reference reconstruction kernels.
     pub fn reference() -> Self {
         Self {
-            untrusted_advice_reconstruction: Box::new(
-                reconstruction::ReferenceReconstruction,
-            ),
-            trusted_advice_reconstruction: Box::new(reconstruction::ReferenceReconstruction),
             bytecode_reconstruction: Box::new(reconstruction::ReferenceReconstruction),
             program_image_reconstruction: Box::new(reconstruction::ReferenceReconstruction),
             base: JoltBackend {
@@ -205,22 +196,23 @@ where
 
 /// Prove one execution over the packed (Akita) protocol: the analog of
 /// `dory::prove`, emitting the packed-envelope [`JoltProof`] (single
-/// `OneHotTrace` commitment, reconstruction claims, native same-point joint
+/// `OneHotTrace` commitment, committed-program reconstruction claims, native same-point joint
 /// opening).
 ///
-/// `trusted_advice` is the precommitted trusted-advice object
-/// ([`witness::commit_advice_one_hot`], built out of band like legacy's
-/// `commit_trusted_advice_one_hot`), passed exactly when the guest consumes
-/// trusted advice. The precommitted `ProgramOneHot` objects ride the
-/// preprocessing ([`crate::CommittedProgramProverData::program_one_hot`]);
-/// stage 0 cross-checks their commitments against the verifier
-/// preprocessing fail-closed. Untrusted advice needs no input — its one-hot
-/// column is committed at prove time from the public advice bytes.
+/// `trusted_advice` is the precommitted trusted-advice object, built out of
+/// band and passed exactly when the guest consumes trusted advice; its dense
+/// word polynomial and transparent setup are re-derived at prove time from the
+/// public advice shape and cross-checked against the passed commitment. The
+/// precommitted `ProgramOneHot` objects ride the preprocessing
+/// ([`crate::CommittedProgramProverData::program_one_hot`]); stage 0
+/// cross-checks their commitments against the verifier preprocessing
+/// fail-closed. Untrusted advice needs no input — its dense word polynomial is
+/// committed at prove time from the public advice bytes.
 pub fn prove<F, PCS, VC, T, W>(
     backend: &JoltAkitaBackend<F, PCS>,
     preprocessing: &JoltProverPreprocessing<PCS, VC>,
     config: &ProverConfig,
-    trusted_advice: Option<&witness::AdviceOneHot<PCS>>,
+    trusted_advice: Option<&witness::DenseAdviceObject<PCS>>,
     witness: &W,
     public_io: &JoltDevice,
 ) -> Result<JoltProof<PCS, VC>, ProverError<F>>

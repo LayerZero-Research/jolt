@@ -406,7 +406,7 @@ mod advice {
     use jolt_prover::JoltProverPreprocessing;
     use jolt_prover_legacy::host;
     use jolt_prover_legacy::zkvm::packed::{
-        akita_verifier_preprocessing, commit_trusted_advice_one_hot, AkitaField, AkitaJoltProof,
+        akita_verifier_preprocessing, commit_trusted_advice_dense, AkitaField, AkitaJoltProof,
         AkitaPackedProver, AkitaPackedScheme, AkitaScheme, AkitaTranscript, AkitaVc,
     };
     use jolt_prover_legacy::zkvm::preprocessing::JoltSharedPreprocessing;
@@ -418,8 +418,8 @@ mod advice {
     use super::support;
 
     /// The packed advice e2e: a guest consuming both advice kinds, proved
-    /// over three commitment objects (`OneHotTrace`, `UntrustedAdviceOneHot`,
-    /// `TrustedAdviceOneHot`), with per-object tamper rejection — the analog
+    /// over three commitment objects (`OneHotTrace`, `UntrustedAdvice`,
+    /// `TrustedAdvice`), with per-object tamper rejection — the analog
     /// of legacy's `advice_e2e_akita` (7 + 5 == 12 on the advice-consumer
     /// guest instead of the merkle leaves).
     #[test]
@@ -440,7 +440,7 @@ mod advice {
 
         // The trusted-advice object commits at preprocessing time, out of
         // band; its commitment goes to both the prover and the verifier.
-        let trusted_object = commit_trusted_advice_one_hot(
+        let trusted_object = commit_trusted_advice_dense(
             &trusted_advice,
             guest.io_device.memory_layout.max_trusted_advice_size as usize,
         )
@@ -513,7 +513,7 @@ mod advice {
         )
         .expect("packed prover should produce a verifier-native proof");
         assert!(proof.untrusted_advice_commitment.is_some());
-        assert!(proof.stages.reconstruction_sumcheck_proof.is_some());
+        assert!(proof.stages.reconstruction_sumcheck_proof.is_none());
         // OneHotTrace is discharged by its native same-point batch. The two
         // advice commitment objects remain in the auxiliary packed opening.
         assert_eq!(proof.joint_opening_proof.auxiliary.len(), 2);
@@ -533,12 +533,6 @@ mod advice {
         assert!(
             verify(&tampered).is_err(),
             "reordered advice proofs must reject"
-        );
-        let mut tampered = proof.clone();
-        tampered.stages.reconstruction_sumcheck_proof = None;
-        assert!(
-            verify(&tampered).is_err(),
-            "a dropped reconstruction proof must be rejected"
         );
         let mut tampered = proof.clone();
         let _dropped = tampered.joint_opening_proof.auxiliary.pop();
@@ -581,7 +575,7 @@ mod advice {
             support::MAX_PADDED_TRACE_LENGTH,
         );
         let legacy_preprocessing = LegacyProverPreprocessing::new(shared);
-        let trusted_object = commit_trusted_advice_one_hot(
+        let trusted_object = commit_trusted_advice_dense(
             &trusted_advice,
             guest.io_device.memory_layout.max_trusted_advice_size as usize,
         )

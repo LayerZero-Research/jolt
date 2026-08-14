@@ -28,9 +28,10 @@ pub enum CommitmentConfig {
     /// Per-polynomial commitments, RLC batch opening (requires additive
     /// homomorphism).
     Homomorphic,
-    /// Packed one-hot witnesses per commitment object, reduction-sumcheck
-    /// batch opening (no homomorphism required).
+    /// Legacy packed one-hot advice protocol. Retained as a wire tombstone.
     Packed,
+    /// Packed trace/program objects with direct dense advice-word commitments.
+    PackedDenseAdvice,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,7 +60,10 @@ pub const SELECTED_ZK_CONFIG: ZkConfig = ZkConfig::BlindFold;
 pub const SELECTED_ZK_CONFIG: ZkConfig = ZkConfig::Transparent;
 
 #[cfg(feature = "akita")]
-pub const SELECTED_COMMITMENT_CONFIG: CommitmentConfig = CommitmentConfig::Packed;
+pub const SELECTED_COMMITMENT_CONFIG: CommitmentConfig = CommitmentConfig::PackedDenseAdvice;
+
+pub const PACKED_DENSE_ADVICE_TRANSCRIPT_VERSION: u64 = 1;
+pub const PACKED_DENSE_ADVICE_ENCODING: u64 = 1;
 
 #[cfg(not(feature = "akita"))]
 pub const SELECTED_COMMITMENT_CONFIG: CommitmentConfig = CommitmentConfig::Homomorphic;

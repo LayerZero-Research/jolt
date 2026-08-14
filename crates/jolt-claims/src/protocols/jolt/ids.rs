@@ -448,15 +448,6 @@ pub enum JoltCommittedPolynomial {
     ProgramImageBytes,
 }
 
-impl JoltCommittedPolynomial {
-    pub fn advice_bytes(kind: JoltAdviceKind) -> Self {
-        match kind {
-            JoltAdviceKind::Trusted => Self::TrustedAdviceBytes,
-            JoltAdviceKind::Untrusted => Self::UntrustedAdviceBytes,
-        }
-    }
-}
-
 #[derive(Hash, PartialEq, Eq, Copy, Clone, Debug, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum JoltVirtualPolynomial {
     PC,

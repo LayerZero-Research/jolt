@@ -652,6 +652,18 @@ pub(crate) fn absorb_preamble<PCS, VC, ZkProof, T>(
         b"dory_layout",
         proof.trace_polynomial_order.transcript_scalar(),
     );
+    #[cfg(feature = "akita")]
+    absorb_labeled_u64(
+        transcript,
+        b"akita_protocol_version",
+        crate::config::PACKED_DENSE_ADVICE_TRANSCRIPT_VERSION,
+    );
+    #[cfg(feature = "akita")]
+    absorb_labeled_u64(
+        transcript,
+        b"akita_advice_encoding",
+        crate::config::PACKED_DENSE_ADVICE_ENCODING,
+    );
 }
 
 /// Absorbs the commitments in the consensus-critical order — the proof-carried
@@ -906,6 +918,18 @@ pub fn absorb_transcript_preamble<T>(
         transcript,
         b"dory_layout",
         config.trace_polynomial_order.transcript_scalar(),
+    );
+    #[cfg(feature = "akita")]
+    absorb_labeled_u64(
+        transcript,
+        b"akita_protocol_version",
+        crate::config::PACKED_DENSE_ADVICE_TRANSCRIPT_VERSION,
+    );
+    #[cfg(feature = "akita")]
+    absorb_labeled_u64(
+        transcript,
+        b"akita_advice_encoding",
+        crate::config::PACKED_DENSE_ADVICE_ENCODING,
     );
 }
 
@@ -1475,8 +1499,6 @@ mod tests {
             },
             #[cfg(feature = "akita")]
             reconstruction: crate::stages::stage8::reconstruction::ReconstructionOutputClaims {
-                untrusted_advice: None,
-                trusted_advice: None,
                 bytecode: None,
                 program_image: None,
             },

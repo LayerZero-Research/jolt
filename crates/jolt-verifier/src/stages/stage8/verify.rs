@@ -528,6 +528,8 @@ where
         trusted_advice_commitment,
         &proof.joint_opening_proof,
         transcript,
+        &checked.precommitted,
+        stage6.clear()?,
         stage7.clear()?,
         &reconstruction,
     )?;

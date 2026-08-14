@@ -26,9 +26,6 @@
 )]
 
 use jolt_claims::protocols::jolt::lattice::relations::{
-    advice_reconstruction::{
-        TrustedAdviceReconstructionOutputClaims, UntrustedAdviceReconstructionOutputClaims,
-    },
     booleanity::LatticeBooleanityOutputClaims,
     bytecode_reconstruction::BytecodeChunkReconstructionOutputClaims,
     program_image_reconstruction::ProgramImageReconstructionOutputClaims,
@@ -530,17 +527,9 @@ fn visit_reconstruction<F: Field>(
     f: &mut dyn FnMut(&mut F),
 ) {
     let ReconstructionOutputClaims {
-        untrusted_advice,
-        trusted_advice,
         bytecode,
         program_image,
     } = claims;
-    if let Some(UntrustedAdviceReconstructionOutputClaims { bytes }) = untrusted_advice {
-        f(bytes);
-    }
-    if let Some(TrustedAdviceReconstructionOutputClaims { bytes }) = trusted_advice {
-        f(bytes);
-    }
     if let Some(BytecodeChunkReconstructionOutputClaims {
         register_selectors,
         circuit_flags,
@@ -727,7 +716,7 @@ fn every_commitment_wire_rejects_perturbation() {
     }
 }
 
-/// Proof-shape tampers: a swapped phase proof, dropped reconstruction /
+/// Proof-shape tampers: a swapped phase proof, dropped committed-program reconstruction /
 /// auxiliary proofs, and swapped auxiliary object proofs — each fail-closed.
 #[test]
 fn akita_proof_shape_tampers_reject() {
@@ -738,14 +727,14 @@ fn akita_proof_shape_tampers_reject() {
 
     let advice = akita_advice_case();
     let mut proof = advice.proof.clone();
-    proof.stages.reconstruction_sumcheck_proof = None;
-    assert_rejects(advice.verify_proof(&proof));
-
-    let mut proof = advice.proof.clone();
     proof.joint_opening_proof.auxiliary.clear();
     assert_rejects(advice.verify_proof(&proof));
 
     let committed = akita_committed_muldiv_case();
+    let mut proof = committed.proof.clone();
+    proof.stages.reconstruction_sumcheck_proof = None;
+    assert_rejects(committed.verify_proof(&proof));
+
     let mut proof = committed.proof.clone();
     proof.joint_opening_proof.auxiliary.clear();
     assert_rejects(committed.verify_proof(&proof));
@@ -756,7 +745,7 @@ fn akita_proof_shape_tampers_reject() {
 }
 
 /// The advice case fails closed when its trusted-advice commitment is absent:
-/// the reconstruction outputs have nothing to bind against.
+/// the direct dense opening has no commitment to bind against.
 #[test]
 fn akita_advice_commitment_presence_rejects() {
     let advice = akita_advice_case();

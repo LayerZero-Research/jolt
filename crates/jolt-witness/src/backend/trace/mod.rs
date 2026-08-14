@@ -282,8 +282,13 @@ impl<T: TraceSource> TraceBackend<T> {
         Ok(RV64_LOOKUP_ADDRESS_BITS / chunk_bits)
     }
 
-    fn advice_log_rows(max_bytes: usize) -> usize {
-        advice::advice_words(max_bytes).ilog2() as usize
+    fn advice_log_rows(max_bytes: usize) -> Result<usize, WitnessError> {
+        common::advice::advice_word_capacity(max_bytes)
+            .map(|words| words.ilog2() as usize)
+            .map_err(|error| WitnessError::InvalidDimensions {
+                label: JOLT_VM_LABEL,
+                reason: error.to_string(),
+            })
     }
 }
 

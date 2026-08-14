@@ -151,6 +151,15 @@ pub const UNISKIP_SEAM_SPANS: [&str; 4] = [
 /// test's presence assertion (fibonacci has no advice).
 pub const ADVICE_SEAM_SPANS: [&str; 2] = ["commit_advice", "AdviceOpeningEvaluation::evaluate"];
 
+/// Akita component-accounting spans. These separate the main packed
+/// commitment from dense-advice rebuild/open/verify work in benchmark traces.
+/// Advice reduction members retain their generated per-relation spans.
+pub const AKITA_COMPONENT_SPANS: [&str; 3] = [
+    "akita_main_commit",
+    "akita_dense_advice_rebuild",
+    "akita_dense_advice_open",
+];
+
 /// Kernel-seam spans that fire only with committed-program preprocessing.
 pub const COMMITTED_PROGRAM_SEAM_SPANS: [&str; 1] = ["build_committed_bytecode_chunk_coeffs"];
 
