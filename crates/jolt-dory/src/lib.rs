@@ -24,6 +24,10 @@
 //! - [`DoryProverSetup`] / [`DoryVerifierSetup`] — prover and verifier SRS.
 //! - [`DoryPartialCommitment`] — intermediate state for streaming commitment.
 //! - [`DoryHint`] — row commitments and commitment blind reusable as opening proof hint.
+//! - [`JoltToDoryTranscript`] and [`JoltG1Routines`] / [`JoltG2Routines`] — the adapter and
+//!   MSM routines [`DoryScheme`] drives `dory::prove` through. Exported so a backend that
+//!   computes the reduction messages elsewhere (e.g. on a GPU) can reproduce the same
+//!   Fiat-Shamir byte layout the verifier replays, rather than restating it.
 
 // In the jolt-verifier runtime closure: stricter panic and unsafe discipline
 // than the workspace lints (specs/verifier-closure-lints.md).
@@ -49,7 +53,9 @@ mod types;
 #[cfg(not(target_arch = "wasm32"))]
 mod urs_lock;
 
+pub use routines::{JoltG1Routines, JoltG2Routines};
 pub use scheme::DoryScheme;
+pub use transcript::JoltToDoryTranscript;
 pub use types::{
     DoryCommitment, DoryHint, DoryPartialCommitment, DoryProof, DoryProverSetup, DoryVerifierSetup,
 };

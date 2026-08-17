@@ -18,7 +18,7 @@ use jolt_openings::CommitmentScheme;
 use jolt_sumcheck::{RoundScheduler, SequentialRounds};
 
 use crate::backend::{BuildRoundScheduler, ProofSession};
-use crate::commitment::ModeStreamingCommitment;
+use crate::commitment::{CommitWitness, ModeStreamingCommitment};
 use crate::JoltBackend;
 
 use self::precommitted_reduction::ReferencePrecommittedAddress;
@@ -86,13 +86,26 @@ where
     /// tier. It is the equivalence anchor optimized backends are tested
     /// against, and the fallback partial backends compose over. Its commit
     /// slot streams, hence the [`ModeStreamingCommitment`] bound — a
-    /// reference-implementation requirement, not a seam one.
+    /// reference-implementation requirement, not a seam one, which is why
+    /// [`reference_with_commit`](Self::reference_with_commit) does without it.
     pub fn reference() -> Self
     where
         PCS: ModeStreamingCommitment,
     {
+        Self::reference_with_commit(Box::new(ReferenceBackend))
+    }
+
+    /// [`reference`](Self::reference) with a caller-supplied commit slot.
+    ///
+    /// Carries no [`ModeStreamingCommitment`] bound: that bound is
+    /// `ReferenceBackend`'s, because its commit implementation drives the
+    /// streaming PCS API. A backend whose commit slot does not — one that
+    /// commits on a device, say — would otherwise have to implement a trait
+    /// it never calls, purely to reach a constructor whose commit slot it
+    /// immediately replaces.
+    pub fn reference_with_commit(commit: Box<dyn CommitWitness<F, PCS>>) -> Self {
         Self {
-            commit: Box::new(ReferenceBackend),
+            commit,
             round_scheduler: Box::new(ReferenceBackend),
             spartan_outer_uniskip: Box::new(ReferenceBackend),
             spartan_outer_remainder: Box::new(ReferenceOuterRemainder),

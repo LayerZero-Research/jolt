@@ -33,7 +33,7 @@
 use jolt_field::Field;
 use jolt_openings::CommitmentScheme;
 
-use crate::commitment::ModeStreamingCommitment;
+use crate::commitment::{CommitWitness, ModeStreamingCommitment};
 
 use crate::JoltBackend;
 
@@ -137,9 +137,14 @@ where
     where
         PCS: ModeStreamingCommitment,
     {
-        let mut backend = Self::reference();
+        Self::optimized_with_commit(Box::new(OptimizedBackend))
+    }
 
-        backend.commit = Box::new(OptimizedBackend);
+    /// [`optimized`](Self::optimized) with a caller-supplied commit slot, and
+    /// therefore no [`ModeStreamingCommitment`] bound — see
+    /// [`reference_with_commit`](Self::reference_with_commit).
+    pub fn optimized_with_commit(commit: Box<dyn CommitWitness<F, PCS>>) -> Self {
+        let mut backend = Self::reference_with_commit(commit);
 
         backend.spartan_outer_uniskip = Box::new(OptimizedOuterUniskip);
         backend.spartan_outer_remainder = Box::new(OptimizedOuterRemainder);
