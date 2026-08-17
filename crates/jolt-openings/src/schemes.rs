@@ -35,6 +35,12 @@ pub trait GroupCommitmentMetadata {
 pub trait GroupSetupMetadata {
     fn max_num_vars(&self) -> usize;
     fn max_num_polys_per_commitment_group(&self) -> usize;
+    /// Total number of polynomials admitted across every group in one native
+    /// opening. For ordinary single-group schemes this is identical to the
+    /// group-local limit.
+    fn max_total_batch_polys(&self) -> usize {
+        self.max_num_polys_per_commitment_group()
+    }
     fn default_layout_digest(&self) -> [u8; 32];
     fn one_hot_k(&self) -> usize;
 }

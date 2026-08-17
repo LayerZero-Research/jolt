@@ -5,8 +5,21 @@
 
 //! The Jolt-owned schedule catalogs: coverage and drift guards.
 
+use akita_config::CommitmentConfig;
+use akita_types::{
+    commit_only_setup_field_elements, setup_matrix_capacity_for_schedule, AkitaScheduleLookupKey,
+};
+#[cfg(feature = "akita-test-schedules")]
+use jolt_akita::configs::JoltOneHotK16Fixture;
+use jolt_akita::configs::{JoltDense, JoltOneHotK16, JoltOneHotK256};
 use jolt_akita::schedules::emit::{
-    family_specs, keys, K16_NUM_VARS, K256_NUM_VARS, ONE_HOT_TRACE_NUM_POLYS,
+    family_specs, keys, K16_NUM_VARS, K256_NUM_VARS, ONE_HOT_TRACE_NUM_POLYS, TRUSTED_ADVICE_GROUP,
+    TRUSTED_ADVICE_K256_FINAL_GROUP,
+};
+#[cfg(feature = "akita-test-schedules")]
+use jolt_akita::schedules::{
+    emit::{FIXTURE_K16_FINAL_NUM_VARS, FIXTURE_TRUSTED_ADVICE_GROUP},
+    jolt_fp128_onehot_k16_fixture_table,
 };
 use jolt_akita::schedules::{jolt_fp128_onehot_k16_table, jolt_fp128_onehot_k256_table};
 
@@ -44,6 +57,122 @@ fn catalogs_cover_every_reachable_one_hot_trace_shape() {
             table.entries.len(),
             "identity key count must match the table"
         );
+    }
+}
+
+fn trusted_advice_grouped_key() -> AkitaScheduleLookupKey {
+    let trusted_profile = JoltDense::profile_without_precommitted_groups(TRUSTED_ADVICE_GROUP)
+        .expect("trusted advice standalone row must resolve");
+    AkitaScheduleLookupKey {
+        final_group: TRUSTED_ADVICE_K256_FINAL_GROUP,
+        precommitteds: vec![trusted_profile],
+    }
+}
+
+#[test]
+fn production_trusted_advice_grouped_row_resolves_exact_profile() {
+    let key = trusted_advice_grouped_key();
+    let resolved = JoltOneHotK256::resolve_catalog_row_for_key(&key)
+        .expect("trusted advice plus K256 final row must resolve");
+
+    assert_eq!(resolved.profiles().precommitteds, key.precommitteds);
+    assert_eq!(resolved.profiles().final_group.group, key.final_group);
+    assert_eq!(resolved.schedule().root.params.precommitted_groups.len(), 1);
+
+    let mut changed = key.clone();
+    changed.precommitteds[0] = JoltDense::profile_without_precommitted_groups(
+        akita_types::PolynomialGroupLayout::new(21, 1),
+    )
+    .expect("neighboring dense row must resolve");
+    assert!(JoltOneHotK256::resolve_catalog_row_for_key(&changed).is_err());
+
+    let mut extra = key;
+    extra.precommitteds.push(extra.precommitteds[0]);
+    assert!(JoltOneHotK256::resolve_catalog_row_for_key(&extra).is_err());
+}
+
+#[test]
+fn grouped_setup_capacity_covers_precommit_and_complete_schedule() {
+    let key = trusted_advice_grouped_key();
+    assert!(key
+        .fits_setup_capacity(39, 2)
+        .expect("grouped capacity arithmetic must not overflow"));
+    assert!(!key
+        .fits_setup_capacity(39, 1)
+        .expect("grouped capacity arithmetic must not overflow"));
+
+    let resolved = JoltOneHotK256::resolve_catalog_row_for_key(&key)
+        .expect("trusted advice plus K256 final row must resolve");
+    let full_capacity = setup_matrix_capacity_for_schedule(resolved.schedule())
+        .expect("grouped schedule capacity must be valid");
+    let prefix = key.precommitteds[0];
+    let precommit_capacity = commit_only_setup_field_elements(
+        &prefix.inner_commit_matrix,
+        &prefix.outer_commit_matrix,
+        prefix.outer_slice_count,
+    )
+    .expect("trusted precommit capacity must be valid");
+
+    let setup_capacity = JoltOneHotK256::setup_matrix_capacity(39, 2)
+        .expect("grouped production setup shape must be catalog-backed");
+    assert!(setup_capacity.num_field_elements >= full_capacity.num_field_elements);
+    assert!(setup_capacity.num_field_elements >= precommit_capacity);
+
+    let scalar_only_capacity = JoltOneHotK256::setup_matrix_capacity(39, 1)
+        .expect("scalar production setup shape must remain catalog-backed");
+    assert!(scalar_only_capacity.num_field_elements >= precommit_capacity);
+}
+
+#[test]
+fn setup_capacity_covers_fitting_catalog_rows_without_an_exact_maximum_row() {
+    let max_num_vars = 26;
+    let max_num_polys = 3;
+    let table = jolt_fp128_onehot_k16_table().expect("K16 catalog is checked in");
+    assert!(!table.entries.iter().any(|entry| {
+        let key = entry.to_runtime_lookup_key();
+        key.max_num_vars() == max_num_vars
+            && key.num_polynomials().expect("catalog count must fit") == max_num_polys
+    }));
+
+    let setup_capacity = JoltOneHotK16::setup_matrix_capacity(max_num_vars, max_num_polys)
+        .expect("fallback setup must also cover fitting catalog rows");
+    for entry in table.entries {
+        let key = entry.to_runtime_lookup_key();
+        if !key
+            .fits_setup_capacity(max_num_vars, max_num_polys)
+            .expect("catalog capacity arithmetic must not overflow")
+        {
+            continue;
+        }
+        let resolved = JoltOneHotK16::resolve_catalog_row_for_key(&key)
+            .expect("checked-in K16 row must resolve");
+        let required = setup_matrix_capacity_for_schedule(resolved.schedule())
+            .expect("catalog schedule capacity must be valid");
+        assert!(setup_capacity.num_field_elements >= required.num_field_elements);
+    }
+}
+
+#[cfg(feature = "akita-test-schedules")]
+#[test]
+fn fixture_grouped_rows_are_explicit_and_absent_from_production_k16() {
+    let trusted_profile =
+        JoltDense::profile_without_precommitted_groups(FIXTURE_TRUSTED_ADVICE_GROUP)
+            .expect("fixture trusted advice standalone row must resolve");
+    let table = jolt_fp128_onehot_k16_fixture_table().expect("fixture catalog is compiled in");
+    assert_eq!(table.identity.key_count, 10);
+
+    for num_vars in FIXTURE_K16_FINAL_NUM_VARS.0..=FIXTURE_K16_FINAL_NUM_VARS.1 {
+        let key = AkitaScheduleLookupKey {
+            final_group: akita_types::PolynomialGroupLayout::new(num_vars, 1),
+            precommitteds: vec![trusted_profile],
+        };
+        assert!(JoltOneHotK16::resolve_catalog_row_for_key(&key).is_err());
+
+        let resolved = JoltOneHotK16Fixture::resolve_catalog_row_for_key(&key)
+            .expect("fixture grouped row must resolve");
+        assert_eq!(resolved.profiles().precommitteds, key.precommitteds);
+        assert_eq!(resolved.profiles().final_group.group, key.final_group);
+        assert!(JoltOneHotK16Fixture::setup_matrix_capacity(num_vars, 2).is_ok());
     }
 }
 
@@ -97,7 +226,7 @@ fn source_tokens(source: &str) -> Vec<String> {
 #[test]
 #[ignore = "regenerates every schedule through the planner DP (minutes)"]
 fn catalogs_match_planner_regeneration() {
-    for spec in family_specs(std::path::PathBuf::new()) {
+    for spec in family_specs(std::path::PathBuf::new()).expect("family specs must be valid") {
         let regenerated =
             akita_planner::emit::emit_family_module(&spec).expect("regeneration must succeed");
         let checked_in = std::fs::read_to_string(

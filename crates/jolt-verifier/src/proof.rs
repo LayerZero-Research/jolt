@@ -7,7 +7,11 @@ use jolt_crypto::{Commitment, VectorCommitment};
 use jolt_field::Field;
 use jolt_openings::CommitmentScheme;
 use jolt_sumcheck::SumcheckProof;
+#[cfg(feature = "akita")]
+use serde::de::{Error as _, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "akita")]
+use std::{fmt, marker::PhantomData};
 
 use crate::{
     config::JoltProtocolConfig,
@@ -33,18 +37,74 @@ pub type JointOpeningProof<PCS> = <PCS as CommitmentScheme>::Proof;
 #[cfg(feature = "akita")]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AkitaJointOpeningProof<P> {
-    pub one_hot_trace: P,
+    pub main_batch: P,
+    #[serde(deserialize_with = "deserialize_bounded_akita_auxiliary")]
     pub auxiliary: Vec<P>,
 }
 
 #[cfg(feature = "akita")]
 impl<P> AkitaJointOpeningProof<P> {
-    pub fn new(one_hot_trace: P, auxiliary: Vec<P>) -> Self {
+    pub fn new(main_batch: P, auxiliary: Vec<P>) -> Self {
         Self {
-            one_hot_trace,
+            main_batch,
             auxiliary,
         }
     }
+}
+
+/// Untrusted advice plus the two committed-program objects is the largest
+/// packed auxiliary set admitted by the current protocol.
+#[cfg(feature = "akita")]
+pub const MAX_AKITA_AUXILIARY_PROOFS: usize = 3;
+
+#[cfg(feature = "akita")]
+fn deserialize_bounded_akita_auxiliary<'de, D, P>(deserializer: D) -> Result<Vec<P>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    P: Deserialize<'de>,
+{
+    struct BoundedVisitor<P>(PhantomData<P>);
+
+    impl<'de, P> Visitor<'de> for BoundedVisitor<P>
+    where
+        P: Deserialize<'de>,
+    {
+        type Value = Vec<P>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(
+                formatter,
+                "at most {MAX_AKITA_AUXILIARY_PROOFS} Akita auxiliary proofs"
+            )
+        }
+
+        fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            if sequence
+                .size_hint()
+                .is_some_and(|len| len > MAX_AKITA_AUXILIARY_PROOFS)
+            {
+                return Err(A::Error::custom("too many Akita auxiliary proofs"));
+            }
+            let mut proofs = Vec::with_capacity(
+                sequence
+                    .size_hint()
+                    .unwrap_or(0)
+                    .min(MAX_AKITA_AUXILIARY_PROOFS),
+            );
+            while let Some(proof) = sequence.next_element()? {
+                if proofs.len() == MAX_AKITA_AUXILIARY_PROOFS {
+                    return Err(A::Error::custom("too many Akita auxiliary proofs"));
+                }
+                proofs.push(proof);
+            }
+            Ok(proofs)
+        }
+    }
+
+    deserializer.deserialize_seq(BoundedVisitor(PhantomData))
 }
 
 #[cfg(feature = "akita")]

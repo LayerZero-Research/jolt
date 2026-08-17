@@ -1,5 +1,5 @@
 //! The versioned span taxonomy for the modular prover — **the normative
-//! schema** for every span the pipeline emits ([`TAXONOMY_VERSION`] = 1).
+//! schema** for every span the pipeline emits ([`TAXONOMY_VERSION`] = 2).
 //!
 //! One instrumentation layer, two renderings: the same `tracing` span stream
 //! becomes both the Perfetto-viewable chrome trace and the machine-queryable
@@ -77,7 +77,7 @@
 //!    explicitly after taxonomy changes.
 
 /// Version of the span label set documented in this module.
-pub const TAXONOMY_VERSION: u32 = 1;
+pub const TAXONOMY_VERSION: u32 = 2;
 
 /// The whole-run root span (`crates/jolt-prover/src/prover.rs`). Named
 /// `jolt_prover::prove` rather than bare `prove`, which jolt-dory uses for an
@@ -151,13 +151,14 @@ pub const UNISKIP_SEAM_SPANS: [&str; 4] = [
 /// test's presence assertion (fibonacci has no advice).
 pub const ADVICE_SEAM_SPANS: [&str; 2] = ["commit_advice", "AdviceOpeningEvaluation::evaluate"];
 
-/// Akita component-accounting spans. These separate the main packed
-/// commitment from dense-advice rebuild/open/verify work in benchmark traces.
-/// Advice reduction members retain their generated per-relation spans.
-pub const AKITA_COMPONENT_SPANS: [&str; 3] = [
-    "akita_main_commit",
-    "akita_dense_advice_rebuild",
-    "akita_dense_advice_open",
+/// Akita trusted/main component-accounting spans. The two commits remain
+/// independently attributable, while proving and verification are fused
+/// across the trusted precommit and contextual main group.
+pub const AKITA_COMPONENT_SPANS: [&str; 4] = [
+    "akita_trusted_advice_precommit",
+    "akita_main_commit_with_precommitted",
+    "akita_trusted_main_batched_prove",
+    "akita_trusted_main_batched_verify",
 ];
 
 /// Kernel-seam spans that fire only with committed-program preprocessing.
@@ -208,7 +209,7 @@ pub enum ProverMode {
     Akita,
 }
 
-/// Every v1 label that fires on all proves of the given mode: the presence
+/// Every v2 label that fires on all proves of the given mode: the presence
 /// set the `jolt-prover` profiling smoke test asserts against a freshly
 /// emitted trace.
 ///

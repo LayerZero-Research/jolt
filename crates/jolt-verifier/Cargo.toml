@@ -16,14 +16,18 @@ default = ["transcript-blake2b"]
 # Heap flamegraph visitation of the stage clear-output carriers (profile
 # harness's per-stage SVGs).
 allocative = ["dep:allocative", "jolt-claims/allocative"]
-prover-fixtures = ["jolt-prover-legacy/host"]
+prover-fixtures = [
+  "jolt-prover-legacy/host",
+  "jolt-prover-legacy/akita-test-schedules",
+  "jolt-akita?/akita-test-schedules",
+]
 fs-audit = []
 field-inline = ["jolt-claims/field-inline", "jolt-r1cs/field-inline"]
 zk = ["jolt-prover-legacy/zk"]
 # The packed (lattice/Akita) commitment mode: one packed one-hot witness per
 # commitment object, co-batched reduction opening. Mutually exclusive with
 # `zk` — one PIOP per compiled verifier.
-akita = ["jolt-prover-legacy/akita", "jolt-claims/akita"]
+akita = ["jolt-prover-legacy/akita", "jolt-claims/akita", "dep:jolt-akita"]
 transcript-blake2b = []
 transcript-keccak = []
 transcript-poseidon = []
@@ -38,6 +42,7 @@ jolt-claims-derive.workspace = true
 jolt-crypto.workspace = true
 jolt-field.workspace = true
 jolt-lookup-tables.workspace = true
+jolt-akita = { workspace = true, optional = true }
 jolt-openings.workspace = true
 jolt-poly.workspace = true
 jolt-program = { workspace = true, features = ["serialization"] }
@@ -50,6 +55,7 @@ jolt-verifier-derive.workspace = true
 num-traits.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 bincode.workspace = true

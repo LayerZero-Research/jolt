@@ -31,14 +31,16 @@ mod trace_onehot;
 pub(crate) use akita_schedules::RecursiveSplitSearchPolicy;
 
 pub use adapters::{
-    set_commit_scratch_bytes_per_worker, AkitaBackendFlavor, AkitaBatchProof, AkitaCommitment,
-    AkitaField, AkitaHidingCommitment, AkitaProverHint, AkitaProverSetup, AkitaSetupParams,
-    AkitaVerifierSetup, AKITA_ONE_HOT_K16, AKITA_ONE_HOT_K256,
+    configured_setup_seed_digest, set_commit_scratch_bytes_per_worker, AkitaBackendFlavor,
+    AkitaBatchProof, AkitaCommitment, AkitaField, AkitaHidingCommitment, AkitaProverHint,
+    AkitaProverSetup, AkitaSetupParams, AkitaVerifierSetup, AKITA_ONE_HOT_K16, AKITA_ONE_HOT_K256,
 };
 pub use native_batching::{
     AkitaNativeBatchPolynomials, AkitaNativeBatchStatement, AkitaNativeBatching,
 };
-pub use scheme::{AkitaScheme, TraceOneHotCommitment};
+pub use scheme::{
+    AkitaScheme, GroupOpeningClaim, PrecommittedTraceBatching, TraceOneHotCommitment,
+};
 pub use trace_onehot::{no_selected_row, TraceOneHotRows, TracePackedOneHot};
 
 /// Jolt↔Akita basis-order bridging, exposed so benchmarks measuring the raw

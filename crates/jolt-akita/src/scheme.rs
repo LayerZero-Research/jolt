@@ -1,4 +1,6 @@
+use akita_config::CommitmentConfig;
 use akita_pcs::{ComputeBackendSetup, CpuBackend};
+use akita_types::{AkitaScheduleLookupKey, PolynomialGroupLayout, PrecommittedGroupProfiles};
 use jolt_crypto::Commitment;
 use jolt_field::CanonicalBytes;
 use jolt_openings::{
@@ -45,11 +47,136 @@ pub trait TraceOneHotCommitment: CommitmentScheme {
     fn release_post_commit_residency(setup: &Self::ProverSetup) -> Result<(), OpeningsError>;
 }
 
+/// One physical commitment group's opening claim. Group semantics are fixed
+/// by the argument position of [`PrecommittedTraceBatching`]: trusted advice
+/// first, final trace second.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupOpeningClaim<F, C> {
+    pub commitment: C,
+    pub point: Vec<F>,
+    pub evaluations: Vec<F>,
+}
+
+impl<F, C> GroupOpeningClaim<F, C> {
+    pub fn singleton(commitment: C, point: Vec<F>, evaluation: F) -> Self {
+        Self {
+            commitment,
+            point,
+            evaluations: vec![evaluation],
+        }
+    }
+
+    pub fn new(commitment: C, point: Vec<F>, evaluations: Vec<F>) -> Self {
+        Self {
+            commitment,
+            point,
+            evaluations,
+        }
+    }
+}
+
+/// Jolt's typed two-group Akita path. The trusted group was committed
+/// independently; the trace is committed later under its frozen profile and
+/// both are discharged by one backend proof at independent points.
+pub trait PrecommittedTraceBatching: TraceOneHotCommitment {
+    /// Resolve the exact grouped row before constructing the potentially
+    /// expensive final source.
+    fn validate_trusted_trace_precommit(
+        setup: &Self::ProverSetup,
+        precommitted_commitment: &Self::Output,
+        precommitted_hint: &Self::OpeningHint,
+        final_num_vars: usize,
+    ) -> Result<(), OpeningsError>;
+
+    fn commit_trace_one_hot_with_precommitted(
+        setup: &Self::ProverSetup,
+        layout_digest: [u8; 32],
+        column_capacity: usize,
+        rows: Arc<dyn TraceOneHotRows>,
+        precommitted_hint: &Self::OpeningHint,
+    ) -> Result<(Self::Output, Self::OpeningHint), OpeningsError>;
+
+    fn prove_trusted_trace_batch<T>(
+        setup: &Self::ProverSetup,
+        trusted: GroupOpeningClaim<Self::Field, Self::Output>,
+        trusted_hint: Self::OpeningHint,
+        main: GroupOpeningClaim<Self::Field, Self::Output>,
+        main_hint: Self::OpeningHint,
+        transcript: &mut T,
+    ) -> Result<Self::Proof, OpeningsError>
+    where
+        T: Transcript<Challenge = Self::Field>;
+
+    fn verify_trusted_trace_batch<T>(
+        setup: &Self::VerifierSetup,
+        trusted: &GroupOpeningClaim<Self::Field, Self::Output>,
+        main: &GroupOpeningClaim<Self::Field, Self::Output>,
+        proof: &Self::Proof,
+        transcript: &mut T,
+    ) -> Result<(), OpeningsError>
+    where
+        T: Transcript<Challenge = Self::Field>;
+}
+
+
 impl AkitaScheme {
     /// Returns true when the Akita backend sparse-ring path can represent a
     /// unit-valued sparse polynomial with this multilinear dimension.
     pub fn supports_unit_sparse_dimension(num_vars: usize) -> bool {
         domain_size(num_vars).is_some_and(|size| size >= AKITA_SOURCE_RING_DIMENSION)
+    }
+
+    pub fn validate_trusted_trace_precommit(
+        setup: &AkitaProverSetup,
+        precommitted_commitment: &AkitaCommitment,
+        precommitted_hint: &AkitaProverHint,
+        final_num_vars: usize,
+    ) -> Result<(), OpeningsError> {
+        if &precommitted_hint.commitment != precommitted_commitment {
+            return Err(invalid_batch(
+                "Akita trusted precommit hint does not match its public commitment",
+            ));
+        }
+        let profiles = Self::trusted_precommitted_profiles(setup, precommitted_hint)?;
+        let key = AkitaScheduleLookupKey {
+            final_group: PolynomialGroupLayout::new(final_num_vars, 1),
+            precommitteds: profiles.as_slice().to_vec(),
+        };
+        let resolved = match setup.one_hot_k() {
+            AKITA_ONE_HOT_K256 => {
+                crate::adapters::AkitaOneHotK256Config::resolve_catalog_row_for_key(&key)
+            }
+            AKITA_ONE_HOT_K16 => {
+                #[cfg(feature = "akita-test-schedules")]
+                {
+                    if setup.grouped_fixture() {
+                        crate::adapters::AkitaOneHotK16FixtureConfig::resolve_catalog_row_for_key(
+                            &key,
+                        )
+                    } else {
+                        return Err(invalid_batch(
+                            "K=16 grouped openings require the test fixture catalog",
+                        ));
+                    }
+                }
+                #[cfg(not(feature = "akita-test-schedules"))]
+                {
+                    return Err(invalid_batch(
+                        "K=16 grouped openings require the test fixture catalog",
+                    ));
+                }
+            }
+            _ => unreachable!("one-hot K was validated during setup"),
+        }
+        .map_err(akita_error)?;
+        if resolved.profiles().precommitteds != profiles.as_slice()
+            || resolved.profiles().final_group.group != key.final_group
+        {
+            return Err(invalid_batch(
+                "Akita grouped schedule does not match the trusted prefix and final layout",
+            ));
+        }
+        Ok(())
     }
 
     pub fn commit_group(
@@ -154,6 +281,147 @@ impl AkitaScheme {
         )
     }
 
+    /// Contextual owned one-hot final commit used by the legacy packed path.
+    /// The witness buffers move into the opening hint without cloning.
+    pub fn commit_one_hot_group_owned_with_precommitted(
+        setup: &AkitaProverSetup,
+        layout_digest: [u8; 32],
+        polynomials: Vec<OneHotPolynomial>,
+        precommitted_hint: &AkitaProverHint,
+    ) -> Result<(AkitaCommitment, AkitaProverHint), OpeningsError> {
+        let first = polynomials
+            .first()
+            .ok_or_else(|| invalid_batch("Akita commitment group must contain a polynomial"))?;
+        let num_vars = first.num_vars();
+        Self::validate_commit_shape(setup, num_vars, polynomials.len())?;
+        let backend_polynomials = polynomials
+            .into_iter()
+            .map(|polynomial| {
+                if polynomial.num_vars() != num_vars {
+                    return Err(invalid_batch(format!(
+                        "Akita commitment group mixes {}-variable and {num_vars}-variable polynomials",
+                        polynomial.num_vars()
+                    )));
+                }
+                owned_one_hot_polynomial(polynomial, setup.one_hot_k())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let profiles = Self::trusted_precommitted_profiles(setup, precommitted_hint)?;
+        let (backend_commitment, backend_hint) =
+            Self::commit_one_hot_backend_with_precommitted(setup, &backend_polynomials, &profiles)?;
+        Self::package_commitment(
+            layout_digest,
+            num_vars,
+            backend_commitment,
+            backend_hint,
+            AkitaHintPolynomials::OneHot(backend_polynomials.into()),
+        )
+    }
+
+    /// Commits the prefix-packed trace without constructing padded per-column
+    /// index vectors or Akita's generic one-hot block representation.
+    pub fn commit_trace_one_hot(
+        setup: &AkitaProverSetup,
+        layout_digest: [u8; 32],
+        column_capacity: usize,
+        rows: Arc<dyn TraceOneHotRows>,
+    ) -> Result<(AkitaCommitment, AkitaProverHint), OpeningsError> {
+        let source = TracePackedOneHot::new(
+            setup.one_hot_k(),
+            AKITA_SOURCE_RING_DIMENSION,
+            column_capacity,
+            rows,
+        )
+        .map_err(commit_failed)?;
+        let num_vars = akita_prover::RootPolyMeta::num_vars(&source);
+        Self::validate_commit_shape(setup, num_vars, 1)?;
+        let (backend_prover_setup, prepared_backend_setup) = setup.one_hot_backend()?;
+        let stack = backend_stack(backend_prover_setup, prepared_backend_setup)?;
+        let (backend_commitment, backend_hint) = with_backend_pool(|| match setup.one_hot_k() {
+            AKITA_ONE_HOT_K16 => AkitaOneHotK16BackendScheme::commit(
+                backend_prover_setup,
+                std::slice::from_ref(&source),
+                &stack,
+                akita_prover::GroupContext::scheduler_without_precommitted_groups(),
+            ),
+            AKITA_ONE_HOT_K256 => AkitaOneHotK256BackendScheme::commit(
+                backend_prover_setup,
+                std::slice::from_ref(&source),
+                &stack,
+                akita_prover::GroupContext::scheduler_without_precommitted_groups(),
+            ),
+            _ => unreachable!("the one-hot setup geometry was validated during setup"),
+        })
+        .map(split_commit_output)
+        .map_err(commit_failed)?;
+        Self::package_commitment(
+            layout_digest,
+            num_vars,
+            backend_commitment,
+            backend_hint,
+            AkitaHintPolynomials::TraceOneHot(vec![source].into()),
+        )
+    }
+
+    /// Contextual final commit for the fixed ordered
+    /// `[dense precommit, streamed trace final]` root.
+    pub fn commit_trace_one_hot_with_precommitted(
+        setup: &AkitaProverSetup,
+        layout_digest: [u8; 32],
+        column_capacity: usize,
+        rows: Arc<dyn TraceOneHotRows>,
+        precommitted_hint: &AkitaProverHint,
+    ) -> Result<(AkitaCommitment, AkitaProverHint), OpeningsError> {
+        let profiles = Self::trusted_precommitted_profiles(setup, precommitted_hint)?;
+
+        let source = TracePackedOneHot::new(
+            setup.one_hot_k(),
+            AKITA_SOURCE_RING_DIMENSION,
+            column_capacity,
+            rows,
+        )
+        .map_err(commit_failed)?;
+        let num_vars = akita_prover::RootPolyMeta::num_vars(&source);
+        Self::validate_commit_shape(setup, num_vars, 1)?;
+        let (backend_prover_setup, prepared_backend_setup) = setup.one_hot_backend()?;
+        let stack = backend_stack(backend_prover_setup, prepared_backend_setup)?;
+        let (backend_commitment, backend_hint) = with_backend_pool(|| match setup.one_hot_k() {
+            AKITA_ONE_HOT_K16 => {
+                #[cfg(feature = "akita-test-schedules")]
+                if setup.grouped_fixture() {
+                    return crate::adapters::AkitaOneHotK16FixtureBackendScheme::commit(
+                        backend_prover_setup,
+                        std::slice::from_ref(&source),
+                        &stack,
+                        akita_prover::GroupContext::scheduler_with_precommitted_groups(&profiles),
+                    );
+                }
+                AkitaOneHotK16BackendScheme::commit(
+                    backend_prover_setup,
+                    std::slice::from_ref(&source),
+                    &stack,
+                    akita_prover::GroupContext::scheduler_with_precommitted_groups(&profiles),
+                )
+            }
+            AKITA_ONE_HOT_K256 => AkitaOneHotK256BackendScheme::commit(
+                backend_prover_setup,
+                std::slice::from_ref(&source),
+                &stack,
+                akita_prover::GroupContext::scheduler_with_precommitted_groups(&profiles),
+            ),
+            _ => unreachable!("the one-hot setup geometry was validated during setup"),
+        })
+        .map(split_commit_output)
+        .map_err(commit_failed)?;
+        Self::package_commitment(
+            layout_digest,
+            num_vars,
+            backend_commitment,
+            backend_hint,
+            AkitaHintPolynomials::TraceOneHot(vec![source].into()),
+        )
+    }
+
     /// Opens committed one-hot columns directly from their hint. The hint
     /// owns the witnesses after [`Self::commit_one_hot_group_owned`], so no
     /// second Jolt-side allocation is required.
@@ -212,6 +480,71 @@ impl AkitaScheme {
         })
         .map(split_commit_output)
         .map_err(commit_failed)
+    }
+
+    fn commit_one_hot_backend_with_precommitted(
+        setup: &AkitaProverSetup,
+        polynomials: &[AkitaBackendOneHotPoly],
+        profiles: &PrecommittedGroupProfiles,
+    ) -> Result<(AkitaBackendCommitment, AkitaBackendHint), OpeningsError> {
+        let (backend_prover_setup, prepared_backend_setup) = setup.one_hot_backend()?;
+        let stack = backend_stack(backend_prover_setup, prepared_backend_setup)?;
+        with_backend_pool(|| match setup.one_hot_k() {
+            AKITA_ONE_HOT_K16 => {
+                #[cfg(feature = "akita-test-schedules")]
+                if setup.grouped_fixture() {
+                    return crate::adapters::AkitaOneHotK16FixtureBackendScheme::commit(
+                        backend_prover_setup,
+                        polynomials,
+                        &stack,
+                        akita_prover::GroupContext::scheduler_with_precommitted_groups(profiles),
+                    );
+                }
+                AkitaOneHotK16BackendScheme::commit(
+                    backend_prover_setup,
+                    polynomials,
+                    &stack,
+                    akita_prover::GroupContext::scheduler_with_precommitted_groups(profiles),
+                )
+            }
+            AKITA_ONE_HOT_K256 => AkitaOneHotK256BackendScheme::commit(
+                backend_prover_setup,
+                polynomials,
+                &stack,
+                akita_prover::GroupContext::scheduler_with_precommitted_groups(profiles),
+            ),
+            _ => unreachable!("the one-hot setup geometry was validated during setup"),
+        })
+        .map(split_commit_output)
+        .map_err(commit_failed)
+    }
+
+    fn trusted_precommitted_profiles(
+        setup: &AkitaProverSetup,
+        precommitted_hint: &AkitaProverHint,
+    ) -> Result<PrecommittedGroupProfiles, OpeningsError> {
+        if setup.max_total_batch_polys() < 2 {
+            return Err(invalid_batch(format!(
+                "Akita grouped trace opening requires total polynomial capacity 2, setup has {}",
+                setup.max_total_batch_polys()
+            )));
+        }
+        if precommitted_hint.commitment.backend_flavor != crate::adapters::AkitaBackendFlavor::Dense
+            || precommitted_hint.commitment.poly_count != 1
+            || !matches!(
+                precommitted_hint.polynomials,
+                AkitaHintPolynomials::Dense(_)
+            )
+        {
+            return Err(invalid_batch(
+                "Akita trace precommit must be one dense trusted-advice polynomial",
+            ));
+        }
+        let (precommitted_group, _) = precommitted_hint.backend.as_ref().ok_or_else(|| {
+            invalid_batch("Akita trusted precommit is missing backend opening data")
+        })?;
+        PrecommittedGroupProfiles::from_profiles(vec![precommitted_group.profile])
+            .map_err(akita_error)
     }
 
     /// Validates the commitment shape before handing values to Akita.
@@ -348,6 +681,72 @@ impl TraceOneHotCommitment for AkitaScheme {
     }
 }
 
+impl PrecommittedTraceBatching for AkitaScheme {
+    fn validate_trusted_trace_precommit(
+        setup: &Self::ProverSetup,
+        precommitted_commitment: &Self::Output,
+        precommitted_hint: &Self::OpeningHint,
+        final_num_vars: usize,
+    ) -> Result<(), OpeningsError> {
+        Self::validate_trusted_trace_precommit(
+            setup,
+            precommitted_commitment,
+            precommitted_hint,
+            final_num_vars,
+        )
+    }
+
+    fn commit_trace_one_hot_with_precommitted(
+        setup: &Self::ProverSetup,
+        layout_digest: [u8; 32],
+        column_capacity: usize,
+        rows: Arc<dyn TraceOneHotRows>,
+        precommitted_hint: &Self::OpeningHint,
+    ) -> Result<(Self::Output, Self::OpeningHint), OpeningsError> {
+        Self::commit_trace_one_hot_with_precommitted(
+            setup,
+            layout_digest,
+            column_capacity,
+            rows,
+            precommitted_hint,
+        )
+    }
+
+    fn prove_trusted_trace_batch<T>(
+        setup: &Self::ProverSetup,
+        trusted: GroupOpeningClaim<Self::Field, Self::Output>,
+        trusted_hint: Self::OpeningHint,
+        main: GroupOpeningClaim<Self::Field, Self::Output>,
+        main_hint: Self::OpeningHint,
+        transcript: &mut T,
+    ) -> Result<Self::Proof, OpeningsError>
+    where
+        T: Transcript<Challenge = Self::Field>,
+    {
+        AkitaNativeBatching::prove_trusted_trace_batch(
+            setup,
+            trusted,
+            trusted_hint,
+            main,
+            main_hint,
+            transcript,
+        )
+    }
+
+    fn verify_trusted_trace_batch<T>(
+        setup: &Self::VerifierSetup,
+        trusted: &GroupOpeningClaim<Self::Field, Self::Output>,
+        main: &GroupOpeningClaim<Self::Field, Self::Output>,
+        proof: &Self::Proof,
+        transcript: &mut T,
+    ) -> Result<(), OpeningsError>
+    where
+        T: Transcript<Challenge = Self::Field>,
+    {
+        AkitaNativeBatching::verify_trusted_trace_batch(setup, trusted, main, proof, transcript)
+    }
+}
+
 struct CommittedOneHotShape {
     num_vars: usize,
 }
@@ -393,29 +792,27 @@ impl CommitmentScheme for AkitaScheme {
         );
         let one_hot_log_k = validate_one_hot_k(params.one_hot_k)
             .map_err(|err| OpeningsError::InvalidSetup(err.to_string()))?;
-        let (backend_prover_setup, prepared_backend_setup, backend_verifier_setup) =
-            if params.one_hot_only {
-                (None, None, None)
-            } else {
-                let backend_prover_setup = with_backend_pool(|| {
-                    AkitaBackendScheme::setup_prover(
-                        params.max_num_vars,
-                        params.max_num_polys_per_commitment_group,
-                    )
-                })
-                .map_err(|err| invalid_setup(&err))?;
-                let prepared_backend_setup =
-                    with_backend_pool(|| CpuBackend::DEFAULT.prepare_setup(&backend_prover_setup))
-                        .map_err(|err| invalid_setup(&err))?;
-                let backend_verifier_setup =
-                    with_backend_pool(|| AkitaBackendScheme::setup_verifier(&backend_prover_setup))
-                        .map_err(|err| invalid_setup(&err))?;
-                (
-                    Some(std::sync::Arc::new(backend_prover_setup)),
-                    Some(std::sync::Arc::new(prepared_backend_setup)),
-                    Some(backend_verifier_setup),
-                )
-            };
+        let (backend_prover_setup, prepared_backend_setup, backend_verifier_setup) = if params
+            .one_hot_only
+        {
+            (None, None, None)
+        } else {
+            let backend_prover_setup = with_backend_pool(|| {
+                AkitaBackendScheme::setup_prover(params.max_num_vars, params.max_total_batch_polys)
+            })
+            .map_err(|err| invalid_setup(&err))?;
+            let prepared_backend_setup =
+                with_backend_pool(|| CpuBackend::DEFAULT.prepare_setup(&backend_prover_setup))
+                    .map_err(|err| invalid_setup(&err))?;
+            let backend_verifier_setup =
+                with_backend_pool(|| AkitaBackendScheme::setup_verifier(&backend_prover_setup))
+                    .map_err(|err| invalid_setup(&err))?;
+            (
+                Some(std::sync::Arc::new(backend_prover_setup)),
+                Some(std::sync::Arc::new(prepared_backend_setup)),
+                Some(backend_verifier_setup),
+            )
+        };
         let (
             one_hot_backend_prover_setup,
             prepared_one_hot_backend_setup,
@@ -424,14 +821,18 @@ impl CommitmentScheme for AkitaScheme {
             let backend_prover_setup = crate::adapters::one_hot_setup_prover(
                 params.one_hot_k,
                 params.max_num_vars,
-                params.max_num_polys_per_commitment_group,
+                params.max_total_batch_polys,
+                params.grouped_fixture,
             )
             .map_err(|err| invalid_setup(&err))?;
             let prepared_backend_setup =
                 with_backend_pool(|| CpuBackend::DEFAULT.prepare_setup(&backend_prover_setup))
                     .map_err(|err| invalid_setup(&err))?;
-            let backend_verifier_setup =
-                crate::adapters::one_hot_setup_verifier(params.one_hot_k, &backend_prover_setup)?;
+            let backend_verifier_setup = crate::adapters::one_hot_setup_verifier(
+                params.one_hot_k,
+                params.grouped_fixture,
+                &backend_prover_setup,
+            )?;
             (
                 Some(std::sync::Arc::new(backend_prover_setup)),
                 Some(std::sync::Arc::new(prepared_backend_setup)),
@@ -443,8 +844,10 @@ impl CommitmentScheme for AkitaScheme {
         let verifier = AkitaVerifierSetup {
             max_num_vars: params.max_num_vars,
             max_num_polys_per_commitment_group: params.max_num_polys_per_commitment_group,
+            max_total_batch_polys: params.max_total_batch_polys,
             default_layout_digest: params.default_layout_digest,
             one_hot_k: params.one_hot_k,
+            grouped_fixture: params.grouped_fixture,
             backend_cache: Default::default(),
         };
         verifier.prime_backend_cache(backend_verifier_setup, one_hot_backend_verifier_setup);
@@ -742,8 +1145,10 @@ mod tests {
         let setup = AkitaVerifierSetup {
             max_num_vars: 4,
             max_num_polys_per_commitment_group: 1,
+            max_total_batch_polys: 1,
             default_layout_digest: [7; 32],
             one_hot_k: AKITA_ONE_HOT_K256,
+            grouped_fixture: false,
             backend_cache: Default::default(),
         };
         let mut baseline = Blake2bTranscript::<AkitaField>::new(b"akita-setup-key-test");

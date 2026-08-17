@@ -23,7 +23,9 @@ use common::jolt_device::JoltDevice;
 use jolt_crypto::VectorCommitment;
 use jolt_field::{CanonicalBytes, Field};
 use jolt_kernels::{JoltBackend, KernelSlots, PrepareKernel, ProofSession, ReferenceBackend};
-use jolt_openings::{CommitmentScheme, GroupSetupMetadata, TransparentObjectSetup};
+use jolt_openings::{
+    CommitmentScheme, GroupCommitmentMetadata, GroupSetupMetadata, TransparentObjectSetup,
+};
 use jolt_transcript::{AppendToTranscript, Transcript};
 use jolt_verifier::proof::JoltProof;
 use jolt_verifier::stages::stage8::reconstruction::{
@@ -200,12 +202,12 @@ where
 /// opening).
 ///
 /// `trusted_advice` is the precommitted trusted-advice object, built out of
-/// band and passed exactly when the guest consumes trusted advice; its dense
-/// word polynomial and transparent setup are re-derived at prove time from the
-/// public advice shape and cross-checked against the passed commitment. The
-/// precommitted `ProgramOneHot` objects ride the preprocessing
-/// ([`crate::CommittedProgramProverData::program_one_hot`]); stage 0
-/// cross-checks their commitments against the verifier preprocessing
+/// band and passed exactly when the guest consumes trusted advice. Its public
+/// commitment reaches the verifier separately; the object's retained source,
+/// frozen profile, and opening hint are what let stage 8 batch the trusted
+/// opening with `OneHotTrace`. The precommitted `ProgramOneHot` objects ride
+/// the preprocessing ([`crate::CommittedProgramProverData::program_one_hot`]);
+/// stage 0 cross-checks their commitments against the verifier preprocessing
 /// fail-closed. Untrusted advice needs no input — its dense word polynomial is
 /// committed at prove time from the public advice bytes.
 pub fn prove<F, PCS, VC, T, W>(
@@ -218,9 +220,12 @@ pub fn prove<F, PCS, VC, T, W>(
 ) -> Result<JoltProof<PCS, VC>, ProverError<F>>
 where
     F: Field + CanonicalBytes + AppendToTranscript,
-    PCS: CommitmentScheme<Field = F> + TransparentObjectSetup + jolt_akita::TraceOneHotCommitment,
+    PCS: CommitmentScheme<Field = F>
+        + TransparentObjectSetup
+        + jolt_akita::TraceOneHotCommitment
+        + jolt_akita::PrecommittedTraceBatching,
     PCS::ProverSetup: GroupSetupMetadata,
-    PCS::Output: Clone + PartialEq + AppendToTranscript,
+    PCS::Output: Clone + PartialEq + AppendToTranscript + GroupCommitmentMetadata,
     VC: VectorCommitment<Field = F>,
     VC::Output: Clone + AppendToTranscript,
     T: Transcript<Challenge = F>,

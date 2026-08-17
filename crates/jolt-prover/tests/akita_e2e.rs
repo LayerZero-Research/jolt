@@ -241,7 +241,6 @@ mod muldiv {
             pcs_setup: object_setup,
             committed_program: None,
         };
-
         let backend = akita::JoltAkitaBackend::optimized();
         let proof = akita::prove::<AkitaField, AkitaScheme, AkitaVc, AkitaTranscript, _>(
             &backend,
@@ -373,7 +372,6 @@ mod muldiv {
             pcs_setup: object_setup,
             committed_program: None,
         };
-
         let backend = akita::JoltAkitaBackend::optimized();
         let proof = akita::prove::<AkitaField, AkitaScheme, AkitaVc, AkitaTranscript, _>(
             &backend,
@@ -424,10 +422,26 @@ mod advice {
     /// guest instead of the merkle leaves).
     #[test]
     fn advice_e2e_akita() {
+        run_advice_e2e_akita(true);
+    }
+
+    /// Phase 1 retains untrusted advice as an auxiliary proof even when no
+    /// trusted precommit is present.
+    #[test]
+    fn untrusted_only_advice_e2e_akita() {
+        run_advice_e2e_akita(false);
+    }
+
+    fn run_advice_e2e_akita(with_trusted: bool) {
         let mut program = host::Program::new("advice-consumer-guest");
-        let inputs = postcard::to_stdvec(&12u64).expect("serialize inputs");
+        let inputs = postcard::to_stdvec(&(if with_trusted { 12u64 } else { 5u64 }))
+            .expect("serialize inputs");
         let untrusted_advice = postcard::to_stdvec(&5u64).expect("serialize untrusted advice");
-        let trusted_advice = postcard::to_stdvec(&7u64).expect("serialize trusted advice");
+        let trusted_advice = if with_trusted {
+            postcard::to_stdvec(&7u64).expect("serialize trusted advice")
+        } else {
+            Vec::new()
+        };
         let guest =
             support::packed_guest(&mut program, &inputs, &untrusted_advice, &trusted_advice);
 
@@ -440,19 +454,16 @@ mod advice {
 
         // The trusted-advice object commits at preprocessing time, out of
         // band; its commitment goes to both the prover and the verifier.
-        let trusted_object = commit_trusted_advice_dense(
-            &trusted_advice,
-            guest.io_device.memory_layout.max_trusted_advice_size as usize,
-        )
-        .expect("trusted advice object must commit");
-        let trusted_commitment = trusted_object.commitment.clone();
-        let modular_trusted = jolt_prover::akita::witness::commit_advice_one_hot::<AkitaScheme>(
-            jolt_claims::protocols::jolt::JoltAdviceKind::Trusted,
-            &trusted_advice,
-            guest.io_device.memory_layout.max_trusted_advice_size as usize,
-        )
-        .expect("modular trusted advice object must commit");
-        assert_eq!(modular_trusted.commitment, trusted_commitment);
+        let trusted_object = with_trusted.then(|| {
+            commit_trusted_advice_dense(
+                &trusted_advice,
+                guest.io_device.memory_layout.max_trusted_advice_size as usize,
+            )
+            .expect("trusted advice object must commit")
+        });
+        let trusted_commitment = trusted_object
+            .as_ref()
+            .map(|object| object.commitment.clone());
 
         let legacy_prover: AkitaPackedProver<'_> = JoltCpuProver::gen_from_elf(
             &legacy_preprocessing,
@@ -492,7 +503,7 @@ mod advice {
         let padded_output = support::pad_trace(trace_output, config.trace_length);
         let witness = TraceBackend::new(
             support::witness_config(&config)
-                .include_trusted_advice(true)
+                .include_trusted_advice(with_trusted)
                 .include_untrusted_advice(true),
             JoltVmWitnessInputs::new(&jolt_program, &program_preprocessing, padded_output),
         );
@@ -502,38 +513,73 @@ mod advice {
             committed_program: None,
         };
 
+        let modular_trusted_object =
+            trusted_object
+                .as_ref()
+                .map(|object| akita::witness::DenseAdviceObject {
+                    plan: object.plan.clone(),
+                    polynomial: object.polynomial.clone(),
+                    commitment: object.commitment.clone(),
+                    hint: object.hint.clone(),
+                    setup: object.setup.clone(),
+                    word_vars: object.words.len().ilog2() as usize,
+                });
+
         let backend = akita::JoltAkitaBackend::optimized();
         let proof = akita::prove::<AkitaField, AkitaScheme, AkitaVc, AkitaTranscript, _>(
             &backend,
             &prover_preprocessing,
             &config,
-            Some(&modular_trusted),
+            modular_trusted_object.as_ref(),
             &witness,
             &public_io,
         )
         .expect("packed prover should produce a verifier-native proof");
         assert!(proof.untrusted_advice_commitment.is_some());
         assert!(proof.stages.reconstruction_sumcheck_proof.is_none());
-        // OneHotTrace is discharged by its native same-point batch. The two
-        // advice commitment objects remain in the auxiliary packed opening.
-        assert_eq!(proof.joint_opening_proof.auxiliary.len(), 2);
+        // Trusted advice is fused into `main_batch`; only untrusted advice
+        // remains an auxiliary opening.
+        assert_eq!(proof.joint_opening_proof.auxiliary.len(), 1);
 
         let verify = |proof: &AkitaJoltProof| {
             jolt_verifier::verify::<AkitaField, AkitaScheme, AkitaVc, AkitaTranscript>(
                 &prover_preprocessing.verifier,
                 &public_io,
                 proof,
-                Some(&trusted_commitment),
+                trusted_commitment.as_ref(),
             )
         };
         verify(&proof).expect("packed verifier should accept the packed proof");
 
+        assert!(
+            jolt_verifier::verify::<AkitaField, AkitaScheme, AkitaVc, AkitaTranscript>(
+                &prover_preprocessing.verifier,
+                &public_io,
+                &proof,
+                proof.untrusted_advice_commitment.as_ref(),
+            )
+            .is_err(),
+            "substituting the untrusted commitment for the externally supplied trusted commitment must be rejected"
+        );
+
         let mut tampered = proof.clone();
-        tampered.joint_opening_proof.auxiliary.swap(0, 1);
+        let mut encoded_main_batch = serde_json::to_value(&tampered.joint_opening_proof.main_batch)
+            .expect("serialize the main batch opening");
+        let schedule_selection = encoded_main_batch
+            .get_mut("serialized_schedule_selection")
+            .and_then(serde_json::Value::as_array_mut)
+            .expect("main batch carries a byte-encoded schedule selection");
+        let first_byte = schedule_selection[0]
+            .as_u64()
+            .expect("schedule selection bytes serialize as integers");
+        schedule_selection[0] = serde_json::Value::from(first_byte ^ 1);
+        tampered.joint_opening_proof.main_batch = serde_json::from_value(encoded_main_batch)
+            .expect("deserialize the tampered main batch opening");
         assert!(
             verify(&tampered).is_err(),
-            "reordered advice proofs must reject"
+            "a tampered main-batch schedule selection must be rejected"
         );
+
         let mut tampered = proof.clone();
         let _dropped = tampered.joint_opening_proof.auxiliary.pop();
         assert!(
@@ -581,13 +627,6 @@ mod advice {
         )
         .expect("trusted advice object must commit");
         let trusted_commitment = trusted_object.commitment.clone();
-        let modular_trusted = jolt_prover::akita::witness::commit_advice_one_hot::<AkitaScheme>(
-            jolt_claims::protocols::jolt::JoltAdviceKind::Trusted,
-            &trusted_advice,
-            guest.io_device.memory_layout.max_trusted_advice_size as usize,
-        )
-        .expect("modular trusted advice object must commit");
-        assert_eq!(modular_trusted.commitment, trusted_commitment);
 
         let legacy_prover: AkitaPackedProver<'_> = JoltCpuProver::gen_from_elf(
             &legacy_preprocessing,
@@ -633,13 +672,21 @@ mod advice {
             pcs_setup: object_setup,
             committed_program: None,
         };
+        let modular_trusted_object = akita::witness::DenseAdviceObject {
+            plan: trusted_object.plan.clone(),
+            polynomial: trusted_object.polynomial.clone(),
+            commitment: trusted_object.commitment.clone(),
+            hint: trusted_object.hint.clone(),
+            setup: trusted_object.setup.clone(),
+            word_vars: trusted_object.words.len().ilog2() as usize,
+        };
 
         let backend = akita::JoltAkitaBackend::optimized();
         let proof = akita::prove::<AkitaField, AkitaScheme, AkitaVc, AkitaTranscript, _>(
             &backend,
             &prover_preprocessing,
             &config,
-            Some(&modular_trusted),
+            Some(&modular_trusted_object),
             &witness,
             &public_io,
         )

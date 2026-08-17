@@ -375,6 +375,39 @@ pub fn commit_advice_dense<PCS>(
 where
     PCS: CommitmentScheme + TransparentObjectSetup,
 {
+    let setup = advice_dense_setup::<PCS>(kind, max_advice_bytes)?;
+    commit_advice_dense_with_setup::<PCS>(kind, advice_bytes, max_advice_bytes, setup)
+}
+
+/// Derives the transparent setup for one dense advice object without
+/// assembling or committing its witness.
+pub fn advice_dense_setup<PCS>(
+    kind: JoltAdviceKind,
+    max_advice_bytes: usize,
+) -> Result<PCS::ProverSetup, ProverError<PCS::Field>>
+where
+    PCS: CommitmentScheme + TransparentObjectSetup,
+{
+    let word_count =
+        common::advice::advice_word_capacity(max_advice_bytes).map_err(commit_failed)?;
+    let word_vars = word_count.ilog2() as usize;
+    let plan = advice_dense_packing_plan(kind, word_vars).map_err(commit_failed)?;
+    PCS::transparent_object_setup(plan.packing().packed_num_vars(), plan.layout_digest())
+        .map(|(setup, _)| setup)
+        .map_err(commit_failed)
+}
+
+/// Assembles and commits a dense advice object under a setup derived earlier
+/// by [`advice_dense_setup`].
+pub fn commit_advice_dense_with_setup<PCS>(
+    kind: JoltAdviceKind,
+    advice_bytes: &[u8],
+    max_advice_bytes: usize,
+    setup: PCS::ProverSetup,
+) -> Result<DenseAdviceObject<PCS>, ProverError<PCS::Field>>
+where
+    PCS: CommitmentScheme + TransparentObjectSetup,
+{
     let words = common::advice::canonical_advice_words(advice_bytes, max_advice_bytes)
         .map_err(commit_failed)?;
     let word_vars = words.len().ilog2() as usize;
@@ -385,9 +418,6 @@ where
         *evaluation = PCS::Field::from_u64(word);
     }
     let polynomial = Polynomial::new(evaluations);
-    let (setup, _verifier_setup) =
-        PCS::transparent_object_setup(physical_vars, plan.layout_digest())
-            .map_err(commit_failed)?;
     let (commitment, hint) = PCS::commit(&polynomial, &setup).map_err(commit_failed)?;
     Ok(DenseAdviceObject {
         plan,

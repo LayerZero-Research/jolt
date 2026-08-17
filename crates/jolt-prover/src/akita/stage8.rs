@@ -1,22 +1,15 @@
-//! Packed stage 8: the final opening — the `OneHotTrace` prefix-packed
-//! claim reduction and its one native Akita opening, then one packed opening
-//! per auxiliary commitment object (advice byte columns, the `ProgramOneHot`
-//! objects).
-//!
-//! Pure orchestration mirroring `stage8::packed::verify`: the per-column
-//! leaf claims come from the verifier's promoted `leaf_claims` resolution
-//! over the stage-7 and reconstruction outputs, the packed `OneHotTrace`
-//! statement from the promoted `one_hot_trace_packed_claims` assembly, and
-//! each auxiliary object's claims from the promoted `object_leaf_claims`.
-//! The prover-only work is supplying the packed polynomial's retained
-//! committed object (stage 0's commit hint) and the auxiliary objects'
-//! witnesses.
+//! Akita's final opening: one heterogeneous trusted-advice/main-trace opening,
+//! followed by independently pointed untrusted-advice and program objects.
 
-use jolt_claims::protocols::jolt::lattice::{OneHotTraceShape, ONE_HOT_TRACE_LAYOUT};
-use jolt_claims::protocols::jolt::{JoltAdviceKind, JoltRelationId};
+use std::collections::BTreeMap;
+
+use jolt_akita::{GroupOpeningClaim, PrecommittedTraceBatching};
+use jolt_claims::protocols::jolt::lattice::packing::{OneHotTraceShape, PrefixPackedObjectPlan};
+use jolt_claims::protocols::jolt::lattice::strategy::ONE_HOT_TRACE_LAYOUT;
+use jolt_claims::protocols::jolt::{JoltAdviceKind, JoltCommittedPolynomial, JoltRelationId};
 use jolt_crypto::VectorCommitment;
 use jolt_field::Field;
-use jolt_openings::CommitmentScheme;
+use jolt_openings::{CommitmentScheme, EvaluationClaim};
 use jolt_poly::MultilinearPoly;
 use jolt_transcript::{AppendToTranscript, Transcript};
 use jolt_verifier::proof::AkitaJointOpeningProof;
@@ -37,17 +30,53 @@ fn batch_failed<F: Field>(reason: impl ToString) -> ProverError<F> {
     })
 }
 
-/// Prove packed stage 8 on `transcript` (positioned at the reconstruction
-/// boundary): the `OneHotTrace` prefix-packed reduction and its native
-/// opening from the group hint, then the auxiliary packed openings in
-/// canonical object order (untrusted advice, trusted advice, the
-/// `ProgramOneHot` objects).
+fn reduce_auxiliary<F, T>(
+    plan: &PrefixPackedObjectPlan,
+    leaves: &BTreeMap<JoltCommittedPolynomial, EvaluationClaim<F>>,
+    transcript: &mut T,
+) -> Result<EvaluationClaim<F>, ProverError<F>>
+where
+    F: Field,
+    T: Transcript<Challenge = F>,
+{
+    let claims = object_leaf_claims(plan, leaves).map_err(ProverError::Verifier)?;
+    let semantic = plan.packed_claims(&claims).map_err(batch_failed::<F>)?;
+    plan.packing()
+        .reduce_claims(&semantic, transcript)
+        .map_err(batch_failed::<F>)
+}
+
+fn open_reduced_auxiliary<F, PCS, T, P>(
+    polynomial: &P,
+    setup: &PCS::ProverSetup,
+    hint: PCS::OpeningHint,
+    physical: &EvaluationClaim<F>,
+    transcript: &mut T,
+) -> Result<PCS::Proof, ProverError<F>>
+where
+    F: Field,
+    PCS: CommitmentScheme<Field = F>,
+    P: MultilinearPoly<F> + ?Sized,
+    T: Transcript<Challenge = F>,
+{
+    PCS::open(
+        polynomial,
+        physical.point.as_slice(),
+        physical.value,
+        setup,
+        Some(hint),
+        transcript,
+    )
+    .map_err(batch_failed::<F>)
+}
+
 #[expect(clippy::too_many_arguments, reason = "the stage's upstream carriers")]
 #[tracing::instrument(skip_all)]
 pub fn prove_stage8<F, PCS, VC, T>(
     checked: &CheckedInputs,
     config: &ProverConfig,
     preprocessing: &JoltProverPreprocessing<PCS, VC>,
+    one_hot_trace_commitment: &PCS::Output,
     one_hot_trace_hint: PCS::OpeningHint,
     untrusted_advice: Option<&DenseAdviceObject<PCS>>,
     trusted_advice: Option<&DenseAdviceObject<PCS>>,
@@ -59,7 +88,7 @@ pub fn prove_stage8<F, PCS, VC, T>(
 ) -> Result<AkitaJointOpeningProof<PCS::Proof>, ProverError<F>>
 where
     F: Field,
-    PCS: CommitmentScheme<Field = F>,
+    PCS: CommitmentScheme<Field = F> + PrecommittedTraceBatching,
     PCS::Output: Clone + AppendToTranscript,
     VC: VectorCommitment<Field = F>,
     T: Transcript<Challenge = F>,
@@ -94,78 +123,84 @@ where
         .packing()
         .reduce_claims(&packed_claims, transcript)
         .map_err(batch_failed::<F>)?;
-    let one_hot_trace = tracing::info_span!(
-        "CommitmentScheme::open_batch_from_hint",
-        packed_num_vars = plan.packing().packed_num_vars()
-    )
-    .in_scope(|| {
-        PCS::open_batch_from_hint(
-            packed_claim.point.as_slice(),
-            std::slice::from_ref(&packed_claim.value),
-            &preprocessing.pcs_setup,
-            one_hot_trace_hint,
-            transcript,
-        )
-    })
-    .map_err(batch_failed::<F>)?;
 
-    // The auxiliary packed objects in canonical order: untrusted advice,
-    // trusted advice, the ProgramOneHot objects (bytecode, then image). Each
-    // reduces its own claims on the transcript and opens natively.
-    let open_object = |plan: &jolt_claims::protocols::jolt::lattice::PrefixPackedObjectPlan,
-                       polynomial: &dyn MultilinearPoly<F>,
-                       setup: &PCS::ProverSetup,
-                       hint: PCS::OpeningHint,
-                       transcript: &mut T|
-     -> Result<PCS::Proof, ProverError<F>> {
-        let claims = object_leaf_claims(plan, &leaves).map_err(ProverError::Verifier)?;
-        let semantic_claims = plan.packed_claims(&claims).map_err(batch_failed::<F>)?;
-        let physical_claim = plan
-            .packing()
-            .reduce_claims(&semantic_claims, transcript)
-            .map_err(batch_failed::<F>)?;
-        PCS::open(
-            polynomial,
-            physical_claim.point.as_slice(),
-            physical_claim.value,
-            setup,
-            Some(hint),
-            transcript,
-        )
-        .map_err(batch_failed::<F>)
-    };
+    // Preserve the protocol's main/untrusted/trusted prefix-reduction order.
+    // The untrusted proof itself remains auxiliary and is emitted only after
+    // the trusted/main group proof.
+    let untrusted_physical = untrusted_advice
+        .map(|object| reduce_auxiliary(&object.plan, &leaves, transcript))
+        .transpose()?;
+    let trusted_physical = trusted_advice
+        .map(|object| reduce_auxiliary(&object.plan, &leaves, transcript))
+        .transpose()?;
 
-    let mut auxiliary = Vec::new();
-    for (kind, object) in [
-        (JoltAdviceKind::Untrusted, untrusted_advice),
-        (JoltAdviceKind::Trusted, trusted_advice),
-    ]
-    .into_iter()
-    .filter_map(|(kind, object)| object.map(|object| (kind, object)))
-    {
-        auxiliary.push(
-            tracing::info_span!("akita_dense_advice_open", kind = ?kind).in_scope(|| {
-                open_object(
-                    &object.plan,
-                    &object.polynomial,
-                    &object.setup,
-                    object.hint.clone(),
+    let main_batch =
+        if let (Some(trusted), Some(trusted_claim)) = (trusted_advice, trusted_physical.as_ref()) {
+            let trusted_group = GroupOpeningClaim::new(
+                trusted.commitment.clone(),
+                trusted_claim.point.as_slice().to_vec(),
+                vec![trusted_claim.value],
+            );
+            let main_group = GroupOpeningClaim::new(
+                one_hot_trace_commitment.clone(),
+                packed_claim.point.as_slice().to_vec(),
+                vec![packed_claim.value],
+            );
+            tracing::info_span!("akita_trusted_main_batched_prove").in_scope(|| {
+                PCS::prove_trusted_trace_batch(
+                    &preprocessing.pcs_setup,
+                    trusted_group,
+                    trusted.hint.clone(),
+                    main_group,
+                    one_hot_trace_hint,
                     transcript,
                 )
-            })?,
+                .map_err(batch_failed::<F>)
+            })?
+        } else {
+            tracing::info_span!(
+                "CommitmentScheme::open_batch_from_hint",
+                packed_num_vars = plan.packing().packed_num_vars()
+            )
+            .in_scope(|| {
+                PCS::open_batch_from_hint(
+                    packed_claim.point.as_slice(),
+                    std::slice::from_ref(&packed_claim.value),
+                    &preprocessing.pcs_setup,
+                    one_hot_trace_hint,
+                    transcript,
+                )
+            })
+            .map_err(batch_failed::<F>)?
+        };
+
+    let mut auxiliary = Vec::new();
+    if let (Some(object), Some(claim)) = (untrusted_advice, untrusted_physical.as_ref()) {
+        auxiliary.push(
+            tracing::info_span!("akita_dense_advice_open", kind = ?JoltAdviceKind::Untrusted)
+                .in_scope(|| {
+                    open_reduced_auxiliary::<F, PCS, T, _>(
+                        &object.polynomial,
+                        &object.setup,
+                        object.hint.clone(),
+                        claim,
+                        transcript,
+                    )
+                })?,
         );
     }
     if let Some(program) = program {
         for object in &program.objects {
-            auxiliary.push(open_object(
-                &object.plan,
+            let physical = reduce_auxiliary(&object.plan, &leaves, transcript)?;
+            auxiliary.push(open_reduced_auxiliary::<F, PCS, T, _>(
                 &object.witness,
                 &object.setup,
                 object.hint.clone(),
+                &physical,
                 transcript,
             )?);
         }
     }
 
-    Ok(AkitaJointOpeningProof::new(one_hot_trace, auxiliary))
+    Ok(AkitaJointOpeningProof::new(main_batch, auxiliary))
 }

@@ -229,7 +229,7 @@ mod support {
             "reconstruction bytes diverged (the auxiliary advice/bytecode/image settlement)",
         );
         assert_eq!(
-            proof.joint_opening_proof.one_hot_trace, legacy_proof.joint_opening_proof.one_hot_trace,
+            proof.joint_opening_proof.main_batch, legacy_proof.joint_opening_proof.main_batch,
             "the native same-point OneHotTrace opening diverged from legacy",
         );
         assert_eq!(
@@ -439,13 +439,6 @@ mod advice_consumer {
         // --- Modular side: trace independently with the advice inputs,
         // prove with an independently precommitted trusted object (its
         // commitment must land byte-identical to legacy's).
-        let modular_trusted = jolt_prover::akita::witness::commit_advice_one_hot::<AkitaScheme>(
-            jolt_claims::protocols::jolt::JoltAdviceKind::Trusted,
-            &trusted_advice,
-            guest.io_device.memory_layout.max_trusted_advice_size as usize,
-        )
-        .expect("modular trusted advice object must commit");
-        assert_eq!(modular_trusted.commitment, trusted_commitment);
         let jolt_program = Arc::new(JoltProgram::from_elf_bytes(guest.elf_contents));
         let memory_layout = &public_io.memory_layout;
         let trace_output = support::trace_modular(
@@ -477,13 +470,21 @@ mod advice_consumer {
             pcs_setup: object_setup,
             committed_program: None,
         };
+        let modular_trusted_object = akita::witness::DenseAdviceObject {
+            plan: trusted_object.plan.clone(),
+            polynomial: trusted_object.polynomial.clone(),
+            commitment: trusted_object.commitment.clone(),
+            hint: trusted_object.hint.clone(),
+            setup: trusted_object.setup.clone(),
+            word_vars: trusted_object.words.len().ilog2() as usize,
+        };
 
         let backend = akita::JoltAkitaBackend::reference();
         let proof = akita::prove::<AkitaField, AkitaScheme, AkitaVc, AkitaTranscript, _>(
             &backend,
             &prover_preprocessing,
             &config,
-            Some(&modular_trusted),
+            Some(&modular_trusted_object),
             &witness,
             &public_io,
         )

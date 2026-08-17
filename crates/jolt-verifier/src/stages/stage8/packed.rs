@@ -1,11 +1,12 @@
 //! The Akita final opening.
 //!
-//! `OneHotTrace` prefix-packs its uniform semantic columns into one physical
-//! polynomial. Optional advice and committed-program objects use the same
-//! fixed-prefix reduction and are opened independently at their own points.
+//! `OneHotTrace` prefix-packs its semantic columns into one physical
+//! polynomial. Trusted advice joins it as a precommitted Akita group;
+//! untrusted advice and committed-program objects remain independent.
 
 use std::collections::BTreeMap;
 
+use jolt_akita::{GroupOpeningClaim, PrecommittedTraceBatching};
 use jolt_claims::protocols::jolt::geometry::dimensions::JoltFormulaDimensions;
 use jolt_claims::protocols::jolt::lattice::geometry::word_byte_num_vars;
 use jolt_claims::protocols::jolt::lattice::packing::{
@@ -145,6 +146,40 @@ struct ResolvedObject<'a, PCS: CommitmentScheme> {
     setup: &'a PCS::VerifierSetup,
 }
 
+fn reduce_object<PCS, T>(
+    object: &ResolvedObject<'_, PCS>,
+    leaves: &BTreeMap<JoltCommittedPolynomial, EvaluationClaim<PCS::Field>>,
+    transcript: &mut T,
+) -> Result<EvaluationClaim<PCS::Field>, VerifierError>
+where
+    PCS: CommitmentScheme,
+    T: Transcript<Challenge = PCS::Field>,
+{
+    let claims = object
+        .plan
+        .packing()
+        .ids()
+        .iter()
+        .map(|id| {
+            leaves
+                .get(id)
+                .cloned()
+                .map(|claim| (*id, claim))
+                .ok_or_else(|| {
+                    batch_failed(format!(
+                        "missing final auxiliary claim for packed leaf {id:?}"
+                    ))
+                })
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let semantic = object.plan.packed_claims(&claims).map_err(batch_failed)?;
+    object
+        .plan
+        .packing()
+        .reduce_claims(&semantic, transcript)
+        .map_err(batch_failed)
+}
+
 /// Resolve one advice object's packing/commitment/setup triple, or `None`
 /// when the reduction schedule says the kind is absent. A setup may exist for
 /// an absent per-proof object because preprocessing is capacity-derived.
@@ -195,7 +230,7 @@ pub fn verify<PCS, VC, T>(
     reconstruction: &ReconstructionClearOutput<PCS::Field>,
 ) -> Result<(), VerifierError>
 where
-    PCS: CommitmentScheme,
+    PCS: CommitmentScheme + PrecommittedTraceBatching,
     PCS::Output: Clone + AppendToTranscript + OneHotTraceCommitmentMetadata,
     PCS::VerifierSetup: OneHotTraceSetupMetadata,
     VC: jolt_crypto::VectorCommitment<Field = PCS::Field>,
@@ -230,36 +265,68 @@ where
         .packing()
         .reduce_claims(&packed_claims, transcript)
         .map_err(batch_failed)?;
-    PCS::verify_batch(
-        one_hot_trace_commitment,
-        packed_claim.point.as_slice(),
-        std::slice::from_ref(&packed_claim.value),
-        &proof.one_hot_trace,
-        &preprocessing.pcs_setup,
-        transcript,
-    )
-    .map_err(opening_failed)?;
-
-    let mut objects = Vec::new();
-
-    if let Some(object) = advice_object::<PCS>(
+    let untrusted = advice_object::<PCS>(
         schedule.untrusted_advice.is_some(),
         leaves.get(&JoltCommittedPolynomial::UntrustedAdvice),
         untrusted_advice_commitment,
         preprocessing.untrusted_advice_setup.as_ref(),
         JoltAdviceKind::Untrusted,
-    )? {
-        objects.push(object);
-    }
-    if let Some(object) = advice_object::<PCS>(
+    )?;
+    let trusted = advice_object::<PCS>(
         schedule.trusted_advice.is_some(),
         leaves.get(&JoltCommittedPolynomial::TrustedAdvice),
         trusted_advice_commitment,
         preprocessing.trusted_advice_setup.as_ref(),
         JoltAdviceKind::Trusted,
-    )? {
-        objects.push(object);
+    )?;
+
+    let untrusted_claim = if let Some(object) = untrusted.as_ref() {
+        validate_auxiliary_metadata(object.commitment, object.setup, &object.plan)?;
+        Some(reduce_object(object, &leaves, transcript)?)
+    } else {
+        None
+    };
+    let trusted_claim = if let Some(object) = trusted.as_ref() {
+        validate_auxiliary_metadata(object.commitment, object.setup, &object.plan)?;
+        Some(reduce_object(object, &leaves, transcript)?)
+    } else {
+        None
+    };
+
+    if let (Some(object), Some(claim)) = (trusted.as_ref(), trusted_claim.as_ref()) {
+        let trusted_group = GroupOpeningClaim::new(
+            object.commitment.clone(),
+            claim.point.as_slice().to_vec(),
+            vec![claim.value],
+        );
+        let main_group = GroupOpeningClaim::new(
+            one_hot_trace_commitment.clone(),
+            packed_claim.point.as_slice().to_vec(),
+            vec![packed_claim.value],
+        );
+        tracing::info_span!("akita_trusted_main_batched_verify").in_scope(|| {
+            PCS::verify_trusted_trace_batch(
+                &preprocessing.pcs_setup,
+                &trusted_group,
+                &main_group,
+                &proof.main_batch,
+                transcript,
+            )
+            .map_err(opening_failed)
+        })?;
+    } else {
+        PCS::verify_batch(
+            one_hot_trace_commitment,
+            packed_claim.point.as_slice(),
+            std::slice::from_ref(&packed_claim.value),
+            &proof.main_batch,
+            &preprocessing.pcs_setup,
+            transcript,
+        )
+        .map_err(opening_failed)?;
     }
+
+    let mut program_objects: Vec<ResolvedObject<'_, PCS>> = Vec::new();
     match (
         reconstruction.output_points.bytecode.as_ref(),
         preprocessing.program.committed(),
@@ -296,7 +363,7 @@ where
                     plans.len()
                 )));
             }
-            objects.extend(
+            program_objects.extend(
                 plans
                     .into_iter()
                     .zip(&committed.program_one_hot_commitments)
@@ -321,23 +388,39 @@ where
         }
     }
 
-    if proof.auxiliary.len() != objects.len() {
+    let expected_auxiliary = usize::from(untrusted.is_some())
+        .checked_add(program_objects.len())
+        .ok_or_else(|| batch_failed("auxiliary proof count overflow"))?;
+    if proof.auxiliary.len() != expected_auxiliary {
         return Err(batch_failed(format!(
             "expected {} auxiliary prefix-packed opening proofs, got {}",
-            objects.len(),
+            expected_auxiliary,
             proof.auxiliary.len()
         )));
     }
 
-    for (object, auxiliary_proof) in objects.into_iter().zip(&proof.auxiliary) {
+    let mut auxiliary = proof.auxiliary.iter();
+    if let (Some(object), Some(claim)) = (untrusted.as_ref(), untrusted_claim.as_ref()) {
+        let auxiliary_proof = auxiliary
+            .next()
+            .ok_or_else(|| batch_failed("missing untrusted-advice auxiliary proof"))?;
+        PCS::verify_batch(
+            object.commitment,
+            claim.point.as_slice(),
+            std::slice::from_ref(&claim.value),
+            auxiliary_proof,
+            object.setup,
+            transcript,
+        )
+        .map_err(opening_failed)?;
+    }
+
+    for object in program_objects {
+        let auxiliary_proof = auxiliary
+            .next()
+            .ok_or_else(|| batch_failed("missing committed-program auxiliary proof"))?;
         validate_auxiliary_metadata(object.commitment, object.setup, &object.plan)?;
-        let claims = object_leaf_claims(&object.plan, &leaves)?;
-        let semantic_claims = object.plan.packed_claims(&claims).map_err(batch_failed)?;
-        let physical_claim = object
-            .plan
-            .packing()
-            .reduce_claims(&semantic_claims, transcript)
-            .map_err(batch_failed)?;
+        let physical_claim = reduce_object(&object, &leaves, transcript)?;
         PCS::verify_batch(
             object.commitment,
             physical_claim.point.as_slice(),
@@ -348,6 +431,7 @@ where
         )
         .map_err(opening_failed)?;
     }
+    debug_assert!(auxiliary.next().is_none());
     Ok(())
 }
 

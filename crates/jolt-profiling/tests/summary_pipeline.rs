@@ -219,6 +219,17 @@ fn fixture_labels_conform_to_taxonomy() {
     assert!(taxonomy::ZK_MODE_SPANS
         .iter()
         .all(|l| zk.contains(l) && !clear.contains(l)));
+
+    assert_eq!(taxonomy::TAXONOMY_VERSION, 2);
+    assert_eq!(
+        taxonomy::AKITA_COMPONENT_SPANS,
+        [
+            "akita_trusted_advice_precommit",
+            "akita_main_commit_with_precommitted",
+            "akita_trusted_main_batched_prove",
+            "akita_trusted_main_batched_verify",
+        ]
+    );
 }
 
 /// Repeated stage labels pair with their rows by occurrence index (both are

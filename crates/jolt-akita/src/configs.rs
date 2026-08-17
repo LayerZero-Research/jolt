@@ -13,7 +13,8 @@ use akita_config::CommitmentConfig;
 use akita_pcs::AkitaError;
 use akita_planner::GeneratedScheduleTable;
 use akita_types::{
-    setup_matrix_capacity_for_schedule, AkitaScheduleLookupKey, SetupMatrixCapacity,
+    commit_only_setup_field_elements, setup_matrix_capacity_for_schedule, AkitaScheduleLookupKey,
+    SetupMatrixCapacity,
 };
 
 fn dp_planned_schedule<Cfg: CommitmentConfig>(
@@ -30,40 +31,52 @@ fn dp_planned_schedule<Cfg: CommitmentConfig>(
     Ok(planned.schedule)
 }
 
-/// Sizes a production OneHotTrace setup directly from the checked-in Jolt catalog.
+/// Sizes a production OneHotTrace setup from both the requested fallback row
+/// and every checked-in Jolt row that fits the advertised extent.
 ///
-/// `Some` means the requested maximum shape itself is catalog-backed. Smaller
-/// catalog rows are included because setup matrices are shared prefix views
-/// and planned footprints are not monotone in either layout dimension.
+/// Setup footprints are not monotone in either layout dimension. The DP row
+/// for the maximum shape therefore cannot stand in for smaller catalog rows,
+/// even when the maximum shape itself is not catalog-backed.
 fn catalog_setup_capacity<Cfg: CommitmentConfig>(
     table: &GeneratedScheduleTable,
     max_num_vars: usize,
     max_num_batched_polys: usize,
-) -> Result<Option<SetupMatrixCapacity>, AkitaError> {
-    let requested_shape_is_catalogued = table.entries.iter().any(|entry| {
-        entry.root.precommitted_groups.is_empty()
-            && entry.root.final_group.layout.num_vars() == max_num_vars
-            && entry.root.final_group.layout.num_polynomials() == max_num_batched_polys
-    });
-    if !requested_shape_is_catalogued {
-        return Ok(None);
-    }
+) -> Result<SetupMatrixCapacity, AkitaError> {
+    let fallback_key = AkitaScheduleLookupKey::single(
+        akita_types::OpeningClaimsLayout::new(max_num_vars, max_num_batched_polys)?
+            .root_final_group_layout()?,
+    );
+    let mut capacity =
+        setup_matrix_capacity_for_schedule(&dp_planned_schedule::<Cfg>(&fallback_key)?)?;
+    for entry in table.entries {
+        let key = entry.to_runtime_lookup_key();
 
-    let mut capacity = SetupMatrixCapacity::minimum();
-    for entry in table.entries.iter().filter(|entry| {
-        entry.root.precommitted_groups.is_empty()
-            && entry.root.final_group.layout.num_vars() <= max_num_vars
-            && entry.root.final_group.layout.num_polynomials() <= max_num_batched_polys
-    }) {
-        let row = Cfg::resolve_catalog_row_for_key(&AkitaScheduleLookupKey::single(
-            entry.root.final_group.layout,
-        ))?;
-        let entry_capacity = setup_matrix_capacity_for_schedule(row.schedule())?;
+        // A prefix group is committed independently before the final grouped
+        // key exists. Its A/B footprint therefore belongs in the setup even
+        // when the complete grouped key exceeds this setup's total capacity.
+        for precommitted in &key.precommitteds {
+            if AkitaScheduleLookupKey::single(precommitted.group)
+                .fits_setup_capacity(max_num_vars, max_num_batched_polys)?
+            {
+                let commit_only = commit_only_setup_field_elements(
+                    &precommitted.inner_commit_matrix,
+                    &precommitted.outer_commit_matrix,
+                    precommitted.outer_slice_count,
+                )?;
+                capacity.num_field_elements = capacity.num_field_elements.max(commit_only);
+            }
+        }
+
+        if !key.fits_setup_capacity(max_num_vars, max_num_batched_polys)? {
+            continue;
+        }
+        let resolved = Cfg::resolve_catalog_row_for_key(&key)?;
+        let entry_capacity = setup_matrix_capacity_for_schedule(resolved.schedule())?;
         capacity.num_field_elements = capacity
             .num_field_elements
             .max(entry_capacity.num_field_elements);
     }
-    Ok(Some(capacity))
+    Ok(capacity)
 }
 
 /// Delegates a [`CommitmentConfig`] to an upstream preset, overriding its
@@ -117,13 +130,11 @@ macro_rules! delegate_preset {
                     ));
                 }
                 if let Some(table) = $catalog {
-                    if let Some(capacity) = catalog_setup_capacity::<Self>(
+                    return catalog_setup_capacity::<Self>(
                         &table,
                         max_num_vars,
                         max_num_batched_polys,
-                    )? {
-                        return Ok(capacity);
-                    }
+                    );
                 }
                 let key = AkitaScheduleLookupKey::single(
                     akita_types::OpeningClaimsLayout::new(
@@ -170,6 +181,17 @@ delegate_preset!(
         akita_types::sis::UnitOneHotFoldPolicy::new(128, 1, 16),
     ),
     crate::schedules::jolt_fp128_onehot_k16_table()
+);
+
+#[cfg(feature = "akita-test-schedules")]
+delegate_preset!(
+    /// Nonproduction K=16 config for small trusted-advice grouped fixtures.
+    JoltOneHotK16Fixture,
+    akita_config::proof_optimized::fp128::OneHot,
+    akita_types::sis::HonestFoldPolicySpec::UnitOneHot(
+        akita_types::sis::UnitOneHotFoldPolicy::new(128, 1, 16),
+    ),
+    crate::schedules::jolt_fp128_onehot_k16_fixture_table()
 );
 
 delegate_preset!(

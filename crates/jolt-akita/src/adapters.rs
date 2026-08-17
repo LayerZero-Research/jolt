@@ -14,7 +14,10 @@ use jolt_field::CanonicalBytes;
 use jolt_openings::{OpeningsError, VerifierOpeningClaim};
 use jolt_poly::{MultilinearPoly, OneHotIndexOrder, OneHotPolynomial, Polynomial};
 use jolt_transcript::{AppendToTranscript, Label, LabelWithCount, Transcript, U64Word};
-use serde::{Deserialize, Serialize};
+use serde::{
+    de::{Error as SerdeDeError, SeqAccess, Visitor},
+    Deserialize, Deserializer, Serialize,
+};
 use tracing::info_span;
 
 use crate::trace_onehot::TracePackedOneHot;
@@ -22,6 +25,8 @@ use crate::trace_onehot::TracePackedOneHot;
 pub type AkitaField = akita_config::proof_optimized::fp128::Field;
 pub(crate) type AkitaConfig = crate::configs::JoltDense;
 pub(crate) type AkitaOneHotK16Config = crate::configs::JoltOneHotK16;
+#[cfg(feature = "akita-test-schedules")]
+pub(crate) type AkitaOneHotK16FixtureConfig = crate::configs::JoltOneHotK16Fixture;
 pub(crate) type AkitaOneHotK256Config = crate::configs::JoltOneHotK256;
 /// Smallest A dimension accepted by the delegated adaptive policy. Source
 /// objects use this only for dimension-independent flat storage metadata;
@@ -35,10 +40,98 @@ const _: () = assert!(
 pub const AKITA_ONE_HOT_K16: usize = 16;
 pub const AKITA_ONE_HOT_K256: usize = 256;
 
+const MAX_COMMITMENT_PAYLOAD_BYTES: usize = 128 * 1024 * 1024;
+const MAX_STATEMENT_BRIDGE_BYTES: usize = 64;
+const SCHEDULE_SELECTION_BYTES: usize = 32;
+const MAX_SERIALIZED_PROOF_SHAPE_BYTES: usize = 16 * 1024;
+const MAX_SERIALIZED_PROOF_BYTES: usize = 256 * 1024 * 1024;
+
+struct BoundedBytesVisitor<const MAX: usize>;
+
+impl<'de, const MAX: usize> Visitor<'de> for BoundedBytesVisitor<MAX> {
+    type Value = Vec<u8>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "at most {MAX} bytes")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        if sequence.size_hint().is_some_and(|len| len > MAX) {
+            return Err(A::Error::custom(format!(
+                "byte sequence exceeds protocol cap {MAX}"
+            )));
+        }
+        let mut bytes = Vec::with_capacity(sequence.size_hint().unwrap_or(0).min(MAX));
+        while let Some(byte) = sequence.next_element::<u8>()? {
+            if bytes.len() == MAX {
+                return Err(A::Error::custom(format!(
+                    "byte sequence exceeds protocol cap {MAX}"
+                )));
+            }
+            bytes.push(byte);
+        }
+        Ok(bytes)
+    }
+}
+
+fn deserialize_bounded_bytes<'de, D, const MAX: usize>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserializer.deserialize_seq(BoundedBytesVisitor::<MAX>)
+}
+
+fn deserialize_commitment_payload<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_bytes::<D, MAX_COMMITMENT_PAYLOAD_BYTES>(deserializer)
+}
+
+fn deserialize_statement_bridge<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_bytes::<D, MAX_STATEMENT_BRIDGE_BYTES>(deserializer)
+}
+
+fn deserialize_schedule_selection<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let bytes = deserialize_bounded_bytes::<D, SCHEDULE_SELECTION_BYTES>(deserializer)?;
+    if bytes.len() != SCHEDULE_SELECTION_BYTES {
+        return Err(D::Error::custom(format!(
+            "schedule selection must be exactly {SCHEDULE_SELECTION_BYTES} bytes"
+        )));
+    }
+    Ok(bytes)
+}
+
+fn deserialize_proof_shape<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_bytes::<D, MAX_SERIALIZED_PROOF_SHAPE_BYTES>(deserializer)
+}
+
+fn deserialize_proof_body<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_bytes::<D, MAX_SERIALIZED_PROOF_BYTES>(deserializer)
+}
+
 pub(crate) type AkitaBackendExtField = <AkitaConfig as CommitmentConfig>::ExtField;
 
 pub(crate) type AkitaBackendScheme = AkitaCommitmentScheme<AkitaConfig>;
 pub(crate) type AkitaOneHotK16BackendScheme = AkitaCommitmentScheme<AkitaOneHotK16Config>;
+#[cfg(feature = "akita-test-schedules")]
+pub(crate) type AkitaOneHotK16FixtureBackendScheme =
+    AkitaCommitmentScheme<AkitaOneHotK16FixtureConfig>;
 pub(crate) type AkitaOneHotK256BackendScheme = AkitaCommitmentScheme<AkitaOneHotK256Config>;
 pub(crate) type AkitaBackendCommitment = AkitaBackendCommittedGroup<AkitaField>;
 pub(crate) type AkitaBackendCommitmentPayload = AkitaBackendRingCommitment<AkitaField>;
@@ -52,6 +145,40 @@ pub(crate) type AkitaBackendSparsePoly = SparseRingPoly<AkitaField>;
 pub(crate) type AkitaBackendPreparedSetup = CpuPreparedSetup<AkitaField>;
 pub(crate) type AkitaBackendProverSetup = akita_prover::AkitaProverSetup<AkitaField>;
 pub(crate) type BackendStack<'a> = akita_prover::UniformProverStack<'a, AkitaField, CpuBackend>;
+
+#[expect(
+    clippy::expect_used,
+    reason = "Jolt's compile-time schedule catalogs are validated generated protocol constants"
+)]
+fn compute_catalog_identity_digest<Cfg: CommitmentConfig>() -> [u8; 32] {
+    let table = Cfg::schedule_catalog().expect("Jolt Akita config must have a schedule catalog");
+    let mut bytes = Vec::with_capacity(64 + 32 * table.entries.len());
+    bytes.extend_from_slice(b"jolt-akita/schedule-catalog/v1");
+    bytes.extend_from_slice(&akita_schedules::identity_digest(&table.identity));
+    bytes.extend_from_slice(&(table.entries.len() as u64).to_le_bytes());
+    for entry in table.entries {
+        let resolved = Cfg::resolve_catalog_row_for_key(&entry.to_runtime_lookup_key())
+            .expect("every generated catalog entry must resolve under its owning config");
+        bytes.extend_from_slice(resolved.selection().row_digest.as_bytes());
+    }
+    akita_types::instance_descriptor::digest_descriptor_bytes(&bytes)
+}
+
+static DENSE_CATALOG_DIGEST: OnceLock<[u8; 32]> = OnceLock::new();
+static ONE_HOT_K16_CATALOG_DIGEST: OnceLock<[u8; 32]> = OnceLock::new();
+#[cfg(feature = "akita-test-schedules")]
+static ONE_HOT_K16_FIXTURE_CATALOG_DIGEST: OnceLock<[u8; 32]> = OnceLock::new();
+static ONE_HOT_K256_CATALOG_DIGEST: OnceLock<[u8; 32]> = OnceLock::new();
+
+/// Identity of the fixed public matrix stream used by every Jolt Akita setup.
+#[expect(
+    clippy::expect_used,
+    reason = "serializing Akita's fixed in-memory sample setup seed has no fallible external input"
+)]
+pub fn configured_setup_seed_digest() -> [u8; 32] {
+    akita_types::setup_seed_digest(&akita_types::sample_akita_setup_seed())
+        .expect("the fixed Akita setup seed must serialize")
+}
 
 static CPU_BACKEND: OnceLock<CpuBackend> = OnceLock::new();
 
@@ -91,6 +218,10 @@ pub(crate) fn with_backend_pool<R: Send>(f: impl FnOnce() -> R + Send) -> R {
 pub struct AkitaSetupParams {
     pub(crate) max_num_vars: usize,
     pub(crate) max_num_polys_per_commitment_group: usize,
+    /// Capacity of the complete ordered group batch. This is passed to
+    /// Akita's setup constructor; commitment entry points still enforce the
+    /// separate group-local limit above.
+    pub(crate) max_total_batch_polys: usize,
     pub(crate) default_layout_digest: AkitaLayoutDigest,
     pub(crate) one_hot_k: usize,
     /// When set, only the one-hot flavor's backend setup is built — the
@@ -101,6 +232,9 @@ pub struct AkitaSetupParams {
     /// flavor dominates the setup cost (~30x the dense flavor at advice
     /// shapes), and a sparse-unit or dense commitment object never touches it.
     pub(crate) dense_only: bool,
+    /// Selects the explicitly nonproduction small K=16 grouped catalog.
+    /// This is only set by `one_hot_only_grouped` under the fixture feature.
+    pub(crate) grouped_fixture: bool,
 }
 
 impl AkitaSetupParams {
@@ -112,10 +246,12 @@ impl AkitaSetupParams {
         Self {
             max_num_vars,
             max_num_polys_per_commitment_group,
+            max_total_batch_polys: max_num_polys_per_commitment_group,
             default_layout_digest,
             one_hot_k: AKITA_ONE_HOT_K256,
             one_hot_only: false,
             dense_only: false,
+            grouped_fixture: false,
         }
     }
 
@@ -131,10 +267,34 @@ impl AkitaSetupParams {
         Self {
             max_num_vars,
             max_num_polys_per_commitment_group,
+            max_total_batch_polys: max_num_polys_per_commitment_group,
             default_layout_digest,
             one_hot_k,
             one_hot_only: true,
             dense_only: false,
+            grouped_fixture: false,
+        }
+    }
+
+    /// Shape-exact one-hot final setup that can discharge a heterogeneous
+    /// opening containing independently committed prefix groups.
+    pub fn one_hot_only_grouped(
+        max_num_vars: usize,
+        max_num_polys_per_commitment_group: usize,
+        max_total_batch_polys: usize,
+        default_layout_digest: AkitaLayoutDigest,
+        one_hot_k: usize,
+    ) -> Self {
+        Self {
+            max_num_vars,
+            max_num_polys_per_commitment_group,
+            max_total_batch_polys,
+            default_layout_digest,
+            one_hot_k,
+            one_hot_only: true,
+            dense_only: false,
+            grouped_fixture: cfg!(feature = "akita-test-schedules")
+                && one_hot_k == AKITA_ONE_HOT_K16,
         }
     }
 
@@ -150,15 +310,25 @@ impl AkitaSetupParams {
         Self {
             max_num_vars,
             max_num_polys_per_commitment_group,
+            max_total_batch_polys: max_num_polys_per_commitment_group,
             default_layout_digest,
             one_hot_k: AKITA_ONE_HOT_K256,
             one_hot_only: false,
             dense_only: true,
+            grouped_fixture: false,
         }
     }
 
     pub fn one_hot_k(&self) -> usize {
         self.one_hot_k
+    }
+
+    pub fn grouped_fixture(&self) -> bool {
+        self.grouped_fixture
+    }
+
+    pub fn max_total_batch_polys(&self) -> usize {
+        self.max_total_batch_polys
     }
 }
 
@@ -180,12 +350,24 @@ impl AkitaProverSetup {
         self.verifier.max_num_polys_per_commitment_group
     }
 
+    pub fn max_total_batch_polys(&self) -> usize {
+        self.verifier.max_total_batch_polys
+    }
+
     pub fn default_layout_digest(&self) -> [u8; 32] {
         self.verifier.default_layout_digest
     }
 
     pub fn one_hot_k(&self) -> usize {
         self.verifier.one_hot_k
+    }
+
+    pub fn grouped_fixture(&self) -> bool {
+        self.verifier.grouped_fixture
+    }
+
+    pub fn catalog_identity_digest(&self, flavor: AkitaBackendFlavor) -> [u8; 32] {
+        self.verifier.catalog_identity_digest(flavor)
     }
 
     /// Releases transformed setup slots after the trace commitment. Later
@@ -243,8 +425,10 @@ impl AkitaProverSetup {
 pub struct AkitaVerifierSetup {
     pub(crate) max_num_vars: usize,
     pub(crate) max_num_polys_per_commitment_group: usize,
+    pub(crate) max_total_batch_polys: usize,
     pub(crate) default_layout_digest: AkitaLayoutDigest,
     pub(crate) one_hot_k: usize,
+    pub(crate) grouped_fixture: bool,
     #[serde(skip)]
     pub(crate) backend_cache: BackendVerifierCache,
 }
@@ -258,12 +442,46 @@ impl AkitaVerifierSetup {
         self.max_num_polys_per_commitment_group
     }
 
+    pub fn max_total_batch_polys(&self) -> usize {
+        self.max_total_batch_polys
+    }
+
     pub fn default_layout_digest(&self) -> [u8; 32] {
         self.default_layout_digest
     }
 
     pub fn one_hot_k(&self) -> usize {
         self.one_hot_k
+    }
+
+    pub fn grouped_fixture(&self) -> bool {
+        self.grouped_fixture
+    }
+
+    /// Identity of the compile-time schedule catalog selected for this setup
+    /// and backend flavor. This is verifier-owned protocol data, never read
+    /// from the proof.
+    pub fn catalog_identity_digest(&self, flavor: AkitaBackendFlavor) -> [u8; 32] {
+        match flavor {
+            AkitaBackendFlavor::Dense => {
+                *DENSE_CATALOG_DIGEST.get_or_init(compute_catalog_identity_digest::<AkitaConfig>)
+            }
+            AkitaBackendFlavor::OneHot => match self.one_hot_k {
+                AKITA_ONE_HOT_K16 => {
+                    #[cfg(feature = "akita-test-schedules")]
+                    if self.grouped_fixture {
+                        return *ONE_HOT_K16_FIXTURE_CATALOG_DIGEST.get_or_init(
+                            compute_catalog_identity_digest::<AkitaOneHotK16FixtureConfig>,
+                        );
+                    }
+                    *ONE_HOT_K16_CATALOG_DIGEST
+                        .get_or_init(compute_catalog_identity_digest::<AkitaOneHotK16Config>)
+                }
+                AKITA_ONE_HOT_K256 => *ONE_HOT_K256_CATALOG_DIGEST
+                    .get_or_init(compute_catalog_identity_digest::<AkitaOneHotK256Config>),
+                _ => [0; 32],
+            },
+        }
     }
 
     /// Primes the lazy key cache with freshly built backend keys, so
@@ -309,10 +527,7 @@ impl AkitaVerifierSetup {
         match flavor {
             AkitaBackendFlavor::Dense => {
                 let prover_setup = with_backend_pool(|| {
-                    AkitaBackendScheme::setup_prover(
-                        self.max_num_vars,
-                        self.max_num_polys_per_commitment_group,
-                    )
+                    AkitaBackendScheme::setup_prover(self.max_num_vars, self.max_total_batch_polys)
                 })
                 .map_err(|err| invalid_setup(&err))?;
                 with_backend_pool(|| AkitaBackendScheme::setup_verifier(&prover_setup))
@@ -326,10 +541,11 @@ impl AkitaVerifierSetup {
                 let prover_setup = one_hot_setup_prover(
                     self.one_hot_k,
                     self.max_num_vars,
-                    self.max_num_polys_per_commitment_group,
+                    self.max_total_batch_polys,
+                    self.grouped_fixture,
                 )
                 .map_err(|err| invalid_setup(&err))?;
-                one_hot_setup_verifier(self.one_hot_k, &prover_setup)
+                one_hot_setup_verifier(self.one_hot_k, self.grouped_fixture, &prover_setup)
             }
         }
     }
@@ -371,8 +587,14 @@ pub(crate) fn append_verifier_setup<T: Transcript>(
     transcript.append_bytes(flavor.transcript_label());
     transcript.append(&U64Word(setup.max_num_vars as u64));
     transcript.append(&U64Word(setup.max_num_polys_per_commitment_group as u64));
+    transcript.append(&U64Word(setup.max_total_batch_polys as u64));
     transcript.append(&U64Word(setup.one_hot_k as u64));
+    transcript.append(&U64Word(u64::from(setup.grouped_fixture)));
     transcript.append_bytes(&setup.default_layout_digest);
+    transcript.append(&Label(b"akita_setup_family"));
+    transcript.append_bytes(&configured_setup_seed_digest());
+    transcript.append(&Label(b"akita_catalog_identity"));
+    transcript.append_bytes(&setup.catalog_identity_digest(flavor));
 }
 
 /// Binds the batch statement (commitment group, point, per-claim data) into
@@ -421,6 +643,7 @@ pub struct AkitaCommitment {
     /// Field-coefficient count of the serialized backend commitment — the
     /// deserialization context [`akita_types::Commitment`] requires.
     pub(crate) backend_coeff_len: usize,
+    #[serde(deserialize_with = "deserialize_commitment_payload")]
     pub(crate) serialized_backend_bytes: Vec<u8>,
 }
 
@@ -455,6 +678,10 @@ impl jolt_openings::GroupSetupMetadata for AkitaVerifierSetup {
         self.max_num_polys_per_commitment_group()
     }
 
+    fn max_total_batch_polys(&self) -> usize {
+        self.max_total_batch_polys()
+    }
+
     fn default_layout_digest(&self) -> [u8; 32] {
         self.default_layout_digest()
     }
@@ -471,6 +698,10 @@ impl jolt_openings::GroupSetupMetadata for AkitaProverSetup {
 
     fn max_num_polys_per_commitment_group(&self) -> usize {
         self.max_num_polys_per_commitment_group()
+    }
+
+    fn max_total_batch_polys(&self) -> usize {
+        self.max_total_batch_polys()
     }
 
     fn default_layout_digest(&self) -> [u8; 32] {
@@ -524,9 +755,23 @@ impl AppendToTranscript for AkitaCommitment {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AkitaBatchProof {
+    #[serde(deserialize_with = "deserialize_statement_bridge")]
     pub(crate) statement_bridge: Vec<u8>,
+    /// Fixed-width public identity of the exact generated row selected by the
+    /// prover. The verifier resolves this digest under its configured catalog;
+    /// the backend proof body does not encode the selection itself.
+    #[serde(deserialize_with = "deserialize_schedule_selection")]
+    pub(crate) serialized_schedule_selection: Vec<u8>,
+    #[serde(deserialize_with = "deserialize_proof_shape")]
     pub(crate) serialized_akita_proof_shape: Vec<u8>,
+    #[serde(deserialize_with = "deserialize_proof_body")]
     pub(crate) serialized_akita_proof: Vec<u8>,
+}
+
+impl AkitaBatchProof {
+    pub fn schedule_selection_bytes(&self) -> &[u8] {
+        &self.serialized_schedule_selection
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -709,9 +954,19 @@ pub(crate) fn one_hot_setup_prover(
     one_hot_k: usize,
     max_num_vars: usize,
     max_num_polys: usize,
+    grouped_fixture: bool,
 ) -> Result<AkitaBackendProverSetup, akita_pcs::AkitaError> {
     with_backend_pool(|| match one_hot_k {
-        AKITA_ONE_HOT_K16 => AkitaOneHotK16BackendScheme::setup_prover(max_num_vars, max_num_polys),
+        AKITA_ONE_HOT_K16 => {
+            #[cfg(feature = "akita-test-schedules")]
+            if grouped_fixture {
+                return akita_pcs::AkitaCommitmentScheme::<
+                    crate::configs::JoltOneHotK16Fixture,
+                >::setup_prover(max_num_vars, max_num_polys);
+            }
+            let _ = grouped_fixture;
+            AkitaOneHotK16BackendScheme::setup_prover(max_num_vars, max_num_polys)
+        }
         AKITA_ONE_HOT_K256 => {
             AkitaOneHotK256BackendScheme::setup_prover(max_num_vars, max_num_polys)
         }
@@ -721,11 +976,22 @@ pub(crate) fn one_hot_setup_prover(
 
 pub(crate) fn one_hot_setup_verifier(
     one_hot_k: usize,
+    grouped_fixture: bool,
     prover_setup: &AkitaBackendProverSetup,
 ) -> Result<AkitaBackendVerifier, OpeningsError> {
     let invalid_setup = |err: &dyn std::fmt::Display| OpeningsError::InvalidSetup(err.to_string());
     match one_hot_k {
         AKITA_ONE_HOT_K16 => {
+            #[cfg(feature = "akita-test-schedules")]
+            if grouped_fixture {
+                return with_backend_pool(|| {
+                    akita_pcs::AkitaCommitmentScheme::<
+                        crate::configs::JoltOneHotK16Fixture,
+                    >::setup_verifier(prover_setup)
+                })
+                .map_err(|err| invalid_setup(&err));
+            }
+            let _ = grouped_fixture;
             with_backend_pool(|| AkitaOneHotK16BackendScheme::setup_verifier(prover_setup))
                 .map_err(|err| invalid_setup(&err))
         }
@@ -925,6 +1191,11 @@ impl AppendToTranscript for AkitaBatchProof {
             self.statement_bridge.len() as u64,
         ));
         transcript.append_bytes(&self.statement_bridge);
+        transcript.append(&LabelWithCount(
+            b"akita_schedule_selection",
+            self.serialized_schedule_selection.len() as u64,
+        ));
+        transcript.append_bytes(&self.serialized_schedule_selection);
         transcript.append(&LabelWithCount(
             b"akita_proof_shape",
             self.serialized_akita_proof_shape.len() as u64,

@@ -5,7 +5,9 @@
 use common::jolt_device::JoltDevice;
 use jolt_crypto::VectorCommitment;
 use jolt_field::{CanonicalBytes, Field};
-use jolt_openings::{CommitmentScheme, GroupSetupMetadata, TransparentObjectSetup};
+use jolt_openings::{
+    CommitmentScheme, GroupCommitmentMetadata, GroupSetupMetadata, TransparentObjectSetup,
+};
 use jolt_transcript::{AppendToTranscript, Transcript};
 use jolt_verifier::config::JoltProtocolConfig;
 use jolt_verifier::proof::{ClearProofClaims, JoltProof, JoltProofClaims, JoltStageProofs};
@@ -38,9 +40,12 @@ pub fn prove<F, PCS, VC, T, W>(
 ) -> Result<JoltProof<PCS, VC>, ProverError<F>>
 where
     F: Field + CanonicalBytes + AppendToTranscript,
-    PCS: CommitmentScheme<Field = F> + TransparentObjectSetup + jolt_akita::TraceOneHotCommitment,
+    PCS: CommitmentScheme<Field = F>
+        + TransparentObjectSetup
+        + jolt_akita::TraceOneHotCommitment
+        + jolt_akita::PrecommittedTraceBatching,
     PCS::ProverSetup: GroupSetupMetadata,
-    PCS::Output: Clone + PartialEq + AppendToTranscript,
+    PCS::Output: Clone + PartialEq + AppendToTranscript + GroupCommitmentMetadata,
     VC: VectorCommitment<Field = F>,
     VC::Output: Clone + AppendToTranscript,
     T: Transcript<Challenge = F>,
@@ -175,6 +180,7 @@ where
         &checked,
         config,
         preprocessing,
+        &stage0.commitment,
         stage0.hint,
         stage0.untrusted_advice.as_ref(),
         trusted_advice,

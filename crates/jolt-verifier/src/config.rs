@@ -32,6 +32,9 @@ pub enum CommitmentConfig {
     Packed,
     /// Packed trace/program objects with direct dense advice-word commitments.
     PackedDenseAdvice,
+    /// Packed dense advice with Akita precommitted-group batching for the
+    /// trusted-advice and final `OneHotTrace` openings.
+    PackedDenseAdviceBatched,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,10 +63,12 @@ pub const SELECTED_ZK_CONFIG: ZkConfig = ZkConfig::BlindFold;
 pub const SELECTED_ZK_CONFIG: ZkConfig = ZkConfig::Transparent;
 
 #[cfg(feature = "akita")]
-pub const SELECTED_COMMITMENT_CONFIG: CommitmentConfig = CommitmentConfig::PackedDenseAdvice;
+pub const SELECTED_COMMITMENT_CONFIG: CommitmentConfig = CommitmentConfig::PackedDenseAdviceBatched;
 
 pub const PACKED_DENSE_ADVICE_TRANSCRIPT_VERSION: u64 = 1;
 pub const PACKED_DENSE_ADVICE_ENCODING: u64 = 1;
+pub const PACKED_DENSE_ADVICE_BATCHED_TRANSCRIPT_VERSION: u64 = 2;
+pub const PACKED_DENSE_ADVICE_BATCHED_ENCODING: u64 = 2;
 
 #[cfg(not(feature = "akita"))]
 pub const SELECTED_COMMITMENT_CONFIG: CommitmentConfig = CommitmentConfig::Homomorphic;

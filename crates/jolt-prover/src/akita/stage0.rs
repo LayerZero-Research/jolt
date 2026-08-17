@@ -12,7 +12,9 @@ use jolt_claims::protocols::jolt::lattice::{OneHotTraceShape, ONE_HOT_TRACE_LAYO
 use jolt_claims::protocols::jolt::JoltRelationId;
 use jolt_crypto::VectorCommitment;
 use jolt_field::Field;
-use jolt_openings::{CommitmentScheme, GroupSetupMetadata, TransparentObjectSetup};
+use jolt_openings::{
+    CommitmentScheme, GroupCommitmentMetadata, GroupSetupMetadata, TransparentObjectSetup,
+};
 use jolt_transcript::{AppendToTranscript, Transcript};
 use jolt_verifier::{
     absorb_packed_commitments, absorb_transcript_preamble, validate_inputs_from_parts,
@@ -53,9 +55,12 @@ pub fn prove_stage0<F, PCS, VC, T, W>(
 ) -> Result<Stage0Output<PCS, T>, ProverError<F>>
 where
     F: Field,
-    PCS: CommitmentScheme<Field = F> + TransparentObjectSetup + jolt_akita::TraceOneHotCommitment,
+    PCS: CommitmentScheme<Field = F>
+        + TransparentObjectSetup
+        + jolt_akita::TraceOneHotCommitment
+        + jolt_akita::PrecommittedTraceBatching,
     PCS::ProverSetup: GroupSetupMetadata,
-    PCS::Output: Clone + AppendToTranscript,
+    PCS::Output: Clone + AppendToTranscript + GroupCommitmentMetadata,
     VC: VectorCommitment<Field = F>,
     T: Transcript<Challenge = F>,
     W: JoltWitnessPlane<F>,
@@ -68,6 +73,44 @@ where
         return Err(ProverError::Unsupported {
             reason: "trusted-advice object presence disagrees with the trusted advice bytes",
         });
+    }
+    if let Some(object) = trusted_advice {
+        if object.plan.packing().ids()
+            != [jolt_claims::protocols::jolt::JoltCommittedPolynomial::TrustedAdvice]
+            || object.commitment.layout_digest() != object.plan.layout_digest()
+            || object.commitment.num_vars() != object.plan.packing().packed_num_vars()
+            || object.commitment.poly_count() != 1
+            || object.setup.max_num_vars() != object.commitment.num_vars()
+            || object.setup.max_num_polys_per_commitment_group() != 1
+            || object.setup.default_layout_digest() != object.plan.layout_digest()
+        {
+            return Err(ProverError::Unsupported {
+                reason: "trusted-advice precommit artifact has inconsistent shape metadata",
+            });
+        }
+        let words = common::advice::canonical_advice_words(
+            &public_io.trusted_advice,
+            public_io.memory_layout.max_trusted_advice_size as usize,
+        )
+        .map_err(|_| ProverError::Unsupported {
+            reason: "trusted-advice bytes do not fit the scheduled precommit capacity",
+        })?;
+        let expected_word_vars = words.len().ilog2() as usize;
+        let evaluations = object.polynomial.evals();
+        if object.word_vars != expected_word_vars
+            || evaluations.len() != 1usize << object.plan.packing().packed_num_vars()
+            || evaluations[..words.len()]
+                .iter()
+                .zip(words)
+                .any(|(evaluation, word)| *evaluation != F::from_u64(word))
+            || evaluations[1usize << expected_word_vars..]
+                .iter()
+                .any(|evaluation| *evaluation != F::default())
+        {
+            return Err(ProverError::Unsupported {
+                reason: "trusted-advice precommit artifact does not match the public advice bytes",
+            });
+        }
     }
     if preprocessing.committed_program.is_some()
         != preprocessing.verifier.program.committed().is_some()
@@ -159,40 +202,63 @@ where
     // wrong arity would otherwise fail minutes later inside the backend.
     if preprocessing.pcs_setup.max_num_vars() != plan.packing().packed_num_vars()
         || preprocessing.pcs_setup.max_num_polys_per_commitment_group() != 1
+        || (trusted_advice.is_some() && preprocessing.pcs_setup.max_total_batch_polys() < 2)
         || preprocessing.pcs_setup.one_hot_k() != 1usize << log_k_chunk
     {
         return Err(ProverError::Unsupported {
             reason: "the packed setup's dimensions disagree with the canonical OneHotTrace shape",
         });
     }
-
-    let packed_trace_rows = assemble_one_hot_trace_rows(
-        witness,
-        &plan,
-        formula_dimensions.ra_layout,
-        log_k_chunk,
-        log_t,
-    )?;
-    let (commitment, hint) = tracing::info_span!(
-        "CommitmentScheme::commit_batch",
-        packed_num_vars = plan.packing().packed_num_vars()
-    )
-    .in_scope(|| {
-        PCS::commit_trace_one_hot(
+    // Resolve the exact grouped row before building the expensive final
+    // source: an unschedulable precommit shape fails here, not minutes later.
+    if let Some(trusted) = trusted_advice {
+        PCS::validate_trusted_trace_precommit(
             &preprocessing.pcs_setup,
-            preprocessing.pcs_setup.default_layout_digest(),
-            plan.packing().slot_capacity(),
-            packed_trace_rows,
+            &trusted.commitment,
+            &trusted.hint,
+            plan.packing().packed_num_vars(),
         )
-    })
-    .map_err(|error| VerifierError::FinalOpeningVerificationFailed {
-        reason: error.to_string(),
-    })?;
-    PCS::release_post_commit_residency(&preprocessing.pcs_setup).map_err(|error| {
-        VerifierError::FinalOpeningVerificationFailed {
+        .map_err(|error| VerifierError::FinalOpeningVerificationFailed {
             reason: error.to_string(),
-        }
-    })?;
+        })?;
+    }
+
+    let (commitment, hint) =
+        tracing::info_span!("akita_main_commit_with_precommitted").in_scope(|| {
+            let packed_trace_rows = assemble_one_hot_trace_rows(
+                witness,
+                &plan,
+                formula_dimensions.ra_layout,
+                log_k_chunk,
+                log_t,
+            )?;
+            let committed = if let Some(trusted) = trusted_advice {
+                PCS::commit_trace_one_hot_with_precommitted(
+                    &preprocessing.pcs_setup,
+                    preprocessing.pcs_setup.default_layout_digest(),
+                    plan.packing().slot_capacity(),
+                    packed_trace_rows,
+                    &trusted.hint,
+                )
+            } else {
+                PCS::commit_trace_one_hot(
+                    &preprocessing.pcs_setup,
+                    preprocessing.pcs_setup.default_layout_digest(),
+                    plan.packing().slot_capacity(),
+                    packed_trace_rows,
+                )
+            };
+            let (commitment, hint) =
+                committed.map_err(|error| VerifierError::FinalOpeningVerificationFailed {
+                    reason: error.to_string(),
+                })?;
+            PCS::release_post_commit_residency(&preprocessing.pcs_setup).map_err(
+                |error| VerifierError::FinalOpeningVerificationFailed {
+                    reason: error.to_string(),
+                },
+            )?;
+            Ok::<_, ProverError<F>>((commitment, hint))
+        })?;
 
     // The per-proof untrusted-advice dense word object; the trusted object is
     // precommitted (its commitment arrives as an argument).
