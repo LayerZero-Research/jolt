@@ -31,13 +31,55 @@ fn dp_planned_schedule<Cfg: CommitmentConfig>(
     Ok(planned.schedule)
 }
 
-/// Sizes a production OneHotTrace setup from both the requested fallback row
-/// and every checked-in Jolt row that fits the advertised extent.
+/// Folds one row's footprint into `capacity`.
+///
+/// A prefix group is committed independently before the final grouped key
+/// exists. Its A/B footprint therefore belongs in the setup even when the
+/// complete grouped key exceeds this setup's total capacity, so prefix
+/// accounting runs before the whole-key filter.
+fn fold_row_capacity(
+    capacity: &mut SetupMatrixCapacity,
+    key: &AkitaScheduleLookupKey,
+    schedule: impl FnOnce() -> Result<akita_types::FoldSchedule, AkitaError>,
+    max_num_vars: usize,
+    max_num_batched_polys: usize,
+) -> Result<(), AkitaError> {
+    for precommitted in &key.precommitteds {
+        if AkitaScheduleLookupKey::single(precommitted.group)
+            .fits_setup_capacity(max_num_vars, max_num_batched_polys)?
+        {
+            let commit_only = commit_only_setup_field_elements(
+                &precommitted.inner_commit_matrix,
+                &precommitted.outer_commit_matrix,
+                precommitted.outer_slice_count,
+            )?;
+            capacity.num_field_elements = capacity.num_field_elements.max(commit_only);
+        }
+    }
+
+    if !key.fits_setup_capacity(max_num_vars, max_num_batched_polys)? {
+        return Ok(());
+    }
+    let row_capacity = setup_matrix_capacity_for_schedule(&schedule()?)?;
+    capacity.num_field_elements = capacity
+        .num_field_elements
+        .max(row_capacity.num_field_elements);
+    Ok(())
+}
+
+/// Sizes a production OneHotTrace setup from the requested fallback row, every
+/// checked-in Jolt row that fits the advertised extent, and every row
+/// preprocessing provisioned for this config.
 ///
 /// Setup footprints are not monotone in either layout dimension. The DP row
 /// for the maximum shape therefore cannot stand in for smaller catalog rows,
 /// even when the maximum shape itself is not catalog-backed.
-fn catalog_setup_capacity<Cfg: CommitmentConfig>(
+///
+/// Provisioned rows are sized here rather than at commit time because setup
+/// construction precedes every commit: a grouped row planned by
+/// [`crate::schedule_registry::provision`] must already be installed when this
+/// runs, or its matrices would be missing from the setup.
+fn catalog_setup_capacity<Cfg: CommitmentConfig + 'static>(
     table: &GeneratedScheduleTable,
     max_num_vars: usize,
     max_num_batched_polys: usize,
@@ -50,31 +92,29 @@ fn catalog_setup_capacity<Cfg: CommitmentConfig>(
         setup_matrix_capacity_for_schedule(&dp_planned_schedule::<Cfg>(&fallback_key)?)?;
     for entry in table.entries {
         let key = entry.to_runtime_lookup_key();
-
-        // A prefix group is committed independently before the final grouped
-        // key exists. Its A/B footprint therefore belongs in the setup even
-        // when the complete grouped key exceeds this setup's total capacity.
-        for precommitted in &key.precommitteds {
-            if AkitaScheduleLookupKey::single(precommitted.group)
-                .fits_setup_capacity(max_num_vars, max_num_batched_polys)?
-            {
-                let commit_only = commit_only_setup_field_elements(
-                    &precommitted.inner_commit_matrix,
-                    &precommitted.outer_commit_matrix,
-                    precommitted.outer_slice_count,
-                )?;
-                capacity.num_field_elements = capacity.num_field_elements.max(commit_only);
-            }
-        }
-
-        if !key.fits_setup_capacity(max_num_vars, max_num_batched_polys)? {
-            continue;
-        }
-        let resolved = Cfg::resolve_catalog_row_for_key(&key)?;
-        let entry_capacity = setup_matrix_capacity_for_schedule(resolved.schedule())?;
-        capacity.num_field_elements = capacity
-            .num_field_elements
-            .max(entry_capacity.num_field_elements);
+        fold_row_capacity(
+            &mut capacity,
+            &key,
+            // Catalog-only: this loop is already iterating the catalog, and
+            // routing through the registry-aware hook would re-enter sizing.
+            || Ok(crate::schedule_registry::catalog_only_row::<Cfg>(&key)?.into_schedule()),
+            max_num_vars,
+            max_num_batched_polys,
+        )?;
+    }
+    for row in crate::schedule_registry::registered_rows::<Cfg>()?.rows() {
+        let profiles = row.profiles();
+        let key = AkitaScheduleLookupKey {
+            final_group: profiles.final_group.group,
+            precommitteds: profiles.precommitteds.clone(),
+        };
+        fold_row_capacity(
+            &mut capacity,
+            &key,
+            || Ok(row.schedule().clone()),
+            max_num_vars,
+            max_num_batched_polys,
+        )?;
     }
     Ok(capacity)
 }
@@ -168,6 +208,66 @@ macro_rules! delegate_preset {
 
             fn schedule_catalog() -> Option<akita_schedules::GeneratedScheduleTable> {
                 $catalog
+            }
+
+            // A grouped row's key contains the frozen precommit profile, which
+            // follows the program's advice capacity and so cannot be emitted
+            // offline. Preprocessing plans those rows into the registry; every
+            // resolution hook therefore checks it before the checked-in
+            // catalog. A miss falls through to the catalog, never to the
+            // planner, which keeps planner DP off the prove/verify path.
+            //
+            // The fallback arms replicate the trait's default bodies; they
+            // cannot be delegated to because a default body is unreachable from
+            // its own override.
+            fn resolve_catalog_row_for_key(
+                key: &AkitaScheduleLookupKey,
+            ) -> Result<akita_schedules::ResolvedScheduleRow, akita_pcs::AkitaError> {
+                if let Some(row) = crate::schedule_registry::lookup_key::<Self>(key) {
+                    return Ok(row);
+                }
+                Self::validate_sis_modulus_profile()?;
+                akita_schedules::resolve_generated_catalog_row_for_key(
+                    key,
+                    &akita_config::policy_of::<Self>(),
+                    Self::ring_challenge_config,
+                    Self::schedule_catalog(),
+                )
+            }
+
+            fn resolve_catalog_row_for_profiles(
+                profiles: &akita_types::CommittedGroupBatchProfile,
+            ) -> Result<akita_schedules::ResolvedScheduleRow, akita_pcs::AkitaError> {
+                if let Some(row) = crate::schedule_registry::lookup_profiles::<Self>(profiles) {
+                    return Ok(row);
+                }
+                Self::validate_sis_modulus_profile()?;
+                profiles.validate(Self::decomposition().field_bits())?;
+                akita_schedules::resolve_generated_catalog_row_for_profiles(
+                    &AkitaScheduleLookupKey {
+                        final_group: profiles.final_group.group,
+                        precommitteds: profiles.precommitteds.clone(),
+                    },
+                    profiles,
+                    &akita_config::policy_of::<Self>(),
+                    Self::ring_challenge_config,
+                    Self::schedule_catalog(),
+                )
+            }
+
+            fn resolve_schedule_selection(
+                selection: akita_types::OpeningScheduleSelection,
+            ) -> Result<akita_schedules::ResolvedScheduleRow, akita_pcs::AkitaError> {
+                if let Some(row) = crate::schedule_registry::lookup_selection::<Self>(selection) {
+                    return Ok(row);
+                }
+                Self::validate_sis_modulus_profile()?;
+                akita_schedules::resolve_generated_schedule_selection(
+                    selection,
+                    &akita_config::policy_of::<Self>(),
+                    Self::ring_challenge_config,
+                    Self::schedule_catalog(),
+                )
             }
         }
     };

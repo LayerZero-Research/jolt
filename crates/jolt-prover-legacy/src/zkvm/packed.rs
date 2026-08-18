@@ -455,6 +455,54 @@ pub fn advice_object_setup(
     Ok(setup)
 }
 
+/// The dense advice object's physical arity for a public advice capacity.
+///
+/// This is the group arity a trusted precommit freezes its profile at, so it is
+/// also the arity every grouped schedule row is keyed on.
+pub fn advice_physical_num_vars(
+    kind: JoltAdviceKind,
+    max_advice_bytes: usize,
+) -> Result<usize, VerifierError> {
+    let words = common::advice::advice_word_capacity(max_advice_bytes).map_err(|error| {
+        VerifierError::FinalOpeningVerificationFailed {
+            reason: error.to_string(),
+        }
+    })?;
+    let plan = advice_dense_packing_plan(kind, words.log_2()).map_err(|error| {
+        VerifierError::FinalOpeningVerificationFailed {
+            reason: error.to_string(),
+        }
+    })?;
+    Ok(plan.packing().packed_num_vars())
+}
+
+/// Plan and install the grouped rows that batch this program's trusted advice
+/// with the packed trace, for every trace length the `one_hot_k` family admits.
+///
+/// The trusted advice capacity is fixed per program and known here, but the
+/// trace length is not, so the rows are provisioned across the family's whole
+/// final-arity range. Rows the checked-in catalog already covers are reused
+/// rather than replanned.
+///
+/// **Ordering:** this must run before the packed setup is built. Setup sizing
+/// folds provisioned rows into the matrix capacity, so a row installed
+/// afterwards would not be covered.
+///
+/// Returns the row-set digest, which prover and verifier compare to prove they
+/// provisioned the same rows.
+pub fn provision_trusted_advice_schedules(
+    max_trusted_advice_bytes: usize,
+    one_hot_k: usize,
+) -> Result<[u8; 32], VerifierError> {
+    let physical_vars =
+        advice_physical_num_vars(JoltAdviceKind::Trusted, max_trusted_advice_bytes)?;
+    jolt_akita::schedule_registry::provision_trusted_advice_for_k(physical_vars, one_hot_k)
+        .map(|rows| rows.set_digest())
+        .map_err(|error| VerifierError::FinalOpeningVerificationFailed {
+            reason: error.to_string(),
+        })
+}
+
 /// A dense advice commitment object: the canonical word polynomial used by
 /// both the base advice reductions and the Akita PCS opening.
 pub struct DenseAdviceObject {
@@ -673,6 +721,15 @@ pub type AkitaPackedProver<'a> =
 
 impl AkitaPackedProver<'_> {
     /// Akita setup parameters sized to the physical `OneHotTrace` polynomial.
+    ///
+    /// Provisions this program's grouped trusted-advice rows first: setup
+    /// sizing folds them into the matrix capacity, so they must be installed
+    /// before the setup this describes is built.
+    #[expect(
+        clippy::expect_used,
+        reason = "consistent with the canonical-layout expects below; a program whose \
+                  advice capacity cannot be scheduled is a preprocessing-time invariant break"
+    )]
     pub fn one_hot_trace_setup_params(&self) -> jolt_akita::AkitaSetupParams {
         let one_hot_trace_shape = self.one_hot_trace_shape();
         let shape = ONE_HOT_TRACE_LAYOUT
@@ -681,12 +738,19 @@ impl AkitaPackedProver<'_> {
         let layout_digest = ONE_HOT_TRACE_LAYOUT
             .layout_digest(&one_hot_trace_shape)
             .expect("canonical OneHotTrace layout digest must exist");
+        let one_hot_k = 1usize << self.one_hot_params.log_k_chunk;
+        let max_trusted_advice_bytes =
+            self.program_io.memory_layout.max_trusted_advice_size as usize;
+        if max_trusted_advice_bytes > 0 {
+            provision_trusted_advice_schedules(max_trusted_advice_bytes, one_hot_k)
+                .expect("trusted-advice grouped schedules must provision");
+        }
         jolt_akita::AkitaSetupParams::one_hot_only_grouped(
             shape.num_vars,
             shape.num_polys,
             2,
             layout_digest,
-            1 << self.one_hot_params.log_k_chunk,
+            one_hot_k,
         )
     }
 
@@ -1809,12 +1873,26 @@ pub fn akita_verifier_preprocessing(
         }
     };
     let committed_mode = preprocessing.shared.program.is_committed();
+    let one_hot_k = akita_verifier_setup.one_hot_k();
     let mut verifier_preprocessing = JoltVerifierPreprocessing::new(
         program,
         preprocessing.shared.digest(),
         akita_verifier_setup,
         None,
     );
+    // The verifier owns its own copy of the grouped trusted-advice rows. A
+    // verifier in its own process re-derives them from the same public advice
+    // capacity, so the set is identical by construction rather than by trust.
+    let max_trusted_advice_bytes =
+        preprocessing.shared.memory_layout.max_trusted_advice_size as usize;
+    let trusted_physical_vars = (max_trusted_advice_bytes > 0)
+        .then(|| advice_physical_num_vars(JoltAdviceKind::Trusted, max_trusted_advice_bytes))
+        .transpose()
+        .expect("the memory layout must carry a schedulable trusted advice capacity")
+        .unwrap_or_default();
+    verifier_preprocessing
+        .provision_akita_schedules(max_trusted_advice_bytes, trusted_physical_vars, one_hot_k)
+        .expect("trusted-advice grouped schedules must provision for the verifier");
     // The per-kind advice commitment-object setups are derived from the
     // public advice shapes with the same fixed seed the prover uses (the
     // Akita setup is transparent).

@@ -179,6 +179,18 @@ where
     /// Committed-program mode: setups matching `program_one_hot_commitments`.
     #[cfg(feature = "akita")]
     pub program_one_hot_setups: Vec<PCS::VerifierSetup>,
+    /// The grouped schedule rows batching this program's trusted advice with
+    /// the packed trace, one per reachable trace arity.
+    ///
+    /// A grouped row is keyed on the frozen advice prefix profile, which
+    /// follows `memory_layout.max_trusted_advice_size`, so these rows cannot be
+    /// emitted offline and are planned here at preprocessing instead. They are
+    /// a pure function of that public capacity, so they are not serialized:
+    /// [`Self::provision_akita_schedules`] rebuilds them on the deserialized
+    /// side.
+    #[cfg(feature = "akita")]
+    #[serde(skip)]
+    pub trusted_advice_schedules: jolt_akita::schedule_registry::RegisteredRows,
 }
 
 impl<PCS, VC> JoltVerifierPreprocessing<PCS, VC>
@@ -203,6 +215,38 @@ where
             trusted_advice_setup: None,
             #[cfg(feature = "akita")]
             program_one_hot_setups: Vec::new(),
+            #[cfg(feature = "akita")]
+            trusted_advice_schedules: Default::default(),
         }
+    }
+
+    /// Plan and take ownership of this program's grouped trusted-advice
+    /// schedule rows, and publish them where the commitment config's resolution
+    /// hooks can see them.
+    ///
+    /// Idempotent: the rows follow the public advice capacity, so re-running it
+    /// — after a serde roundtrip, or on a verifier that never saw the prover —
+    /// reproduces the same set. Returns the row-set digest, which prover and
+    /// verifier can compare to confirm they provisioned identically.
+    ///
+    /// Must run before the packed setup is sized: setup capacity folds these
+    /// rows into the matrix footprint.
+    #[cfg(feature = "akita")]
+    pub fn provision_akita_schedules(
+        &mut self,
+        max_trusted_advice_bytes: usize,
+        trusted_advice_physical_vars: usize,
+        one_hot_k: usize,
+    ) -> Result<[u8; 32], jolt_akita::AkitaError> {
+        if max_trusted_advice_bytes == 0 {
+            self.trusted_advice_schedules = Default::default();
+            return Ok(self.trusted_advice_schedules.set_digest());
+        }
+        self.trusted_advice_schedules =
+            jolt_akita::schedule_registry::provision_trusted_advice_for_k(
+                trusted_advice_physical_vars,
+                one_hot_k,
+            )?;
+        Ok(self.trusted_advice_schedules.set_digest())
     }
 }

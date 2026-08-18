@@ -165,7 +165,11 @@ pub mod emit {
 
     /// Freeze an independently committed group's profile from a fresh planner
     /// solve. Generation must not consult the catalog it is regenerating.
-    fn planned_profile_without_precommitted_groups<Cfg: CommitmentConfig>(
+    ///
+    /// The runtime counterpart is
+    /// [`crate::schedule_registry::dense_precommit_profile`], which reads the
+    /// catalog instead; the two must agree byte-for-byte.
+    pub fn planned_profile_without_precommitted_groups<Cfg: CommitmentConfig>(
         group: PolynomialGroupLayout,
     ) -> Result<CommittedGroupProfile, AkitaError> {
         let schedule = regen::<Cfg>(group)?;
