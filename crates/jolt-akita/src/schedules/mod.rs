@@ -126,26 +126,23 @@ pub mod emit {
     pub const DENSE_NUM_VARS: (usize, usize) = (14, 34);
 
     /// Production trusted-advice precommit layout (`2^20` u64 words).
+    ///
+    /// Documents the shape and anchors the tests; no grouped row is emitted for
+    /// it. Grouped advice rows are never checked in — see [`family_specs`].
     pub const TRUSTED_ADVICE_GROUP: PolynomialGroupLayout = PolynomialGroupLayout::new(20, 1);
 
-    /// Production untrusted-advice precommit layout (`2^20` u64 words).
-    pub const UNTRUSTED_ADVICE_GROUP: PolynomialGroupLayout = PolynomialGroupLayout::new(20, 1);
-
-    /// Phase-1 production SHA2-chain packed-trace layout at `log_T = 26`, K=256.
+    /// Production SHA2-chain packed-trace layout at `log_T = 26`, K=256.
     pub const TRUSTED_ADVICE_K256_FINAL_GROUP: PolynomialGroupLayout =
         PolynomialGroupLayout::new(39, 1);
 
-    /// Default 4 KiB trusted-advice fixture after the dense arity floor.
+    /// Default 4 KiB advice fixture after the dense arity floor. Both advice
+    /// kinds land here, since the floor absorbs any capacity up to 128 KiB.
     #[cfg(feature = "akita-test-schedules")]
     pub const FIXTURE_TRUSTED_ADVICE_GROUP: PolynomialGroupLayout =
         PolynomialGroupLayout::new(14, 1);
 
-    /// Default 4 KiB untrusted-advice fixture after the dense arity floor.
-    #[cfg(feature = "akita-test-schedules")]
-    pub const FIXTURE_UNTRUSTED_ADVICE_GROUP: PolynomialGroupLayout =
-        PolynomialGroupLayout::new(14, 1);
-
-    /// K=16 fixture final arities for canonical `log_T = 12..=16` traces.
+    /// K=16 fixture final arities for canonical `log_T = 12..=16` traces. This
+    /// is the range preprocessing plans grouped advice rows over.
     #[cfg(feature = "akita-test-schedules")]
     pub const FIXTURE_K16_FINAL_NUM_VARS: (usize, usize) = (22, 26);
 
@@ -184,80 +181,19 @@ pub mod emit {
         CommittedGroupProfile::try_from_params(group, &schedule.root.params.final_group.commitment)
     }
 
-    /// Every ordered non-empty advice presence combination, as frozen dense
-    /// profiles in canonical `[untrusted, trusted]` order.
+    /// Grouped advice rows are deliberately NOT emitted.
     ///
-    /// Mirrors `schedule_registry::AdvicePrecommitLayouts::precommit_combinations`
-    /// — the runtime reads the catalog while this plans it, so the two must
-    /// enumerate the same combinations or a reachable proof finds no row.
-    /// Deduplicated for the same reason: a row is keyed on profiles alone, so
-    /// equal-arity advice objects share their single-precommit row.
-    fn advice_precommit_combinations(
-        untrusted: PolynomialGroupLayout,
-        trusted: PolynomialGroupLayout,
-    ) -> Result<Vec<Vec<CommittedGroupProfile>>, AkitaError> {
-        let untrusted_profile =
-            planned_profile_without_precommitted_groups::<JoltDense>(untrusted)?;
-        let trusted_profile = planned_profile_without_precommitted_groups::<JoltDense>(trusted)?;
-        let mut combinations: Vec<Vec<CommittedGroupProfile>> = Vec::with_capacity(3);
-        for combination in [
-            vec![untrusted_profile],
-            vec![trusted_profile],
-            vec![untrusted_profile, trusted_profile],
-        ] {
-            if !combinations.contains(&combination) {
-                combinations.push(combination);
-            }
-        }
-        Ok(combinations)
-    }
-
-    fn group_batch_keys_over(
-        combinations: Vec<Vec<CommittedGroupProfile>>,
-        final_num_vars: impl IntoIterator<Item = usize> + Clone,
-    ) -> Vec<(AkitaScheduleLookupKey, Vec<HonestFoldPolicySpec>)> {
-        combinations
-            .into_iter()
-            .flat_map(|precommitteds| {
-                let policies = vec![JoltDense::root_honest_fold_policy(); precommitteds.len()];
-                final_num_vars
-                    .clone()
-                    .into_iter()
-                    .map(|num_vars| {
-                        (
-                            AkitaScheduleLookupKey {
-                                final_group: PolynomialGroupLayout::new(num_vars, 1),
-                                precommitteds: precommitteds.clone(),
-                            },
-                            policies.clone(),
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect()
-    }
-
-    fn k256_group_batch_keys(
-    ) -> Result<Vec<(AkitaScheduleLookupKey, Vec<HonestFoldPolicySpec>)>, AkitaError> {
-        let combinations =
-            advice_precommit_combinations(UNTRUSTED_ADVICE_GROUP, TRUSTED_ADVICE_GROUP)?;
-        Ok(group_batch_keys_over(
-            combinations,
-            [TRUSTED_ADVICE_K256_FINAL_GROUP.num_vars()],
-        ))
-    }
-
-    #[cfg(feature = "akita-test-schedules")]
-    fn k16_fixture_group_batch_keys(
-    ) -> Result<Vec<(AkitaScheduleLookupKey, Vec<HonestFoldPolicySpec>)>, AkitaError> {
-        let combinations = advice_precommit_combinations(
-            FIXTURE_UNTRUSTED_ADVICE_GROUP,
-            FIXTURE_TRUSTED_ADVICE_GROUP,
-        )?;
-        Ok(group_batch_keys_over(
-            combinations,
-            FIXTURE_K16_FINAL_NUM_VARS.0..=FIXTURE_K16_FINAL_NUM_VARS.1,
-        ))
+    /// A grouped row is keyed on the frozen precommit profiles, which follow the
+    /// program's `max_{un,}trusted_advice_size`. Shipping rows for a handful of
+    /// guessed capacities only covered those capacities while implying the rest
+    /// were unsupported, and it split one behavior across two sources — a
+    /// checked-in table for some shapes and the preprocessing planner for the
+    /// others. Preprocessing now plans every grouped advice row
+    /// (`schedule_registry::provision_advice_for_k`), so there is exactly one
+    /// path. Resolution still checks the registry first and falls through to the
+    /// catalog, which simply carries no grouped rows to find.
+    fn advice_group_batch_keys() -> Vec<(AkitaScheduleLookupKey, Vec<HonestFoldPolicySpec>)> {
+        Vec::new()
     }
 
     /// The reachable scalar keys of one family grid.
@@ -327,7 +263,7 @@ pub mod emit {
                 "jolt-fp128-onehot-k256",
                 ONE_HOT_TRACE_NUM_POLYS,
                 K256_NUM_VARS,
-                k256_group_batch_keys()?,
+                advice_group_batch_keys(),
                 output_dir.clone(),
             ),
             spec::<JoltDense>(
@@ -349,7 +285,7 @@ pub mod emit {
                 "jolt-fp128-onehot-k16-fixture",
                 &[1],
                 FIXTURE_K16_FINAL_NUM_VARS,
-                k16_fixture_group_batch_keys()?,
+                advice_group_batch_keys(),
                 output_dir,
             ));
             specs

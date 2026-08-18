@@ -544,9 +544,8 @@ mod tests {
         assert!(lookup_selection::<JoltOneHotK256>(selection).is_none());
     }
 
-    /// The fixture family ships checked-in grouped rows for a known prefix, so
-    /// it is the one place a runtime plan can be compared against an
-    /// independently generated oracle.
+    /// The fixture family's arities are small, so it is the one family whose
+    /// grouped rows are cheap enough to plan end to end inside a test.
     #[cfg(feature = "akita-test-schedules")]
     mod fixture {
         use super::*;
@@ -574,37 +573,36 @@ mod tests {
             (profile, keys)
         }
 
+        /// No grouped advice row is checked in, so preprocessing plans every
+        /// one. A cataloged grouped row would split one behavior across two
+        /// sources: a table for the guessed capacities, the planner for the rest.
         #[test]
-        fn planned_rows_match_the_checked_in_fixture_rows() {
+        fn no_grouped_advice_row_is_cataloged_and_provisioning_plans_them_all() {
+            reset_for_tests();
             let (_, keys) =
                 fixture_keys(FIXTURE_K16_FINAL_NUM_VARS.0..=FIXTURE_K16_FINAL_NUM_VARS.1);
             for key in &keys {
-                let cataloged = JoltOneHotK16Fixture::resolve_catalog_row_for_key(key)
-                    .expect("fixture catalog must cover its own grouped rows");
-                let planned =
-                    plan_row::<JoltOneHotK16Fixture>(key, &[JoltDense::root_honest_fold_policy()])
-                        .expect("planner must solve a fixture grouped key");
-                assert_eq!(
-                    cataloged.selection().row_digest,
-                    planned.selection().row_digest,
-                    "runtime plan diverges from the checked-in row for {key:?}"
+                assert!(
+                    catalog_only_row::<JoltOneHotK16Fixture>(key).is_err(),
+                    "a grouped advice row must never be checked in: {key:?}"
                 );
-                assert_eq!(cataloged.profiles(), planned.profiles());
             }
-        }
 
-        #[test]
-        fn provisioning_reuses_cataloged_rows_instead_of_planning_them() {
-            reset_for_tests();
             let rows = provision_advice::<JoltOneHotK16Fixture>(
                 trusted_only(FIXTURE_TRUSTED_ADVICE_GROUP),
                 FIXTURE_K16_FINAL_NUM_VARS.0..=FIXTURE_K16_FINAL_NUM_VARS.1,
             )
-            .expect("provisioning a fully cataloged range must succeed");
-            assert!(
-                rows.is_empty(),
-                "every key is cataloged, so nothing should have been planned"
+            .expect("provisioning must plan the whole range");
+            assert_eq!(
+                rows.len(),
+                keys.len(),
+                "every final arity must be planned, since none is cataloged"
             );
+            for key in &keys {
+                let resolved = JoltOneHotK16Fixture::resolve_catalog_row_for_key(key)
+                    .expect("a provisioned row must resolve through the hook");
+                assert_eq!(resolved.profiles().precommitteds, key.precommitteds);
+            }
             reset_for_tests();
         }
 
