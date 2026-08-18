@@ -103,7 +103,7 @@ pub mod emit {
     /// Dense advice/program byte objects: word-byte arity over the supported
     /// trace range. The low end is the folded-only planner floor for the
     /// dense fp128 shape; smaller objects pad up to it.
-    pub const DENSE_NUM_VARS: (usize, usize) = (14, 34);
+    pub const DENSE_NUM_VARS: (usize, usize) = (14, 37);
 
     /// Pure DP regeneration for `Cfg` — never consults the shipped table.
     fn regen<Cfg: CommitmentConfig>(
