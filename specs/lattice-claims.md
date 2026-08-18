@@ -9,8 +9,9 @@
 
 > **Advice update:** The byte-one-hot trusted/untrusted advice design in this
 > document is historical. The active protocol commits dense word advice and
-> directly opens the final `AdviceClaimReduction` claims as specified in
-> [`akita-dense-advice.md`](akita-dense-advice.md). The old advice IDs remain
+> directly opens the final `AdviceClaimReduction` claims; both advice objects
+> are precommitted groups of one joint Akita opening, in the canonical order
+> `[UntrustedAdvice, TrustedAdvice, OneHotTrace]`. The old advice IDs remain
 > only as positional-codec tombstones. One-hot trace and committed-program
 > reconstruction remain active.
 
