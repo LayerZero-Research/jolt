@@ -2726,7 +2726,6 @@ impl<F: Field> VectorCommitment for NoVectorCommitment<F> {
 #[expect(clippy::unwrap_used)]
 mod advice_object_tests {
     use super::*;
-    use jolt_poly::MultilinearPoly;
 
     /// A couple of bytes of advice must stay provable: without the packing
     /// plan's capacity padding, the zero-variable dense domain of a one-word

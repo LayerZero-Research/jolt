@@ -79,6 +79,12 @@ jobs:
         run: cargo clippy -p jolt-verifier --all-targets --features akita,prover-fixtures
       - name: cargo clippy -p jolt-prover-legacy --features akita
         run: cargo clippy -p jolt-prover-legacy --all-targets --features akita
+      # The K=16 fixture catalog and the grouped-row code behind it are
+      # feature-gated, so the invocations above never lint them.
+      - name: cargo clippy -p jolt-prover-legacy --features akita,akita-test-schedules
+        run: cargo clippy -p jolt-prover-legacy --all-targets --features akita,akita-test-schedules
+      - name: cargo clippy -p jolt-akita --features akita-test-schedules
+        run: cargo clippy -p jolt-akita --all-targets --features akita-test-schedules
       # The modular prover's packed (Akita) path: lint alone and with
       # prover-fixtures so the acceptance suites keep compiling.
       - name: cargo clippy -p jolt-prover --features akita
@@ -337,8 +343,11 @@ jobs:
       # The packed-prover e2e suite: muldiv, forced K=256, trusted/untrusted
       # advice, and committed-program, each proving and verifying over the
       # Akita lattice PCS (the release-only perf harness stays ignored).
+      # akita-test-schedules ships the K=16 fixture catalog these e2e tests
+      # resolve their grouped advice rows from; without it they fail to
+      # provision. jolt-prover/jolt-verifier get it via prover-fixtures.
       - name: Run jolt-prover-legacy tests with akita feature
-        run: cargo nextest run --cargo-profile ci -p jolt-prover-legacy --features akita
+        run: cargo nextest run --cargo-profile ci -p jolt-prover-legacy --features akita,akita-test-schedules
       # The MODULAR packed-prover acceptance suites: the five e2e analogs
       # (with live tampers) plus the four byte-diff ratchets asserting
       # wire-for-wire equality with the legacy packed prover.
@@ -640,6 +649,10 @@ jobs:
       # its own lane.
       - name: Regenerate schedule catalogs through the planner
         run: cargo nextest run --cargo-profile ci -p jolt-akita --run-ignored all -E 'test(catalogs_match_planner_regeneration)' --cargo-quiet
+      # The K=16 fixture family is feature-gated, so the run above never sees
+      # it. Its grouped advice rows drift for exactly the same reasons.
+      - name: Regenerate the fixture schedule catalog through the planner
+        run: cargo nextest run --cargo-profile ci -p jolt-akita --features akita-test-schedules --run-ignored all -E 'test(catalogs_match_planner_regeneration)' --cargo-quiet
 
   test-inlines:
     name: Test inlines
