@@ -1,12 +1,15 @@
 //! The Akita final opening.
 //!
 //! `OneHotTrace` prefix-packs its semantic columns into one physical
-//! polynomial. Trusted advice joins it as a precommitted Akita group;
-//! untrusted advice and committed-program objects remain independent.
+//! polynomial. Both advice objects join it as precommitted Akita groups in the
+//! canonical order `[UntrustedAdvice, TrustedAdvice, OneHotTrace]`, discharged by
+//! one joint opening; committed-program objects remain independent.
 
 use std::collections::BTreeMap;
 
-use jolt_akita::{GroupOpeningClaim, PrecommittedTraceBatching};
+use jolt_akita::{
+    GroupOpeningClaim, PrecommittedClaim, PrecommittedRole, PrecommittedTraceBatching,
+};
 use jolt_claims::protocols::jolt::geometry::dimensions::JoltFormulaDimensions;
 use jolt_claims::protocols::jolt::lattice::geometry::word_byte_num_vars;
 use jolt_claims::protocols::jolt::lattice::packing::{
@@ -293,28 +296,33 @@ where
         None
     };
 
-    if let (Some(object), Some(claim)) = (trusted.as_ref(), trusted_claim.as_ref()) {
-        let trusted_group = GroupOpeningClaim::new(
-            object.commitment.clone(),
-            claim.point.as_slice().to_vec(),
-            vec![claim.value],
-        );
-        let main_group = GroupOpeningClaim::new(
-            one_hot_trace_commitment.clone(),
-            packed_claim.point.as_slice().to_vec(),
-            vec![packed_claim.value],
-        );
-        tracing::info_span!("akita_trusted_main_batched_verify").in_scope(|| {
-            PCS::verify_trusted_trace_batch(
-                &preprocessing.pcs_setup,
-                &trusted_group,
-                &main_group,
-                &proof.main_batch,
-                transcript,
-            )
-            .map_err(opening_failed)
-        })?;
-    } else {
+    // Canonical public batch order: [UntrustedAdvice, TrustedAdvice, OneHotTrace].
+    let mut precommitted = Vec::with_capacity(2);
+    for (role, object, claim) in [
+        (
+            PrecommittedRole::UntrustedAdvice,
+            untrusted.as_ref(),
+            untrusted_claim.as_ref(),
+        ),
+        (
+            PrecommittedRole::TrustedAdvice,
+            trusted.as_ref(),
+            trusted_claim.as_ref(),
+        ),
+    ] {
+        if let (Some(object), Some(claim)) = (object, claim) {
+            precommitted.push(PrecommittedClaim::new(
+                role,
+                GroupOpeningClaim::new(
+                    object.commitment.clone(),
+                    claim.point.as_slice().to_vec(),
+                    vec![claim.value],
+                ),
+            ));
+        }
+    }
+
+    if precommitted.is_empty() {
         PCS::verify_batch(
             one_hot_trace_commitment,
             packed_claim.point.as_slice(),
@@ -324,6 +332,22 @@ where
             transcript,
         )
         .map_err(opening_failed)?;
+    } else {
+        let main_group = GroupOpeningClaim::new(
+            one_hot_trace_commitment.clone(),
+            packed_claim.point.as_slice().to_vec(),
+            vec![packed_claim.value],
+        );
+        tracing::info_span!("akita_advice_main_batched_verify").in_scope(|| {
+            PCS::verify_precommitted_trace_batch(
+                &preprocessing.pcs_setup,
+                &precommitted,
+                &main_group,
+                &proof.main_batch,
+                transcript,
+            )
+            .map_err(opening_failed)
+        })?;
     }
 
     let mut program_objects: Vec<ResolvedObject<'_, PCS>> = Vec::new();
@@ -388,9 +412,9 @@ where
         }
     }
 
-    let expected_auxiliary = usize::from(untrusted.is_some())
-        .checked_add(program_objects.len())
-        .ok_or_else(|| batch_failed("auxiliary proof count overflow"))?;
+    // Both advice objects are discharged by the joint batch above, so only the
+    // committed-program objects remain auxiliary.
+    let expected_auxiliary = program_objects.len();
     if proof.auxiliary.len() != expected_auxiliary {
         return Err(batch_failed(format!(
             "expected {} auxiliary prefix-packed opening proofs, got {}",
@@ -400,21 +424,6 @@ where
     }
 
     let mut auxiliary = proof.auxiliary.iter();
-    if let (Some(object), Some(claim)) = (untrusted.as_ref(), untrusted_claim.as_ref()) {
-        let auxiliary_proof = auxiliary
-            .next()
-            .ok_or_else(|| batch_failed("missing untrusted-advice auxiliary proof"))?;
-        PCS::verify_batch(
-            object.commitment,
-            claim.point.as_slice(),
-            std::slice::from_ref(&claim.value),
-            auxiliary_proof,
-            object.setup,
-            transcript,
-        )
-        .map_err(opening_failed)?;
-    }
-
     for object in program_objects {
         let auxiliary_proof = auxiliary
             .next()

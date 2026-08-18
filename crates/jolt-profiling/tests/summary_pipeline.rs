@@ -226,8 +226,8 @@ fn fixture_labels_conform_to_taxonomy() {
         [
             "akita_trusted_advice_precommit",
             "akita_main_commit_with_precommitted",
-            "akita_trusted_main_batched_prove",
-            "akita_trusted_main_batched_verify",
+            "akita_advice_main_batched_prove",
+            "akita_advice_main_batched_verify",
         ]
     );
 }

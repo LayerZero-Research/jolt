@@ -114,10 +114,10 @@ pub(crate) fn deserialize_checked_backend_payload(
     Ok((resolved.selection(), backend_commitment, backend_proof))
 }
 
-/// Guard and decode the fixed two-group root in public order
-/// `[trusted dense, final streamed one-hot]`.
+/// Guard and decode the ordered grouped root in public order
+/// `[dense precommits.., final streamed one-hot]`.
 pub(crate) fn deserialize_checked_grouped_backend_payload(
-    trusted: &AkitaCommitment,
+    precommitted: &[&AkitaCommitment],
     main: &AkitaCommitment,
     proof: &AkitaBatchProof,
     main_backend_point: &[AkitaField],
@@ -126,18 +126,25 @@ pub(crate) fn deserialize_checked_grouped_backend_payload(
 ) -> Result<
     (
         OpeningScheduleSelection,
-        AkitaBackendCommitment,
+        Vec<AkitaBackendCommitment>,
         AkitaBackendCommitment,
         AkitaBackendProof,
     ),
     OpeningsError,
 > {
+    if precommitted.is_empty() {
+        return Err(invalid_batch(
+            "Akita grouped opening requires at least one precommitted group",
+        ));
+    }
     let selection = deserialize_selection(proof)?;
-    let layout = OpeningClaimsLayout::from_groups(vec![
-        PolynomialGroupLayout::new(trusted.num_vars, trusted.poly_count),
-        PolynomialGroupLayout::new(main.num_vars, main.poly_count),
-    ])
-    .map_err(|err| invalid_batch(format!("Akita grouped opening layout is invalid: {err}")))?;
+    let mut group_layouts = precommitted
+        .iter()
+        .map(|commitment| PolynomialGroupLayout::new(commitment.num_vars, commitment.poly_count))
+        .collect::<Vec<_>>();
+    group_layouts.push(PolynomialGroupLayout::new(main.num_vars, main.poly_count));
+    let layout = OpeningClaimsLayout::from_groups(group_layouts)
+        .map_err(|err| invalid_batch(format!("Akita grouped opening layout is invalid: {err}")))?;
     let resolved = match one_hot_k {
         AKITA_ONE_HOT_K256 => resolve_grouped_schedule::<AkitaOneHotK256Config>(
             selection,
@@ -171,30 +178,40 @@ pub(crate) fn deserialize_checked_grouped_backend_payload(
     }
     .map_err(|err| invalid_batch(format!("Akita grouped schedule resolution failed: {err}")))?;
     let profiles = resolved.profiles();
-    let [trusted_profile] = profiles.precommitteds.as_slice() else {
-        return Err(invalid_batch(
-            "Akita grouped row must contain exactly one precommitted group",
-        ));
-    };
-    if trusted_profile.group != PolynomialGroupLayout::new(trusted.num_vars, trusted.poly_count)
-        || profiles.final_group.group != PolynomialGroupLayout::new(main.num_vars, main.poly_count)
-    {
+    if profiles.precommitteds.len() != precommitted.len() {
+        return Err(invalid_batch(format!(
+            "Akita grouped row has {} precommitted groups but the statement has {}",
+            profiles.precommitteds.len(),
+            precommitted.len()
+        )));
+    }
+    for (commitment, profile) in precommitted.iter().zip(profiles.precommitteds.iter()) {
+        if profile.group != PolynomialGroupLayout::new(commitment.num_vars, commitment.poly_count) {
+            return Err(invalid_batch(
+                "Akita grouped row profiles do not match the public commitments",
+            ));
+        }
+    }
+    if profiles.final_group.group != PolynomialGroupLayout::new(main.num_vars, main.poly_count) {
         return Err(invalid_batch(
             "Akita grouped row profiles do not match the public commitments",
         ));
     }
 
-    validate_commitment_profile_len(trusted, trusted_profile)?;
+    let mut precommitted_backend = Vec::with_capacity(precommitted.len());
+    for (commitment, profile) in precommitted.iter().zip(profiles.precommitteds.iter()) {
+        validate_commitment_profile_len(commitment, profile)?;
+        let payload = deserialize_akita::<AkitaBackendCommitmentPayload>(
+            &commitment.serialized_backend_bytes,
+            &commitment.backend_coeff_len,
+        )?;
+        precommitted_backend.push(AkitaBackendCommitment::new(*profile, payload));
+    }
     validate_commitment_profile_len(main, &profiles.final_group)?;
-    let trusted_payload = deserialize_akita::<AkitaBackendCommitmentPayload>(
-        &trusted.serialized_backend_bytes,
-        &trusted.backend_coeff_len,
-    )?;
     let main_payload = deserialize_akita::<AkitaBackendCommitmentPayload>(
         &main.serialized_backend_bytes,
         &main.backend_coeff_len,
     )?;
-    let trusted_backend = AkitaBackendCommitment::new(*trusted_profile, trusted_payload);
     let main_backend = AkitaBackendCommitment::new(profiles.final_group, main_payload);
 
     if proof.serialized_akita_proof_shape.len() > MAX_PROOF_SHAPE_BYTES {
@@ -210,7 +227,7 @@ pub(crate) fn deserialize_checked_grouped_backend_payload(
         deserialize_akita::<AkitaBackendProof>(&proof.serialized_akita_proof, &proof_shape)?;
     Ok((
         resolved.selection(),
-        trusted_backend,
+        precommitted_backend,
         main_backend,
         backend_proof,
     ))

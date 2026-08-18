@@ -52,10 +52,11 @@ impl<P> AkitaJointOpeningProof<P> {
     }
 }
 
-/// Untrusted advice plus the two committed-program objects is the largest
-/// packed auxiliary set admitted by the current protocol.
+/// The two committed-program objects are the largest packed auxiliary set
+/// admitted by the current protocol: both advice objects are precommitted batch
+/// groups discharged by the joint opening, never auxiliary.
 #[cfg(feature = "akita")]
-pub const MAX_AKITA_AUXILIARY_PROOFS: usize = 3;
+pub const MAX_AKITA_AUXILIARY_PROOFS: usize = 2;
 
 #[cfg(feature = "akita")]
 fn deserialize_bounded_akita_auxiliary<'de, D, P>(deserializer: D) -> Result<Vec<P>, D::Error>

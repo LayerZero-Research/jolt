@@ -716,8 +716,9 @@ fn every_commitment_wire_rejects_perturbation() {
     }
 }
 
-/// Proof-shape tampers: a swapped phase proof, dropped committed-program reconstruction /
-/// auxiliary proofs, and swapped auxiliary object proofs — each fail-closed.
+/// Proof-shape tampers: a swapped phase proof, a spurious auxiliary proof on a
+/// case that has none, dropped committed-program reconstruction / auxiliary
+/// proofs, and swapped auxiliary object proofs — each fail-closed.
 #[test]
 fn akita_proof_shape_tampers_reject() {
     let muldiv = akita_muldiv_case();
@@ -725,9 +726,16 @@ fn akita_proof_shape_tampers_reject() {
     proof.stages.stage6b_sumcheck_proof = proof.stages.stage3_sumcheck_proof.clone();
     assert_rejects(muldiv.verify_proof(&proof));
 
+    // Both advice objects are precommitted batch groups, so the advice case
+    // carries no auxiliary proofs at all — a spurious one must be rejected on
+    // count. (Clearing the list would be a no-op here, hence a vacuous tamper.)
     let advice = akita_advice_case();
     let mut proof = advice.proof.clone();
-    proof.joint_opening_proof.auxiliary.clear();
+    assert!(proof.joint_opening_proof.auxiliary.is_empty());
+    proof
+        .joint_opening_proof
+        .auxiliary
+        .push(proof.joint_opening_proof.main_batch.clone());
     assert_rejects(advice.verify_proof(&proof));
 
     let committed = akita_committed_muldiv_case();

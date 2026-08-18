@@ -425,8 +425,8 @@ mod advice {
         run_advice_e2e_akita(true);
     }
 
-    /// Phase 1 retains untrusted advice as an auxiliary proof even when no
-    /// trusted precommit is present.
+    /// Untrusted advice is a precommitted batch group in its own right, so it
+    /// joins the joint opening even with no trusted precommit present.
     #[test]
     fn untrusted_only_advice_e2e_akita() {
         run_advice_e2e_akita(false);
@@ -537,9 +537,9 @@ mod advice {
         .expect("packed prover should produce a verifier-native proof");
         assert!(proof.untrusted_advice_commitment.is_some());
         assert!(proof.stages.reconstruction_sumcheck_proof.is_none());
-        // Trusted advice is fused into `main_batch`; only untrusted advice
-        // remains an auxiliary opening.
-        assert_eq!(proof.joint_opening_proof.auxiliary.len(), 1);
+        // Both advice objects are fused into `main_batch`, and this guest has
+        // no committed program, so nothing remains auxiliary.
+        assert_eq!(proof.joint_opening_proof.auxiliary.len(), 0);
 
         let verify = |proof: &AkitaJoltProof| {
             jolt_verifier::verify::<AkitaField, AkitaScheme, AkitaVc, AkitaTranscript>(
@@ -580,11 +580,18 @@ mod advice {
             "a tampered main-batch schedule selection must be rejected"
         );
 
+        // Both advice objects are precommitted batch groups and this guest has
+        // no committed program, so the auxiliary list is empty. The count is
+        // still enforced: a spurious auxiliary opening must break fail-closed.
+        // (Popping would be a no-op here, hence a vacuous tamper.)
         let mut tampered = proof.clone();
-        let _dropped = tampered.joint_opening_proof.auxiliary.pop();
+        tampered
+            .joint_opening_proof
+            .auxiliary
+            .push(tampered.joint_opening_proof.main_batch.clone());
         assert!(
             verify(&tampered).is_err(),
-            "a dropped auxiliary opening proof must be rejected"
+            "a spurious auxiliary opening proof must be rejected"
         );
     }
 

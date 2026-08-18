@@ -1,12 +1,12 @@
 //! Preprocessing-provisioned grouped schedule rows.
 //!
-//! A grouped row is keyed on the frozen profile of every precommitted group,
-//! so a trusted-advice batch row cannot be emitted offline: the precommit
-//! layout follows the program's `max_trusted_advice_size`, which is only known
-//! at preprocessing. The checked-in catalogs therefore cover scalar rows and
-//! the fixture grouped rows, and the rows for a program's actual advice
-//! capacity are planned once here, at preprocessing, and installed for the rest
-//! of the process.
+//! A grouped row is keyed on the frozen profile of every precommitted group, so
+//! an advice batch row cannot be emitted offline: each precommit layout follows
+//! the program's `max_{un,}trusted_advice_size`, which is only known at
+//! preprocessing. The checked-in catalogs therefore cover scalar rows and the
+//! fixture grouped rows, and the rows for a program's actual advice capacities
+//! are planned once here, at preprocessing, and installed for the rest of the
+//! process.
 //!
 //! Preprocessing owns the resulting [`RegisteredRows`] and carries it for the
 //! life of the proving session. Because the
@@ -241,15 +241,29 @@ fn reject_setup_prefix_contributions(schedule: &FoldSchedule) -> Result<(), Akit
 /// one — two advice capacities in one process would otherwise silently
 /// reinterpret each other's rows.
 pub fn provision<Cfg: CommitmentConfig + 'static>(
-    precommitted: &CommittedGroupProfile,
-    precommitted_honest_fold_policies: &[HonestFoldPolicySpec],
+    precommitted_combinations: &[Vec<CommittedGroupProfile>],
+    precommitted_honest_fold_policy: HonestFoldPolicySpec,
     final_num_vars: impl IntoIterator<Item = usize>,
 ) -> Result<RegisteredRows, AkitaError> {
-    let keys: Vec<AkitaScheduleLookupKey> = final_num_vars
-        .into_iter()
-        .map(|num_vars| AkitaScheduleLookupKey {
-            final_group: PolynomialGroupLayout::new(num_vars, 1),
-            precommitteds: vec![*precommitted],
+    if precommitted_combinations.iter().any(Vec::is_empty) {
+        return Err(AkitaError::InvalidSetup(
+            "a grouped row must have at least one precommitted group".to_owned(),
+        ));
+    }
+    let final_arities: Vec<usize> = final_num_vars.into_iter().collect();
+    // Every reachable presence combination gets its own row at every final
+    // arity: which advice objects a proof actually carries is a runtime fact,
+    // so a missing combination would only surface as an unresolvable row.
+    let keys: Vec<AkitaScheduleLookupKey> = precommitted_combinations
+        .iter()
+        .flat_map(|precommitteds| {
+            final_arities
+                .iter()
+                .map(|num_vars| AkitaScheduleLookupKey {
+                    final_group: PolynomialGroupLayout::new(*num_vars, 1),
+                    precommitteds: precommitteds.clone(),
+                })
+                .collect::<Vec<_>>()
         })
         .collect();
     if keys.len() > MAX_REGISTERED_ROWS {
@@ -267,7 +281,8 @@ pub fn provision<Cfg: CommitmentConfig + 'static>(
         if catalog_only_row::<Cfg>(key).is_ok() {
             return Ok(None);
         }
-        match plan_row::<Cfg>(key, precommitted_honest_fold_policies) {
+        let policies = vec![precommitted_honest_fold_policy; key.precommitteds.len()];
+        match plan_row::<Cfg>(key, &policies) {
             Ok(row) => Ok(Some(row)),
             // Adding a precommit raises the fold-count floor, so a final arity
             // near the bottom of a family's scalar range can admit no grouped
@@ -342,44 +357,97 @@ pub fn dense_precommit_profile(
     crate::configs::JoltDense::profile_without_precommitted_groups(layout)
 }
 
-/// Plan and install the grouped rows batching one trusted-advice precommit with
-/// every final `OneHotTrace` arity in `final_num_vars`.
+/// The dense advice layouts a program can precommit, in canonical public batch
+/// order. `None` means that advice kind cannot appear in any proof for this
+/// program, so no row is planned for it.
 ///
-/// The trusted layout is fixed by the program's advice capacity, so this runs
+/// Both layouts are fixed by the program's advice capacities, which are known at
+/// preprocessing even though whether a given proof carries each object is only
+/// decided at proving time.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AdvicePrecommitLayouts {
+    pub untrusted: Option<PolynomialGroupLayout>,
+    pub trusted: Option<PolynomialGroupLayout>,
+}
+
+impl AdvicePrecommitLayouts {
+    /// Every ordered non-empty presence combination, as frozen dense profiles.
+    ///
+    /// A proof carries whichever advice objects its inputs actually populate, so
+    /// all of `[untrusted]`, `[trusted]`, and `[untrusted, trusted]` are
+    /// reachable when both capacities are nonzero.
+    ///
+    /// Deduplicated by profile sequence: a grouped row is keyed on the frozen
+    /// profiles alone, never on which advice kind produced them (the role is
+    /// bound in the statement transcript, not in the schedule). Two advice
+    /// objects of equal arity therefore share one single-precommit row, and
+    /// emitting it twice would be a duplicate row identity.
+    fn precommit_combinations(self) -> Result<Vec<Vec<CommittedGroupProfile>>, AkitaError> {
+        let untrusted = self.untrusted.map(dense_precommit_profile).transpose()?;
+        let trusted = self.trusted.map(dense_precommit_profile).transpose()?;
+        let mut combinations: Vec<Vec<CommittedGroupProfile>> = Vec::with_capacity(3);
+        let mut push_unique = |combination: Vec<CommittedGroupProfile>| {
+            if !combinations.contains(&combination) {
+                combinations.push(combination);
+            }
+        };
+        if let Some(untrusted) = untrusted {
+            push_unique(vec![untrusted]);
+        }
+        if let Some(trusted) = trusted {
+            push_unique(vec![trusted]);
+        }
+        if let (Some(untrusted), Some(trusted)) = (untrusted, trusted) {
+            push_unique(vec![untrusted, trusted]);
+        }
+        Ok(combinations)
+    }
+}
+
+/// Plan and install the grouped rows batching the program's dense advice
+/// precommits with every final `OneHotTrace` arity in `final_num_vars`.
+///
+/// The advice layouts are fixed by the program's advice capacities, so this runs
 /// once at preprocessing; the trace length is not known then, hence the sweep
 /// over the family's whole arity range.
-pub fn provision_trusted_advice<Cfg: CommitmentConfig + 'static>(
-    trusted_layout: PolynomialGroupLayout,
+pub fn provision_advice<Cfg: CommitmentConfig + 'static>(
+    layouts: AdvicePrecommitLayouts,
     final_num_vars: impl IntoIterator<Item = usize>,
 ) -> Result<RegisteredRows, AkitaError> {
-    let profile = dense_precommit_profile(trusted_layout)?;
+    let combinations = layouts.precommit_combinations()?;
+    if combinations.is_empty() {
+        return Ok(RegisteredRows::default());
+    }
     provision::<Cfg>(
-        &profile,
-        &[crate::configs::JoltDense::root_honest_fold_policy()],
+        &combinations,
+        crate::configs::JoltDense::root_honest_fold_policy(),
         final_num_vars,
     )
 }
 
-/// Provision the grouped trusted-advice rows for the `OneHotTrace` family
-/// selected by `one_hot_k`, over that family's whole reachable final-arity
-/// range.
+/// Provision the grouped advice rows for the `OneHotTrace` family selected by
+/// `one_hot_k`, over that family's whole reachable final-arity range.
 ///
 /// Preprocessing calls this once, before building the packed setup: setup
 /// sizing folds in the provisioned rows, so a row installed later would not be
 /// covered by the setup matrices.
 ///
-/// `trusted_physical_vars` is the dense advice object's physical arity — the
-/// caller derives it from `max_trusted_advice_size` through the same packing
-/// plan the commit uses, so this crate stays free of the advice layout.
-pub fn provision_trusted_advice_for_k(
-    trusted_physical_vars: usize,
+/// Each physical arity is the dense advice object's own — the caller derives it
+/// from the matching `max_*_advice_size` through the same packing plan the commit
+/// uses, so this crate stays free of the advice layout.
+pub fn provision_advice_for_k(
+    untrusted_physical_vars: Option<usize>,
+    trusted_physical_vars: Option<usize>,
     one_hot_k: usize,
 ) -> Result<RegisteredRows, AkitaError> {
-    let layout = PolynomialGroupLayout::new(trusted_physical_vars, 1);
+    let layouts = AdvicePrecommitLayouts {
+        untrusted: untrusted_physical_vars.map(|vars| PolynomialGroupLayout::new(vars, 1)),
+        trusted: trusted_physical_vars.map(|vars| PolynomialGroupLayout::new(vars, 1)),
+    };
     match one_hot_k {
         crate::AKITA_ONE_HOT_K256 => {
             let (min, max) = crate::schedules::emit::K256_NUM_VARS;
-            provision_trusted_advice::<crate::configs::JoltOneHotK256>(layout, min..=max)
+            provision_advice::<crate::configs::JoltOneHotK256>(layouts, min..=max)
         }
         crate::AKITA_ONE_HOT_K16 => {
             #[cfg(feature = "akita-test-schedules")]
@@ -388,18 +456,17 @@ pub fn provision_trusted_advice_for_k(
                 // K=16 grid: its catalog is generated over these arities, so a
                 // wider sweep would plan rows no fixture can reach.
                 let (min, max) = crate::schedules::emit::FIXTURE_K16_FINAL_NUM_VARS;
-                provision_trusted_advice::<crate::configs::JoltOneHotK16Fixture>(layout, min..=max)
+                provision_advice::<crate::configs::JoltOneHotK16Fixture>(layouts, min..=max)
             }
             #[cfg(not(feature = "akita-test-schedules"))]
             {
                 Err(AkitaError::InvalidSetup(
-                    "K=16 grouped trusted-advice openings require the test fixture catalog"
-                        .to_owned(),
+                    "K=16 grouped advice openings require the test fixture catalog".to_owned(),
                 ))
             }
         }
         other => Err(AkitaError::InvalidSetup(format!(
-            "unsupported one-hot K {other} for grouped trusted-advice provisioning"
+            "unsupported one-hot K {other} for grouped advice provisioning"
         ))),
     }
 }
@@ -460,8 +527,8 @@ mod tests {
         let profile =
             dense_precommit_profile(PolynomialGroupLayout::new(emit::DENSE_NUM_VARS.0, 1)).unwrap();
         let error = provision::<JoltOneHotK256>(
-            &profile,
-            &[JoltDense::root_honest_fold_policy()],
+            &[vec![profile]],
+            JoltDense::root_honest_fold_policy(),
             0..=MAX_REGISTERED_ROWS,
         )
         .expect_err("exceeding the row cap must be rejected");
@@ -485,6 +552,13 @@ mod tests {
         use super::*;
         use crate::configs::JoltOneHotK16Fixture;
         use crate::schedules::emit::{FIXTURE_K16_FINAL_NUM_VARS, FIXTURE_TRUSTED_ADVICE_GROUP};
+
+        fn trusted_only(trusted: PolynomialGroupLayout) -> AdvicePrecommitLayouts {
+            AdvicePrecommitLayouts {
+                untrusted: None,
+                trusted: Some(trusted),
+            }
+        }
 
         fn fixture_keys(
             final_num_vars: impl IntoIterator<Item = usize>,
@@ -522,8 +596,8 @@ mod tests {
         #[test]
         fn provisioning_reuses_cataloged_rows_instead_of_planning_them() {
             reset_for_tests();
-            let rows = provision_trusted_advice::<JoltOneHotK16Fixture>(
-                FIXTURE_TRUSTED_ADVICE_GROUP,
+            let rows = provision_advice::<JoltOneHotK16Fixture>(
+                trusted_only(FIXTURE_TRUSTED_ADVICE_GROUP),
                 FIXTURE_K16_FINAL_NUM_VARS.0..=FIXTURE_K16_FINAL_NUM_VARS.1,
             )
             .expect("provisioning a fully cataloged range must succeed");
@@ -548,8 +622,8 @@ mod tests {
             );
 
             let rows = provision::<JoltOneHotK16Fixture>(
-                &profile,
-                &[JoltDense::root_honest_fold_policy()],
+                &[vec![profile]],
+                JoltDense::root_honest_fold_policy(),
                 [27],
             )
             .expect("provisioning an uncataloged key must plan it");
@@ -580,8 +654,8 @@ mod tests {
             let range = FIXTURE_K16_FINAL_NUM_VARS.0..=FIXTURE_K16_FINAL_NUM_VARS.1;
             let expected = range.clone().count();
 
-            let rows = provision_trusted_advice::<JoltOneHotK16Fixture>(
-                uncataloged_trusted,
+            let rows = provision_advice::<JoltOneHotK16Fixture>(
+                trusted_only(uncataloged_trusted),
                 range.clone(),
             )
             .expect("a previously unseen advice capacity must provision");
@@ -614,10 +688,11 @@ mod tests {
         fn republishing_an_identical_row_set_is_a_no_op() {
             reset_for_tests();
             let (profile, _) = fixture_keys([27]);
-            let policies = [JoltDense::root_honest_fold_policy()];
-            let first = provision::<JoltOneHotK16Fixture>(&profile, &policies, [27])
+            let combinations = [vec![profile]];
+            let policy = JoltDense::root_honest_fold_policy();
+            let first = provision::<JoltOneHotK16Fixture>(&combinations, policy, [27])
                 .expect("first provisioning");
-            let second = provision::<JoltOneHotK16Fixture>(&profile, &policies, [27])
+            let second = provision::<JoltOneHotK16Fixture>(&combinations, policy, [27])
                 .expect("re-provisioning an identical set must succeed");
             assert_eq!(first.set_digest(), second.set_digest());
             reset_for_tests();
@@ -633,9 +708,9 @@ mod tests {
             let large = PolynomialGroupLayout::new(small.num_vars() + 1, 1);
 
             let small_rows =
-                provision_trusted_advice::<JoltOneHotK16Fixture>(small, [27]).expect("small");
+                provision_advice::<JoltOneHotK16Fixture>(trusted_only(small), [27]).expect("small");
             let large_rows =
-                provision_trusted_advice::<JoltOneHotK16Fixture>(large, [27]).expect("large");
+                provision_advice::<JoltOneHotK16Fixture>(trusted_only(large), [27]).expect("large");
             assert_ne!(
                 small_rows.set_digest(),
                 large_rows.set_digest(),
@@ -669,8 +744,8 @@ mod tests {
             reset_for_tests();
             let (profile, _) = fixture_keys([27]);
             let mut rows = provision::<JoltOneHotK16Fixture>(
-                &profile,
-                &[JoltDense::root_honest_fold_policy()],
+                &[vec![profile]],
+                JoltDense::root_honest_fold_policy(),
                 [27],
             )
             .expect("provisioning must succeed");
@@ -706,8 +781,8 @@ mod tests {
                 .expect("baseline capacity")
                 .num_field_elements;
             let _ = provision::<JoltOneHotK16Fixture>(
-                &profile,
-                &[JoltDense::root_honest_fold_policy()],
+                &[vec![profile]],
+                JoltDense::root_honest_fold_policy(),
                 [27],
             )
             .expect("provisioning must succeed");

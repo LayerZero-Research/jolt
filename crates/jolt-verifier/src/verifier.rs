@@ -656,13 +656,13 @@ pub(crate) fn absorb_preamble<PCS, VC, ZkProof, T>(
     absorb_labeled_u64(
         transcript,
         b"akita_protocol_version",
-        crate::config::PACKED_DENSE_ADVICE_BATCHED_TRANSCRIPT_VERSION,
+        crate::config::PACKED_ALL_ADVICE_BATCHED_TRANSCRIPT_VERSION,
     );
     #[cfg(feature = "akita")]
     absorb_labeled_u64(
         transcript,
         b"akita_advice_encoding",
-        crate::config::PACKED_DENSE_ADVICE_BATCHED_ENCODING,
+        crate::config::PACKED_ALL_ADVICE_BATCHED_ENCODING,
     );
 }
 
@@ -923,13 +923,13 @@ pub fn absorb_transcript_preamble<T>(
     absorb_labeled_u64(
         transcript,
         b"akita_protocol_version",
-        crate::config::PACKED_DENSE_ADVICE_BATCHED_TRANSCRIPT_VERSION,
+        crate::config::PACKED_ALL_ADVICE_BATCHED_TRANSCRIPT_VERSION,
     );
     #[cfg(feature = "akita")]
     absorb_labeled_u64(
         transcript,
         b"akita_advice_encoding",
-        crate::config::PACKED_DENSE_ADVICE_BATCHED_ENCODING,
+        crate::config::PACKED_ALL_ADVICE_BATCHED_ENCODING,
     );
 }
 

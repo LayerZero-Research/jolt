@@ -1319,17 +1319,88 @@ no longer exists.
 - [x] The SHA2-chain scale-26 8 MiB benchmark is rerun and recorded only after
       correctness, tamper, lint, and regression suites pass.
 
-## Phase 2 Direction (Not Part of This Change)
+## Phase 2: Untrusted Advice in the Joint Batch (Implemented)
 
-The next generic form commits untrusted advice before the main trace and uses
-the canonical public group order:
+Phase 2 generalizes the batch from one precommitted group to an ordered list,
+and puts untrusted advice in it. The canonical public group order is:
 
 ```text
 [UntrustedAdvice, TrustedAdvice, OneHotTrace]
 ```
 
-It requires the exact untrusted capacity/profile, two-prefix grouped schedule
-rows, Stage-0 untrusted commit reordering, total setup capacity three, and a
-new protocol/catalog version. The Phase-1 internal group carriers should not
-hard-code an assumption that Akita can have only one prefix, but no Phase-2
-row or behavior is accepted by this spec.
+Both advice objects and the trace are now discharged by **one** joint opening
+proof and one joint verification. Untrusted advice is no longer an auxiliary
+opening; only committed-program objects remain auxiliary.
+
+### Why untrusted advice can be precommitted
+
+"Precommitted" is a batch-structure property, not a trust property: it means the
+group is committed before the final group, so the final commit can be
+conditioned on its frozen profile. Untrusted advice qualifies because its
+**shape** is known at preprocessing (`max_untrusted_advice_size`) even though its
+**value** is only committed during proving. The transparent object setup and the
+dense precommit profile both derive from the max size alone
+(`advice_dense_setup`, `dense_precommit_profile`), so the grouped schedule row is
+plannable at preprocessing exactly as the trusted row is.
+
+Trust is unchanged by batching: the trusted commitment still arrives
+out-of-band under its committer's attestation, and untrusted advice is still
+bound only by the execution argument and the PCS. In particular, batching does
+**not** range-prove untrusted coefficients — canonical `u64` word packing remains
+an honest-prover/API invariant, as in `akita-dense-advice.md`.
+
+### Group order and presence
+
+Order is explicit, not positional. Each precommitted group carries a
+`PrecommittedRole`, whose variant order defines the canonical batch order and
+whose label is bound into the statement transcript. A list that is empty,
+duplicated, or out of ascending role order is rejected fail-closed
+(`validate_precommitted_order`).
+
+Which advice objects a proof carries is a runtime fact, so all four presence
+combinations are reachable and each has its own grouped row:
+
+| Untrusted | Trusted | Groups in the batch |
+|---|---|---|
+| absent | absent | `[OneHotTrace]` (scalar, non-grouped opening) |
+| present | absent | `[UntrustedAdvice, OneHotTrace]` |
+| absent | present | `[TrustedAdvice, OneHotTrace]` |
+| present | present | `[UntrustedAdvice, TrustedAdvice, OneHotTrace]` |
+
+Preprocessing provisions rows for every combination reachable from the
+program's public capacities (`AdvicePrecommitLayouts::precommit_combinations`),
+so a program whose advice happens to be empty at proving time cannot land on a
+missing row. The offline emitter enumerates the same combinations
+(`emit::advice_precommit_combinations`); the two must agree or a reachable proof
+finds no row.
+
+The combination list is **deduplicated by profile sequence**, because a grouped
+row is keyed on the frozen dense profiles alone and never on which advice kind
+produced them. When both advice capacities have the same physical arity — as
+both the production (`20`) and fixture (`14`) layouts do — the untrusted-only and
+trusted-only cases resolve to the *same* single-precommit row, and emitting it
+under both names would be a duplicate row identity. Distinguishing the two cases
+is the statement transcript's job, not the schedule's: the verifier derives the
+roles from its own reduction schedule, so a proof cannot substitute one advice
+kind for the other even though they share a schedule row.
+
+### Ordering change in the prover
+
+Both advice objects are now committed **before** the trace, since the final
+commit is conditioned on every precommitted hint. Commit order and Fiat-Shamir
+absorb order are decoupled: the absorb sequence remains the canonical
+`OneHotTrace`, untrusted advice, trusted advice, `ProgramOneHot`. In the legacy
+prover this required splitting the untrusted commit from its absorb.
+
+### Capacity and versioning
+
+Total batch polynomial capacity is now derived rather than fixed at 2: one group
+per advice object the program can precommit, plus the trace
+(`grouped_batch_poly_capacity`), so 3 when both capacities are nonzero.
+
+The statement domain moves to `akita_precommit_batch_v3` /
+`jolt-akita/precommitted-group-batch/v3`, the group count is bound explicitly,
+and the commitment config becomes `PackedAllAdviceBatched` (version 3).
+`PackedDenseAdviceBatched` is retained only as a wire tombstone: v2 proofs are
+rejected rather than verified through a compatibility fallback, matching the
+Phase-1 break policy.

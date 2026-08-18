@@ -8,6 +8,7 @@
 //! structurally, so stage-0 Fiat-Shamir drift is impossible by construction.
 
 use common::jolt_device::JoltDevice;
+use jolt_akita::PrecommittedRole;
 use jolt_claims::protocols::jolt::lattice::{OneHotTraceShape, ONE_HOT_TRACE_LAYOUT};
 use jolt_claims::protocols::jolt::JoltRelationId;
 use jolt_crypto::VectorCommitment;
@@ -200,9 +201,42 @@ where
     // (the verifier enforces the same equalities on its setup before the
     // native opening) — a shape-exact setup with the right digest but the
     // wrong arity would otherwise fail minutes later inside the backend.
+    // The untrusted object joins the batch as a precommitted group, so it is
+    // committed before the trace: the final commit is conditioned on the frozen
+    // profile of every precommitted group.
+    let untrusted_advice = if untrusted_advice_present {
+        Some(commit_advice_dense::<PCS>(
+            jolt_claims::protocols::jolt::JoltAdviceKind::Untrusted,
+            &public_io.untrusted_advice,
+            public_io.memory_layout.max_untrusted_advice_size as usize,
+        )?)
+    } else {
+        None
+    };
+
+    // Canonical public batch order: [UntrustedAdvice, TrustedAdvice, OneHotTrace].
+    let precommitted: Vec<(PrecommittedRole, &PCS::Output, &PCS::OpeningHint)> = untrusted_advice
+        .as_ref()
+        .map(|object| {
+            (
+                PrecommittedRole::UntrustedAdvice,
+                &object.commitment,
+                &object.hint,
+            )
+        })
+        .into_iter()
+        .chain(trusted_advice.map(|object| {
+            (
+                PrecommittedRole::TrustedAdvice,
+                &object.commitment,
+                &object.hint,
+            )
+        }))
+        .collect();
+    let required_batch_polys = precommitted.len() + 1;
     if preprocessing.pcs_setup.max_num_vars() != plan.packing().packed_num_vars()
         || preprocessing.pcs_setup.max_num_polys_per_commitment_group() != 1
-        || (trusted_advice.is_some() && preprocessing.pcs_setup.max_total_batch_polys() < 2)
+        || preprocessing.pcs_setup.max_total_batch_polys() < required_batch_polys
         || preprocessing.pcs_setup.one_hot_k() != 1usize << log_k_chunk
     {
         return Err(ProverError::Unsupported {
@@ -211,11 +245,10 @@ where
     }
     // Resolve the exact grouped row before building the expensive final
     // source: an unschedulable precommit shape fails here, not minutes later.
-    if let Some(trusted) = trusted_advice {
-        PCS::validate_trusted_trace_precommit(
+    if !precommitted.is_empty() {
+        PCS::validate_trace_precommits(
             &preprocessing.pcs_setup,
-            &trusted.commitment,
-            &trusted.hint,
+            &precommitted,
             plan.packing().packed_num_vars(),
         )
         .map_err(|error| VerifierError::FinalOpeningVerificationFailed {
@@ -232,20 +265,24 @@ where
                 log_k_chunk,
                 log_t,
             )?;
-            let committed = if let Some(trusted) = trusted_advice {
-                PCS::commit_trace_one_hot_with_precommitted(
-                    &preprocessing.pcs_setup,
-                    preprocessing.pcs_setup.default_layout_digest(),
-                    plan.packing().slot_capacity(),
-                    packed_trace_rows,
-                    &trusted.hint,
-                )
-            } else {
+            let precommitted_hints = precommitted
+                .iter()
+                .map(|(_, _, hint)| *hint)
+                .collect::<Vec<_>>();
+            let committed = if precommitted_hints.is_empty() {
                 PCS::commit_trace_one_hot(
                     &preprocessing.pcs_setup,
                     preprocessing.pcs_setup.default_layout_digest(),
                     plan.packing().slot_capacity(),
                     packed_trace_rows,
+                )
+            } else {
+                PCS::commit_trace_one_hot_with_precommitted(
+                    &preprocessing.pcs_setup,
+                    preprocessing.pcs_setup.default_layout_digest(),
+                    plan.packing().slot_capacity(),
+                    packed_trace_rows,
+                    &precommitted_hints,
                 )
             };
             let (commitment, hint) =
@@ -259,18 +296,6 @@ where
             )?;
             Ok::<_, ProverError<F>>((commitment, hint))
         })?;
-
-    // The per-proof untrusted-advice dense word object; the trusted object is
-    // precommitted (its commitment arrives as an argument).
-    let untrusted_advice = if untrusted_advice_present {
-        Some(commit_advice_dense::<PCS>(
-            jolt_claims::protocols::jolt::JoltAdviceKind::Untrusted,
-            &public_io.untrusted_advice,
-            public_io.memory_layout.max_untrusted_advice_size as usize,
-        )?)
-    } else {
-        None
-    };
 
     absorb_packed_commitments(
         &commitment,

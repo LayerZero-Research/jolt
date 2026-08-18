@@ -125,8 +125,11 @@ pub mod emit {
     /// dense fp128 shape; smaller objects pad up to it.
     pub const DENSE_NUM_VARS: (usize, usize) = (14, 34);
 
-    /// Phase-1 production trusted-advice precommit layout (`2^20` u64 words).
+    /// Production trusted-advice precommit layout (`2^20` u64 words).
     pub const TRUSTED_ADVICE_GROUP: PolynomialGroupLayout = PolynomialGroupLayout::new(20, 1);
+
+    /// Production untrusted-advice precommit layout (`2^20` u64 words).
+    pub const UNTRUSTED_ADVICE_GROUP: PolynomialGroupLayout = PolynomialGroupLayout::new(20, 1);
 
     /// Phase-1 production SHA2-chain packed-trace layout at `log_T = 26`, K=256.
     pub const TRUSTED_ADVICE_K256_FINAL_GROUP: PolynomialGroupLayout =
@@ -135,6 +138,11 @@ pub mod emit {
     /// Default 4 KiB trusted-advice fixture after the dense arity floor.
     #[cfg(feature = "akita-test-schedules")]
     pub const FIXTURE_TRUSTED_ADVICE_GROUP: PolynomialGroupLayout =
+        PolynomialGroupLayout::new(14, 1);
+
+    /// Default 4 KiB untrusted-advice fixture after the dense arity floor.
+    #[cfg(feature = "akita-test-schedules")]
+    pub const FIXTURE_UNTRUSTED_ADVICE_GROUP: PolynomialGroupLayout =
         PolynomialGroupLayout::new(14, 1);
 
     /// K=16 fixture final arities for canonical `log_T = 12..=16` traces.
@@ -176,37 +184,80 @@ pub mod emit {
         CommittedGroupProfile::try_from_params(group, &schedule.root.params.final_group.commitment)
     }
 
+    /// Every ordered non-empty advice presence combination, as frozen dense
+    /// profiles in canonical `[untrusted, trusted]` order.
+    ///
+    /// Mirrors `schedule_registry::AdvicePrecommitLayouts::precommit_combinations`
+    /// — the runtime reads the catalog while this plans it, so the two must
+    /// enumerate the same combinations or a reachable proof finds no row.
+    /// Deduplicated for the same reason: a row is keyed on profiles alone, so
+    /// equal-arity advice objects share their single-precommit row.
+    fn advice_precommit_combinations(
+        untrusted: PolynomialGroupLayout,
+        trusted: PolynomialGroupLayout,
+    ) -> Result<Vec<Vec<CommittedGroupProfile>>, AkitaError> {
+        let untrusted_profile =
+            planned_profile_without_precommitted_groups::<JoltDense>(untrusted)?;
+        let trusted_profile = planned_profile_without_precommitted_groups::<JoltDense>(trusted)?;
+        let mut combinations: Vec<Vec<CommittedGroupProfile>> = Vec::with_capacity(3);
+        for combination in [
+            vec![untrusted_profile],
+            vec![trusted_profile],
+            vec![untrusted_profile, trusted_profile],
+        ] {
+            if !combinations.contains(&combination) {
+                combinations.push(combination);
+            }
+        }
+        Ok(combinations)
+    }
+
+    fn group_batch_keys_over(
+        combinations: Vec<Vec<CommittedGroupProfile>>,
+        final_num_vars: impl IntoIterator<Item = usize> + Clone,
+    ) -> Vec<(AkitaScheduleLookupKey, Vec<HonestFoldPolicySpec>)> {
+        combinations
+            .into_iter()
+            .flat_map(|precommitteds| {
+                let policies = vec![JoltDense::root_honest_fold_policy(); precommitteds.len()];
+                final_num_vars
+                    .clone()
+                    .into_iter()
+                    .map(|num_vars| {
+                        (
+                            AkitaScheduleLookupKey {
+                                final_group: PolynomialGroupLayout::new(num_vars, 1),
+                                precommitteds: precommitteds.clone(),
+                            },
+                            policies.clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
     fn k256_group_batch_keys(
     ) -> Result<Vec<(AkitaScheduleLookupKey, Vec<HonestFoldPolicySpec>)>, AkitaError> {
-        let trusted_profile =
-            planned_profile_without_precommitted_groups::<JoltDense>(TRUSTED_ADVICE_GROUP)?;
-        Ok(vec![(
-            AkitaScheduleLookupKey {
-                final_group: TRUSTED_ADVICE_K256_FINAL_GROUP,
-                precommitteds: vec![trusted_profile],
-            },
-            vec![JoltDense::root_honest_fold_policy()],
-        )])
+        let combinations =
+            advice_precommit_combinations(UNTRUSTED_ADVICE_GROUP, TRUSTED_ADVICE_GROUP)?;
+        Ok(group_batch_keys_over(
+            combinations,
+            [TRUSTED_ADVICE_K256_FINAL_GROUP.num_vars()],
+        ))
     }
 
     #[cfg(feature = "akita-test-schedules")]
     fn k16_fixture_group_batch_keys(
     ) -> Result<Vec<(AkitaScheduleLookupKey, Vec<HonestFoldPolicySpec>)>, AkitaError> {
-        let trusted_profile =
-            planned_profile_without_precommitted_groups::<JoltDense>(FIXTURE_TRUSTED_ADVICE_GROUP)?;
-        Ok(
-            (FIXTURE_K16_FINAL_NUM_VARS.0..=FIXTURE_K16_FINAL_NUM_VARS.1)
-                .map(|num_vars| {
-                    (
-                        AkitaScheduleLookupKey {
-                            final_group: PolynomialGroupLayout::new(num_vars, 1),
-                            precommitteds: vec![trusted_profile],
-                        },
-                        vec![JoltDense::root_honest_fold_policy()],
-                    )
-                })
-                .collect(),
-        )
+        let combinations = advice_precommit_combinations(
+            FIXTURE_UNTRUSTED_ADVICE_GROUP,
+            FIXTURE_TRUSTED_ADVICE_GROUP,
+        )?;
+        Ok(group_batch_keys_over(
+            combinations,
+            FIXTURE_K16_FINAL_NUM_VARS.0..=FIXTURE_K16_FINAL_NUM_VARS.1,
+        ))
     }
 
     /// The reachable scalar keys of one family grid.

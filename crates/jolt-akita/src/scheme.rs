@@ -47,14 +47,80 @@ pub trait TraceOneHotCommitment: CommitmentScheme {
     fn release_post_commit_residency(setup: &Self::ProverSetup) -> Result<(), OpeningsError>;
 }
 
-/// One physical commitment group's opening claim. Group semantics are fixed
-/// by the argument position of [`PrecommittedTraceBatching`]: trusted advice
-/// first, final trace second.
+/// One physical commitment group's opening claim. Precommitted groups carry
+/// their own [`PrecommittedRole`]; the final trace group is always last.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GroupOpeningClaim<F, C> {
     pub commitment: C,
     pub point: Vec<F>,
     pub evaluations: Vec<F>,
+}
+
+/// Identity of one precommitted group. The variant order *is* the canonical
+/// public batch order, which precedes the final trace group:
+/// `[UntrustedAdvice, TrustedAdvice, OneHotTrace]`. The role is bound into the
+/// statement transcript, so a group's semantics never rest on position alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PrecommittedRole {
+    UntrustedAdvice,
+    TrustedAdvice,
+}
+
+impl PrecommittedRole {
+    /// Domain-separating transcript tag for this group.
+    pub const fn transcript_label(self) -> &'static [u8] {
+        match self {
+            Self::UntrustedAdvice => b"untrusted_advice",
+            Self::TrustedAdvice => b"trusted_advice",
+        }
+    }
+
+    /// Human-readable role used in validation diagnostics.
+    pub const fn diagnostic_name(self) -> &'static str {
+        match self {
+            Self::UntrustedAdvice => "untrusted-advice",
+            Self::TrustedAdvice => "trusted-advice",
+        }
+    }
+}
+
+/// One precommitted group's public opening claim, tagged with its role.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrecommittedClaim<F, C> {
+    pub role: PrecommittedRole,
+    pub claim: GroupOpeningClaim<F, C>,
+}
+
+impl<F, C> PrecommittedClaim<F, C> {
+    pub fn new(role: PrecommittedRole, claim: GroupOpeningClaim<F, C>) -> Self {
+        Self { role, claim }
+    }
+}
+
+/// One precommitted group's public claim paired with the prover's retained
+/// opening hint. The prover passes these in canonical role order.
+pub type PrecommittedOpening<F, C, H> = (PrecommittedClaim<F, C>, H);
+
+/// Rejects a precommitted list that is empty of meaning or not in canonical
+/// order. Strictly ascending roles make the ordered group list unambiguous and
+/// forbid duplicate or permuted groups.
+pub(crate) fn validate_precommitted_order(
+    roles: impl IntoIterator<Item = PrecommittedRole>,
+) -> Result<(), OpeningsError> {
+    let mut previous: Option<PrecommittedRole> = None;
+    for role in roles {
+        if let Some(previous) = previous {
+            if role <= previous {
+                return Err(invalid_batch(format!(
+                    "Akita precommitted groups must be in canonical ascending order, found {} after {}",
+                    role.diagnostic_name(),
+                    previous.diagnostic_name()
+                )));
+            }
+        }
+        previous = Some(role);
+    }
+    Ok(())
 }
 
 impl<F, C> GroupOpeningClaim<F, C> {
@@ -75,16 +141,16 @@ impl<F, C> GroupOpeningClaim<F, C> {
     }
 }
 
-/// Jolt's typed two-group Akita path. The trusted group was committed
-/// independently; the trace is committed later under its frozen profile and
-/// both are discharged by one backend proof at independent points.
+/// Jolt's typed grouped Akita path. Each precommitted group was committed
+/// independently in canonical role order; the trace is committed last under
+/// their frozen profiles and every group is discharged by one backend proof at
+/// independent points.
 pub trait PrecommittedTraceBatching: TraceOneHotCommitment {
     /// Resolve the exact grouped row before constructing the potentially
-    /// expensive final source.
-    fn validate_trusted_trace_precommit(
+    /// expensive final source. Pairs are in canonical precommitted order.
+    fn validate_trace_precommits(
         setup: &Self::ProverSetup,
-        precommitted_commitment: &Self::Output,
-        precommitted_hint: &Self::OpeningHint,
+        precommitted: &[(PrecommittedRole, &Self::Output, &Self::OpeningHint)],
         final_num_vars: usize,
     ) -> Result<(), OpeningsError>;
 
@@ -93,13 +159,12 @@ pub trait PrecommittedTraceBatching: TraceOneHotCommitment {
         layout_digest: [u8; 32],
         column_capacity: usize,
         rows: Arc<dyn TraceOneHotRows>,
-        precommitted_hint: &Self::OpeningHint,
+        precommitted_hints: &[&Self::OpeningHint],
     ) -> Result<(Self::Output, Self::OpeningHint), OpeningsError>;
 
-    fn prove_trusted_trace_batch<T>(
+    fn prove_precommitted_trace_batch<T>(
         setup: &Self::ProverSetup,
-        trusted: GroupOpeningClaim<Self::Field, Self::Output>,
-        trusted_hint: Self::OpeningHint,
+        precommitted: Vec<PrecommittedOpening<Self::Field, Self::Output, Self::OpeningHint>>,
         main: GroupOpeningClaim<Self::Field, Self::Output>,
         main_hint: Self::OpeningHint,
         transcript: &mut T,
@@ -107,9 +172,9 @@ pub trait PrecommittedTraceBatching: TraceOneHotCommitment {
     where
         T: Transcript<Challenge = Self::Field>;
 
-    fn verify_trusted_trace_batch<T>(
+    fn verify_precommitted_trace_batch<T>(
         setup: &Self::VerifierSetup,
-        trusted: &GroupOpeningClaim<Self::Field, Self::Output>,
+        precommitted: &[PrecommittedClaim<Self::Field, Self::Output>],
         main: &GroupOpeningClaim<Self::Field, Self::Output>,
         proof: &Self::Proof,
         transcript: &mut T,
@@ -126,18 +191,25 @@ impl AkitaScheme {
         domain_size(num_vars).is_some_and(|size| size >= AKITA_SOURCE_RING_DIMENSION)
     }
 
-    pub fn validate_trusted_trace_precommit(
+    pub fn validate_trace_precommits(
         setup: &AkitaProverSetup,
-        precommitted_commitment: &AkitaCommitment,
-        precommitted_hint: &AkitaProverHint,
+        precommitted: &[(PrecommittedRole, &AkitaCommitment, &AkitaProverHint)],
         final_num_vars: usize,
     ) -> Result<(), OpeningsError> {
-        if &precommitted_hint.commitment != precommitted_commitment {
-            return Err(invalid_batch(
-                "Akita trusted precommit hint does not match its public commitment",
-            ));
+        validate_precommitted_order(precommitted.iter().map(|(role, _, _)| *role))?;
+        for (role, commitment, hint) in precommitted {
+            if &hint.commitment != *commitment {
+                return Err(invalid_batch(format!(
+                    "Akita {} precommit hint does not match its public commitment",
+                    role.diagnostic_name()
+                )));
+            }
         }
-        let profiles = Self::trusted_precommitted_profiles(setup, precommitted_hint)?;
+        let hints = precommitted
+            .iter()
+            .map(|(_, _, hint)| *hint)
+            .collect::<Vec<_>>();
+        let profiles = Self::precommitted_profiles(setup, &hints)?;
         let key = AkitaScheduleLookupKey {
             final_group: PolynomialGroupLayout::new(final_num_vars, 1),
             precommitteds: profiles.as_slice().to_vec(),
@@ -173,7 +245,7 @@ impl AkitaScheme {
             || resolved.profiles().final_group.group != key.final_group
         {
             return Err(invalid_batch(
-                "Akita grouped schedule does not match the trusted prefix and final layout",
+                "Akita grouped schedule does not match the precommitted prefix and final layout",
             ));
         }
         Ok(())
@@ -287,7 +359,7 @@ impl AkitaScheme {
         setup: &AkitaProverSetup,
         layout_digest: [u8; 32],
         polynomials: Vec<OneHotPolynomial>,
-        precommitted_hint: &AkitaProverHint,
+        precommitted_hints: &[&AkitaProverHint],
     ) -> Result<(AkitaCommitment, AkitaProverHint), OpeningsError> {
         let first = polynomials
             .first()
@@ -306,7 +378,7 @@ impl AkitaScheme {
                 owned_one_hot_polynomial(polynomial, setup.one_hot_k())
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let profiles = Self::trusted_precommitted_profiles(setup, precommitted_hint)?;
+        let profiles = Self::precommitted_profiles(setup, precommitted_hints)?;
         let (backend_commitment, backend_hint) =
             Self::commit_one_hot_backend_with_precommitted(setup, &backend_polynomials, &profiles)?;
         Self::package_commitment(
@@ -363,16 +435,16 @@ impl AkitaScheme {
         )
     }
 
-    /// Contextual final commit for the fixed ordered
-    /// `[dense precommit, streamed trace final]` root.
+    /// Contextual final commit for the ordered
+    /// `[dense precommits.., streamed trace final]` root.
     pub fn commit_trace_one_hot_with_precommitted(
         setup: &AkitaProverSetup,
         layout_digest: [u8; 32],
         column_capacity: usize,
         rows: Arc<dyn TraceOneHotRows>,
-        precommitted_hint: &AkitaProverHint,
+        precommitted_hints: &[&AkitaProverHint],
     ) -> Result<(AkitaCommitment, AkitaProverHint), OpeningsError> {
-        let profiles = Self::trusted_precommitted_profiles(setup, precommitted_hint)?;
+        let profiles = Self::precommitted_profiles(setup, precommitted_hints)?;
 
         let source = TracePackedOneHot::new(
             setup.one_hot_k(),
@@ -519,32 +591,46 @@ impl AkitaScheme {
         .map_err(commit_failed)
     }
 
-    fn trusted_precommitted_profiles(
+    /// Freezes the ordered precommitted profiles the final trace group commits
+    /// against. Order is the caller's canonical role order; the backend keys the
+    /// grouped row on this exact sequence.
+    fn precommitted_profiles(
         setup: &AkitaProverSetup,
-        precommitted_hint: &AkitaProverHint,
+        precommitted_hints: &[&AkitaProverHint],
     ) -> Result<PrecommittedGroupProfiles, OpeningsError> {
-        if setup.max_total_batch_polys() < 2 {
+        if precommitted_hints.is_empty() {
+            return Err(invalid_batch(
+                "Akita grouped trace opening requires at least one precommitted group",
+            ));
+        }
+        // Every precommitted group plus the final trace group must fit the
+        // setup's total batch capacity.
+        let required = precommitted_hints
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| invalid_batch("Akita precommitted group count overflows"))?;
+        if setup.max_total_batch_polys() < required {
             return Err(invalid_batch(format!(
-                "Akita grouped trace opening requires total polynomial capacity 2, setup has {}",
+                "Akita grouped trace opening requires total polynomial capacity {required}, setup has {}",
                 setup.max_total_batch_polys()
             )));
         }
-        if precommitted_hint.commitment.backend_flavor != crate::adapters::AkitaBackendFlavor::Dense
-            || precommitted_hint.commitment.poly_count != 1
-            || !matches!(
-                precommitted_hint.polynomials,
-                AkitaHintPolynomials::Dense(_)
-            )
-        {
-            return Err(invalid_batch(
-                "Akita trace precommit must be one dense trusted-advice polynomial",
-            ));
+        let mut profiles = Vec::with_capacity(precommitted_hints.len());
+        for hint in precommitted_hints {
+            if hint.commitment.backend_flavor != crate::adapters::AkitaBackendFlavor::Dense
+                || hint.commitment.poly_count != 1
+                || !matches!(hint.polynomials, AkitaHintPolynomials::Dense(_))
+            {
+                return Err(invalid_batch(
+                    "Akita trace precommit must be one dense advice polynomial",
+                ));
+            }
+            let (precommitted_group, _) = hint.backend.as_ref().ok_or_else(|| {
+                invalid_batch("Akita advice precommit is missing backend opening data")
+            })?;
+            profiles.push(precommitted_group.profile);
         }
-        let (precommitted_group, _) = precommitted_hint.backend.as_ref().ok_or_else(|| {
-            invalid_batch("Akita trusted precommit is missing backend opening data")
-        })?;
-        PrecommittedGroupProfiles::from_profiles(vec![precommitted_group.profile])
-            .map_err(akita_error)
+        PrecommittedGroupProfiles::from_profiles(profiles).map_err(akita_error)
     }
 
     /// Validates the commitment shape before handing values to Akita.
@@ -682,18 +768,12 @@ impl TraceOneHotCommitment for AkitaScheme {
 }
 
 impl PrecommittedTraceBatching for AkitaScheme {
-    fn validate_trusted_trace_precommit(
+    fn validate_trace_precommits(
         setup: &Self::ProverSetup,
-        precommitted_commitment: &Self::Output,
-        precommitted_hint: &Self::OpeningHint,
+        precommitted: &[(PrecommittedRole, &Self::Output, &Self::OpeningHint)],
         final_num_vars: usize,
     ) -> Result<(), OpeningsError> {
-        Self::validate_trusted_trace_precommit(
-            setup,
-            precommitted_commitment,
-            precommitted_hint,
-            final_num_vars,
-        )
+        Self::validate_trace_precommits(setup, precommitted, final_num_vars)
     }
 
     fn commit_trace_one_hot_with_precommitted(
@@ -701,21 +781,20 @@ impl PrecommittedTraceBatching for AkitaScheme {
         layout_digest: [u8; 32],
         column_capacity: usize,
         rows: Arc<dyn TraceOneHotRows>,
-        precommitted_hint: &Self::OpeningHint,
+        precommitted_hints: &[&Self::OpeningHint],
     ) -> Result<(Self::Output, Self::OpeningHint), OpeningsError> {
         Self::commit_trace_one_hot_with_precommitted(
             setup,
             layout_digest,
             column_capacity,
             rows,
-            precommitted_hint,
+            precommitted_hints,
         )
     }
 
-    fn prove_trusted_trace_batch<T>(
+    fn prove_precommitted_trace_batch<T>(
         setup: &Self::ProverSetup,
-        trusted: GroupOpeningClaim<Self::Field, Self::Output>,
-        trusted_hint: Self::OpeningHint,
+        precommitted: Vec<PrecommittedOpening<Self::Field, Self::Output, Self::OpeningHint>>,
         main: GroupOpeningClaim<Self::Field, Self::Output>,
         main_hint: Self::OpeningHint,
         transcript: &mut T,
@@ -723,19 +802,18 @@ impl PrecommittedTraceBatching for AkitaScheme {
     where
         T: Transcript<Challenge = Self::Field>,
     {
-        AkitaNativeBatching::prove_trusted_trace_batch(
+        AkitaNativeBatching::prove_precommitted_trace_batch(
             setup,
-            trusted,
-            trusted_hint,
+            precommitted,
             main,
             main_hint,
             transcript,
         )
     }
 
-    fn verify_trusted_trace_batch<T>(
+    fn verify_precommitted_trace_batch<T>(
         setup: &Self::VerifierSetup,
-        trusted: &GroupOpeningClaim<Self::Field, Self::Output>,
+        precommitted: &[PrecommittedClaim<Self::Field, Self::Output>],
         main: &GroupOpeningClaim<Self::Field, Self::Output>,
         proof: &Self::Proof,
         transcript: &mut T,
@@ -743,7 +821,13 @@ impl PrecommittedTraceBatching for AkitaScheme {
     where
         T: Transcript<Challenge = Self::Field>,
     {
-        AkitaNativeBatching::verify_trusted_trace_batch(setup, trusted, main, proof, transcript)
+        AkitaNativeBatching::verify_precommitted_trace_batch(
+            setup,
+            precommitted,
+            main,
+            proof,
+            transcript,
+        )
     }
 }
 

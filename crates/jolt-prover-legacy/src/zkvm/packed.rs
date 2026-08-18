@@ -23,7 +23,9 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Compress, Validate};
-use jolt_akita::{GroupOpeningClaim, PrecommittedTraceBatching};
+use jolt_akita::{
+    GroupOpeningClaim, PrecommittedClaim, PrecommittedRole, PrecommittedTraceBatching,
+};
 use jolt_claims::protocols::jolt::geometry::ra::JoltRaPolynomialLayout;
 use jolt_claims::protocols::jolt::lattice::{
     advice_dense_packing_plan, precommitted_packing_plan, OneHotTraceLayoutPlan, OneHotTraceShape,
@@ -490,17 +492,35 @@ pub fn advice_physical_num_vars(
 ///
 /// Returns the row-set digest, which prover and verifier compare to prove they
 /// provisioned the same rows.
-pub fn provision_trusted_advice_schedules(
+pub fn provision_advice_schedules(
+    max_untrusted_advice_bytes: usize,
     max_trusted_advice_bytes: usize,
     one_hot_k: usize,
 ) -> Result<[u8; 32], VerifierError> {
-    let physical_vars =
-        advice_physical_num_vars(JoltAdviceKind::Trusted, max_trusted_advice_bytes)?;
-    jolt_akita::schedule_registry::provision_trusted_advice_for_k(physical_vars, one_hot_k)
-        .map(|rows| rows.set_digest())
-        .map_err(|error| VerifierError::FinalOpeningVerificationFailed {
-            reason: error.to_string(),
-        })
+    let untrusted_physical_vars = (max_untrusted_advice_bytes > 0)
+        .then(|| advice_physical_num_vars(JoltAdviceKind::Untrusted, max_untrusted_advice_bytes))
+        .transpose()?;
+    let trusted_physical_vars = (max_trusted_advice_bytes > 0)
+        .then(|| advice_physical_num_vars(JoltAdviceKind::Trusted, max_trusted_advice_bytes))
+        .transpose()?;
+    jolt_akita::schedule_registry::provision_advice_for_k(
+        untrusted_physical_vars,
+        trusted_physical_vars,
+        one_hot_k,
+    )
+    .map(|rows| rows.set_digest())
+    .map_err(|error| VerifierError::FinalOpeningVerificationFailed {
+        reason: error.to_string(),
+    })
+}
+
+/// Total Akita batch polynomial capacity for a program: the final trace group
+/// plus one group per advice object the program can precommit.
+pub fn grouped_batch_poly_capacity(
+    max_untrusted_advice_bytes: usize,
+    max_trusted_advice_bytes: usize,
+) -> usize {
+    1 + usize::from(max_untrusted_advice_bytes > 0) + usize::from(max_trusted_advice_bytes > 0)
 }
 
 /// A dense advice commitment object: the canonical word polynomial used by
@@ -741,14 +761,20 @@ impl AkitaPackedProver<'_> {
         let one_hot_k = 1usize << self.one_hot_params.log_k_chunk;
         let max_trusted_advice_bytes =
             self.program_io.memory_layout.max_trusted_advice_size as usize;
-        if max_trusted_advice_bytes > 0 {
-            provision_trusted_advice_schedules(max_trusted_advice_bytes, one_hot_k)
-                .expect("trusted-advice grouped schedules must provision");
+        let max_untrusted_advice_bytes =
+            self.program_io.memory_layout.max_untrusted_advice_size as usize;
+        if max_trusted_advice_bytes > 0 || max_untrusted_advice_bytes > 0 {
+            provision_advice_schedules(
+                max_untrusted_advice_bytes,
+                max_trusted_advice_bytes,
+                one_hot_k,
+            )
+            .expect("advice grouped schedules must provision");
         }
         jolt_akita::AkitaSetupParams::one_hot_only_grouped(
             shape.num_vars,
             shape.num_polys,
-            2,
+            grouped_batch_poly_capacity(max_untrusted_advice_bytes, max_trusted_advice_bytes),
             layout_digest,
             one_hot_k,
         )
@@ -885,6 +911,10 @@ impl AkitaPackedProver<'_> {
     /// Builds and commits the untrusted dense advice-word polynomial.
     /// Also materializes the base advice *word* polynomial on `self.advice`
     /// so the shared stage-4/6b/7 advice reduction machinery runs unchanged.
+    ///
+    /// Does not absorb: the untrusted object is a precommitted batch group, so
+    /// it is committed before the trace, while its commitment must still be
+    /// absorbed at the canonical position *after* the trace commitment.
     #[tracing::instrument(skip_all, name = "generate_and_commit_untrusted_advice_packed")]
     fn generate_and_commit_untrusted_advice_packed(
         &mut self,
@@ -910,11 +940,6 @@ impl AkitaPackedProver<'_> {
             max_advice_bytes,
             setup,
         )?;
-        append_length_prefixed(
-            &mut self.transcript,
-            b"untrusted_advice",
-            &object.commitment,
-        );
         self.advice.untrusted_advice_polynomial =
             Some(MultilinearPolynomial::from(object.words.clone()));
         Ok(Some(object))
@@ -1558,11 +1583,11 @@ impl AkitaPackedProver<'_> {
         );
         self.transcript.append_u64(
             b"akita_protocol_version",
-            jolt_verifier::config::PACKED_DENSE_ADVICE_BATCHED_TRANSCRIPT_VERSION,
+            jolt_verifier::config::PACKED_ALL_ADVICE_BATCHED_TRANSCRIPT_VERSION,
         );
         self.transcript.append_u64(
             b"akita_advice_encoding",
-            jolt_verifier::config::PACKED_DENSE_ADVICE_BATCHED_ENCODING,
+            jolt_verifier::config::PACKED_ALL_ADVICE_BATCHED_ENCODING,
         );
 
         // One-hot machinery (RaPolynomial and friends) reads the global trace
@@ -1580,11 +1605,30 @@ impl AkitaPackedProver<'_> {
         let plan = ONE_HOT_TRACE_LAYOUT
             .plan(&self.one_hot_trace_shape())
             .expect("canonical OneHotTrace layout must exist");
-        if let Some(trusted) = trusted_advice {
-            AkitaScheme::validate_trusted_trace_precommit(
+        // Both advice objects are precommitted batch groups, so both are
+        // committed before the trace: the final commit is conditioned on the
+        // frozen profile of every precommitted group.
+        let advice_object = self.generate_and_commit_untrusted_advice_packed()?;
+        // Canonical public batch order: [UntrustedAdvice, TrustedAdvice, OneHotTrace].
+        let mut precommitted = Vec::with_capacity(2);
+        if let Some(object) = advice_object.as_ref() {
+            precommitted.push((
+                PrecommittedRole::UntrustedAdvice,
+                &object.commitment,
+                &object.hint,
+            ));
+        }
+        if let Some(object) = trusted_advice {
+            precommitted.push((
+                PrecommittedRole::TrustedAdvice,
+                &object.commitment,
+                &object.hint,
+            ));
+        }
+        if !precommitted.is_empty() {
+            AkitaScheme::validate_trace_precommits(
                 object_setup,
-                &trusted.commitment,
-                &trusted.hint,
+                &precommitted,
                 plan.packing().packed_num_vars(),
             )
             .map_err(|error| VerifierError::FinalOpeningVerificationFailed {
@@ -1592,18 +1636,22 @@ impl AkitaPackedProver<'_> {
             })?;
         }
         let one_hot_trace_witness = self.assemble_one_hot_trace(&plan, &fused_cycles);
-        let committed = if let Some(trusted) = trusted_advice {
-            AkitaScheme::commit_one_hot_group_owned_with_precommitted(
-                object_setup,
-                plan.layout_digest(),
-                vec![one_hot_trace_witness],
-                &trusted.hint,
-            )
-        } else {
+        let precommitted_hints = precommitted
+            .iter()
+            .map(|(_, _, hint)| *hint)
+            .collect::<Vec<_>>();
+        let committed = if precommitted_hints.is_empty() {
             AkitaScheme::commit_one_hot_group_owned(
                 object_setup,
                 plan.layout_digest(),
                 vec![one_hot_trace_witness],
+            )
+        } else {
+            AkitaScheme::commit_one_hot_group_owned_with_precommitted(
+                object_setup,
+                plan.layout_digest(),
+                vec![one_hot_trace_witness],
+                &precommitted_hints,
             )
         };
         let (commitment, hint) =
@@ -1612,9 +1660,16 @@ impl AkitaPackedProver<'_> {
             })?;
 
         // Absorb the packed commitment objects exactly where and how the
-        // verifier's `absorb_commitments` akita arm does.
+        // verifier's `absorb_commitments` akita arm does. The commit order above
+        // is independent of this absorb order.
         append_length_prefixed(&mut self.transcript, b"commitment", &commitment);
-        let advice_object = self.generate_and_commit_untrusted_advice_packed()?;
+        if let Some(object) = advice_object.as_ref() {
+            append_length_prefixed(
+                &mut self.transcript,
+                b"untrusted_advice",
+                &object.commitment,
+            );
+        }
         if let Some(trusted) = trusted_advice {
             append_length_prefixed(&mut self.transcript, b"trusted_advice", &trusted.commitment);
             self.advice.trusted_advice_polynomial =
@@ -1708,31 +1763,36 @@ impl AkitaPackedProver<'_> {
             })
             .transpose()?;
 
-        let main_batch = if let (Some(trusted), Some(trusted_claim)) =
-            (trusted_advice, trusted_physical.as_ref())
-        {
-            let trusted_group = GroupOpeningClaim::new(
-                trusted.commitment.clone(),
-                trusted_claim.point.as_slice().to_vec(),
-                vec![trusted_claim.value],
-            );
-            let main_group = GroupOpeningClaim::new(
-                commitment.clone(),
-                packed_claim.point.as_slice().to_vec(),
-                vec![packed_claim.value],
-            );
-            AkitaScheme::prove_trusted_trace_batch(
-                object_setup,
-                trusted_group,
-                trusted.hint.clone(),
-                main_group,
-                hint,
-                &mut self.transcript,
-            )
-            .map_err(|error| VerifierError::FinalOpeningBatchFailed {
-                reason: error.to_string(),
-            })?
-        } else {
+        // Canonical public batch order: [UntrustedAdvice, TrustedAdvice, OneHotTrace].
+        let mut batch_precommitted = Vec::with_capacity(2);
+        for (role, object, claim) in [
+            (
+                PrecommittedRole::UntrustedAdvice,
+                advice_object.as_ref(),
+                untrusted_physical.as_ref(),
+            ),
+            (
+                PrecommittedRole::TrustedAdvice,
+                trusted_advice,
+                trusted_physical.as_ref(),
+            ),
+        ] {
+            if let (Some(object), Some(claim)) = (object, claim) {
+                batch_precommitted.push((
+                    PrecommittedClaim::new(
+                        role,
+                        GroupOpeningClaim::new(
+                            object.commitment.clone(),
+                            claim.point.as_slice().to_vec(),
+                            vec![claim.value],
+                        ),
+                    ),
+                    object.hint.clone(),
+                ));
+            }
+        }
+
+        let main_batch = if batch_precommitted.is_empty() {
             AkitaScheme::open_one_hot_group_from_hint(
                 packed_claim.point.as_slice(),
                 std::slice::from_ref(&packed_claim.value),
@@ -1743,24 +1803,24 @@ impl AkitaPackedProver<'_> {
             .map_err(|error| VerifierError::FinalOpeningBatchFailed {
                 reason: error.to_string(),
             })?
-        };
-        let mut auxiliary = Vec::new();
-        if let (Some(object), Some(physical)) =
-            (advice_object.as_ref(), untrusted_physical.as_ref())
-        {
-            let proof = AkitaScheme::open(
-                &object.polynomial,
-                physical.point.as_slice(),
-                physical.value,
-                &object.setup,
-                Some(object.hint.clone()),
+        } else {
+            let main_group = GroupOpeningClaim::new(
+                commitment.clone(),
+                packed_claim.point.as_slice().to_vec(),
+                vec![packed_claim.value],
+            );
+            AkitaScheme::prove_precommitted_trace_batch(
+                object_setup,
+                batch_precommitted,
+                main_group,
+                hint,
                 &mut self.transcript,
             )
             .map_err(|error| VerifierError::FinalOpeningBatchFailed {
-                reason: format!("untrusted dense advice opening failed: {error}"),
-            })?;
-            auxiliary.push(proof);
-        }
+                reason: error.to_string(),
+            })?
+        };
+        let mut auxiliary = Vec::new();
         if let Some(program) = program {
             for object in &program.objects {
                 let claims = self.packed_program_claims(&object.plan)?;
@@ -1808,7 +1868,7 @@ impl AkitaPackedProver<'_> {
         Ok(JoltProof {
             protocol: JoltProtocolConfig {
                 zk: ZkConfig::Transparent,
-                commitment: CommitmentConfig::PackedDenseAdviceBatched,
+                commitment: CommitmentConfig::PackedAllAdviceBatched,
             },
             commitments: commitment,
             stages,
@@ -1880,19 +1940,26 @@ pub fn akita_verifier_preprocessing(
         akita_verifier_setup,
         None,
     );
-    // The verifier owns its own copy of the grouped trusted-advice rows. A
-    // verifier in its own process re-derives them from the same public advice
-    // capacity, so the set is identical by construction rather than by trust.
-    let max_trusted_advice_bytes =
-        preprocessing.shared.memory_layout.max_trusted_advice_size as usize;
-    let trusted_physical_vars = (max_trusted_advice_bytes > 0)
-        .then(|| advice_physical_num_vars(JoltAdviceKind::Trusted, max_trusted_advice_bytes))
-        .transpose()
-        .expect("the memory layout must carry a schedulable trusted advice capacity")
-        .unwrap_or_default();
+    // The verifier owns its own copy of the grouped advice rows. A verifier in
+    // its own process re-derives them from the same public advice capacities, so
+    // the set is identical by construction rather than by trust.
+    let advice_physical_vars = |kind: JoltAdviceKind, max_bytes: usize| {
+        (max_bytes > 0)
+            .then(|| advice_physical_num_vars(kind, max_bytes))
+            .transpose()
+            .expect("the memory layout must carry a schedulable advice capacity")
+    };
+    let untrusted_physical_vars = advice_physical_vars(
+        JoltAdviceKind::Untrusted,
+        preprocessing.shared.memory_layout.max_untrusted_advice_size as usize,
+    );
+    let trusted_physical_vars = advice_physical_vars(
+        JoltAdviceKind::Trusted,
+        preprocessing.shared.memory_layout.max_trusted_advice_size as usize,
+    );
     verifier_preprocessing
-        .provision_akita_schedules(max_trusted_advice_bytes, trusted_physical_vars, one_hot_k)
-        .expect("trusted-advice grouped schedules must provision for the verifier");
+        .provision_akita_schedules(untrusted_physical_vars, trusted_physical_vars, one_hot_k)
+        .expect("advice grouped schedules must provision for the verifier");
     // The per-kind advice commitment-object setups are derived from the
     // public advice shapes with the same fixed seed the prover uses (the
     // Akita setup is transparent).
@@ -2178,9 +2245,9 @@ mod advice_tests {
             .expect("packed prover should produce a verifier-native proof");
         assert!(proof.untrusted_advice_commitment.is_some());
         assert!(proof.stages.reconstruction_sumcheck_proof.is_none());
-        // Trusted advice is fused into the main Akita batch. Only untrusted
-        // advice remains as an auxiliary fixed-prefix opening.
-        assert_eq!(proof.joint_opening_proof.auxiliary.len(), 1);
+        // Both advice objects are fused into the main Akita batch, and this
+        // guest has no committed program, so nothing remains auxiliary.
+        assert_eq!(proof.joint_opening_proof.auxiliary.len(), 0);
 
         let verifier_preprocessing =
             akita_verifier_preprocessing(&prover_preprocessing, verifier_setup, None);
@@ -2194,13 +2261,18 @@ mod advice_tests {
         };
         verify(&proof).expect("packed verifier should accept the packed proof");
 
-        // The auxiliary joint opening is mandatory whenever auxiliary
-        // objects exist: dropping it must break fail-closed.
+        // Both advice objects are precommitted batch groups and this guest has
+        // no committed program, so the auxiliary list is empty. The count is
+        // still enforced: a spurious auxiliary opening must break fail-closed.
+        // (Popping would be a no-op here, hence a vacuous tamper.)
         let mut tampered = proof.clone();
-        let _dropped = tampered.joint_opening_proof.auxiliary.pop();
+        tampered
+            .joint_opening_proof
+            .auxiliary
+            .push(tampered.joint_opening_proof.main_batch.clone());
         assert!(
             verify(&tampered).is_err(),
-            "a dropped auxiliary opening proof must be rejected"
+            "a spurious auxiliary opening proof must be rejected"
         );
     }
 

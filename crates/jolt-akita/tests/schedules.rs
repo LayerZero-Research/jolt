@@ -85,7 +85,30 @@ fn production_trusted_advice_grouped_row_resolves_exact_profile() {
     )
     .expect("neighboring dense row must resolve");
     assert!(JoltOneHotK256::resolve_catalog_row_for_key(&changed).is_err());
+}
 
+/// The both-advice production row: two dense precommits ahead of the same final
+/// trace group. Untrusted and trusted share the production arity, so this is the
+/// `[UntrustedAdvice, TrustedAdvice, OneHotTrace]` shape.
+#[test]
+fn production_two_precommit_grouped_row_resolves_exact_profiles() {
+    let mut key = trusted_advice_grouped_key();
+    key.precommitteds.push(key.precommitteds[0]);
+
+    let resolved = JoltOneHotK256::resolve_catalog_row_for_key(&key)
+        .expect("two dense precommits plus K256 final row must resolve");
+    assert_eq!(resolved.profiles().precommitteds, key.precommitteds);
+    assert_eq!(resolved.profiles().final_group.group, key.final_group);
+    assert_eq!(resolved.schedule().root.params.precommitted_groups.len(), 2);
+
+    assert!(key
+        .fits_setup_capacity(39, 3)
+        .expect("grouped capacity arithmetic must not overflow"));
+    assert!(!key
+        .fits_setup_capacity(39, 2)
+        .expect("grouped capacity arithmetic must not overflow"));
+
+    // Three precommits are beyond the canonical group order, so no row exists.
     let mut extra = key;
     extra.precommitteds.push(extra.precommitteds[0]);
     assert!(JoltOneHotK256::resolve_catalog_row_for_key(&extra).is_err());
@@ -159,20 +182,29 @@ fn fixture_grouped_rows_are_explicit_and_absent_from_production_k16() {
         JoltDense::profile_without_precommitted_groups(FIXTURE_TRUSTED_ADVICE_GROUP)
             .expect("fixture trusted advice standalone row must resolve");
     let table = jolt_fp128_onehot_k16_fixture_table().expect("fixture catalog is compiled in");
-    assert_eq!(table.identity.key_count, 10);
+    assert_eq!(table.identity.key_count, 15);
 
-    for num_vars in FIXTURE_K16_FINAL_NUM_VARS.0..=FIXTURE_K16_FINAL_NUM_VARS.1 {
-        let key = AkitaScheduleLookupKey {
-            final_group: akita_types::PolynomialGroupLayout::new(num_vars, 1),
-            precommitteds: vec![trusted_profile],
-        };
-        assert!(JoltOneHotK16::resolve_catalog_row_for_key(&key).is_err());
+    // One and two dense precommits, covering the single-advice and
+    // both-advice batch shapes. The fixture's untrusted and trusted layouts
+    // share an arity, so the single-precommit row serves either kind alone.
+    for precommitteds in [
+        vec![trusted_profile],
+        vec![trusted_profile, trusted_profile],
+    ] {
+        let batch_polys = precommitteds.len() + 1;
+        for num_vars in FIXTURE_K16_FINAL_NUM_VARS.0..=FIXTURE_K16_FINAL_NUM_VARS.1 {
+            let key = AkitaScheduleLookupKey {
+                final_group: akita_types::PolynomialGroupLayout::new(num_vars, 1),
+                precommitteds: precommitteds.clone(),
+            };
+            assert!(JoltOneHotK16::resolve_catalog_row_for_key(&key).is_err());
 
-        let resolved = JoltOneHotK16Fixture::resolve_catalog_row_for_key(&key)
-            .expect("fixture grouped row must resolve");
-        assert_eq!(resolved.profiles().precommitteds, key.precommitteds);
-        assert_eq!(resolved.profiles().final_group.group, key.final_group);
-        assert!(JoltOneHotK16Fixture::setup_matrix_capacity(num_vars, 2).is_ok());
+            let resolved = JoltOneHotK16Fixture::resolve_catalog_row_for_key(&key)
+                .expect("fixture grouped row must resolve");
+            assert_eq!(resolved.profiles().precommitteds, key.precommitteds);
+            assert_eq!(resolved.profiles().final_group.group, key.final_group);
+            assert!(JoltOneHotK16Fixture::setup_matrix_capacity(num_vars, batch_polys).is_ok());
+        }
     }
 }
 

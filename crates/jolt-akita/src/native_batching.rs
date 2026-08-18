@@ -37,7 +37,9 @@ use crate::adapters::{
     AkitaOneHotK256Config, AkitaProverHint, AkitaProverSetup, AkitaVerifierSetup,
     AKITA_ONE_HOT_K16, AKITA_ONE_HOT_K256,
 };
-use crate::scheme::GroupOpeningClaim;
+use crate::scheme::{
+    validate_precommitted_order, GroupOpeningClaim, PrecommittedClaim, PrecommittedOpening,
+};
 use crate::trace_onehot::GroupedRootSource;
 
 /// Marker adapter selecting Akita's native batched opening as the Jolt batch
@@ -84,21 +86,36 @@ fn validate_grouped_claim(
     Ok(())
 }
 
-fn validate_trusted_trace_statement(
+fn validate_precommitted_trace_statement(
     setup: &AkitaVerifierSetup,
-    trusted: &GroupOpeningClaim<AkitaField, AkitaCommitment>,
+    precommitted: &[PrecommittedClaim<AkitaField, AkitaCommitment>],
     main: &GroupOpeningClaim<AkitaField, AkitaCommitment>,
 ) -> Result<(), OpeningsError> {
-    validate_grouped_claim("trusted-advice", trusted, None)?;
-    validate_grouped_claim("main-trace", main, None)?;
-    if trusted.commitment.backend_flavor != AkitaBackendFlavor::Dense
-        || trusted.commitment.one_hot_k != 0
-        || trusted.commitment.poly_count != 1
-    {
+    if precommitted.is_empty() {
         return Err(invalid_batch(
-            "Akita trusted-advice group must be one dense polynomial",
+            "Akita grouped opening requires at least one precommitted group",
         ));
     }
+    validate_precommitted_order(precommitted.iter().map(|entry| entry.role))?;
+    for entry in precommitted {
+        validate_grouped_claim(entry.role.diagnostic_name(), &entry.claim, None)?;
+        if entry.claim.commitment.backend_flavor != AkitaBackendFlavor::Dense
+            || entry.claim.commitment.one_hot_k != 0
+            || entry.claim.commitment.poly_count != 1
+        {
+            return Err(invalid_batch(format!(
+                "Akita {} group must be one dense polynomial",
+                entry.role.diagnostic_name()
+            )));
+        }
+        if entry.claim.commitment.num_vars > setup.max_num_vars {
+            return Err(invalid_batch(format!(
+                "Akita {} arity exceeds grouped setup capacity",
+                entry.role.diagnostic_name()
+            )));
+        }
+    }
+    validate_grouped_claim("main-trace", main, None)?;
     if main.commitment.backend_flavor != AkitaBackendFlavor::OneHot
         || main.commitment.one_hot_k != setup.one_hot_k
         || main.commitment.poly_count != 1
@@ -117,23 +134,21 @@ fn validate_trusted_trace_statement(
             "Akita final trace commitment does not match the grouped final setup",
         ));
     }
-    if trusted.commitment.num_vars > setup.max_num_vars {
-        return Err(invalid_batch(
-            "Akita trusted-advice arity exceeds grouped setup capacity",
-        ));
-    }
-    if trusted.commitment.poly_count > setup.max_num_polys_per_commitment_group
-        || main.commitment.poly_count > setup.max_num_polys_per_commitment_group
+    if main.commitment.poly_count > setup.max_num_polys_per_commitment_group
+        || precommitted.iter().any(|entry| {
+            entry.claim.commitment.poly_count > setup.max_num_polys_per_commitment_group
+        })
     {
         return Err(invalid_batch(
             "Akita grouped commitment exceeds the group-local polynomial capacity",
         ));
     }
-    let total = trusted
-        .commitment
-        .poly_count
-        .checked_add(main.commitment.poly_count)
-        .ok_or_else(|| invalid_batch("Akita grouped polynomial count overflows"))?;
+    let mut total = main.commitment.poly_count;
+    for entry in precommitted {
+        total = total
+            .checked_add(entry.claim.commitment.poly_count)
+            .ok_or_else(|| invalid_batch("Akita grouped polynomial count overflows"))?;
+    }
     if total > setup.max_total_batch_polys {
         return Err(invalid_batch(format!(
             "Akita grouped opening has {total} polynomials but setup supports {}",
@@ -147,26 +162,28 @@ fn bind_grouped_statement_transcripts<T>(
     transcript: &mut T,
     setup: &AkitaVerifierSetup,
     selection: akita_types::OpeningScheduleSelection,
-    trusted: &GroupOpeningClaim<AkitaField, AkitaCommitment>,
+    precommitted: &[PrecommittedClaim<AkitaField, AkitaCommitment>],
     main: &GroupOpeningClaim<AkitaField, AkitaCommitment>,
 ) -> Result<(AkitaTranscript<AkitaField>, Vec<u8>), OpeningsError>
 where
     T: Transcript<Challenge = AkitaField>,
 {
     append_verifier_setup(transcript, setup, AkitaBackendFlavor::OneHot);
-    transcript.append(&Label(b"akita_precommit_batch_v2"));
+    transcript.append(&Label(b"akita_precommit_batch_v3"));
     transcript.append_bytes(&serialize_akita(&selection)?);
-    transcript.append(&LabelWithCount(b"akita_groups", 2));
-    for (index, (role, precommitted, claim)) in [
-        (b"trusted_advice".as_slice(), true, trusted),
-        (b"main_trace".as_slice(), false, main),
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    let group_count = precommitted
+        .len()
+        .checked_add(1)
+        .ok_or_else(|| invalid_batch("Akita grouped statement group count overflows"))?;
+    transcript.append(&LabelWithCount(b"akita_groups", group_count as u64));
+    let groups = precommitted
+        .iter()
+        .map(|entry| (entry.role.transcript_label(), true, &entry.claim))
+        .chain(std::iter::once((b"main_trace".as_slice(), false, main)));
+    for (index, (role, is_precommitted, claim)) in groups.enumerate() {
         transcript.append(&U64Word(index as u64));
         transcript.append_bytes(role);
-        transcript.append(&U64Word(u64::from(precommitted)));
+        transcript.append(&U64Word(u64::from(is_precommitted)));
         claim.commitment.append_to_transcript(transcript);
         transcript.append_values(b"akita_group_point", &claim.point);
         transcript.append(&LabelWithCount(
@@ -178,16 +195,15 @@ where
         }
     }
     let mut akita_transcript =
-        AkitaTranscript::<AkitaField>::new(b"jolt-akita/precommitted-group-batch/v2");
+        AkitaTranscript::<AkitaField>::new(b"jolt-akita/precommitted-group-batch/v3");
     let bridge = bridge_jolt_statement_challenge(transcript, &mut akita_transcript);
     Ok((akita_transcript, bridge))
 }
 
 impl AkitaNativeBatching {
-    pub(crate) fn prove_trusted_trace_batch<T>(
+    pub(crate) fn prove_precommitted_trace_batch<T>(
         setup: &AkitaProverSetup,
-        trusted: GroupOpeningClaim<AkitaField, AkitaCommitment>,
-        trusted_hint: AkitaProverHint,
+        precommitted: Vec<PrecommittedOpening<AkitaField, AkitaCommitment, AkitaProverHint>>,
         main: GroupOpeningClaim<AkitaField, AkitaCommitment>,
         main_hint: AkitaProverHint,
         transcript: &mut T,
@@ -195,21 +211,42 @@ impl AkitaNativeBatching {
     where
         T: Transcript<Challenge = AkitaField>,
     {
-        validate_trusted_trace_statement(&setup.verifier, &trusted, &main)?;
-        validate_grouped_claim("trusted-advice", &trusted, Some(&trusted_hint))?;
+        let precommitted_claims = precommitted
+            .iter()
+            .map(|(entry, _)| entry.clone())
+            .collect::<Vec<_>>();
+        validate_precommitted_trace_statement(&setup.verifier, &precommitted_claims, &main)?;
+        for (entry, hint) in &precommitted {
+            validate_grouped_claim(entry.role.diagnostic_name(), &entry.claim, Some(hint))?;
+        }
         validate_grouped_claim("main-trace", &main, Some(&main_hint))?;
 
-        let trusted_polys = match &trusted_hint.polynomials {
-            AkitaHintPolynomials::Dense(polys) if polys.len() == 1 => std::sync::Arc::clone(polys),
-            AkitaHintPolynomials::Dense(_)
-            | AkitaHintPolynomials::OneHot(_)
-            | AkitaHintPolynomials::TraceOneHot(_)
-            | AkitaHintPolynomials::SparseUnit(_) => {
-                return Err(invalid_batch(
-                    "Akita trusted-advice hint must retain one dense source",
+        let mut precommitted_sources = Vec::with_capacity(precommitted.len());
+        let mut precommitted_backend = Vec::with_capacity(precommitted.len());
+        for (entry, hint) in &precommitted {
+            let polys = match &hint.polynomials {
+                AkitaHintPolynomials::Dense(polys) if polys.len() == 1 => {
+                    std::sync::Arc::clone(polys)
+                }
+                AkitaHintPolynomials::Dense(_)
+                | AkitaHintPolynomials::OneHot(_)
+                | AkitaHintPolynomials::TraceOneHot(_)
+                | AkitaHintPolynomials::SparseUnit(_) => {
+                    return Err(invalid_batch(format!(
+                        "Akita {} hint must retain one dense source",
+                        entry.role.diagnostic_name()
+                    )))
+                }
+            };
+            let backend = hint.backend.clone().ok_or_else(|| {
+                invalid_batch(format!(
+                    "Akita {} hint has no backend payload",
+                    entry.role.diagnostic_name()
                 ))
-            }
-        };
+            })?;
+            precommitted_sources.push(GroupedRootSource::Dense(polys));
+            precommitted_backend.push(backend);
+        }
         let main_source = match &main_hint.polynomials {
             AkitaHintPolynomials::TraceOneHot(polys) if polys.len() == 1 => {
                 GroupedRootSource::Trace(std::sync::Arc::clone(polys))
@@ -226,39 +263,54 @@ impl AkitaNativeBatching {
                 ))
             }
         };
-        let (trusted_backend_commitment, trusted_backend_hint) = trusted_hint
-            .backend
-            .clone()
-            .ok_or_else(|| invalid_batch("Akita trusted-advice hint has no backend payload"))?;
         let (main_backend_commitment, main_backend_hint) = main_hint
             .backend
             .clone()
             .ok_or_else(|| invalid_batch("Akita main-trace hint has no backend payload"))?;
 
-        let trusted_source = GroupedRootSource::Dense(trusted_polys);
-        let trusted_refs = [&trusted_source];
-        let main_refs = [&main_source];
+        // Group order is canonical: every precommitted group, then the final
+        // trace group. Claims, backend hints, and sources stay index-aligned.
+        let mut group_refs: Vec<[&GroupedRootSource; 1]> = precommitted_sources
+            .iter()
+            .map(|source| [source])
+            .collect::<Vec<_>>();
+        group_refs.push([&main_source]);
+        let group_slices = group_refs
+            .iter()
+            .map(|refs| refs.as_slice())
+            .collect::<Vec<_>>();
+
         let backend_main_point = reverse_point(&main.point);
-        let claims = OpeningClaims::from_groups(vec![
-            PolynomialGroupClaims::new(
-                trusted.point.clone(),
-                trusted.evaluations.clone(),
-                trusted_backend_commitment,
-            )
-            .map_err(akita_error)?,
+        let mut group_claims = Vec::with_capacity(group_refs.len());
+        let mut backend_hints = Vec::with_capacity(group_refs.len());
+        for ((entry, _), (backend_commitment, backend_hint)) in
+            precommitted.iter().zip(precommitted_backend)
+        {
+            group_claims.push(
+                PolynomialGroupClaims::new(
+                    entry.claim.point.clone(),
+                    entry.claim.evaluations.clone(),
+                    backend_commitment,
+                )
+                .map_err(akita_error)?,
+            );
+            backend_hints.push(backend_hint);
+        }
+        group_claims.push(
             PolynomialGroupClaims::new(
                 backend_main_point,
                 main.evaluations.clone(),
                 main_backend_commitment,
             )
             .map_err(akita_error)?,
-        ])
-        .map_err(akita_error)?;
+        );
+        backend_hints.push(main_backend_hint);
+        let claims = OpeningClaims::from_groups(group_claims).map_err(akita_error)?;
         let opening = match setup.one_hot_k() {
             AKITA_ONE_HOT_K256 => selected_group_batch::<AkitaOneHotK256Config, _>(
                 claims,
-                vec![trusted_backend_hint, main_backend_hint],
-                vec![&trusted_refs, &main_refs],
+                backend_hints,
+                group_slices,
             )?,
             AKITA_ONE_HOT_K16 => {
                 #[cfg(feature = "akita-test-schedules")]
@@ -266,8 +318,8 @@ impl AkitaNativeBatching {
                     if setup.grouped_fixture() {
                         selected_group_batch::<crate::adapters::AkitaOneHotK16FixtureConfig, _>(
                             claims,
-                            vec![trusted_backend_hint, main_backend_hint],
-                            vec![&trusted_refs, &main_refs],
+                            backend_hints,
+                            group_slices,
                         )?
                     } else {
                         return Err(invalid_batch(
@@ -289,7 +341,7 @@ impl AkitaNativeBatching {
             transcript,
             &setup.verifier,
             selection,
-            &trusted,
+            &precommitted_claims,
             &main,
         )?;
         let (backend_prover_setup, prepared_backend_setup) = setup.one_hot_backend()?;
@@ -330,9 +382,9 @@ impl AkitaNativeBatching {
         Ok(proof)
     }
 
-    pub(crate) fn verify_trusted_trace_batch<T>(
+    pub(crate) fn verify_precommitted_trace_batch<T>(
         setup: &AkitaVerifierSetup,
-        trusted: &GroupOpeningClaim<AkitaField, AkitaCommitment>,
+        precommitted: &[PrecommittedClaim<AkitaField, AkitaCommitment>],
         main: &GroupOpeningClaim<AkitaField, AkitaCommitment>,
         proof: &AkitaBatchProof,
         transcript: &mut T,
@@ -340,11 +392,15 @@ impl AkitaNativeBatching {
     where
         T: Transcript<Challenge = AkitaField>,
     {
-        validate_trusted_trace_statement(setup, trusted, main)?;
+        validate_precommitted_trace_statement(setup, precommitted, main)?;
         let backend_main_point = reverse_point(&main.point);
-        let (selection, trusted_backend, main_backend, backend_proof) =
+        let precommitted_commitments = precommitted
+            .iter()
+            .map(|entry| &entry.claim.commitment)
+            .collect::<Vec<_>>();
+        let (selection, precommitted_backend, main_backend, backend_proof) =
             crate::shape_guard::deserialize_checked_grouped_backend_payload(
-                &trusted.commitment,
+                &precommitted_commitments,
                 &main.commitment,
                 proof,
                 &backend_main_point,
@@ -352,22 +408,27 @@ impl AkitaNativeBatching {
                 setup.grouped_fixture,
             )?;
         let (mut akita_transcript, bridge) =
-            bind_grouped_statement_transcripts(transcript, setup, selection, trusted, main)?;
+            bind_grouped_statement_transcripts(transcript, setup, selection, precommitted, main)?;
         if proof.statement_bridge != bridge {
             return Err(OpeningsError::VerificationFailed);
         }
         transcript.append(proof);
-        let claims = OpeningClaims::from_groups(vec![
-            PolynomialGroupClaims::new(
-                trusted.point.clone(),
-                trusted.evaluations.clone(),
-                &trusted_backend,
-            )
-            .map_err(akita_error)?,
+        let mut group_claims = Vec::with_capacity(precommitted.len() + 1);
+        for (entry, backend) in precommitted.iter().zip(&precommitted_backend) {
+            group_claims.push(
+                PolynomialGroupClaims::new(
+                    entry.claim.point.clone(),
+                    entry.claim.evaluations.clone(),
+                    backend,
+                )
+                .map_err(akita_error)?,
+            );
+        }
+        group_claims.push(
             PolynomialGroupClaims::new(backend_main_point, main.evaluations.clone(), &main_backend)
                 .map_err(akita_error)?,
-        ])
-        .map_err(akita_error)?;
+        );
+        let claims = OpeningClaims::from_groups(group_claims).map_err(akita_error)?;
         let batch_statement = GroupBatchStatement::new(selection, claims).map_err(akita_error)?;
         let backend_verifier = setup.backend_verifier(AkitaBackendFlavor::OneHot)?;
         with_backend_pool(|| match setup.one_hot_k {
