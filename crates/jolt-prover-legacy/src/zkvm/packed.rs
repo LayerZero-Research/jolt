@@ -437,12 +437,7 @@ pub fn advice_object_setup(
     kind: JoltAdviceKind,
     max_advice_bytes: usize,
 ) -> Result<<AkitaScheme as VerifierCommitmentScheme>::ProverSetup, VerifierError> {
-    let words = common::advice::advice_word_capacity(max_advice_bytes).map_err(|error| {
-        VerifierError::FinalOpeningVerificationFailed {
-            reason: error.to_string(),
-        }
-    })?;
-    let word_vars = words.log_2();
+    let word_vars = (max_advice_bytes / 8).next_power_of_two().log_2();
     let plan = advice_packing_plan(kind, word_vars).map_err(|error| {
         VerifierError::FinalOpeningVerificationFailed {
             reason: error.to_string(),
@@ -465,11 +460,7 @@ pub fn advice_physical_num_vars(
     kind: JoltAdviceKind,
     max_advice_bytes: usize,
 ) -> Result<usize, VerifierError> {
-    let words = common::advice::advice_word_capacity(max_advice_bytes).map_err(|error| {
-        VerifierError::FinalOpeningVerificationFailed {
-            reason: error.to_string(),
-        }
-    })?;
+    let words = (max_advice_bytes / 8).next_power_of_two();
     let plan = advice_packing_plan(kind, words.log_2()).map_err(|error| {
         VerifierError::FinalOpeningVerificationFailed {
             reason: error.to_string(),
@@ -1984,9 +1975,7 @@ pub fn akita_verifier_preprocessing(
     // Akita setup is transparent).
     let advice_setup = |kind: JoltAdviceKind, max_bytes: usize| {
         (max_bytes > 0).then(|| {
-            let words = common::advice::advice_word_capacity(max_bytes)
-                .expect("the memory layout must carry a valid advice capacity");
-            let word_vars = words.log_2();
+            let word_vars = (max_bytes / 8).next_power_of_two().log_2();
             let plan = advice_packing_plan(kind, word_vars)
                 .expect("the canonical advice layout must derive");
             let (_, verifier_setup) =

@@ -602,7 +602,7 @@ where
         .expect("prover group claims");
     let claims = OpeningClaims::from_groups(vec![group]).expect("prover claims");
     SelectedProverOpeningData::from_committed_claims::<Cfg>(claims, vec![hint], vec![polynomials])
-        .expect("selected prover opening data")
+        .expect("prover opening data")
 }
 
 fn akita_prover_open_dense(

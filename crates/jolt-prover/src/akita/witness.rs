@@ -388,9 +388,7 @@ pub fn advice_setup<PCS>(
 where
     PCS: CommitmentScheme + TransparentObjectSetup,
 {
-    let word_count =
-        common::advice::advice_word_capacity(max_advice_bytes).map_err(commit_failed)?;
-    let word_vars = word_count.ilog2() as usize;
+    let word_vars = (max_advice_bytes / 8).next_power_of_two().ilog2() as usize;
     let plan = advice_packing_plan(kind, word_vars).map_err(commit_failed)?;
     PCS::transparent_object_setup(plan.packing().packed_num_vars(), plan.layout_digest())
         .map(|(setup, _)| setup)

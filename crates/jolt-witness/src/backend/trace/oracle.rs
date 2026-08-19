@@ -73,7 +73,7 @@ impl<T: TraceSource> TraceBackend<T> {
                     Ok(Shape::new(
                         Self::advice_log_rows(
                             self.preprocessing.memory_layout.max_trusted_advice_size as usize,
-                        )?,
+                        ),
                         Compact,
                     ))
                 }
@@ -86,7 +86,7 @@ impl<T: TraceSource> TraceBackend<T> {
                     Ok(Shape::new(
                         Self::advice_log_rows(
                             self.preprocessing.memory_layout.max_untrusted_advice_size as usize,
-                        )?,
+                        ),
                         Compact,
                     ))
                 }
