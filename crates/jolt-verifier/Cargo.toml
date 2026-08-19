@@ -16,9 +16,7 @@ default = ["transcript-blake2b"]
 # Heap flamegraph visitation of the stage clear-output carriers (profile
 # harness's per-stage SVGs).
 allocative = ["dep:allocative", "jolt-claims/allocative"]
-prover-fixtures = [
-  "jolt-prover-legacy/host",
-]
+prover-fixtures = ["jolt-prover-legacy/host"]
 fs-audit = []
 field-inline = ["jolt-claims/field-inline", "jolt-r1cs/field-inline"]
 zk = ["jolt-prover-legacy/zk"]

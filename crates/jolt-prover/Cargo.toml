@@ -14,9 +14,7 @@ workspace = true
 [features]
 default = ["parallel"]
 parallel = ["jolt-kernels/parallel", "dep:rayon"]
-prover-fixtures = [
-  "jolt-prover-legacy/host",
-]
+prover-fixtures = ["jolt-prover-legacy/host"]
 # The packed (lattice/Akita) protocol. Like jolt-verifier, one compiled
 # prover proves exactly one protocol: this feature swaps the proof shape to
 # the packed envelope, so the Dory (elliptic-curve) path `src/dory` is
