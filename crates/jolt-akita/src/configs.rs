@@ -285,13 +285,20 @@ delegate_preset!(
 
 #[cfg(feature = "akita-test-schedules")]
 delegate_preset!(
-    /// Nonproduction K=16 config for small trusted-advice grouped fixtures.
+    /// Nonproduction K=16 config admitting grouped (advice-batched) openings.
+    ///
+    /// Identical to [`JoltOneHotK16`] in preset, policy, and catalog: what makes
+    /// it a separate config is its distinct `TypeId`, which is the registry key.
+    /// Grouped K=16 rows provisioned here can never be resolved by the
+    /// production config, and the grouped K=16 paths accept only this one — so a
+    /// build without `akita-test-schedules` fails closed on a configuration that
+    /// production does not support.
     JoltOneHotK16Fixture,
     akita_config::proof_optimized::fp128::OneHot,
     akita_types::sis::HonestFoldPolicySpec::UnitOneHot(
         akita_types::sis::UnitOneHotFoldPolicy::new(128, 1, 16),
     ),
-    crate::schedules::jolt_fp128_onehot_k16_fixture_table()
+    crate::schedules::jolt_fp128_onehot_k16_table()
 );
 
 delegate_preset!(

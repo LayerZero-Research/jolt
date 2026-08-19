@@ -17,10 +17,7 @@ use jolt_akita::schedules::emit::{
     TRUSTED_ADVICE_K256_FINAL_GROUP,
 };
 #[cfg(feature = "akita-test-schedules")]
-use jolt_akita::schedules::{
-    emit::{FIXTURE_K16_FINAL_NUM_VARS, FIXTURE_TRUSTED_ADVICE_GROUP},
-    jolt_fp128_onehot_k16_fixture_table,
-};
+use jolt_akita::schedules::emit::{FIXTURE_K16_FINAL_NUM_VARS, FIXTURE_TRUSTED_ADVICE_GROUP};
 use jolt_akita::schedules::{jolt_fp128_onehot_k16_table, jolt_fp128_onehot_k256_table};
 
 /// Every key of a family grid resolves from its checked-in table (binary
@@ -198,23 +195,23 @@ fn setup_capacity_covers_fitting_catalog_rows_without_an_exact_maximum_row() {
     }
 }
 
-/// The fixture family carries only its scalar rows: no grouped advice row is
-/// checked in for either family, and setup capacity still covers the grouped
-/// shapes preprocessing will plan.
+/// No grouped advice row is checked in for either K=16 config, and setup
+/// capacity still covers the grouped shapes preprocessing will plan. The
+/// production and grouped-capable configs share one catalog, so the assertion
+/// covers both.
 #[cfg(feature = "akita-test-schedules")]
 #[test]
 fn no_family_catalogs_a_grouped_advice_row() {
     let trusted_profile =
         JoltDense::profile_without_precommitted_groups(FIXTURE_TRUSTED_ADVICE_GROUP)
             .expect("fixture trusted advice standalone row must resolve");
-    let table = jolt_fp128_onehot_k16_fixture_table().expect("fixture catalog is compiled in");
-    assert_eq!(table.identity.key_count, table.entries.len());
+    let table = jolt_fp128_onehot_k16_table().expect("K16 catalog is checked in");
     assert!(
         table
             .entries
             .iter()
             .all(|entry| entry.root.precommitted_groups.is_empty()),
-        "the fixture catalog must carry no grouped rows"
+        "the K=16 catalog must carry no grouped rows"
     );
 
     // One and two dense precommits, covering the single-advice and both-advice

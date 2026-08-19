@@ -6,7 +6,6 @@
 //!
 //! ```text
 //! cargo run --release -p jolt-akita --bin gen_jolt_schedules -- crates/jolt-akita/src/schedules [k16|k256]
-//! cargo run --release -p jolt-akita --features akita-test-schedules --bin gen_jolt_schedules -- crates/jolt-akita/src/schedules k16_fixture
 //! ```
 
 use std::path::PathBuf;
@@ -23,7 +22,7 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let output_dir = PathBuf::from(
         args.next()
-            .expect("usage: gen_jolt_schedules <output-dir> [k16|k256|k16_fixture]"),
+            .expect("usage: gen_jolt_schedules <output-dir> [k16|k256|dense]"),
     );
     let only = args.next();
 
