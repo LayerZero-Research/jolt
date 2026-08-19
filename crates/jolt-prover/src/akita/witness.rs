@@ -1,12 +1,12 @@
 //! Prover-side packed (Akita) witness assembly: the `OneHotTrace` columns
-//! from the witness plane's typed rows, the dense advice word objects, the
+//! from the witness plane's typed rows, the advice word objects, the
 //! sparse unit-valued precommitted `ProgramOneHot`, and the shape-only
 //! stand-ins the native openings take.
 
 use jolt_claims::protocols::jolt::geometry::ra::JoltRaPolynomialLayout;
 use jolt_claims::protocols::jolt::lattice::geometry::WORD_BYTES;
 use jolt_claims::protocols::jolt::lattice::packing::{
-    advice_dense_packing_plan, precommitted_packing_plan, PrecommittedPackingShape,
+    advice_packing_plan, precommitted_packing_plan, PrecommittedPackingShape,
     PrefixPackedObjectPlan,
 };
 use jolt_claims::protocols::jolt::lattice::strategy::OneHotTraceLayoutPlan;
@@ -352,10 +352,10 @@ pub fn assemble_one_hot_trace_rows<F: Field>(
     }))
 }
 
-/// One dense advice-word commitment object: one field coefficient per
+/// One advice-word commitment object: one field coefficient per
 /// canonical little-endian `u64`, embedded in slot zero when Akita's dense
 /// schedule floor exceeds the logical word arity.
-pub struct DenseAdviceObject<PCS: CommitmentScheme> {
+pub struct AdviceObject<PCS: CommitmentScheme> {
     pub plan: PrefixPackedObjectPlan,
     pub polynomial: Polynomial<PCS::Field>,
     pub commitment: PCS::Output,
@@ -364,24 +364,24 @@ pub struct DenseAdviceObject<PCS: CommitmentScheme> {
     pub word_vars: usize,
 }
 
-/// Builds the canonical zero-padded dense advice-word commitment. The setup
+/// Builds the canonical zero-padded advice-word commitment. The setup
 /// is derived from the public advice shape with the same fixed seed on both
 /// sides (the setup is transparent).
-pub fn commit_advice_dense<PCS>(
+pub fn commit_advice<PCS>(
     kind: JoltAdviceKind,
     advice_bytes: &[u8],
     max_advice_bytes: usize,
-) -> Result<DenseAdviceObject<PCS>, ProverError<PCS::Field>>
+) -> Result<AdviceObject<PCS>, ProverError<PCS::Field>>
 where
     PCS: CommitmentScheme + TransparentObjectSetup,
 {
-    let setup = advice_dense_setup::<PCS>(kind, max_advice_bytes)?;
-    commit_advice_dense_with_setup::<PCS>(kind, advice_bytes, max_advice_bytes, setup)
+    let setup = advice_setup::<PCS>(kind, max_advice_bytes)?;
+    commit_advice_with_setup::<PCS>(kind, advice_bytes, max_advice_bytes, setup)
 }
 
-/// Derives the transparent setup for one dense advice object without
+/// Derives the transparent setup for one advice object without
 /// assembling or committing its witness.
-pub fn advice_dense_setup<PCS>(
+pub fn advice_setup<PCS>(
     kind: JoltAdviceKind,
     max_advice_bytes: usize,
 ) -> Result<PCS::ProverSetup, ProverError<PCS::Field>>
@@ -391,27 +391,27 @@ where
     let word_count =
         common::advice::advice_word_capacity(max_advice_bytes).map_err(commit_failed)?;
     let word_vars = word_count.ilog2() as usize;
-    let plan = advice_dense_packing_plan(kind, word_vars).map_err(commit_failed)?;
+    let plan = advice_packing_plan(kind, word_vars).map_err(commit_failed)?;
     PCS::transparent_object_setup(plan.packing().packed_num_vars(), plan.layout_digest())
         .map(|(setup, _)| setup)
         .map_err(commit_failed)
 }
 
-/// Assembles and commits a dense advice object under a setup derived earlier
-/// by [`advice_dense_setup`].
-pub fn commit_advice_dense_with_setup<PCS>(
+/// Assembles and commits an advice object under a setup derived earlier
+/// by [`advice_setup`].
+pub fn commit_advice_with_setup<PCS>(
     kind: JoltAdviceKind,
     advice_bytes: &[u8],
     max_advice_bytes: usize,
     setup: PCS::ProverSetup,
-) -> Result<DenseAdviceObject<PCS>, ProverError<PCS::Field>>
+) -> Result<AdviceObject<PCS>, ProverError<PCS::Field>>
 where
     PCS: CommitmentScheme + TransparentObjectSetup,
 {
     let words = common::advice::canonical_advice_words(advice_bytes, max_advice_bytes)
         .map_err(commit_failed)?;
     let word_vars = words.len().ilog2() as usize;
-    let plan = advice_dense_packing_plan(kind, word_vars).map_err(commit_failed)?;
+    let plan = advice_packing_plan(kind, word_vars).map_err(commit_failed)?;
     let physical_vars = plan.packing().packed_num_vars();
     let mut evaluations = vec![PCS::Field::default(); 1usize << physical_vars];
     for (evaluation, word) in evaluations.iter_mut().zip(words) {
@@ -419,7 +419,7 @@ where
     }
     let polynomial = Polynomial::new(evaluations);
     let (commitment, hint) = PCS::commit(&polynomial, &setup).map_err(commit_failed)?;
-    Ok(DenseAdviceObject {
+    Ok(AdviceObject {
         plan,
         polynomial,
         commitment,

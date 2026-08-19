@@ -179,7 +179,7 @@ where
     /// Committed-program mode: setups matching `program_one_hot_commitments`.
     #[cfg(feature = "akita")]
     pub program_one_hot_setups: Vec<PCS::VerifierSetup>,
-    /// The grouped schedule rows batching this program's dense advice objects
+    /// The grouped schedule rows batching this program's advice objects
     /// with the packed trace: one per reachable presence combination per
     /// reachable trace arity.
     ///

@@ -13,8 +13,8 @@ use jolt_akita::{
 use jolt_claims::protocols::jolt::geometry::dimensions::JoltFormulaDimensions;
 use jolt_claims::protocols::jolt::lattice::geometry::word_byte_num_vars;
 use jolt_claims::protocols::jolt::lattice::packing::{
-    advice_dense_packing_plan, precommitted_packing_plan, OneHotTraceShape,
-    PrecommittedPackingShape, PrefixPackedObjectPlan,
+    advice_packing_plan, precommitted_packing_plan, OneHotTraceShape, PrecommittedPackingShape,
+    PrefixPackedObjectPlan,
 };
 use jolt_claims::protocols::jolt::lattice::strategy::{
     OneHotTraceLayoutPlan, ONE_HOT_TRACE_LAYOUT,
@@ -206,7 +206,7 @@ fn advice_object<'a, PCS: CommitmentScheme>(
             "{kind:?} advice object without a final claim, commitment, or setup"
         )));
     };
-    let plan = advice_dense_packing_plan(kind, leaf.point.len()).map_err(batch_failed)?;
+    let plan = advice_packing_plan(kind, leaf.point.len()).map_err(batch_failed)?;
     Ok(Some(ResolvedObject {
         plan,
         commitment,
@@ -790,7 +790,7 @@ mod tests {
 
     #[test]
     fn auxiliary_metadata_is_enforced_before_pcs_verification() {
-        let plan = advice_dense_packing_plan(JoltAdviceKind::Untrusted, 3).unwrap();
+        let plan = advice_packing_plan(JoltAdviceKind::Untrusted, 3).unwrap();
         let digest = plan.layout_digest();
         let num_vars = plan.packing().packed_num_vars();
         let commitment = CommitmentMetadata {
@@ -953,8 +953,8 @@ mod tests {
         })
         .unwrap();
         let advice = [
-            advice_dense_packing_plan(JoltAdviceKind::Untrusted, ADVICE_WORD_VARS).unwrap(),
-            advice_dense_packing_plan(JoltAdviceKind::Trusted, ADVICE_WORD_VARS).unwrap(),
+            advice_packing_plan(JoltAdviceKind::Untrusted, ADVICE_WORD_VARS).unwrap(),
+            advice_packing_plan(JoltAdviceKind::Trusted, ADVICE_WORD_VARS).unwrap(),
         ];
         for object in advice.iter().chain(program.objects()) {
             let claims = object

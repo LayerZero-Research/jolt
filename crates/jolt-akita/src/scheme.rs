@@ -583,7 +583,7 @@ impl AkitaScheme {
                 || !matches!(hint.polynomials, AkitaHintPolynomials::Dense(_))
             {
                 return Err(invalid_batch(
-                    "Akita trace precommit must be one dense advice polynomial",
+                    "Akita trace precommit must be one advice polynomial",
                 ));
             }
             let (precommitted_group, _) = hint.backend.as_ref().ok_or_else(|| {

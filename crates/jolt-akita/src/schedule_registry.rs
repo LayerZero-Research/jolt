@@ -361,7 +361,7 @@ pub fn dense_precommit_profile(
     crate::configs::JoltDense::profile_without_precommitted_groups(layout)
 }
 
-/// The dense advice layouts a program can precommit, in canonical public batch
+/// The advice layouts a program can precommit, in canonical public batch
 /// order. `None` means that advice kind cannot appear in any proof for this
 /// program, so no row is planned for it.
 ///
@@ -408,7 +408,7 @@ impl AdvicePrecommitLayouts {
     }
 }
 
-/// Plan and install the grouped rows batching the program's dense advice
+/// Plan and install the grouped rows batching the program's advice
 /// precommits with every final `OneHotTrace` arity in `final_num_vars`.
 ///
 /// The advice layouts are fixed by the program's advice capacities, so this runs
@@ -436,7 +436,7 @@ pub fn provision_advice<Cfg: CommitmentConfig + 'static>(
 /// sizing folds in the provisioned rows, so a row installed later would not be
 /// covered by the setup matrices.
 ///
-/// Each physical arity is the dense advice object's own — the caller derives it
+/// Each physical arity is the advice object's own — the caller derives it
 /// from the matching `max_*_advice_size` through the same packing plan the commit
 /// uses, so this crate stays free of the advice layout.
 pub fn provision_advice_for_k(

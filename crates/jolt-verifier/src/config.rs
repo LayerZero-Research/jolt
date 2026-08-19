@@ -30,13 +30,13 @@ pub enum CommitmentConfig {
     Homomorphic,
     /// Legacy packed one-hot advice protocol. Retained as a wire tombstone.
     Packed,
-    /// Packed trace/program objects with direct dense advice-word commitments.
+    /// Packed trace/program objects with direct advice-word commitments.
     PackedDenseAdvice,
     /// Packed dense advice with Akita precommitted-group batching for the
     /// trusted-advice and final `OneHotTrace` openings. Retained as a wire
     /// tombstone: superseded by [`Self::PackedAllAdviceBatched`].
     PackedDenseAdviceBatched,
-    /// Packed dense advice with Akita precommitted-group batching over the full
+    /// Packed advice with Akita precommitted-group batching over the full
     /// canonical group order `[UntrustedAdvice, TrustedAdvice, OneHotTrace]`, so
     /// both advice objects and the trace share one joint opening proof.
     PackedAllAdviceBatched,

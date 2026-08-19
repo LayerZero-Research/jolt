@@ -23,7 +23,7 @@ use jolt_verifier::{
 };
 use jolt_witness::JoltWitnessPlane;
 
-use super::witness::{assemble_one_hot_trace_rows, commit_advice_dense, DenseAdviceObject};
+use super::witness::{assemble_one_hot_trace_rows, commit_advice, AdviceObject};
 use crate::{JoltProverPreprocessing, ProverConfig, ProverError};
 
 /// Stage 0's outputs: the validated inputs, the seeded transcript (positioned
@@ -39,18 +39,18 @@ where
     pub transcript: T,
     pub commitment: PCS::Output,
     pub hint: PCS::OpeningHint,
-    pub untrusted_advice: Option<DenseAdviceObject<PCS>>,
+    pub untrusted_advice: Option<AdviceObject<PCS>>,
 }
 
 /// Validate inputs, seed the transcript, assemble and commit the
-/// prefix-packed `OneHotTrace` polynomial, commit the untrusted-advice dense
-/// word object when advice bytes are present, and absorb the packed commitment
+/// prefix-packed `OneHotTrace` polynomial, commit the untrusted-advice word
+/// object when advice bytes are present, and absorb the packed commitment
 /// objects in canonical object order (the verifier's own absorb helper).
 #[tracing::instrument(skip_all)]
 pub fn prove_stage0<F, PCS, VC, T, W>(
     preprocessing: &JoltProverPreprocessing<PCS, VC>,
     config: &ProverConfig,
-    trusted_advice: Option<&DenseAdviceObject<PCS>>,
+    trusted_advice: Option<&AdviceObject<PCS>>,
     witness: &W,
     public_io: &JoltDevice,
 ) -> Result<Stage0Output<PCS, T>, ProverError<F>>
@@ -205,7 +205,7 @@ where
     // committed before the trace: the final commit is conditioned on the frozen
     // profile of every precommitted group.
     let untrusted_advice = if untrusted_advice_present {
-        Some(commit_advice_dense::<PCS>(
+        Some(commit_advice::<PCS>(
             jolt_claims::protocols::jolt::JoltAdviceKind::Untrusted,
             &public_io.untrusted_advice,
             public_io.memory_layout.max_untrusted_advice_size as usize,

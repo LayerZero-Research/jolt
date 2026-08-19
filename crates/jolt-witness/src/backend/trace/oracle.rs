@@ -29,7 +29,7 @@ pub(crate) const LATTICE_REASON: &str =
     "lattice-mode packed-witness polynomial; base mode never constructs it";
 /// Retired Akita byte-one-hot advice ids retained only for codec stability.
 pub(crate) const RETIRED_ADVICE_BYTES_REASON: &str =
-    "retired byte-one-hot advice polynomial; dense word advice is committed directly";
+    "retired byte-one-hot advice polynomial; advice is committed directly";
 /// Openings produced by kernels during proving (owned by the proof session).
 pub(crate) const PROTOCOL_INTERMEDIATE_REASON: &str =
     "protocol intermediate produced during proving, never served by a witness backend";

@@ -404,7 +404,7 @@ mod advice {
     use jolt_prover::JoltProverPreprocessing;
     use jolt_prover_legacy::host;
     use jolt_prover_legacy::zkvm::packed::{
-        akita_verifier_preprocessing, commit_trusted_advice_dense, AkitaField, AkitaJoltProof,
+        akita_verifier_preprocessing, commit_trusted_advice, AkitaField, AkitaJoltProof,
         AkitaPackedProver, AkitaPackedScheme, AkitaScheme, AkitaTranscript, AkitaVc,
     };
     use jolt_prover_legacy::zkvm::preprocessing::JoltSharedPreprocessing;
@@ -455,7 +455,7 @@ mod advice {
         // The trusted-advice object commits at preprocessing time, out of
         // band; its commitment goes to both the prover and the verifier.
         let trusted_object = with_trusted.then(|| {
-            commit_trusted_advice_dense(
+            commit_trusted_advice(
                 &trusted_advice,
                 guest.io_device.memory_layout.max_trusted_advice_size as usize,
             )
@@ -516,7 +516,7 @@ mod advice {
         let modular_trusted_object =
             trusted_object
                 .as_ref()
-                .map(|object| akita::witness::DenseAdviceObject {
+                .map(|object| akita::witness::AdviceObject {
                     plan: object.plan.clone(),
                     polynomial: object.polynomial.clone(),
                     commitment: object.commitment.clone(),
@@ -628,7 +628,7 @@ mod advice {
             support::MAX_PADDED_TRACE_LENGTH,
         );
         let legacy_preprocessing = LegacyProverPreprocessing::new(shared);
-        let trusted_object = commit_trusted_advice_dense(
+        let trusted_object = commit_trusted_advice(
             &trusted_advice,
             guest.io_device.memory_layout.max_trusted_advice_size as usize,
         )
@@ -679,7 +679,7 @@ mod advice {
             pcs_setup: object_setup,
             committed_program: None,
         };
-        let modular_trusted_object = akita::witness::DenseAdviceObject {
+        let modular_trusted_object = akita::witness::AdviceObject {
             plan: trusted_object.plan.clone(),
             polynomial: trusted_object.polynomial.clone(),
             commitment: trusted_object.commitment.clone(),

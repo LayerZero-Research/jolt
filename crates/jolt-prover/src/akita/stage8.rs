@@ -24,7 +24,7 @@ use jolt_verifier::stages::stage8::packed::{
 use jolt_verifier::stages::stage8::reconstruction::ReconstructionClearOutput;
 use jolt_verifier::{CheckedInputs, VerifierError};
 
-use super::witness::{DenseAdviceObject, ProgramOneHot};
+use super::witness::{AdviceObject, ProgramOneHot};
 use crate::{JoltProverPreprocessing, ProverConfig, ProverError};
 
 fn batch_failed<F: Field>(reason: impl ToString) -> ProverError<F> {
@@ -81,8 +81,8 @@ pub fn prove_stage8<F, PCS, VC, T>(
     preprocessing: &JoltProverPreprocessing<PCS, VC>,
     one_hot_trace_commitment: &PCS::Output,
     one_hot_trace_hint: PCS::OpeningHint,
-    untrusted_advice: Option<&DenseAdviceObject<PCS>>,
-    trusted_advice: Option<&DenseAdviceObject<PCS>>,
+    untrusted_advice: Option<&AdviceObject<PCS>>,
+    trusted_advice: Option<&AdviceObject<PCS>>,
     program: Option<&ProgramOneHot<PCS>>,
     stage6b: &Stage6bClearOutput<F>,
     stage7: &Stage7ClearOutput<F>,

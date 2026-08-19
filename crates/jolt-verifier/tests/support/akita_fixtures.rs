@@ -19,9 +19,9 @@ use jolt_verifier::{verify, JoltVerifierPreprocessing, VerifierError};
 use jolt_openings::CommitmentScheme as VerifierCommitmentScheme;
 use jolt_prover_legacy::host;
 use jolt_prover_legacy::zkvm::packed::{
-    akita_verifier_preprocessing, commit_trusted_advice_dense,
-    shared_preprocessing_with_program_one_hot, AkitaField, AkitaJoltProof, AkitaPackedProver,
-    AkitaPackedScheme, AkitaScheme, AkitaTranscript, AkitaVc,
+    akita_verifier_preprocessing, commit_trusted_advice, shared_preprocessing_with_program_one_hot,
+    AkitaField, AkitaJoltProof, AkitaPackedProver, AkitaPackedScheme, AkitaScheme, AkitaTranscript,
+    AkitaVc,
 };
 use jolt_prover_legacy::zkvm::preprocessing::JoltSharedPreprocessing;
 use jolt_prover_legacy::zkvm::program::ProgramPreprocessing;
@@ -125,7 +125,7 @@ fn generate_advice() -> AkitaFixtureCase {
         JoltSharedPreprocessing::new(program_data, io_device.memory_layout.clone(), 1 << 16);
     let prover_preprocessing = JoltProverPreprocessing::new(shared);
     let elf_contents = program.get_elf_contents().expect("elf contents");
-    let trusted_object = commit_trusted_advice_dense(
+    let trusted_object = commit_trusted_advice(
         &trusted_advice,
         io_device.memory_layout.max_trusted_advice_size as usize,
     )

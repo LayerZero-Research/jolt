@@ -2,7 +2,7 @@
 //! sumcheck settling every virtualized word/chunk claim against its committed
 //! one-hot decomposition, producing the packed final claims for the
 //! `ProgramOneHot` lane columns. Members in canonical commitment-object order:
-//! bytecode chunks, then program image. Dense advice is opened directly and
+//! bytecode chunks, then program image. Advice is opened directly and
 //! never enters this phase. The phase is entirely absent (zero transcript
 //! interaction) when the program is full.
 //!

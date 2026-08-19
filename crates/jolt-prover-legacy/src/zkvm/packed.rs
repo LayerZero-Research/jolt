@@ -28,7 +28,7 @@ use jolt_akita::{
 };
 use jolt_claims::protocols::jolt::geometry::ra::JoltRaPolynomialLayout;
 use jolt_claims::protocols::jolt::lattice::{
-    advice_dense_packing_plan, precommitted_packing_plan, OneHotTraceLayoutPlan, OneHotTraceShape,
+    advice_packing_plan, precommitted_packing_plan, OneHotTraceLayoutPlan, OneHotTraceShape,
     PrecommittedPackingShape, PrefixPackedObjectPlan, ONE_HOT_TRACE_LAYOUT,
 };
 use jolt_claims::protocols::jolt::{BytecodeRegisterLane, JoltAdviceKind, JoltCommittedPolynomial};
@@ -382,7 +382,7 @@ impl crate::zkvm::proof::ProofCurve<AkitaFp128> for AkitaNoCurve {
     }
 }
 
-/// The transparent setup of a singleton commitment object (dense advice word
+/// The transparent setup of a singleton commitment object (advice word
 /// objects, `ProgramOneHot`): one polynomial at `num_vars`, seeded by the
 /// object plan's layout digest — the shared [`TransparentObjectSetup`]
 /// convention `akita_verifier_preprocessing` and the modular packed prover
@@ -443,7 +443,7 @@ pub fn advice_object_setup(
         }
     })?;
     let word_vars = words.log_2();
-    let plan = advice_dense_packing_plan(kind, word_vars).map_err(|error| {
+    let plan = advice_packing_plan(kind, word_vars).map_err(|error| {
         VerifierError::FinalOpeningVerificationFailed {
             reason: error.to_string(),
         }
@@ -457,7 +457,7 @@ pub fn advice_object_setup(
     Ok(setup)
 }
 
-/// The dense advice object's physical arity for a public advice capacity.
+/// The advice object's physical arity for a public advice capacity.
 ///
 /// This is the group arity a trusted precommit freezes its profile at, so it is
 /// also the arity every grouped schedule row is keyed on.
@@ -470,7 +470,7 @@ pub fn advice_physical_num_vars(
             reason: error.to_string(),
         }
     })?;
-    let plan = advice_dense_packing_plan(kind, words.log_2()).map_err(|error| {
+    let plan = advice_packing_plan(kind, words.log_2()).map_err(|error| {
         VerifierError::FinalOpeningVerificationFailed {
             reason: error.to_string(),
         }
@@ -525,9 +525,9 @@ pub fn grouped_batch_poly_capacity(
     1 + usize::from(max_untrusted_advice_bytes > 0) + usize::from(max_trusted_advice_bytes > 0)
 }
 
-/// A dense advice commitment object: the canonical word polynomial used by
+/// An advice commitment object: the canonical word polynomial used by
 /// both the base advice reductions and the Akita PCS opening.
-pub struct DenseAdviceObject {
+pub struct AdviceObject {
     pub words: Vec<u64>,
     pub plan: PrefixPackedObjectPlan,
     pub polynomial: jolt_poly::Polynomial<AkitaField>,
@@ -536,21 +536,21 @@ pub struct DenseAdviceObject {
     pub setup: <AkitaScheme as VerifierCommitmentScheme>::ProverSetup,
 }
 
-/// Builds the canonical zero-padded dense advice-word commitment. The setup is derived from the public advice shape
+/// Builds the canonical zero-padded advice-word commitment. The setup is derived from the public advice shape
 /// with the same fixed seed on both sides (the Akita setup is transparent).
-pub fn commit_advice_dense(
+pub fn commit_advice(
     kind: JoltAdviceKind,
     advice_bytes: &[u8],
     max_advice_bytes: usize,
     setup: &<AkitaScheme as VerifierCommitmentScheme>::ProverSetup,
-) -> Result<DenseAdviceObject, VerifierError> {
+) -> Result<AdviceObject, VerifierError> {
     let commit_failed = |reason: String| VerifierError::FinalOpeningVerificationFailed { reason };
 
     let words = common::advice::canonical_advice_words(advice_bytes, max_advice_bytes)
         .map_err(|error| commit_failed(error.to_string()))?;
     let word_vars = words.len().log_2();
-    let plan = advice_dense_packing_plan(kind, word_vars)
-        .map_err(|error| commit_failed(error.to_string()))?;
+    let plan =
+        advice_packing_plan(kind, word_vars).map_err(|error| commit_failed(error.to_string()))?;
     let physical_vars = plan.packing().packed_num_vars();
     debug_assert_eq!(
         setup.max_num_vars(),
@@ -565,7 +565,7 @@ pub fn commit_advice_dense(
 
     let (commitment, hint) = <AkitaScheme as VerifierCommitmentScheme>::commit(&polynomial, setup)
         .map_err(|error| commit_failed(error.to_string()))?;
-    Ok(DenseAdviceObject {
+    Ok(AdviceObject {
         words,
         plan,
         polynomial,
@@ -575,16 +575,16 @@ pub fn commit_advice_dense(
     })
 }
 
-/// Precommits the trusted dense advice-word polynomial out of band.
+/// Precommits the trusted advice-word polynomial out of band.
 /// The caller passes the returned object to the packed prove and its
 /// commitment to the verifier. Runs at preprocessing time, so it builds its
 /// own object setup.
-pub fn commit_trusted_advice_dense(
+pub fn commit_trusted_advice(
     trusted_advice_bytes: &[u8],
     max_trusted_advice_bytes: usize,
-) -> Result<DenseAdviceObject, VerifierError> {
+) -> Result<AdviceObject, VerifierError> {
     let setup = advice_object_setup(JoltAdviceKind::Trusted, max_trusted_advice_bytes)?;
-    commit_advice_dense(
+    commit_advice(
         JoltAdviceKind::Trusted,
         trusted_advice_bytes,
         max_trusted_advice_bytes,
@@ -921,7 +921,7 @@ impl AkitaPackedProver<'_> {
         FusedIncColumns { one_hot, fused }
     }
 
-    /// Builds and commits the untrusted dense advice-word polynomial.
+    /// Builds and commits the untrusted advice-word polynomial.
     /// Also materializes the base advice *word* polynomial on `self.advice`
     /// so the shared stage-4/6b/7 advice reduction machinery runs unchanged.
     ///
@@ -931,7 +931,7 @@ impl AkitaPackedProver<'_> {
     #[tracing::instrument(skip_all, name = "generate_and_commit_untrusted_advice_packed")]
     fn generate_and_commit_untrusted_advice_packed(
         &mut self,
-    ) -> Result<Option<DenseAdviceObject>, VerifierError> {
+    ) -> Result<Option<AdviceObject>, VerifierError> {
         if self.program_io.untrusted_advice.is_empty() {
             return Ok(None);
         }
@@ -947,7 +947,7 @@ impl AkitaPackedProver<'_> {
                     .get_or_init(|| built)
             }
         };
-        let object = commit_advice_dense(
+        let object = commit_advice(
             JoltAdviceKind::Untrusted,
             &self.program_io.untrusted_advice,
             max_advice_bytes,
@@ -1303,12 +1303,12 @@ impl AkitaPackedProver<'_> {
 
     /// The reconstruction phase (the head of the stage-8 region): settles
     /// the bytecode chunk and program-image claims against the packed lane
-    /// columns. Dense advice is opened directly and never enters this phase.
+    /// columns. Advice is opened directly and never enters this phase.
     #[tracing::instrument(skip_all, name = "prove_reconstruction_phase")]
     fn prove_reconstruction_phase(
         &mut self,
-        _untrusted: Option<&DenseAdviceObject>,
-        _trusted: Option<&DenseAdviceObject>,
+        _untrusted: Option<&AdviceObject>,
+        _trusted: Option<&AdviceObject>,
     ) -> Option<
         crate::subprotocols::sumcheck::SumcheckInstanceProof<
             AkitaFp128,
@@ -1454,12 +1454,12 @@ impl AkitaPackedProver<'_> {
         Ok((point.r.iter().map(|value| value.0).collect(), value.0))
     }
 
-    /// The fixed-prefix dense advice claim produced by the retained word-level
+    /// The fixed-prefix advice claim produced by the retained word-level
     /// advice claim reduction.
     fn packed_advice_claims(
         &self,
         kind: JoltAdviceKind,
-        object: &DenseAdviceObject,
+        object: &AdviceObject,
     ) -> Result<PrefixPackedClaims<AkitaField>, VerifierError> {
         let batch_failed = |reason: String| VerifierError::FinalOpeningBatchFailed { reason };
         let advice_kind = match kind {
@@ -1517,13 +1517,13 @@ impl AkitaPackedProver<'_> {
 
     /// The Akita prove pipeline. `object_setup` is the Akita prover setup
     /// sized to OneHotTrace ([`Self::one_hot_trace_setup_params`]);
-    /// `trusted_advice` is the precommitted dense trusted-advice object, passed exactly
+    /// `trusted_advice` is the precommitted trusted-advice object, passed exactly
     /// when trusted advice exists.
     #[tracing::instrument(skip_all, name = "prove_packed")]
     pub fn prove_packed(
         mut self,
         object_setup: &<AkitaScheme as VerifierCommitmentScheme>::ProverSetup,
-        trusted_advice: Option<&DenseAdviceObject>,
+        trusted_advice: Option<&AdviceObject>,
         program: Option<&ProgramOneHot>,
     ) -> Result<AkitaJoltProof, VerifierError> {
         assert_eq!(
@@ -1551,12 +1551,10 @@ impl AkitaPackedProver<'_> {
                 });
             }
             let expected_word_vars = object.words.len().log_2();
-            let expected_plan =
-                advice_dense_packing_plan(JoltAdviceKind::Trusted, expected_word_vars).map_err(
-                    |error| VerifierError::FinalOpeningBatchFailed {
-                        reason: error.to_string(),
-                    },
-                )?;
+            let expected_plan = advice_packing_plan(JoltAdviceKind::Trusted, expected_word_vars)
+                .map_err(|error| VerifierError::FinalOpeningBatchFailed {
+                    reason: error.to_string(),
+                })?;
             let evaluations = object.polynomial.evals();
             if object.plan.layout_digest() != expected_plan.layout_digest()
                 || object.plan.packing().ids() != expected_plan.packing().ids()
@@ -1989,7 +1987,7 @@ pub fn akita_verifier_preprocessing(
             let words = common::advice::advice_word_capacity(max_bytes)
                 .expect("the memory layout must carry a valid advice capacity");
             let word_vars = words.log_2();
-            let plan = advice_dense_packing_plan(kind, word_vars)
+            let plan = advice_packing_plan(kind, word_vars)
                 .expect("the canonical advice layout must derive");
             let (_, verifier_setup) =
                 transparent_object_setup(plan.packing().packed_num_vars(), plan.layout_digest())
@@ -2214,7 +2212,7 @@ mod advice_tests {
     use serial_test::serial;
 
     /// The packed advice e2e: a guest consuming both advice kinds, proved
-    /// over three commitment objects (`OneHotTrace`, dense untrusted advice, dense trusted advice), with
+    /// over three commitment objects (`OneHotTrace`, untrusted advice, trusted advice), with
     /// per-object tamper rejection.
     #[test]
     #[serial]
@@ -2239,7 +2237,7 @@ mod advice_tests {
         let prover_preprocessing = JoltProverPreprocessing::new(shared);
         let elf_contents = program.get_elf_contents().expect("elf contents is None");
 
-        let trusted_object = commit_trusted_advice_dense(
+        let trusted_object = commit_trusted_advice(
             &trusted_advice,
             io_device.memory_layout.max_trusted_advice_size as usize,
         )
@@ -2336,7 +2334,7 @@ mod advice_tests {
         let prover_preprocessing = JoltProverPreprocessing::new(shared);
         let elf_contents = program.get_elf_contents().expect("elf contents is None");
 
-        let trusted_object = commit_trusted_advice_dense(
+        let trusted_object = commit_trusted_advice(
             &trusted_advice,
             io_device.memory_layout.max_trusted_advice_size as usize,
         )
@@ -2564,7 +2562,7 @@ mod committed_tests {
         eprintln!("akita setup: {:.2?}", setup_start.elapsed());
 
         let commit_start = Instant::now();
-        let trusted_object = commit_trusted_advice_dense(
+        let trusted_object = commit_trusted_advice(
             &trusted_advice,
             io_device.memory_layout.max_trusted_advice_size as usize,
         )
@@ -2759,13 +2757,13 @@ mod advice_object_tests {
 
         for kind in [JoltAdviceKind::Untrusted, JoltAdviceKind::Trusted] {
             let setup = advice_object_setup(kind, max_advice_bytes).unwrap();
-            let DenseAdviceObject {
+            let AdviceObject {
                 plan,
                 polynomial,
                 commitment,
                 hint,
                 ..
-            } = commit_advice_dense(kind, &advice_bytes, max_advice_bytes, &setup).unwrap();
+            } = commit_advice(kind, &advice_bytes, max_advice_bytes, &setup).unwrap();
             let column = match kind {
                 JoltAdviceKind::Trusted => JoltCommittedPolynomial::TrustedAdvice,
                 JoltAdviceKind::Untrusted => JoltCommittedPolynomial::UntrustedAdvice,

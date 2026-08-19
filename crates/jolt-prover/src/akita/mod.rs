@@ -103,7 +103,7 @@ where
         _setup: &PCS::ProverSetup,
     ) -> Result<jolt_kernels::WitnessCommitment<PCS>, jolt_kernels::KernelError<F>> {
         Err(jolt_kernels::KernelError::Unsupported {
-            reason: "the packed (Akita) path commits dense advice objects outside this seam; \
+            reason: "the packed (Akita) path commits advice objects outside this seam; \
                      the streaming advice-commit slot is unreachable",
         })
     }
@@ -208,13 +208,13 @@ where
 /// opening with `OneHotTrace`. The precommitted `ProgramOneHot` objects ride
 /// the preprocessing ([`crate::CommittedProgramProverData::program_one_hot`]);
 /// stage 0 cross-checks their commitments against the verifier preprocessing
-/// fail-closed. Untrusted advice needs no input — its dense word polynomial is
+/// fail-closed. Untrusted advice needs no input — its word polynomial is
 /// committed at prove time from the public advice bytes.
 pub fn prove<F, PCS, VC, T, W>(
     backend: &JoltAkitaBackend<F, PCS>,
     preprocessing: &JoltProverPreprocessing<PCS, VC>,
     config: &ProverConfig,
-    trusted_advice: Option<&witness::DenseAdviceObject<PCS>>,
+    trusted_advice: Option<&witness::AdviceObject<PCS>>,
     witness: &W,
     public_io: &JoltDevice,
 ) -> Result<JoltProof<PCS, VC>, ProverError<F>>

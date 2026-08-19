@@ -16,7 +16,7 @@ use jolt_witness::JoltWitnessPlane;
 use super::reconstruction::prove_reconstruction;
 use super::stage0::prove_stage0;
 use super::stage8::prove_stage8;
-use super::witness::DenseAdviceObject;
+use super::witness::AdviceObject;
 use super::JoltAkitaBackend;
 use crate::stages::stage1::prove_stage1;
 use crate::stages::stage2::prove_stage2;
@@ -34,7 +34,7 @@ pub fn prove<F, PCS, VC, T, W>(
     backend: &JoltAkitaBackend<F, PCS>,
     preprocessing: &JoltProverPreprocessing<PCS, VC>,
     config: &ProverConfig,
-    trusted_advice: Option<&DenseAdviceObject<PCS>>,
+    trusted_advice: Option<&AdviceObject<PCS>>,
     witness: &W,
     public_io: &JoltDevice,
 ) -> Result<JoltProof<PCS, VC>, ProverError<F>>
