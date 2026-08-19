@@ -8,9 +8,6 @@ description = "Akita batch opening adapter for the Jolt zkVM"
 [lints]
 workspace = true
 
-[features]
-akita-test-schedules = []
-
 [dependencies]
 akita-algebra.workspace = true
 akita-config.workspace = true

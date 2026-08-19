@@ -122,7 +122,6 @@ pub(crate) fn deserialize_checked_grouped_backend_payload(
     proof: &AkitaBatchProof,
     main_backend_point: &[AkitaField],
     one_hot_k: usize,
-    grouped_fixture: bool,
 ) -> Result<
     (
         OpeningScheduleSelection,
@@ -151,29 +150,11 @@ pub(crate) fn deserialize_checked_grouped_backend_payload(
             &layout,
             main_backend_point,
         ),
-        AKITA_ONE_HOT_K16 => {
-            #[cfg(feature = "akita-test-schedules")]
-            {
-                if grouped_fixture {
-                    resolve_grouped_schedule::<crate::adapters::AkitaOneHotK16FixtureConfig>(
-                        selection,
-                        &layout,
-                        main_backend_point,
-                    )
-                } else {
-                    return Err(invalid_batch(
-                        "K=16 grouped proof requires the test fixture catalog",
-                    ));
-                }
-            }
-            #[cfg(not(feature = "akita-test-schedules"))]
-            {
-                let _ = grouped_fixture;
-                return Err(invalid_batch(
-                    "K=16 grouped proof requires the test fixture catalog",
-                ));
-            }
-        }
+        AKITA_ONE_HOT_K16 => resolve_grouped_schedule::<crate::adapters::AkitaOneHotK16Config>(
+            selection,
+            &layout,
+            main_backend_point,
+        ),
         _ => return Err(invalid_batch("unsupported grouped one-hot configuration")),
     }
     .map_err(|err| invalid_batch(format!("Akita grouped schedule resolution failed: {err}")))?;

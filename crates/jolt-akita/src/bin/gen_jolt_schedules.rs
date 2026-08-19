@@ -22,11 +22,11 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let output_dir = PathBuf::from(
         args.next()
-            .expect("usage: gen_jolt_schedules <output-dir> [k16|k256|dense]"),
+            .expect("usage: gen_jolt_schedules <output-dir> [k16|k256]"),
     );
     let only = args.next();
 
-    for family in family_specs(output_dir).expect("schedule family construction must succeed") {
+    for family in family_specs(output_dir) {
         if only
             .as_deref()
             .is_some_and(|only| !family.module_name.ends_with(only))
@@ -34,10 +34,9 @@ fn main() {
             continue;
         }
         println!(
-            "generating {} ({} scalar keys, {} grouped keys)…",
+            "generating {} ({} keys)…",
             family.module_name,
-            family.keys.len(),
-            family.group_batch_keys.len(),
+            family.keys.len()
         );
         let path = family.output_dir.join(format!("{}.rs", family.module_name));
         let source = emit_family_module(&family).expect("table generation must succeed");

@@ -79,12 +79,6 @@ jobs:
         run: cargo clippy -p jolt-verifier --all-targets --features akita,prover-fixtures
       - name: cargo clippy -p jolt-prover-legacy --features akita
         run: cargo clippy -p jolt-prover-legacy --all-targets --features akita
-      # Grouped (advice-batched) K=16 openings and the code behind them are
-      # feature-gated, so the invocations above never lint them.
-      - name: cargo clippy -p jolt-prover-legacy --features akita,akita-test-schedules
-        run: cargo clippy -p jolt-prover-legacy --all-targets --features akita,akita-test-schedules
-      - name: cargo clippy -p jolt-akita --features akita-test-schedules
-        run: cargo clippy -p jolt-akita --all-targets --features akita-test-schedules
       # The modular prover's packed (Akita) path: lint alone and with
       # prover-fixtures so the acceptance suites keep compiling.
       - name: cargo clippy -p jolt-prover --features akita
@@ -343,11 +337,8 @@ jobs:
       # The packed-prover e2e suite: muldiv, forced K=256, trusted/untrusted
       # advice, and committed-program, each proving and verifying over the
       # Akita lattice PCS (the release-only perf harness stays ignored).
-      # akita-test-schedules admits grouped (advice-batched) openings at K=16,
-      # which is what these small-trace e2e tests use; without it they fail to
-      # provision. jolt-prover/jolt-verifier get it via prover-fixtures.
       - name: Run jolt-prover-legacy tests with akita feature
-        run: cargo nextest run --cargo-profile ci -p jolt-prover-legacy --features akita,akita-test-schedules
+        run: cargo nextest run --cargo-profile ci -p jolt-prover-legacy --features akita
       # The MODULAR packed-prover acceptance suites: the five e2e analogs
       # (with live tampers) plus the four byte-diff ratchets asserting
       # wire-for-wire equality with the legacy packed prover.

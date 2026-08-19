@@ -18,8 +18,6 @@ default = ["transcript-blake2b"]
 allocative = ["dep:allocative", "jolt-claims/allocative"]
 prover-fixtures = [
   "jolt-prover-legacy/host",
-  "jolt-prover-legacy/akita-test-schedules",
-  "jolt-akita?/akita-test-schedules",
 ]
 fs-audit = []
 field-inline = ["jolt-claims/field-inline", "jolt-r1cs/field-inline"]

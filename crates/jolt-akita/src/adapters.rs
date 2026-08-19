@@ -25,8 +25,6 @@ use crate::trace_onehot::TracePackedOneHot;
 pub type AkitaField = akita_config::proof_optimized::fp128::Field;
 pub(crate) type AkitaConfig = crate::configs::JoltDense;
 pub(crate) type AkitaOneHotK16Config = crate::configs::JoltOneHotK16;
-#[cfg(feature = "akita-test-schedules")]
-pub(crate) type AkitaOneHotK16FixtureConfig = crate::configs::JoltOneHotK16Fixture;
 pub(crate) type AkitaOneHotK256Config = crate::configs::JoltOneHotK256;
 /// Smallest A dimension accepted by the delegated adaptive policy. Source
 /// objects use this only for dimension-independent flat storage metadata;
@@ -129,9 +127,6 @@ pub(crate) type AkitaBackendExtField = <AkitaConfig as CommitmentConfig>::ExtFie
 
 pub(crate) type AkitaBackendScheme = AkitaCommitmentScheme<AkitaConfig>;
 pub(crate) type AkitaOneHotK16BackendScheme = AkitaCommitmentScheme<AkitaOneHotK16Config>;
-#[cfg(feature = "akita-test-schedules")]
-pub(crate) type AkitaOneHotK16FixtureBackendScheme =
-    AkitaCommitmentScheme<AkitaOneHotK16FixtureConfig>;
 pub(crate) type AkitaOneHotK256BackendScheme = AkitaCommitmentScheme<AkitaOneHotK256Config>;
 pub(crate) type AkitaBackendCommitment = AkitaBackendCommittedGroup<AkitaField>;
 pub(crate) type AkitaBackendCommitmentPayload = AkitaBackendRingCommitment<AkitaField>;
@@ -166,8 +161,6 @@ fn compute_catalog_identity_digest<Cfg: CommitmentConfig>() -> [u8; 32] {
 
 static DENSE_CATALOG_DIGEST: OnceLock<[u8; 32]> = OnceLock::new();
 static ONE_HOT_K16_CATALOG_DIGEST: OnceLock<[u8; 32]> = OnceLock::new();
-#[cfg(feature = "akita-test-schedules")]
-static ONE_HOT_K16_FIXTURE_CATALOG_DIGEST: OnceLock<[u8; 32]> = OnceLock::new();
 static ONE_HOT_K256_CATALOG_DIGEST: OnceLock<[u8; 32]> = OnceLock::new();
 
 /// Identity of the fixed public matrix stream used by every Jolt Akita setup.
@@ -232,9 +225,6 @@ pub struct AkitaSetupParams {
     /// flavor dominates the setup cost (~30x the dense flavor at advice
     /// shapes), and a sparse-unit or dense commitment object never touches it.
     pub(crate) dense_only: bool,
-    /// Selects the explicitly nonproduction small K=16 grouped catalog.
-    /// This is only set by `one_hot_only_grouped` under the fixture feature.
-    pub(crate) grouped_fixture: bool,
 }
 
 impl AkitaSetupParams {
@@ -251,7 +241,6 @@ impl AkitaSetupParams {
             one_hot_k: AKITA_ONE_HOT_K256,
             one_hot_only: false,
             dense_only: false,
-            grouped_fixture: false,
         }
     }
 
@@ -272,7 +261,6 @@ impl AkitaSetupParams {
             one_hot_k,
             one_hot_only: true,
             dense_only: false,
-            grouped_fixture: false,
         }
     }
 
@@ -293,8 +281,6 @@ impl AkitaSetupParams {
             one_hot_k,
             one_hot_only: true,
             dense_only: false,
-            grouped_fixture: cfg!(feature = "akita-test-schedules")
-                && one_hot_k == AKITA_ONE_HOT_K16,
         }
     }
 
@@ -315,16 +301,11 @@ impl AkitaSetupParams {
             one_hot_k: AKITA_ONE_HOT_K256,
             one_hot_only: false,
             dense_only: true,
-            grouped_fixture: false,
         }
     }
 
     pub fn one_hot_k(&self) -> usize {
         self.one_hot_k
-    }
-
-    pub fn grouped_fixture(&self) -> bool {
-        self.grouped_fixture
     }
 
     pub fn max_total_batch_polys(&self) -> usize {
@@ -360,10 +341,6 @@ impl AkitaProverSetup {
 
     pub fn one_hot_k(&self) -> usize {
         self.verifier.one_hot_k
-    }
-
-    pub fn grouped_fixture(&self) -> bool {
-        self.verifier.grouped_fixture
     }
 
     pub fn catalog_identity_digest(&self, flavor: AkitaBackendFlavor) -> [u8; 32] {
@@ -428,7 +405,6 @@ pub struct AkitaVerifierSetup {
     pub(crate) max_total_batch_polys: usize,
     pub(crate) default_layout_digest: AkitaLayoutDigest,
     pub(crate) one_hot_k: usize,
-    pub(crate) grouped_fixture: bool,
     #[serde(skip)]
     pub(crate) backend_cache: BackendVerifierCache,
 }
@@ -454,10 +430,6 @@ impl AkitaVerifierSetup {
         self.one_hot_k
     }
 
-    pub fn grouped_fixture(&self) -> bool {
-        self.grouped_fixture
-    }
-
     /// Identity of the compile-time schedule catalog selected for this setup
     /// and backend flavor. This is verifier-owned protocol data, never read
     /// from the proof.
@@ -467,16 +439,8 @@ impl AkitaVerifierSetup {
                 *DENSE_CATALOG_DIGEST.get_or_init(compute_catalog_identity_digest::<AkitaConfig>)
             }
             AkitaBackendFlavor::OneHot => match self.one_hot_k {
-                AKITA_ONE_HOT_K16 => {
-                    #[cfg(feature = "akita-test-schedules")]
-                    if self.grouped_fixture {
-                        return *ONE_HOT_K16_FIXTURE_CATALOG_DIGEST.get_or_init(
-                            compute_catalog_identity_digest::<AkitaOneHotK16FixtureConfig>,
-                        );
-                    }
-                    *ONE_HOT_K16_CATALOG_DIGEST
-                        .get_or_init(compute_catalog_identity_digest::<AkitaOneHotK16Config>)
-                }
+                AKITA_ONE_HOT_K16 => *ONE_HOT_K16_CATALOG_DIGEST
+                    .get_or_init(compute_catalog_identity_digest::<AkitaOneHotK16Config>),
                 AKITA_ONE_HOT_K256 => *ONE_HOT_K256_CATALOG_DIGEST
                     .get_or_init(compute_catalog_identity_digest::<AkitaOneHotK256Config>),
                 _ => [0; 32],
@@ -542,10 +506,9 @@ impl AkitaVerifierSetup {
                     self.one_hot_k,
                     self.max_num_vars,
                     self.max_total_batch_polys,
-                    self.grouped_fixture,
                 )
                 .map_err(|err| invalid_setup(&err))?;
-                one_hot_setup_verifier(self.one_hot_k, self.grouped_fixture, &prover_setup)
+                one_hot_setup_verifier(self.one_hot_k, &prover_setup)
             }
         }
     }
@@ -589,7 +552,6 @@ pub(crate) fn append_verifier_setup<T: Transcript>(
     transcript.append(&U64Word(setup.max_num_polys_per_commitment_group as u64));
     transcript.append(&U64Word(setup.max_total_batch_polys as u64));
     transcript.append(&U64Word(setup.one_hot_k as u64));
-    transcript.append(&U64Word(u64::from(setup.grouped_fixture)));
     transcript.append_bytes(&setup.default_layout_digest);
     transcript.append(&Label(b"akita_setup_family"));
     transcript.append_bytes(&configured_setup_seed_digest());
@@ -954,19 +916,9 @@ pub(crate) fn one_hot_setup_prover(
     one_hot_k: usize,
     max_num_vars: usize,
     max_num_polys: usize,
-    grouped_fixture: bool,
 ) -> Result<AkitaBackendProverSetup, akita_pcs::AkitaError> {
     with_backend_pool(|| match one_hot_k {
-        AKITA_ONE_HOT_K16 => {
-            #[cfg(feature = "akita-test-schedules")]
-            if grouped_fixture {
-                return akita_pcs::AkitaCommitmentScheme::<
-                    crate::configs::JoltOneHotK16Fixture,
-                >::setup_prover(max_num_vars, max_num_polys);
-            }
-            let _ = grouped_fixture;
-            AkitaOneHotK16BackendScheme::setup_prover(max_num_vars, max_num_polys)
-        }
+        AKITA_ONE_HOT_K16 => AkitaOneHotK16BackendScheme::setup_prover(max_num_vars, max_num_polys),
         AKITA_ONE_HOT_K256 => {
             AkitaOneHotK256BackendScheme::setup_prover(max_num_vars, max_num_polys)
         }
@@ -976,22 +928,11 @@ pub(crate) fn one_hot_setup_prover(
 
 pub(crate) fn one_hot_setup_verifier(
     one_hot_k: usize,
-    grouped_fixture: bool,
     prover_setup: &AkitaBackendProverSetup,
 ) -> Result<AkitaBackendVerifier, OpeningsError> {
     let invalid_setup = |err: &dyn std::fmt::Display| OpeningsError::InvalidSetup(err.to_string());
     match one_hot_k {
         AKITA_ONE_HOT_K16 => {
-            #[cfg(feature = "akita-test-schedules")]
-            if grouped_fixture {
-                return with_backend_pool(|| {
-                    akita_pcs::AkitaCommitmentScheme::<
-                        crate::configs::JoltOneHotK16Fixture,
-                    >::setup_verifier(prover_setup)
-                })
-                .map_err(|err| invalid_setup(&err));
-            }
-            let _ = grouped_fixture;
             with_backend_pool(|| AkitaOneHotK16BackendScheme::setup_verifier(prover_setup))
                 .map_err(|err| invalid_setup(&err))
         }

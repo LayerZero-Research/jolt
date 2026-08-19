@@ -36,9 +36,6 @@ akita = [
   "jolt-field/akita",
   "jolt-verifier/akita",
 ]
-# Fixture-only grouped rows are inert unless `akita` also activates the
-# optional adapter dependency.
-akita-test-schedules = ["jolt-akita?/akita-test-schedules"]
 zk = ["dory/zk", "dep:jolt-blindfold", "jolt-verifier/zk"]
 host = [
   "prover",

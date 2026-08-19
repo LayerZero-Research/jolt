@@ -219,24 +219,7 @@ impl AkitaScheme {
                 crate::adapters::AkitaOneHotK256Config::resolve_catalog_row_for_key(&key)
             }
             AKITA_ONE_HOT_K16 => {
-                #[cfg(feature = "akita-test-schedules")]
-                {
-                    if setup.grouped_fixture() {
-                        crate::adapters::AkitaOneHotK16FixtureConfig::resolve_catalog_row_for_key(
-                            &key,
-                        )
-                    } else {
-                        return Err(invalid_batch(
-                            "K=16 grouped openings require the test fixture catalog",
-                        ));
-                    }
-                }
-                #[cfg(not(feature = "akita-test-schedules"))]
-                {
-                    return Err(invalid_batch(
-                        "K=16 grouped openings require the test fixture catalog",
-                    ));
-                }
+                crate::adapters::AkitaOneHotK16Config::resolve_catalog_row_for_key(&key)
             }
             _ => unreachable!("one-hot K was validated during setup"),
         }
@@ -458,23 +441,12 @@ impl AkitaScheme {
         let (backend_prover_setup, prepared_backend_setup) = setup.one_hot_backend()?;
         let stack = backend_stack(backend_prover_setup, prepared_backend_setup)?;
         let (backend_commitment, backend_hint) = with_backend_pool(|| match setup.one_hot_k() {
-            AKITA_ONE_HOT_K16 => {
-                #[cfg(feature = "akita-test-schedules")]
-                if setup.grouped_fixture() {
-                    return crate::adapters::AkitaOneHotK16FixtureBackendScheme::commit(
-                        backend_prover_setup,
-                        std::slice::from_ref(&source),
-                        &stack,
-                        akita_prover::GroupContext::scheduler_with_precommitted_groups(&profiles),
-                    );
-                }
-                AkitaOneHotK16BackendScheme::commit(
-                    backend_prover_setup,
-                    std::slice::from_ref(&source),
-                    &stack,
-                    akita_prover::GroupContext::scheduler_with_precommitted_groups(&profiles),
-                )
-            }
+            AKITA_ONE_HOT_K16 => AkitaOneHotK16BackendScheme::commit(
+                backend_prover_setup,
+                std::slice::from_ref(&source),
+                &stack,
+                akita_prover::GroupContext::scheduler_with_precommitted_groups(&profiles),
+            ),
             AKITA_ONE_HOT_K256 => AkitaOneHotK256BackendScheme::commit(
                 backend_prover_setup,
                 std::slice::from_ref(&source),
@@ -562,23 +534,12 @@ impl AkitaScheme {
         let (backend_prover_setup, prepared_backend_setup) = setup.one_hot_backend()?;
         let stack = backend_stack(backend_prover_setup, prepared_backend_setup)?;
         with_backend_pool(|| match setup.one_hot_k() {
-            AKITA_ONE_HOT_K16 => {
-                #[cfg(feature = "akita-test-schedules")]
-                if setup.grouped_fixture() {
-                    return crate::adapters::AkitaOneHotK16FixtureBackendScheme::commit(
-                        backend_prover_setup,
-                        polynomials,
-                        &stack,
-                        akita_prover::GroupContext::scheduler_with_precommitted_groups(profiles),
-                    );
-                }
-                AkitaOneHotK16BackendScheme::commit(
-                    backend_prover_setup,
-                    polynomials,
-                    &stack,
-                    akita_prover::GroupContext::scheduler_with_precommitted_groups(profiles),
-                )
-            }
+            AKITA_ONE_HOT_K16 => AkitaOneHotK16BackendScheme::commit(
+                backend_prover_setup,
+                polynomials,
+                &stack,
+                akita_prover::GroupContext::scheduler_with_precommitted_groups(profiles),
+            ),
             AKITA_ONE_HOT_K256 => AkitaOneHotK256BackendScheme::commit(
                 backend_prover_setup,
                 polynomials,
@@ -906,17 +867,13 @@ impl CommitmentScheme for AkitaScheme {
                 params.one_hot_k,
                 params.max_num_vars,
                 params.max_total_batch_polys,
-                params.grouped_fixture,
             )
             .map_err(|err| invalid_setup(&err))?;
             let prepared_backend_setup =
                 with_backend_pool(|| CpuBackend::DEFAULT.prepare_setup(&backend_prover_setup))
                     .map_err(|err| invalid_setup(&err))?;
-            let backend_verifier_setup = crate::adapters::one_hot_setup_verifier(
-                params.one_hot_k,
-                params.grouped_fixture,
-                &backend_prover_setup,
-            )?;
+            let backend_verifier_setup =
+                crate::adapters::one_hot_setup_verifier(params.one_hot_k, &backend_prover_setup)?;
             (
                 Some(std::sync::Arc::new(backend_prover_setup)),
                 Some(std::sync::Arc::new(prepared_backend_setup)),
@@ -931,7 +888,6 @@ impl CommitmentScheme for AkitaScheme {
             max_total_batch_polys: params.max_total_batch_polys,
             default_layout_digest: params.default_layout_digest,
             one_hot_k: params.one_hot_k,
-            grouped_fixture: params.grouped_fixture,
             backend_cache: Default::default(),
         };
         verifier.prime_backend_cache(backend_verifier_setup, one_hot_backend_verifier_setup);
@@ -1232,7 +1188,6 @@ mod tests {
             max_total_batch_polys: 1,
             default_layout_digest: [7; 32],
             one_hot_k: AKITA_ONE_HOT_K256,
-            grouped_fixture: false,
             backend_cache: Default::default(),
         };
         let mut baseline = Blake2bTranscript::<AkitaField>::new(b"akita-setup-key-test");

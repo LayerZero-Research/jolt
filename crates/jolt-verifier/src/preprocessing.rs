@@ -238,6 +238,7 @@ where
         untrusted_advice_physical_vars: Option<usize>,
         trusted_advice_physical_vars: Option<usize>,
         one_hot_k: usize,
+        max_final_num_vars: usize,
     ) -> Result<[u8; 32], jolt_akita::AkitaError> {
         if untrusted_advice_physical_vars.is_none() && trusted_advice_physical_vars.is_none() {
             self.advice_schedules = Default::default();
@@ -247,6 +248,7 @@ where
             untrusted_advice_physical_vars,
             trusted_advice_physical_vars,
             one_hot_k,
+            max_final_num_vars,
         )?;
         Ok(self.advice_schedules.set_digest())
     }

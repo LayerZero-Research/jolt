@@ -496,6 +496,7 @@ pub fn provision_advice_schedules(
     max_untrusted_advice_bytes: usize,
     max_trusted_advice_bytes: usize,
     one_hot_k: usize,
+    max_final_num_vars: usize,
 ) -> Result<[u8; 32], VerifierError> {
     let untrusted_physical_vars = (max_untrusted_advice_bytes > 0)
         .then(|| advice_physical_num_vars(JoltAdviceKind::Untrusted, max_untrusted_advice_bytes))
@@ -507,6 +508,7 @@ pub fn provision_advice_schedules(
         untrusted_physical_vars,
         trusted_physical_vars,
         one_hot_k,
+        max_final_num_vars,
     )
     .map(|rows| rows.set_digest())
     .map_err(|error| VerifierError::FinalOpeningVerificationFailed {
@@ -764,10 +766,21 @@ impl AkitaPackedProver<'_> {
         let max_untrusted_advice_bytes =
             self.program_io.memory_layout.max_untrusted_advice_size as usize;
         if max_trusted_advice_bytes > 0 || max_untrusted_advice_bytes > 0 {
+            // The trace this prove uses may be shorter than the program's
+            // padded ceiling, but preprocessing must cover every arity a proof
+            // of this program can select, so sweep up to the ceiling's arity.
+            let max_final_num_vars = ONE_HOT_TRACE_LAYOUT
+                .setup_shape(&OneHotTraceShape {
+                    log_t: self.preprocessing.shared.max_padded_trace_length.log_2(),
+                    ..one_hot_trace_shape
+                })
+                .expect("the padded-ceiling OneHotTrace layout must exist")
+                .num_vars;
             provision_advice_schedules(
                 max_untrusted_advice_bytes,
                 max_trusted_advice_bytes,
                 one_hot_k,
+                max_final_num_vars,
             )
             .expect("advice grouped schedules must provision");
         }
@@ -1934,6 +1947,9 @@ pub fn akita_verifier_preprocessing(
     };
     let committed_mode = preprocessing.shared.program.is_committed();
     let one_hot_k = akita_verifier_setup.one_hot_k();
+    // The verifier's setup is shape-exact, so its own arity is the only final
+    // arity any proof it accepts can carry — a tight bound on the sweep.
+    let akita_verifier_max_final_num_vars = akita_verifier_setup.max_num_vars();
     let mut verifier_preprocessing = JoltVerifierPreprocessing::new(
         program,
         preprocessing.shared.digest(),
@@ -1958,7 +1974,12 @@ pub fn akita_verifier_preprocessing(
         preprocessing.shared.memory_layout.max_trusted_advice_size as usize,
     );
     verifier_preprocessing
-        .provision_akita_schedules(untrusted_physical_vars, trusted_physical_vars, one_hot_k)
+        .provision_akita_schedules(
+            untrusted_physical_vars,
+            trusted_physical_vars,
+            one_hot_k,
+            akita_verifier_max_final_num_vars,
+        )
         .expect("advice grouped schedules must provision for the verifier");
     // The per-kind advice commitment-object setups are derived from the
     // public advice shapes with the same fixed seed the prover uses (the

@@ -34,10 +34,14 @@ use akita_types::{
     FoldSchedule, OpeningScheduleSelection, PolynomialGroupLayout, ScheduleRowDigest,
 };
 
-/// Upper bound on rows one config may hold. The provisioning sweep spans a
-/// family's declared final-arity range, so this is a backstop against a caller
-/// installing an unbounded set — not a shape the honest path approaches.
-pub const MAX_REGISTERED_ROWS: usize = 64;
+/// Upper bound on rows one config may hold.
+///
+/// The honest sweep is one row per reachable final arity per advice presence
+/// combination: the widest family declares 32 arities (`K256_NUM_VARS`) and two
+/// advice objects of differing capacity reach 3 combinations, so 96 is the
+/// honest ceiling. This leaves headroom above it as a backstop against a caller
+/// installing an unbounded set.
+pub const MAX_REGISTERED_ROWS: usize = 128;
 
 /// One config's provisioned rows, addressable by the two keys the resolution
 /// hooks use: the public row digest (verifier boundary) and the lookup key or
@@ -439,40 +443,41 @@ pub fn provision_advice_for_k(
     untrusted_physical_vars: Option<usize>,
     trusted_physical_vars: Option<usize>,
     one_hot_k: usize,
+    max_final_num_vars: usize,
 ) -> Result<RegisteredRows, AkitaError> {
     let layouts = AdvicePrecommitLayouts {
         untrusted: untrusted_physical_vars.map(|vars| PolynomialGroupLayout::new(vars, 1)),
         trusted: trusted_physical_vars.map(|vars| PolynomialGroupLayout::new(vars, 1)),
     };
+    // The family's declared range is what the catalog covers; `max_final_num_vars`
+    // is what this program can actually reach, from its padded trace-length
+    // bound. Sweeping past it plans rows no proof of this program can select.
+    let (min, declared_max) = match one_hot_k {
+        crate::AKITA_ONE_HOT_K256 => crate::schedules::emit::K256_NUM_VARS,
+        crate::AKITA_ONE_HOT_K16 => crate::schedules::emit::K16_NUM_VARS,
+        other => {
+            return Err(AkitaError::InvalidSetup(format!(
+                "unsupported one-hot K {other} for grouped advice provisioning"
+            )))
+        }
+    };
+    let max = declared_max.min(max_final_num_vars);
+    if max < min {
+        return Ok(RegisteredRows::default());
+    }
     match one_hot_k {
         crate::AKITA_ONE_HOT_K256 => {
-            let (min, max) = crate::schedules::emit::K256_NUM_VARS;
             provision_advice::<crate::configs::JoltOneHotK256>(layouts, min..=max)
         }
         crate::AKITA_ONE_HOT_K16 => {
-            #[cfg(feature = "akita-test-schedules")]
-            {
-                // The fixture family's own declared range, not the production
-                // K=16 grid: its catalog is generated over these arities, so a
-                // wider sweep would plan rows no fixture can reach.
-                let (min, max) = crate::schedules::emit::FIXTURE_K16_FINAL_NUM_VARS;
-                provision_advice::<crate::configs::JoltOneHotK16Fixture>(layouts, min..=max)
-            }
-            #[cfg(not(feature = "akita-test-schedules"))]
-            {
-                Err(AkitaError::InvalidSetup(
-                    "K=16 grouped advice openings require the test fixture catalog".to_owned(),
-                ))
-            }
+            provision_advice::<crate::configs::JoltOneHotK16>(layouts, min..=max)
         }
-        other => Err(AkitaError::InvalidSetup(format!(
-            "unsupported one-hot K {other} for grouped advice provisioning"
-        ))),
+        _ => unreachable!("one-hot K was validated above"),
     }
 }
 
 /// Drop every installed row. Tests only: production installs once per process.
-#[cfg(any(test, feature = "akita-test-schedules"))]
+#[cfg(test)]
 pub fn reset_for_tests() {
     if let Ok(mut guard) = registry().write() {
         guard.clear();
@@ -546,10 +551,9 @@ mod tests {
 
     /// The fixture family's arities are small, so it is the one family whose
     /// grouped rows are cheap enough to plan end to end inside a test.
-    #[cfg(feature = "akita-test-schedules")]
     mod fixture {
         use super::*;
-        use crate::configs::JoltOneHotK16Fixture;
+        use crate::configs::JoltOneHotK16;
         use crate::schedules::emit::{FIXTURE_K16_FINAL_NUM_VARS, FIXTURE_TRUSTED_ADVICE_GROUP};
 
         fn trusted_only(trusted: PolynomialGroupLayout) -> AdvicePrecommitLayouts {
@@ -583,12 +587,12 @@ mod tests {
                 fixture_keys(FIXTURE_K16_FINAL_NUM_VARS.0..=FIXTURE_K16_FINAL_NUM_VARS.1);
             for key in &keys {
                 assert!(
-                    catalog_only_row::<JoltOneHotK16Fixture>(key).is_err(),
+                    catalog_only_row::<JoltOneHotK16>(key).is_err(),
                     "a grouped advice row must never be checked in: {key:?}"
                 );
             }
 
-            let rows = provision_advice::<JoltOneHotK16Fixture>(
+            let rows = provision_advice::<JoltOneHotK16>(
                 trusted_only(FIXTURE_TRUSTED_ADVICE_GROUP),
                 FIXTURE_K16_FINAL_NUM_VARS.0..=FIXTURE_K16_FINAL_NUM_VARS.1,
             )
@@ -599,7 +603,7 @@ mod tests {
                 "every final arity must be planned, since none is cataloged"
             );
             for key in &keys {
-                let resolved = JoltOneHotK16Fixture::resolve_catalog_row_for_key(key)
+                let resolved = JoltOneHotK16::resolve_catalog_row_for_key(key)
                     .expect("a provisioned row must resolve through the hook");
                 assert_eq!(resolved.profiles().precommitteds, key.precommitteds);
             }
@@ -615,11 +619,11 @@ mod tests {
             let key = keys.first().expect("one key");
 
             assert!(
-                JoltOneHotK16Fixture::resolve_catalog_row_for_key(key).is_err(),
+                JoltOneHotK16::resolve_catalog_row_for_key(key).is_err(),
                 "arity 27 must not be cataloged, or this test proves nothing"
             );
 
-            let rows = provision::<JoltOneHotK16Fixture>(
+            let rows = provision::<JoltOneHotK16>(
                 &[vec![profile]],
                 JoltDense::root_honest_fold_policy(),
                 [27],
@@ -627,12 +631,11 @@ mod tests {
             .expect("provisioning an uncataloged key must plan it");
             assert_eq!(rows.len(), 1);
 
-            let by_key = JoltOneHotK16Fixture::resolve_catalog_row_for_key(key)
+            let by_key = JoltOneHotK16::resolve_catalog_row_for_key(key)
                 .expect("the provisioned row must now resolve by key");
-            let by_profiles =
-                JoltOneHotK16Fixture::resolve_catalog_row_for_profiles(by_key.profiles())
-                    .expect("the provisioned row must resolve by exact profiles");
-            let by_selection = JoltOneHotK16Fixture::resolve_schedule_selection(by_key.selection())
+            let by_profiles = JoltOneHotK16::resolve_catalog_row_for_profiles(by_key.profiles())
+                .expect("the provisioned row must resolve by exact profiles");
+            let by_selection = JoltOneHotK16::resolve_schedule_selection(by_key.selection())
                 .expect("the provisioned row must resolve by public selection");
 
             assert_eq!(by_key.selection(), by_profiles.selection());
@@ -652,11 +655,9 @@ mod tests {
             let range = FIXTURE_K16_FINAL_NUM_VARS.0..=FIXTURE_K16_FINAL_NUM_VARS.1;
             let expected = range.clone().count();
 
-            let rows = provision_advice::<JoltOneHotK16Fixture>(
-                trusted_only(uncataloged_trusted),
-                range.clone(),
-            )
-            .expect("a previously unseen advice capacity must provision");
+            let rows =
+                provision_advice::<JoltOneHotK16>(trusted_only(uncataloged_trusted), range.clone())
+                    .expect("a previously unseen advice capacity must provision");
             assert_eq!(
                 rows.len(),
                 expected,
@@ -669,14 +670,13 @@ mod tests {
                     final_group: PolynomialGroupLayout::new(num_vars, 1),
                     precommitteds: vec![profile],
                 };
-                let row = JoltOneHotK16Fixture::resolve_catalog_row_for_key(&key)
+                let row = JoltOneHotK16::resolve_catalog_row_for_key(&key)
                     .unwrap_or_else(|error| panic!("arity {num_vars} must resolve: {error}"));
                 // The verifier only ever sees the public selection.
-                let by_selection =
-                    JoltOneHotK16Fixture::resolve_schedule_selection(row.selection())
-                        .unwrap_or_else(|error| {
-                            panic!("arity {num_vars} must resolve by selection: {error}")
-                        });
+                let by_selection = JoltOneHotK16::resolve_schedule_selection(row.selection())
+                    .unwrap_or_else(|error| {
+                        panic!("arity {num_vars} must resolve by selection: {error}")
+                    });
                 assert_eq!(by_selection.profiles(), row.profiles());
             }
             reset_for_tests();
@@ -688,9 +688,9 @@ mod tests {
             let (profile, _) = fixture_keys([27]);
             let combinations = [vec![profile]];
             let policy = JoltDense::root_honest_fold_policy();
-            let first = provision::<JoltOneHotK16Fixture>(&combinations, policy, [27])
+            let first = provision::<JoltOneHotK16>(&combinations, policy, [27])
                 .expect("first provisioning");
-            let second = provision::<JoltOneHotK16Fixture>(&combinations, policy, [27])
+            let second = provision::<JoltOneHotK16>(&combinations, policy, [27])
                 .expect("re-provisioning an identical set must succeed");
             assert_eq!(first.set_digest(), second.set_digest());
             reset_for_tests();
@@ -706,9 +706,9 @@ mod tests {
             let large = PolynomialGroupLayout::new(small.num_vars() + 1, 1);
 
             let small_rows =
-                provision_advice::<JoltOneHotK16Fixture>(trusted_only(small), [27]).expect("small");
+                provision_advice::<JoltOneHotK16>(trusted_only(small), [27]).expect("small");
             let large_rows =
-                provision_advice::<JoltOneHotK16Fixture>(trusted_only(large), [27]).expect("large");
+                provision_advice::<JoltOneHotK16>(trusted_only(large), [27]).expect("large");
             assert_ne!(
                 small_rows.set_digest(),
                 large_rows.set_digest(),
@@ -721,7 +721,7 @@ mod tests {
                     final_group: PolynomialGroupLayout::new(27, 1),
                     precommitteds: vec![profile],
                 };
-                let resolved = JoltOneHotK16Fixture::resolve_catalog_row_for_key(&key)
+                let resolved = JoltOneHotK16::resolve_catalog_row_for_key(&key)
                     .unwrap_or_else(|error| panic!("{layout:?} must still resolve: {error}"));
                 assert_eq!(
                     resolved.profiles().precommitteds,
@@ -741,7 +741,7 @@ mod tests {
         fn a_digest_collision_with_different_profiles_is_rejected() {
             reset_for_tests();
             let (profile, _) = fixture_keys([27]);
-            let mut rows = provision::<JoltOneHotK16Fixture>(
+            let mut rows = provision::<JoltOneHotK16>(
                 &[vec![profile]],
                 JoltDense::root_honest_fold_policy(),
                 [27],
@@ -750,7 +750,7 @@ mod tests {
 
             // Re-key a genuinely different row under an already-published
             // digest: the identity says "same row", the profiles say otherwise.
-            let other = plan_row::<JoltOneHotK16Fixture>(
+            let other = plan_row::<JoltOneHotK16>(
                 &AkitaScheduleLookupKey {
                     final_group: PolynomialGroupLayout::new(28, 1),
                     precommitteds: vec![profile],
@@ -762,8 +762,8 @@ mod tests {
             rows.by_digest.clear();
             let _ = rows.by_digest.insert(stolen_digest, other);
 
-            let error = publish::<JoltOneHotK16Fixture>(rows)
-                .expect_err("a digest collision must be rejected");
+            let error =
+                publish::<JoltOneHotK16>(rows).expect_err("a digest collision must be rejected");
             assert!(
                 format!("{error}").contains("collision"),
                 "unexpected error: {error}"
@@ -775,16 +775,16 @@ mod tests {
         fn setup_capacity_covers_a_provisioned_row() {
             reset_for_tests();
             let (profile, _) = fixture_keys([27]);
-            let baseline = JoltOneHotK16Fixture::setup_matrix_capacity(27, 2)
+            let baseline = JoltOneHotK16::setup_matrix_capacity(27, 2)
                 .expect("baseline capacity")
                 .num_field_elements;
-            let _ = provision::<JoltOneHotK16Fixture>(
+            let _ = provision::<JoltOneHotK16>(
                 &[vec![profile]],
                 JoltDense::root_honest_fold_policy(),
                 [27],
             )
             .expect("provisioning must succeed");
-            let provisioned = JoltOneHotK16Fixture::setup_matrix_capacity(27, 2)
+            let provisioned = JoltOneHotK16::setup_matrix_capacity(27, 2)
                 .expect("capacity after provisioning")
                 .num_field_elements;
             assert!(

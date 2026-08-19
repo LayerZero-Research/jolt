@@ -124,8 +124,8 @@ fn validate_precommitted_trace_statement(
             "Akita final trace group must be one setup-matched one-hot polynomial",
         ));
     }
-    let supported_grouped_config = setup.one_hot_k == AKITA_ONE_HOT_K256
-        || (setup.one_hot_k == AKITA_ONE_HOT_K16 && setup.grouped_fixture);
+    let supported_grouped_config =
+        setup.one_hot_k == AKITA_ONE_HOT_K256 || setup.one_hot_k == AKITA_ONE_HOT_K16;
     if !supported_grouped_config
         || main.commitment.num_vars != setup.max_num_vars
         || main.commitment.layout_digest != setup.default_layout_digest
@@ -312,28 +312,11 @@ impl AkitaNativeBatching {
                 backend_hints,
                 group_slices,
             )?,
-            AKITA_ONE_HOT_K16 => {
-                #[cfg(feature = "akita-test-schedules")]
-                {
-                    if setup.grouped_fixture() {
-                        selected_group_batch::<crate::adapters::AkitaOneHotK16FixtureConfig, _>(
-                            claims,
-                            backend_hints,
-                            group_slices,
-                        )?
-                    } else {
-                        return Err(invalid_batch(
-                            "K=16 grouped openings require the test fixture catalog",
-                        ));
-                    }
-                }
-                #[cfg(not(feature = "akita-test-schedules"))]
-                {
-                    return Err(invalid_batch(
-                        "K=16 grouped openings require the test fixture catalog",
-                    ));
-                }
-            }
+            AKITA_ONE_HOT_K16 => selected_group_batch::<AkitaOneHotK16Config, _>(
+                claims,
+                backend_hints,
+                group_slices,
+            )?,
             _ => unreachable!("one-hot K was validated by setup"),
         };
         let selection = opening.selection();
@@ -355,20 +338,13 @@ impl AkitaNativeBatching {
                 &mut akita_transcript,
                 BasisMode::Lagrange,
             ),
-            AKITA_ONE_HOT_K16 => {
-                #[cfg(feature = "akita-test-schedules")]
-                {
-                    crate::adapters::AkitaOneHotK16FixtureBackendScheme::batched_prove(
-                        backend_prover_setup,
-                        opening,
-                        &releasing_stack,
-                        &mut akita_transcript,
-                        BasisMode::Lagrange,
-                    )
-                }
-                #[cfg(not(feature = "akita-test-schedules"))]
-                unreachable!("K=16 grouped fixture was rejected before proving")
-            }
+            AKITA_ONE_HOT_K16 => AkitaOneHotK16BackendScheme::batched_prove(
+                backend_prover_setup,
+                opening,
+                &releasing_stack,
+                &mut akita_transcript,
+                BasisMode::Lagrange,
+            ),
             _ => unreachable!("one-hot K was validated by setup"),
         })
         .map_err(prove_failed)?;
@@ -405,7 +381,6 @@ impl AkitaNativeBatching {
                 proof,
                 &backend_main_point,
                 setup.one_hot_k,
-                setup.grouped_fixture,
             )?;
         let (mut akita_transcript, bridge) =
             bind_grouped_statement_transcripts(transcript, setup, selection, precommitted, main)?;
@@ -439,20 +414,13 @@ impl AkitaNativeBatching {
                 batch_statement,
                 BasisMode::Lagrange,
             ),
-            AKITA_ONE_HOT_K16 => {
-                #[cfg(feature = "akita-test-schedules")]
-                {
-                    crate::adapters::AkitaOneHotK16FixtureBackendScheme::batched_verify(
-                        &backend_proof,
-                        backend_verifier,
-                        &mut akita_transcript,
-                        batch_statement,
-                        BasisMode::Lagrange,
-                    )
-                }
-                #[cfg(not(feature = "akita-test-schedules"))]
-                unreachable!("K=16 grouped fixture was rejected before verification")
-            }
+            AKITA_ONE_HOT_K16 => AkitaOneHotK16BackendScheme::batched_verify(
+                &backend_proof,
+                backend_verifier,
+                &mut akita_transcript,
+                batch_statement,
+                BasisMode::Lagrange,
+            ),
             _ => unreachable!("one-hot K was validated by setup"),
         })
         .map_err(|_| OpeningsError::VerificationFailed)

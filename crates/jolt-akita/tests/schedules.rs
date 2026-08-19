@@ -9,14 +9,11 @@ use akita_config::CommitmentConfig;
 use akita_types::{
     commit_only_setup_field_elements, setup_matrix_capacity_for_schedule, AkitaScheduleLookupKey,
 };
-#[cfg(feature = "akita-test-schedules")]
-use jolt_akita::configs::JoltOneHotK16Fixture;
 use jolt_akita::configs::{JoltDense, JoltOneHotK16, JoltOneHotK256};
 use jolt_akita::schedules::emit::{
     family_specs, keys, K16_NUM_VARS, K256_NUM_VARS, ONE_HOT_TRACE_NUM_POLYS, TRUSTED_ADVICE_GROUP,
     TRUSTED_ADVICE_K256_FINAL_GROUP,
 };
-#[cfg(feature = "akita-test-schedules")]
 use jolt_akita::schedules::emit::{FIXTURE_K16_FINAL_NUM_VARS, FIXTURE_TRUSTED_ADVICE_GROUP};
 use jolt_akita::schedules::{jolt_fp128_onehot_k16_table, jolt_fp128_onehot_k256_table};
 
@@ -199,7 +196,6 @@ fn setup_capacity_covers_fitting_catalog_rows_without_an_exact_maximum_row() {
 /// capacity still covers the grouped shapes preprocessing will plan. The
 /// production and grouped-capable configs share one catalog, so the assertion
 /// covers both.
-#[cfg(feature = "akita-test-schedules")]
 #[test]
 fn no_family_catalogs_a_grouped_advice_row() {
     let trusted_profile =
@@ -228,8 +224,7 @@ fn no_family_catalogs_a_grouped_advice_row() {
                 precommitteds: precommitteds.clone(),
             };
             assert!(JoltOneHotK16::resolve_catalog_row_for_key(&key).is_err());
-            assert!(JoltOneHotK16Fixture::resolve_catalog_row_for_key(&key).is_err());
-            assert!(JoltOneHotK16Fixture::setup_matrix_capacity(num_vars, batch_polys).is_ok());
+            assert!(JoltOneHotK16::setup_matrix_capacity(num_vars, batch_polys).is_ok());
         }
     }
 }
@@ -284,7 +279,7 @@ fn source_tokens(source: &str) -> Vec<String> {
 #[test]
 #[ignore = "regenerates every schedule through the planner DP (minutes)"]
 fn catalogs_match_planner_regeneration() {
-    for spec in family_specs(std::path::PathBuf::new()).expect("family specs must be valid") {
+    for spec in family_specs(std::path::PathBuf::new()) {
         let regenerated =
             akita_planner::emit::emit_family_module(&spec).expect("regeneration must succeed");
         let checked_in = std::fs::read_to_string(

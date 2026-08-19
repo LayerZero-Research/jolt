@@ -118,13 +118,11 @@ pub mod emit {
 
     /// Default 4 KiB advice fixture after the dense arity floor. Both advice
     /// kinds land here, since the floor absorbs any capacity up to 128 KiB.
-    #[cfg(feature = "akita-test-schedules")]
     pub const FIXTURE_TRUSTED_ADVICE_GROUP: PolynomialGroupLayout =
         PolynomialGroupLayout::new(14, 1);
 
     /// K=16 fixture final arities for canonical `log_T = 12..=16` traces. This
     /// is the range preprocessing plans grouped advice rows over.
-    #[cfg(feature = "akita-test-schedules")]
     pub const FIXTURE_K16_FINAL_NUM_VARS: (usize, usize) = (22, 26);
 
     /// Pure DP regeneration for `Cfg` — never consults the shipped table.
@@ -162,21 +160,6 @@ pub mod emit {
         CommittedGroupProfile::try_from_params(group, &schedule.root.params.final_group.commitment)
     }
 
-    /// Grouped advice rows are deliberately NOT emitted.
-    ///
-    /// A grouped row is keyed on the frozen precommit profiles, which follow the
-    /// program's `max_{un,}trusted_advice_size`. Shipping rows for a handful of
-    /// guessed capacities only covered those capacities while implying the rest
-    /// were unsupported, and it split one behavior across two sources — a
-    /// checked-in table for some shapes and the preprocessing planner for the
-    /// others. Preprocessing now plans every grouped advice row
-    /// (`schedule_registry::provision_advice_for_k`), so there is exactly one
-    /// path. Resolution still checks the registry first and falls through to the
-    /// catalog, which simply carries no grouped rows to find.
-    fn advice_group_batch_keys() -> Vec<(AkitaScheduleLookupKey, Vec<HonestFoldPolicySpec>)> {
-        Vec::new()
-    }
-
     /// The reachable scalar keys of one family grid.
     pub fn keys(
         num_polys: &[usize],
@@ -201,11 +184,8 @@ pub mod emit {
         family_name: &'static str,
         num_polys: &[usize],
         num_vars: (usize, usize),
-        group_batch_keys: Vec<(AkitaScheduleLookupKey, Vec<HonestFoldPolicySpec>)>,
         output_dir: std::path::PathBuf,
     ) -> EmitSpec {
-        let generator_command =
-            "cargo run --release -p jolt-akita --bin gen_jolt_schedules -- crates/jolt-akita/src/schedules";
         EmitSpec {
             module_name,
             const_name,
@@ -213,26 +193,35 @@ pub mod emit {
             schedule_feature: "",
             policy: policy_of::<Cfg>(),
             keys: keys(num_polys, num_vars),
-            group_batch_keys,
+            group_batch_keys: Vec::new(),
             preplanned_scalar: Vec::new(),
             output_dir,
             regen: regen::<Cfg>,
             regen_group_batch: regen_group_batch::<Cfg>,
             ring_challenge_config: Cfg::ring_challenge_config,
-            generator_command,
+            generator_command:
+                "cargo run --release -p jolt-akita --bin gen_jolt_schedules -- crates/jolt-akita/src/schedules",
         }
     }
 
     /// All family specs, in emission order.
-    pub fn family_specs(output_dir: std::path::PathBuf) -> Result<Vec<EmitSpec>, AkitaError> {
-        let specs = vec![
+    ///
+    /// No family emits grouped advice rows. A grouped row is keyed on the frozen
+    /// precommit profiles, which follow the program's
+    /// `max_{un,}trusted_advice_size`; shipping rows for a handful of guessed
+    /// capacities covered only those and implied the rest were unsupported.
+    /// Preprocessing plans every grouped advice row instead
+    /// (`schedule_registry::provision_advice_for_k`), so there is exactly one
+    /// path — resolution checks the registry first and falls through to a catalog
+    /// that carries no grouped rows to find.
+    pub fn family_specs(output_dir: std::path::PathBuf) -> [EmitSpec; 3] {
+        [
             spec::<JoltOneHotK16>(
                 "jolt_fp128_onehot_k16",
                 "JOLT_FP128_ONEHOT_K16_SCHEDULES",
                 "jolt-fp128-onehot-k16",
                 ONE_HOT_TRACE_NUM_POLYS,
                 K16_NUM_VARS,
-                Vec::new(),
                 output_dir.clone(),
             ),
             spec::<JoltOneHotK256>(
@@ -241,7 +230,6 @@ pub mod emit {
                 "jolt-fp128-onehot-k256",
                 ONE_HOT_TRACE_NUM_POLYS,
                 K256_NUM_VARS,
-                advice_group_batch_keys(),
                 output_dir.clone(),
             ),
             spec::<JoltDense>(
@@ -250,10 +238,8 @@ pub mod emit {
                 "jolt-fp128-dense",
                 ONE_HOT_TRACE_NUM_POLYS,
                 DENSE_NUM_VARS,
-                Vec::new(),
-                output_dir.clone(),
+                output_dir,
             ),
-        ];
-        Ok(specs)
+        ]
     }
 }
