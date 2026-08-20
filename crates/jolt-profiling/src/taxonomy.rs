@@ -1,5 +1,5 @@
 //! The versioned span taxonomy for the modular prover — **the normative
-//! schema** for every span the pipeline emits ([`TAXONOMY_VERSION`] = 2).
+//! schema** for every span the pipeline emits ([`TAXONOMY_VERSION`] = 1).
 //!
 //! One instrumentation layer, two renderings: the same `tracing` span stream
 //! becomes both the Perfetto-viewable chrome trace and the machine-queryable
@@ -77,7 +77,7 @@
 //!    explicitly after taxonomy changes.
 
 /// Version of the span label set documented in this module.
-pub const TAXONOMY_VERSION: u32 = 2;
+pub const TAXONOMY_VERSION: u32 = 1;
 
 /// The whole-run root span (`crates/jolt-prover/src/prover.rs`). Named
 /// `jolt_prover::prove` rather than bare `prove`, which jolt-dory uses for an
@@ -209,7 +209,7 @@ pub enum ProverMode {
     Akita,
 }
 
-/// Every v2 label that fires on all proves of the given mode: the presence
+/// Every v1 label that fires on all proves of the given mode: the presence
 /// set the `jolt-prover` profiling smoke test asserts against a freshly
 /// emitted trace.
 ///

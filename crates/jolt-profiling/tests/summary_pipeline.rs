@@ -220,7 +220,7 @@ fn fixture_labels_conform_to_taxonomy() {
         .iter()
         .all(|l| zk.contains(l) && !clear.contains(l)));
 
-    assert_eq!(taxonomy::TAXONOMY_VERSION, 2);
+    assert_eq!(taxonomy::TAXONOMY_VERSION, 1);
     assert_eq!(
         taxonomy::AKITA_COMPONENT_SPANS,
         [

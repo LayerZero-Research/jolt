@@ -338,16 +338,14 @@ where
             packed_claim.point.as_slice().to_vec(),
             vec![packed_claim.value],
         );
-        tracing::info_span!("akita_advice_main_batched_verify").in_scope(|| {
-            PCS::verify_precommitted_trace_batch(
-                &preprocessing.pcs_setup,
-                &precommitted,
-                &main_group,
-                &proof.main_batch,
-                transcript,
-            )
-            .map_err(opening_failed)
-        })?;
+        PCS::verify_precommitted_trace_batch(
+            &preprocessing.pcs_setup,
+            &precommitted,
+            &main_group,
+            &proof.main_batch,
+            transcript,
+        )
+        .map_err(opening_failed)?;
     }
 
     let mut program_objects: Vec<ResolvedObject<'_, PCS>> = Vec::new();

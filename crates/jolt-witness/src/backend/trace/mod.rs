@@ -283,7 +283,7 @@ impl<T: TraceSource> TraceBackend<T> {
     }
 
     fn advice_log_rows(max_bytes: usize) -> usize {
-        (max_bytes / 8).next_power_of_two().ilog2() as usize
+        advice::advice_words(max_bytes).ilog2() as usize
     }
 }
 

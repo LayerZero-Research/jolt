@@ -728,12 +728,6 @@ pub struct AkitaBatchProof {
     pub(crate) serialized_akita_proof: Vec<u8>,
 }
 
-impl AkitaBatchProof {
-    pub fn schedule_selection_bytes(&self) -> &[u8] {
-        &self.serialized_schedule_selection
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AkitaHidingCommitment {
