@@ -32,7 +32,7 @@ use crate::{
     },
 };
 
-pub(crate) struct JoltProofParts<
+pub struct JoltProofParts<
     F: JoltField,
     C: JoltCurve<F = F>,
     PCS: CommitmentScheme<Field = F>,
@@ -63,7 +63,7 @@ pub(crate) struct JoltProofParts<
 }
 
 #[cfg(not(feature = "zk"))]
-pub(crate) struct ProverOpeningClaims<F: JoltField>(pub Openings<F>);
+pub struct ProverOpeningClaims<F: JoltField>(pub Openings<F>);
 
 #[cfg(not(feature = "zk"))]
 impl<F: JoltField> CanonicalSerialize for ProverOpeningClaims<F> {

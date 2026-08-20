@@ -434,7 +434,7 @@ where
     })
 }
 
-fn advice_object_setup(
+pub fn advice_object_setup(
     kind: JoltAdviceKind,
     max_advice_bytes: usize,
 ) -> Result<<AkitaScheme as VerifierCommitmentScheme>::ProverSetup, VerifierError> {
