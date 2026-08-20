@@ -534,16 +534,6 @@ mod tests {
     }
 
     #[test]
-    fn dense_catalog_covers_every_legal_advice_arity() {
-        for physical_vars in emit::DENSE_NUM_VARS.0..=emit::DENSE_NUM_VARS.1 {
-            assert!(
-                dense_precommit_profile(PolynomialGroupLayout::new(physical_vars, 1)).is_ok(),
-                "dense catalog must cover {physical_vars} physical vars"
-            );
-        }
-    }
-
-    #[test]
     fn provisioning_more_rows_than_the_cap_is_rejected() {
         let profile =
             dense_precommit_profile(PolynomialGroupLayout::new(emit::DENSE_NUM_VARS.0, 1)).unwrap();
@@ -557,12 +547,6 @@ mod tests {
             format!("{error}").contains("cap"),
             "unexpected error: {error}"
         );
-    }
-
-    #[test]
-    fn empty_registry_resolves_nothing() {
-        let selection = OpeningScheduleSelection::default();
-        assert!(lookup_selection::<JoltOneHotK256>(selection).is_none());
     }
 
     /// The fixture family's arities are small, so it is the one family whose

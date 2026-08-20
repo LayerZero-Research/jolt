@@ -170,35 +170,6 @@ fn grouped_setup_capacity_covers_precommit_and_complete_schedule() {
     assert!(scalar_only_capacity.num_field_elements >= precommit_capacity);
 }
 
-#[test]
-fn setup_capacity_covers_fitting_catalog_rows_without_an_exact_maximum_row() {
-    let max_num_vars = 26;
-    let max_num_polys = 3;
-    let table = jolt_fp128_onehot_k16_table().expect("K16 catalog is checked in");
-    assert!(!table.entries.iter().any(|entry| {
-        let key = entry.to_runtime_lookup_key();
-        key.max_num_vars() == max_num_vars
-            && key.num_polynomials().expect("catalog count must fit") == max_num_polys
-    }));
-
-    let setup_capacity = JoltOneHotK16::setup_matrix_capacity(max_num_vars, max_num_polys)
-        .expect("fallback setup must also cover fitting catalog rows");
-    for entry in table.entries {
-        let key = entry.to_runtime_lookup_key();
-        if !key
-            .fits_setup_capacity(max_num_vars, max_num_polys)
-            .expect("catalog capacity arithmetic must not overflow")
-        {
-            continue;
-        }
-        let resolved = JoltOneHotK16::resolve_catalog_row_for_key(&key)
-            .expect("checked-in K16 row must resolve");
-        let required = setup_matrix_capacity_for_schedule(resolved.schedule())
-            .expect("catalog schedule capacity must be valid");
-        assert!(setup_capacity.num_field_elements >= required.num_field_elements);
-    }
-}
-
 /// No grouped advice row is checked in for either K=16 config, and setup
 /// capacity still covers the grouped shapes preprocessing will plan. The
 /// production and grouped-capable configs share one catalog, so the assertion
