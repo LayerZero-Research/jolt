@@ -23,7 +23,7 @@ zk = ["jolt-prover-legacy/zk"]
 # The packed (lattice/Akita) commitment mode: one packed one-hot witness per
 # commitment object, co-batched reduction opening. Mutually exclusive with
 # `zk` — one PIOP per compiled verifier.
-akita = ["jolt-prover-legacy/akita", "jolt-claims/akita", "dep:jolt-akita"]
+akita = ["jolt-prover-legacy/akita", "jolt-claims/akita"]
 transcript-blake2b = []
 transcript-keccak = []
 transcript-poseidon = []
@@ -38,7 +38,6 @@ jolt-claims-derive.workspace = true
 jolt-crypto.workspace = true
 jolt-field.workspace = true
 jolt-lookup-tables.workspace = true
-jolt-akita = { workspace = true, optional = true }
 jolt-openings.workspace = true
 jolt-poly.workspace = true
 jolt-program = { workspace = true, features = ["serialization"] }

@@ -23,9 +23,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Compress, Validate};
-use jolt_akita::{
-    GroupOpeningClaim, PrecommittedClaim, PrecommittedRole, PrecommittedTraceBatching,
-};
+use jolt_akita::PrecommittedTraceBatching;
 use jolt_claims::protocols::jolt::geometry::ra::JoltRaPolynomialLayout;
 use jolt_claims::protocols::jolt::lattice::{
     advice_packing_plan, precommitted_packing_plan, OneHotTraceLayoutPlan, OneHotTraceShape,
@@ -33,8 +31,8 @@ use jolt_claims::protocols::jolt::lattice::{
 };
 use jolt_claims::protocols::jolt::{BytecodeRegisterLane, JoltAdviceKind, JoltCommittedPolynomial};
 use jolt_openings::{
-    CommitmentScheme as VerifierCommitmentScheme, EvaluationClaim, PrefixPackedClaims,
-    TransparentObjectSetup,
+    CommitmentScheme as VerifierCommitmentScheme, EvaluationClaim, GroupOpeningClaim,
+    PrecommittedClaim, PrecommittedRole, PrefixPackedClaims, TransparentObjectSetup,
 };
 use jolt_program::preprocess::{JoltProgramPreprocessing, ProgramMetadata};
 use jolt_transcript::append_length_prefixed;
@@ -1940,28 +1938,13 @@ pub fn akita_verifier_preprocessing(
     // The verifier owns its own copy of the grouped advice rows. A verifier in
     // its own process re-derives them from the same public advice capacities, so
     // the set is identical by construction rather than by trust.
-    let advice_physical_vars = |kind: JoltAdviceKind, max_bytes: usize| {
-        (max_bytes > 0)
-            .then(|| advice_physical_num_vars(kind, max_bytes))
-            .transpose()
-            .expect("the memory layout must carry a schedulable advice capacity")
-    };
-    let untrusted_physical_vars = advice_physical_vars(
-        JoltAdviceKind::Untrusted,
+    provision_advice_schedules(
         preprocessing.shared.memory_layout.max_untrusted_advice_size as usize,
-    );
-    let trusted_physical_vars = advice_physical_vars(
-        JoltAdviceKind::Trusted,
         preprocessing.shared.memory_layout.max_trusted_advice_size as usize,
-    );
-    verifier_preprocessing
-        .provision_akita_schedules(
-            untrusted_physical_vars,
-            trusted_physical_vars,
-            one_hot_k,
-            akita_verifier_max_final_num_vars,
-        )
-        .expect("advice grouped schedules must provision for the verifier");
+        one_hot_k,
+        akita_verifier_max_final_num_vars,
+    )
+    .expect("advice grouped schedules must provision for the verifier");
     // The per-kind advice commitment-object setups are derived from the
     // public advice shapes with the same fixed seed the prover uses (the
     // Akita setup is transparent).

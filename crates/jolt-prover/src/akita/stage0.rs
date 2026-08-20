@@ -8,13 +8,13 @@
 //! structurally, so stage-0 Fiat-Shamir drift is impossible by construction.
 
 use common::jolt_device::JoltDevice;
-use jolt_akita::PrecommittedRole;
 use jolt_claims::protocols::jolt::lattice::{OneHotTraceShape, ONE_HOT_TRACE_LAYOUT};
 use jolt_claims::protocols::jolt::JoltRelationId;
 use jolt_crypto::VectorCommitment;
 use jolt_field::Field;
 use jolt_openings::{
-    CommitmentScheme, GroupCommitmentMetadata, GroupSetupMetadata, TransparentObjectSetup,
+    CommitmentScheme, GroupCommitmentMetadata, GroupSetupMetadata, PrecommittedRole,
+    TransparentObjectSetup,
 };
 use jolt_transcript::{AppendToTranscript, Transcript};
 use jolt_verifier::{

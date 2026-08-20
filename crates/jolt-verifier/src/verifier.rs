@@ -183,7 +183,7 @@ pub fn verify<F, PCS, VC, T>(
 ) -> Result<(), VerifierError>
 where
     F: Field + AppendToTranscript,
-    PCS: CommitmentScheme<Field = F> + jolt_akita::PrecommittedTraceBatching,
+    PCS: CommitmentScheme<Field = F> + jolt_openings::PrecommittedTraceVerify,
     PCS::Output: Clone + AppendToTranscript + stage8::OneHotTraceCommitmentMetadata,
     PCS::VerifierSetup: stage8::OneHotTraceSetupMetadata,
     VC: VectorCommitment<Field = F>,

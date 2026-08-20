@@ -732,3 +732,88 @@ where
         Ok(hiding_commitment)
     }
 }
+
+/// One physical commitment group's opening claim. Precommitted groups carry
+/// their own [`PrecommittedRole`]; the final trace group is always last.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupOpeningClaim<F, C> {
+    pub commitment: C,
+    pub point: Vec<F>,
+    pub evaluations: Vec<F>,
+}
+
+impl<F, C> GroupOpeningClaim<F, C> {
+    pub fn singleton(commitment: C, point: Vec<F>, evaluation: F) -> Self {
+        Self {
+            commitment,
+            point,
+            evaluations: vec![evaluation],
+        }
+    }
+
+    pub fn new(commitment: C, point: Vec<F>, evaluations: Vec<F>) -> Self {
+        Self {
+            commitment,
+            point,
+            evaluations,
+        }
+    }
+}
+
+/// Identity of one precommitted group. The variant order *is* the canonical
+/// public batch order, which precedes the final trace group:
+/// `[UntrustedAdvice, TrustedAdvice, OneHotTrace]`. The role is bound into the
+/// statement transcript, so a group's semantics never rest on position alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PrecommittedRole {
+    UntrustedAdvice,
+    TrustedAdvice,
+}
+
+impl PrecommittedRole {
+    /// Domain-separating transcript tag for this group.
+    pub const fn transcript_label(self) -> &'static [u8] {
+        match self {
+            Self::UntrustedAdvice => b"untrusted_advice",
+            Self::TrustedAdvice => b"trusted_advice",
+        }
+    }
+
+    /// Human-readable role used in validation diagnostics.
+    pub const fn diagnostic_name(self) -> &'static str {
+        match self {
+            Self::UntrustedAdvice => "untrusted-advice",
+            Self::TrustedAdvice => "trusted-advice",
+        }
+    }
+}
+
+/// One precommitted group's public opening claim, tagged with its role.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrecommittedClaim<F, C> {
+    pub role: PrecommittedRole,
+    pub claim: GroupOpeningClaim<F, C>,
+}
+
+impl<F, C> PrecommittedClaim<F, C> {
+    pub fn new(role: PrecommittedRole, claim: GroupOpeningClaim<F, C>) -> Self {
+        Self { role, claim }
+    }
+}
+
+/// The verifier half of Jolt's grouped commitment path: check one backend proof
+/// discharging several independently committed groups at independent points.
+///
+/// Separate from the prover-side batching trait so a verify-only build never
+/// needs a scheme that can commit or prove.
+pub trait PrecommittedTraceVerify: CommitmentScheme {
+    fn verify_precommitted_trace_batch<T>(
+        setup: &Self::VerifierSetup,
+        precommitted: &[PrecommittedClaim<Self::Field, Self::Output>],
+        main: &GroupOpeningClaim<Self::Field, Self::Output>,
+        proof: &Self::Proof,
+        transcript: &mut T,
+    ) -> Result<(), OpeningsError>
+    where
+        T: Transcript<Challenge = Self::Field>;
+}

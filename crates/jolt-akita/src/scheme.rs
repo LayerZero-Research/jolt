@@ -4,7 +4,8 @@ use akita_types::{AkitaScheduleLookupKey, PolynomialGroupLayout, PrecommittedGro
 use jolt_crypto::Commitment;
 use jolt_field::CanonicalBytes;
 use jolt_openings::{
-    BatchOpeningScheme, CommitmentScheme, EvaluationClaim, OpeningsError, TransparentObjectSetup,
+    BatchOpeningScheme, CommitmentScheme, EvaluationClaim, GroupOpeningClaim, OpeningsError,
+    PrecommittedClaim, PrecommittedRole, PrecommittedTraceVerify, TransparentObjectSetup,
     VerifierOpeningClaim, ZkBatchOpeningScheme, ZkOpeningScheme,
 };
 use jolt_poly::{MultilinearPoly, OneHotPolynomial, Polynomial};
@@ -47,56 +48,6 @@ pub trait TraceOneHotCommitment: CommitmentScheme {
     fn release_post_commit_residency(setup: &Self::ProverSetup) -> Result<(), OpeningsError>;
 }
 
-/// One physical commitment group's opening claim. Precommitted groups carry
-/// their own [`PrecommittedRole`]; the final trace group is always last.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GroupOpeningClaim<F, C> {
-    pub commitment: C,
-    pub point: Vec<F>,
-    pub evaluations: Vec<F>,
-}
-
-/// Identity of one precommitted group. The variant order *is* the canonical
-/// public batch order, which precedes the final trace group:
-/// `[UntrustedAdvice, TrustedAdvice, OneHotTrace]`. The role is bound into the
-/// statement transcript, so a group's semantics never rest on position alone.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum PrecommittedRole {
-    UntrustedAdvice,
-    TrustedAdvice,
-}
-
-impl PrecommittedRole {
-    /// Domain-separating transcript tag for this group.
-    pub const fn transcript_label(self) -> &'static [u8] {
-        match self {
-            Self::UntrustedAdvice => b"untrusted_advice",
-            Self::TrustedAdvice => b"trusted_advice",
-        }
-    }
-
-    /// Human-readable role used in validation diagnostics.
-    pub const fn diagnostic_name(self) -> &'static str {
-        match self {
-            Self::UntrustedAdvice => "untrusted-advice",
-            Self::TrustedAdvice => "trusted-advice",
-        }
-    }
-}
-
-/// One precommitted group's public opening claim, tagged with its role.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PrecommittedClaim<F, C> {
-    pub role: PrecommittedRole,
-    pub claim: GroupOpeningClaim<F, C>,
-}
-
-impl<F, C> PrecommittedClaim<F, C> {
-    pub fn new(role: PrecommittedRole, claim: GroupOpeningClaim<F, C>) -> Self {
-        Self { role, claim }
-    }
-}
-
 /// One precommitted group's public claim paired with the prover's retained
 /// opening hint. The prover passes these in canonical role order.
 pub type PrecommittedOpening<F, C, H> = (PrecommittedClaim<F, C>, H);
@@ -123,29 +74,11 @@ pub(crate) fn validate_precommitted_order(
     Ok(())
 }
 
-impl<F, C> GroupOpeningClaim<F, C> {
-    pub fn singleton(commitment: C, point: Vec<F>, evaluation: F) -> Self {
-        Self {
-            commitment,
-            point,
-            evaluations: vec![evaluation],
-        }
-    }
-
-    pub fn new(commitment: C, point: Vec<F>, evaluations: Vec<F>) -> Self {
-        Self {
-            commitment,
-            point,
-            evaluations,
-        }
-    }
-}
-
 /// Jolt's typed grouped Akita path. Each precommitted group was committed
 /// independently in canonical role order; the trace is committed last under
 /// their frozen profiles and every group is discharged by one backend proof at
 /// independent points.
-pub trait PrecommittedTraceBatching: TraceOneHotCommitment {
+pub trait PrecommittedTraceBatching: TraceOneHotCommitment + PrecommittedTraceVerify {
     /// Resolve the exact grouped row before constructing the potentially
     /// expensive final source. Pairs are in canonical precommitted order.
     fn validate_trace_precommits(
@@ -169,16 +102,6 @@ pub trait PrecommittedTraceBatching: TraceOneHotCommitment {
         main_hint: Self::OpeningHint,
         transcript: &mut T,
     ) -> Result<Self::Proof, OpeningsError>
-    where
-        T: Transcript<Challenge = Self::Field>;
-
-    fn verify_precommitted_trace_batch<T>(
-        setup: &Self::VerifierSetup,
-        precommitted: &[PrecommittedClaim<Self::Field, Self::Output>],
-        main: &GroupOpeningClaim<Self::Field, Self::Output>,
-        proof: &Self::Proof,
-        transcript: &mut T,
-    ) -> Result<(), OpeningsError>
     where
         T: Transcript<Challenge = Self::Field>;
 }
@@ -771,7 +694,9 @@ impl PrecommittedTraceBatching for AkitaScheme {
             transcript,
         )
     }
+}
 
+impl PrecommittedTraceVerify for AkitaScheme {
     fn verify_precommitted_trace_batch<T>(
         setup: &Self::VerifierSetup,
         precommitted: &[PrecommittedClaim<Self::Field, Self::Output>],

@@ -4,15 +4,15 @@
 
 use std::collections::BTreeMap;
 
-use jolt_akita::{
-    GroupOpeningClaim, PrecommittedClaim, PrecommittedRole, PrecommittedTraceBatching,
-};
+use jolt_akita::PrecommittedTraceBatching;
 use jolt_claims::protocols::jolt::lattice::packing::{OneHotTraceShape, PrefixPackedObjectPlan};
 use jolt_claims::protocols::jolt::lattice::strategy::ONE_HOT_TRACE_LAYOUT;
 use jolt_claims::protocols::jolt::{JoltCommittedPolynomial, JoltRelationId};
 use jolt_crypto::VectorCommitment;
 use jolt_field::Field;
-use jolt_openings::{CommitmentScheme, EvaluationClaim};
+use jolt_openings::{
+    CommitmentScheme, EvaluationClaim, GroupOpeningClaim, PrecommittedClaim, PrecommittedRole,
+};
 use jolt_poly::MultilinearPoly;
 use jolt_transcript::{AppendToTranscript, Transcript};
 use jolt_verifier::proof::AkitaJointOpeningProof;

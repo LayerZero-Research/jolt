@@ -7,9 +7,6 @@
 
 use std::collections::BTreeMap;
 
-use jolt_akita::{
-    GroupOpeningClaim, PrecommittedClaim, PrecommittedRole, PrecommittedTraceBatching,
-};
 use jolt_claims::protocols::jolt::geometry::dimensions::JoltFormulaDimensions;
 use jolt_claims::protocols::jolt::lattice::geometry::word_byte_num_vars;
 use jolt_claims::protocols::jolt::lattice::packing::{
@@ -23,7 +20,10 @@ use jolt_claims::protocols::jolt::{
     JoltAdviceKind, JoltCommittedPolynomial, JoltOneHotConfig, JoltOpeningId, JoltPolynomialId,
 };
 use jolt_field::{Field, FixedByteSize};
-use jolt_openings::{CommitmentScheme, EvaluationClaim};
+use jolt_openings::{
+    CommitmentScheme, EvaluationClaim, GroupOpeningClaim, PrecommittedClaim, PrecommittedRole,
+    PrecommittedTraceVerify,
+};
 use jolt_poly::Point;
 use jolt_transcript::{AppendToTranscript, Transcript};
 
@@ -233,7 +233,7 @@ pub fn verify<PCS, VC, T>(
     reconstruction: &ReconstructionClearOutput<PCS::Field>,
 ) -> Result<(), VerifierError>
 where
-    PCS: CommitmentScheme + PrecommittedTraceBatching,
+    PCS: CommitmentScheme + PrecommittedTraceVerify,
     PCS::Output: Clone + AppendToTranscript + OneHotTraceCommitmentMetadata,
     PCS::VerifierSetup: OneHotTraceSetupMetadata,
     VC: jolt_crypto::VectorCommitment<Field = PCS::Field>,

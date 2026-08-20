@@ -22,7 +22,9 @@ use akita_prover::{
     CpuBackend, PreparedGroupProveOps, PreparedProverGroup, SelectedProverOpeningData,
 };
 use akita_types::{BasisMode, GroupBatchStatement, OpeningClaims, PolynomialGroupClaims};
-use jolt_openings::{BatchOpeningScheme, OpeningsError, VerifierOpeningClaim};
+use jolt_openings::{
+    BatchOpeningScheme, GroupOpeningClaim, OpeningsError, PrecommittedClaim, VerifierOpeningClaim,
+};
 use jolt_poly::MultilinearPoly;
 use jolt_transcript::{AppendToTranscript, Label, LabelWithCount, Transcript, U64Word};
 use tracing::info_span;
@@ -37,9 +39,7 @@ use crate::adapters::{
     AkitaOneHotK256Config, AkitaProverHint, AkitaProverSetup, AkitaVerifierSetup,
     AKITA_ONE_HOT_K16, AKITA_ONE_HOT_K256,
 };
-use crate::scheme::{
-    validate_precommitted_order, GroupOpeningClaim, PrecommittedClaim, PrecommittedOpening,
-};
+use crate::scheme::{validate_precommitted_order, PrecommittedOpening};
 use crate::trace_onehot::GroupedRootSource;
 
 /// Marker adapter selecting Akita's native batched opening as the Jolt batch
