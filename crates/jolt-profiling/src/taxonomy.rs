@@ -151,16 +151,6 @@ pub const UNISKIP_SEAM_SPANS: [&str; 4] = [
 /// test's presence assertion (fibonacci has no advice).
 pub const ADVICE_SEAM_SPANS: [&str; 2] = ["commit_advice", "AdviceOpeningEvaluation::evaluate"];
 
-/// Akita advice/main component-accounting spans. Each commit remains
-/// independently attributable, while proving and verification are fused across
-/// every advice precommit and the contextual main group.
-pub const AKITA_COMPONENT_SPANS: [&str; 4] = [
-    "akita_trusted_advice_precommit",
-    "akita_main_commit_with_precommitted",
-    "akita_advice_main_batched_prove",
-    "akita_advice_main_batched_verify",
-];
-
 /// Kernel-seam spans that fire only with committed-program preprocessing.
 pub const COMMITTED_PROGRAM_SEAM_SPANS: [&str; 1] = ["build_committed_bytecode_chunk_coeffs"];
 

@@ -27,9 +27,6 @@ pub(crate) const COMMITTED_PROGRAM_REASON: &str =
 /// Lattice-mode slots of the packed witness; base mode never constructs them.
 pub(crate) const LATTICE_REASON: &str =
     "lattice-mode packed-witness polynomial; base mode never constructs it";
-/// Retired Akita byte-one-hot advice ids retained only for codec stability.
-pub(crate) const RETIRED_ADVICE_BYTES_REASON: &str =
-    "retired byte-one-hot advice polynomial; advice is committed directly";
 /// Openings produced by kernels during proving (owned by the proof session).
 pub(crate) const PROTOCOL_INTERMEDIATE_REASON: &str =
     "protocol intermediate produced during proving, never served by a witness backend";
@@ -98,9 +95,6 @@ impl<T: TraceSource> TraceBackend<T> {
                     Ok(Shape::new(self.one_hot_log_rows()?, OneHot))
                 }
                 C::BalancedIncCarry => Ok(Shape::new(self.one_hot_log_rows()?, OneHot)),
-                C::TrustedAdviceBytes | C::UntrustedAdviceBytes => {
-                    Err(not_served(id, RETIRED_ADVICE_BYTES_REASON))
-                }
                 C::BytecodeRegisterSelector { .. }
                 | C::BytecodeCircuitFlag { .. }
                 | C::BytecodeInstructionFlag { .. }
@@ -223,9 +217,6 @@ impl<F: Field, T: TraceSource> JoltWitnessOracle<F> for TraceBackend<T> {
                         width: self.config.one_hot.committed_chunk_bits(),
                     },
                 ),
-                C::TrustedAdviceBytes | C::UntrustedAdviceBytes => {
-                    Err(not_served(id, RETIRED_ADVICE_BYTES_REASON))
-                }
                 C::BytecodeRegisterSelector { .. }
                 | C::BytecodeCircuitFlag { .. }
                 | C::BytecodeInstructionFlag { .. }

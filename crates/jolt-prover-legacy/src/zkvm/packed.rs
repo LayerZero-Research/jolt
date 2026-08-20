@@ -1583,14 +1583,6 @@ impl AkitaPackedProver<'_> {
             &preprocessing_digest,
             &mut self.transcript,
         );
-        self.transcript.append_u64(
-            b"akita_protocol_version",
-            jolt_verifier::config::PACKED_ALL_ADVICE_BATCHED_TRANSCRIPT_VERSION,
-        );
-        self.transcript.append_u64(
-            b"akita_advice_encoding",
-            jolt_verifier::config::PACKED_ALL_ADVICE_BATCHED_ENCODING,
-        );
 
         // One-hot machinery (RaPolynomial and friends) reads the global trace
         // dimensions; initialize them exactly like the base commit path.

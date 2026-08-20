@@ -72,12 +72,6 @@ pub const SELECTED_ZK_CONFIG: ZkConfig = ZkConfig::Transparent;
 #[cfg(feature = "akita")]
 pub const SELECTED_COMMITMENT_CONFIG: CommitmentConfig = CommitmentConfig::PackedAllAdviceBatched;
 
-/// Absorbed as `akita_protocol_version` / `akita_advice_encoding`, binding the
-/// advice wire format into Fiat-Shamir. Versions 1 and 2 are retired and must
-/// never be reused — see [`CommitmentConfig`]'s tombstone variants.
-pub const PACKED_ALL_ADVICE_BATCHED_TRANSCRIPT_VERSION: u64 = 3;
-pub const PACKED_ALL_ADVICE_BATCHED_ENCODING: u64 = 3;
-
 #[cfg(not(feature = "akita"))]
 pub const SELECTED_COMMITMENT_CONFIG: CommitmentConfig = CommitmentConfig::Homomorphic;
 

@@ -385,8 +385,6 @@ fn append_auxiliary_id(
     id: JoltCommittedPolynomial,
 ) -> Result<(), OpeningsError> {
     let (tag, index, secondary) = match id {
-        JoltCommittedPolynomial::TrustedAdviceBytes => (0u8, 0usize, 0usize),
-        JoltCommittedPolynomial::UntrustedAdviceBytes => (1, 0, 0),
         JoltCommittedPolynomial::BytecodeRegisterSelector { chunk, lane } => {
             let lane = match lane {
                 BytecodeRegisterLane::Rs1 => 0,

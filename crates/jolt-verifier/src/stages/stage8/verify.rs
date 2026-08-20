@@ -413,8 +413,6 @@ where
                 )?,
                 JoltCommittedPolynomial::BalancedIncDigit(_)
                 | JoltCommittedPolynomial::BalancedIncCarry
-                | JoltCommittedPolynomial::TrustedAdviceBytes
-                | JoltCommittedPolynomial::UntrustedAdviceBytes
                 | JoltCommittedPolynomial::BytecodeRegisterSelector { .. }
                 | JoltCommittedPolynomial::BytecodeCircuitFlag { .. }
                 | JoltCommittedPolynomial::BytecodeInstructionFlag { .. }
