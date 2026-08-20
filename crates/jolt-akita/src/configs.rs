@@ -9,6 +9,7 @@
 //! policy on every lookup, so a policy/table drift hard-errors instead of
 //! silently planning a different schedule.
 
+use akita_config::proof_optimized::fp128;
 use akita_config::CommitmentConfig;
 use akita_pcs::AkitaError;
 use akita_planner::GeneratedScheduleTable;
@@ -22,7 +23,7 @@ fn dp_planned_schedule<Cfg: CommitmentConfig>(
 ) -> Result<akita_types::FoldSchedule, AkitaError> {
     let planned = akita_planner::find_schedule(
         key,
-        Cfg::root_honest_fold_policy(),
+        akita_config::honest_fold_policy_of::<Cfg>(),
         &[],
         &akita_config::policy_of::<Cfg>(),
         Cfg::ring_challenge_config,
@@ -126,7 +127,7 @@ macro_rules! delegate_preset {
         $(#[$doc:meta])*
         $name:ident,
         $base:ty,
-        $root_honest_fold_policy:expr,
+        $committed_source_class:expr,
         $catalog:expr
     ) => {
         $(#[$doc])*
@@ -194,8 +195,8 @@ macro_rules! delegate_preset {
                 <$base>::inner_basis_range()
             }
 
-            fn root_honest_fold_policy() -> akita_types::sis::HonestFoldPolicySpec {
-                $root_honest_fold_policy
+            fn committed_source_class() -> akita_types::sis::CommittedSourceClass {
+                $committed_source_class
             }
 
             fn chunked_witness_cfg() -> akita_types::ChunkedWitnessCfg {
@@ -276,27 +277,37 @@ macro_rules! delegate_preset {
 delegate_preset!(
     /// Adaptive one-hot config with the Jolt-generated K=16 schedule catalog.
     JoltOneHotK16,
-    akita_config::proof_optimized::fp128::OneHot,
-    akita_types::sis::HonestFoldPolicySpec::UnitOneHot(
-        akita_types::sis::UnitOneHotFoldPolicy::new(128, 1, 16),
-    ),
+    fp128::OneHot,
+    akita_types::sis::CommittedSourceClass::UnitOneHot {
+        source_chunk_size: crate::AKITA_ONE_HOT_K16,
+    },
     crate::schedules::jolt_fp128_onehot_k16_table()
 );
 
 delegate_preset!(
     /// Adaptive one-hot config with the Jolt-generated K=256 schedule catalog.
     JoltOneHotK256,
-    akita_config::proof_optimized::fp128::OneHot,
-    akita_config::proof_optimized::fp128::OneHot::root_honest_fold_policy(),
+    fp128::OneHot,
+    <fp128::OneHot as CommitmentConfig>::committed_source_class(),
     crate::schedules::jolt_fp128_onehot_k256_table()
 );
 
 delegate_preset!(
-    /// Adaptive dense config with the Jolt-generated advice/program byte-object catalog.
-    JoltDense,
-    akita_config::proof_optimized::fp128::Dense,
-    akita_config::proof_optimized::fp128::Dense::root_honest_fold_policy(),
-    crate::schedules::jolt_fp128_dense_table()
+    /// Dense config for Jolt's advice and committed-program byte objects, over
+    /// upstream's `u64`-bounded committed source.
+    ///
+    /// Both objects this config commits sit inside
+    /// [`fp128::DenseBounded::MAX_CENTERED_MAGNITUDE`] by construction: advice
+    /// columns are little-endian `u64` words, and the committed-program witness is
+    /// one-hot. The bound roughly halves the A-role digit depth, and with it the
+    /// setup matrix and the level-1 witness the whole recursion suffix inherits.
+    /// `commit` rejects an out-of-range coefficient rather than binding a
+    /// truncation, so a new dense object must fit `u64` or get its own full-field
+    /// config.
+    JoltDenseBounded,
+    fp128::DenseBounded,
+    <fp128::DenseBounded as CommitmentConfig>::committed_source_class(),
+    crate::schedules::jolt_fp128_dense_bounded_table()
 );
 
 #[cfg(test)]
@@ -305,7 +316,7 @@ mod tests {
 
     #[test]
     fn exact_shapes_have_setup_capacities() {
-        assert!(JoltDense::setup_matrix_capacity(14, 2).is_ok());
+        assert!(JoltDenseBounded::setup_matrix_capacity(14, 2).is_ok());
         assert!(JoltOneHotK16::setup_matrix_capacity(34, 1).is_ok());
         assert!(JoltOneHotK256::setup_matrix_capacity(43, 1).is_ok());
     }

@@ -20,7 +20,7 @@ use tracing::info_span;
 use crate::trace_onehot::TracePackedOneHot;
 
 pub type AkitaField = akita_config::proof_optimized::fp128::Field;
-pub(crate) type AkitaConfig = crate::configs::JoltDense;
+pub(crate) type AkitaConfig = crate::configs::JoltDenseBounded;
 pub(crate) type AkitaOneHotK16Config = crate::configs::JoltOneHotK16;
 pub(crate) type AkitaOneHotK256Config = crate::configs::JoltOneHotK256;
 /// Smallest A dimension accepted by the delegated adaptive policy. Source

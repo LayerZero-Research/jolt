@@ -559,6 +559,30 @@ impl<const D: usize> RootCommitSource<AkitaField, D> for GroupedRootSource {
     fn commit_view(&self) -> Result<Self::CommitView<'_>, AkitaError> {
         Ok(GroupedRootView { source: self })
     }
+
+    fn committed_centered_reach(
+        &self,
+        modulus: u128,
+        centering_threshold: u128,
+    ) -> Result<(u128, u128), AkitaError> {
+        match self {
+            Self::Dense(polys) => RootCommitSource::<AkitaField, D>::committed_centered_reach(
+                grouped_singleton(polys),
+                modulus,
+                centering_threshold,
+            ),
+            Self::OneHot(polys) => RootCommitSource::<AkitaField, D>::committed_centered_reach(
+                grouped_singleton(polys),
+                modulus,
+                centering_threshold,
+            ),
+            Self::Trace(polys) => RootCommitSource::<AkitaField, D>::committed_centered_reach(
+                grouped_singleton(polys),
+                modulus,
+                centering_threshold,
+            ),
+        }
+    }
 }
 
 impl<const D: usize> RootOpeningSource<AkitaField, D> for GroupedRootSource {
@@ -680,6 +704,16 @@ impl<const D: usize> RootCommitSource<AkitaField, D> for TracePackedOneHot {
             source: self,
             rows: self.lock_rows()?,
         })
+    }
+
+    /// The packed trace stores hot positions, so every coefficient it commits is
+    /// `0` or `1` and no scan is possible or needed.
+    fn committed_centered_reach(
+        &self,
+        _modulus: u128,
+        _centering_threshold: u128,
+    ) -> Result<(u128, u128), AkitaError> {
+        Ok((0, 1))
     }
 }
 

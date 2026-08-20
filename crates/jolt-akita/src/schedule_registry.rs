@@ -26,7 +26,7 @@ use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
 
-use akita_config::{policy_of, CommitmentConfig, ResolvedScheduleRow};
+use akita_config::{honest_fold_policy_of, policy_of, CommitmentConfig, ResolvedScheduleRow};
 use akita_pcs::AkitaError;
 use akita_types::sis::HonestFoldPolicySpec;
 use akita_types::{
@@ -193,7 +193,7 @@ fn plan_row<Cfg: CommitmentConfig>(
     let policy = policy_of::<Cfg>();
     let schedule = akita_planner::find_schedule(
         key,
-        Cfg::root_honest_fold_policy(),
+        honest_fold_policy_of::<Cfg>(),
         precommitted_honest_fold_policies,
         &policy,
         Cfg::ring_challenge_config,
@@ -358,7 +358,7 @@ fn publish<Cfg: CommitmentConfig + 'static>(
 pub fn dense_precommit_profile(
     layout: PolynomialGroupLayout,
 ) -> Result<CommittedGroupProfile, AkitaError> {
-    crate::configs::JoltDense::profile_without_precommitted_groups(layout)
+    crate::configs::JoltDenseBounded::profile_without_precommitted_groups(layout)
 }
 
 /// The advice layouts a program can precommit, in canonical public batch
@@ -424,7 +424,7 @@ pub fn provision_advice<Cfg: CommitmentConfig + 'static>(
     }
     provision::<Cfg>(
         &combinations,
-        crate::configs::JoltDense::root_honest_fold_policy(),
+        honest_fold_policy_of::<crate::configs::JoltDenseBounded>(),
         final_num_vars,
     )
 }
@@ -503,7 +503,7 @@ pub fn reset_for_tests() {
 )]
 mod tests {
     use super::*;
-    use crate::configs::{JoltDense, JoltOneHotK256};
+    use crate::configs::{JoltDenseBounded, JoltOneHotK256};
     use crate::schedules::emit;
 
     /// Freeze a group's profile from a fresh planner solve, never consulting
@@ -524,7 +524,7 @@ mod tests {
             let from_catalog = dense_precommit_profile(layout).unwrap_or_else(|error| {
                 panic!("dense catalog must cover {physical_vars} physical vars: {error}")
             });
-            let from_planner = planned_profile::<JoltDense>(layout)
+            let from_planner = planned_profile::<JoltDenseBounded>(layout)
                 .unwrap_or_else(|error| panic!("planner must solve {physical_vars} vars: {error}"));
             assert_eq!(
                 from_catalog, from_planner,
@@ -539,7 +539,7 @@ mod tests {
             dense_precommit_profile(PolynomialGroupLayout::new(emit::DENSE_NUM_VARS.0, 1)).unwrap();
         let error = provision::<JoltOneHotK256>(
             &[vec![profile]],
-            JoltDense::root_honest_fold_policy(),
+            honest_fold_policy_of::<JoltDenseBounded>(),
             0..=MAX_REGISTERED_ROWS,
         )
         .expect_err("exceeding the row cap must be rejected");
@@ -624,7 +624,7 @@ mod tests {
 
             let rows = provision::<JoltOneHotK16>(
                 &[vec![profile]],
-                JoltDense::root_honest_fold_policy(),
+                honest_fold_policy_of::<JoltDenseBounded>(),
                 [27],
             )
             .expect("provisioning an uncataloged key must plan it");
@@ -686,7 +686,7 @@ mod tests {
             reset_for_tests();
             let (profile, _) = fixture_keys([27]);
             let combinations = [vec![profile]];
-            let policy = JoltDense::root_honest_fold_policy();
+            let policy = honest_fold_policy_of::<JoltDenseBounded>();
             let first = provision::<JoltOneHotK16>(&combinations, policy, [27])
                 .expect("first provisioning");
             let second = provision::<JoltOneHotK16>(&combinations, policy, [27])
@@ -742,7 +742,7 @@ mod tests {
             let (profile, _) = fixture_keys([27]);
             let mut rows = provision::<JoltOneHotK16>(
                 &[vec![profile]],
-                JoltDense::root_honest_fold_policy(),
+                honest_fold_policy_of::<JoltDenseBounded>(),
                 [27],
             )
             .expect("provisioning must succeed");
@@ -754,7 +754,7 @@ mod tests {
                     final_group: PolynomialGroupLayout::new(28, 1),
                     precommitteds: vec![profile],
                 },
-                &[JoltDense::root_honest_fold_policy()],
+                &[honest_fold_policy_of::<JoltDenseBounded>()],
             )
             .expect("plan a second row");
             let stolen_digest = rows.by_digest.keys().next().copied().expect("one row");
@@ -779,7 +779,7 @@ mod tests {
                 .num_field_elements;
             let _ = provision::<JoltOneHotK16>(
                 &[vec![profile]],
-                JoltDense::root_honest_fold_policy(),
+                honest_fold_policy_of::<JoltDenseBounded>(),
                 [27],
             )
             .expect("provisioning must succeed");

@@ -5,11 +5,11 @@
 
 //! The Jolt-owned schedule catalogs: coverage and drift guards.
 
-use akita_config::CommitmentConfig;
+use akita_config::{honest_fold_policy_of, CommitmentConfig};
 use akita_types::{
     commit_only_setup_field_elements, setup_matrix_capacity_for_schedule, AkitaScheduleLookupKey,
 };
-use jolt_akita::configs::{JoltDense, JoltOneHotK16, JoltOneHotK256};
+use jolt_akita::configs::{JoltDenseBounded, JoltOneHotK16, JoltOneHotK256};
 use jolt_akita::schedule_registry::{FIXTURE_K16_FINAL_NUM_VARS, FIXTURE_TRUSTED_ADVICE_GROUP};
 use jolt_akita::schedules::emit::{
     family_specs, keys, K16_NUM_VARS, K256_NUM_VARS, ONE_HOT_TRACE_NUM_POLYS,
@@ -62,8 +62,9 @@ const TRUSTED_ADVICE_K256_FINAL_GROUP: akita_types::PolynomialGroupLayout =
     akita_types::PolynomialGroupLayout::new(39, 1);
 
 fn trusted_advice_grouped_key() -> AkitaScheduleLookupKey {
-    let trusted_profile = JoltDense::profile_without_precommitted_groups(TRUSTED_ADVICE_GROUP)
-        .expect("trusted advice standalone row must resolve");
+    let trusted_profile =
+        JoltDenseBounded::profile_without_precommitted_groups(TRUSTED_ADVICE_GROUP)
+            .expect("trusted advice standalone row must resolve");
     AkitaScheduleLookupKey {
         final_group: TRUSTED_ADVICE_K256_FINAL_GROUP,
         precommitteds: vec![trusted_profile],
@@ -84,7 +85,7 @@ fn grouped_advice_rows_are_planned_not_cataloged() {
 
     let rows = jolt_akita::schedule_registry::provision::<JoltOneHotK256>(
         std::slice::from_ref(&key.precommitteds),
-        JoltDense::root_honest_fold_policy(),
+        honest_fold_policy_of::<JoltDenseBounded>(),
         [key.final_group.num_vars()],
     )
     .expect("preprocessing must plan the production grouped row");
@@ -112,7 +113,7 @@ fn two_precommit_grouped_advice_row_is_planned() {
 
     let rows = jolt_akita::schedule_registry::provision::<JoltOneHotK256>(
         std::slice::from_ref(&key.precommitteds),
-        JoltDense::root_honest_fold_policy(),
+        honest_fold_policy_of::<JoltDenseBounded>(),
         [key.final_group.num_vars()],
     )
     .expect("preprocessing must plan the two-precommit grouped row");
@@ -144,7 +145,7 @@ fn grouped_setup_capacity_covers_precommit_and_complete_schedule() {
     // Grouped advice rows are planned, not cataloged, so install it first.
     let _rows = jolt_akita::schedule_registry::provision::<JoltOneHotK256>(
         std::slice::from_ref(&key.precommitteds),
-        JoltDense::root_honest_fold_policy(),
+        honest_fold_policy_of::<JoltDenseBounded>(),
         [key.final_group.num_vars()],
     )
     .expect("preprocessing must plan the production grouped row");
@@ -177,7 +178,7 @@ fn grouped_setup_capacity_covers_precommit_and_complete_schedule() {
 #[test]
 fn no_family_catalogs_a_grouped_advice_row() {
     let trusted_profile =
-        JoltDense::profile_without_precommitted_groups(FIXTURE_TRUSTED_ADVICE_GROUP)
+        JoltDenseBounded::profile_without_precommitted_groups(FIXTURE_TRUSTED_ADVICE_GROUP)
             .expect("fixture trusted advice standalone row must resolve");
     let table = jolt_fp128_onehot_k16_table().expect("K16 catalog is checked in");
     assert!(
@@ -257,7 +258,9 @@ fn source_tokens(source: &str) -> Vec<String> {
 #[test]
 #[ignore = "regenerates every schedule through the planner DP (minutes)"]
 fn catalogs_match_planner_regeneration() {
-    for spec in family_specs(std::path::PathBuf::new()) {
+    for spec in
+        family_specs(std::path::PathBuf::new()).expect("every family must declare a valid contract")
+    {
         let regenerated =
             akita_planner::emit::emit_family_module(&spec).expect("regeneration must succeed");
         let checked_in = std::fs::read_to_string(
