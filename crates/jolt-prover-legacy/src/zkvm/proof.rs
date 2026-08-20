@@ -418,9 +418,9 @@ fn commitments_from_proof_payload_order<C>(
 #[cfg(not(any(feature = "zk", feature = "akita")))]
 #[expect(
     clippy::type_complexity,
-    reason = "private converter returns the verifier-native proof with projected backend types"
+    reason = "the converter returns the verifier-native proof with projected backend types"
 )]
-pub(crate) fn proof_parts_into_verifier<F, C, PCS, FS>(
+pub fn proof_parts_into_verifier<F, C, PCS, FS>(
     proof: ProverProofParts<F, C, PCS, FS>,
 ) -> Result<
     JoltProof<
@@ -474,9 +474,9 @@ where
 #[cfg(feature = "zk")]
 #[expect(
     clippy::type_complexity,
-    reason = "private converter returns the verifier-native proof with projected backend types"
+    reason = "the converter returns the verifier-native proof with projected backend types"
 )]
-pub(crate) fn proof_parts_into_verifier<F, C, PCS, FS>(
+pub fn proof_parts_into_verifier<F, C, PCS, FS>(
     proof: ProverProofParts<F, C, PCS, FS>,
 ) -> Result<
     JoltProof<
@@ -526,7 +526,7 @@ where
     })
 }
 
-pub(crate) fn convert_uniskip<F, C, FS>(
+pub fn convert_uniskip<F, C, FS>(
     proof: UniSkipFirstRoundProofVariant<F, C, FS>,
 ) -> SumcheckProof<F::VerifierField, C::VerifierRoundCommitment>
 where
@@ -550,7 +550,7 @@ where
     }
 }
 
-pub(crate) fn convert_sumcheck<F, C, FS>(
+pub fn convert_sumcheck<F, C, FS>(
     proof: SumcheckInstanceProof<F, C, FS>,
 ) -> SumcheckProof<F::VerifierField, C::VerifierRoundCommitment>
 where
@@ -774,7 +774,7 @@ where
 }
 
 #[cfg(not(feature = "zk"))]
-pub(crate) fn convert_opening_id(id: prover_opening::OpeningId) -> JoltOpeningId {
+pub fn convert_opening_id(id: prover_opening::OpeningId) -> JoltOpeningId {
     match id {
         prover_opening::OpeningId::Polynomial(poly, sumcheck) => {
             JoltOpeningId::polynomial(convert_polynomial_id(poly), convert_sumcheck_id(sumcheck))
@@ -816,7 +816,7 @@ fn convert_polynomial_id(id: prover_opening::PolynomialId) -> JoltPolynomialId {
 }
 
 #[cfg(not(feature = "zk"))]
-pub(crate) fn convert_sumcheck_id(id: prover_opening::SumcheckId) -> JoltRelationId {
+pub fn convert_sumcheck_id(id: prover_opening::SumcheckId) -> JoltRelationId {
     match id {
         prover_opening::SumcheckId::SpartanOuter => JoltRelationId::SpartanOuter,
         prover_opening::SumcheckId::SpartanProductVirtualization => {
