@@ -10,11 +10,10 @@ use akita_types::{
     commit_only_setup_field_elements, setup_matrix_capacity_for_schedule, AkitaScheduleLookupKey,
 };
 use jolt_akita::configs::{JoltDense, JoltOneHotK16, JoltOneHotK256};
+use jolt_akita::schedule_registry::{FIXTURE_K16_FINAL_NUM_VARS, FIXTURE_TRUSTED_ADVICE_GROUP};
 use jolt_akita::schedules::emit::{
-    family_specs, keys, K16_NUM_VARS, K256_NUM_VARS, ONE_HOT_TRACE_NUM_POLYS, TRUSTED_ADVICE_GROUP,
-    TRUSTED_ADVICE_K256_FINAL_GROUP,
+    family_specs, keys, K16_NUM_VARS, K256_NUM_VARS, ONE_HOT_TRACE_NUM_POLYS,
 };
-use jolt_akita::schedules::emit::{FIXTURE_K16_FINAL_NUM_VARS, FIXTURE_TRUSTED_ADVICE_GROUP};
 use jolt_akita::schedules::{jolt_fp128_onehot_k16_table, jolt_fp128_onehot_k256_table};
 
 /// Every key of a family grid resolves from its checked-in table (binary
@@ -53,6 +52,14 @@ fn catalogs_cover_every_reachable_one_hot_trace_shape() {
         );
     }
 }
+
+/// Production trusted-advice precommit layout (`2^20` u64 words) and the
+/// SHA2-chain packed-trace layout at `log_T = 26`, K=256. No grouped row is
+/// checked in for either — this test is what asserts that.
+const TRUSTED_ADVICE_GROUP: akita_types::PolynomialGroupLayout =
+    akita_types::PolynomialGroupLayout::new(20, 1);
+const TRUSTED_ADVICE_K256_FINAL_GROUP: akita_types::PolynomialGroupLayout =
+    akita_types::PolynomialGroupLayout::new(39, 1);
 
 fn trusted_advice_grouped_key() -> AkitaScheduleLookupKey {
     let trusted_profile = JoltDense::profile_without_precommitted_groups(TRUSTED_ADVICE_GROUP)

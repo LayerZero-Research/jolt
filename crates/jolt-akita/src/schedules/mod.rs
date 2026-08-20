@@ -83,8 +83,7 @@ pub mod emit {
     use akita_planner::{find_schedule, EmitSpec};
     use akita_types::sis::HonestFoldPolicySpec;
     use akita_types::{
-        AkitaScheduleLookupKey, CommittedGroupProfile, FoldSchedule, OpeningClaimsLayout,
-        PolynomialGroupLayout,
+        AkitaScheduleLookupKey, FoldSchedule, OpeningClaimsLayout, PolynomialGroupLayout,
     };
 
     use crate::configs::{JoltDense, JoltOneHotK16, JoltOneHotK256};
@@ -106,27 +105,8 @@ pub mod emit {
     /// dense fp128 shape; smaller objects pad up to it.
     pub const DENSE_NUM_VARS: (usize, usize) = (14, 34);
 
-    /// Production trusted-advice precommit layout (`2^20` u64 words).
-    ///
-    /// Documents the shape and anchors the tests; no grouped row is emitted for
-    /// it. Grouped advice rows are never checked in — see [`family_specs`].
-    pub const TRUSTED_ADVICE_GROUP: PolynomialGroupLayout = PolynomialGroupLayout::new(20, 1);
-
-    /// Production SHA2-chain packed-trace layout at `log_T = 26`, K=256.
-    pub const TRUSTED_ADVICE_K256_FINAL_GROUP: PolynomialGroupLayout =
-        PolynomialGroupLayout::new(39, 1);
-
-    /// Default 4 KiB advice fixture after the dense arity floor. Both advice
-    /// kinds land here, since the floor absorbs any capacity up to 128 KiB.
-    pub const FIXTURE_TRUSTED_ADVICE_GROUP: PolynomialGroupLayout =
-        PolynomialGroupLayout::new(14, 1);
-
-    /// K=16 fixture final arities for canonical `log_T = 12..=16` traces. This
-    /// is the range preprocessing plans grouped advice rows over.
-    pub const FIXTURE_K16_FINAL_NUM_VARS: (usize, usize) = (22, 26);
-
     /// Pure DP regeneration for `Cfg` — never consults the shipped table.
-    fn regen<Cfg: CommitmentConfig>(
+    pub(crate) fn regen<Cfg: CommitmentConfig>(
         key: PolynomialGroupLayout,
     ) -> Result<FoldSchedule, AkitaError> {
         regen_group_batch::<Cfg>(AkitaScheduleLookupKey::single(key), Vec::new())
@@ -145,19 +125,6 @@ pub mod emit {
         )?;
         planned.schedule.validate_structure()?;
         Ok(planned.schedule)
-    }
-
-    /// Freeze an independently committed group's profile from a fresh planner
-    /// solve. Generation must not consult the catalog it is regenerating.
-    ///
-    /// The runtime counterpart is
-    /// [`crate::schedule_registry::dense_precommit_profile`], which reads the
-    /// catalog instead; the two must agree byte-for-byte.
-    pub fn planned_profile_without_precommitted_groups<Cfg: CommitmentConfig>(
-        group: PolynomialGroupLayout,
-    ) -> Result<CommittedGroupProfile, AkitaError> {
-        let schedule = regen::<Cfg>(group)?;
-        CommittedGroupProfile::try_from_params(group, &schedule.root.params.final_group.commitment)
     }
 
     /// The reachable scalar keys of one family grid.

@@ -429,6 +429,16 @@ pub fn provision_advice<Cfg: CommitmentConfig + 'static>(
     )
 }
 
+/// Default 4 KiB advice fixture, at the dense arity floor
+/// ([`crate::schedules::emit::DENSE_NUM_VARS`]'s low end). Both advice kinds
+/// land here, since the floor absorbs any capacity up to 128 KiB.
+pub const FIXTURE_TRUSTED_ADVICE_GROUP: PolynomialGroupLayout = PolynomialGroupLayout::new(14, 1);
+
+/// K=16 fixture final arities for canonical `log_T = 12..=16` traces — the
+/// range [`provision_advice_for_k`] plans grouped advice rows over. Shared with
+/// the catalog drift guard, which must assert over exactly this range.
+pub const FIXTURE_K16_FINAL_NUM_VARS: (usize, usize) = (22, 26);
+
 /// Provision the grouped advice rows for the `OneHotTrace` family selected by
 /// `one_hot_k`, over that family's whole reachable final-arity range.
 ///
@@ -496,6 +506,15 @@ mod tests {
     use crate::configs::{JoltDense, JoltOneHotK256};
     use crate::schedules::emit;
 
+    /// Freeze a group's profile from a fresh planner solve, never consulting
+    /// the catalog under test.
+    fn planned_profile<Cfg: akita_config::CommitmentConfig>(
+        group: PolynomialGroupLayout,
+    ) -> Result<CommittedGroupProfile, AkitaError> {
+        let schedule = emit::regen::<Cfg>(group)?;
+        CommittedGroupProfile::try_from_params(group, &schedule.root.params.final_group.commitment)
+    }
+
     /// Runtime reads the dense catalog; the emitter runs a fresh planner solve.
     /// A divergence would key grouped rows on a prefix no commit can produce.
     #[test]
@@ -505,11 +524,8 @@ mod tests {
             let from_catalog = dense_precommit_profile(layout).unwrap_or_else(|error| {
                 panic!("dense catalog must cover {physical_vars} physical vars: {error}")
             });
-            let from_planner =
-                emit::planned_profile_without_precommitted_groups::<JoltDense>(layout)
-                    .unwrap_or_else(|error| {
-                        panic!("planner must solve {physical_vars} vars: {error}")
-                    });
+            let from_planner = planned_profile::<JoltDense>(layout)
+                .unwrap_or_else(|error| panic!("planner must solve {physical_vars} vars: {error}"));
             assert_eq!(
                 from_catalog, from_planner,
                 "dense profile for {physical_vars} vars diverges between catalog and planner"
@@ -554,7 +570,6 @@ mod tests {
     mod fixture {
         use super::*;
         use crate::configs::JoltOneHotK16;
-        use crate::schedules::emit::{FIXTURE_K16_FINAL_NUM_VARS, FIXTURE_TRUSTED_ADVICE_GROUP};
 
         fn trusted_only(trusted: PolynomialGroupLayout) -> AdvicePrecommitLayouts {
             AdvicePrecommitLayouts {
