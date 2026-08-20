@@ -80,7 +80,7 @@ use jolt_verifier::{
 // `ClearProofClaims` itself; the base builder and its stage-6b/7 pieces
 // target the base wire shape and are compiled out with it.
 #[cfg(not(feature = "akita"))]
-pub(crate) fn build_clear_claims<F: JoltField>(
+pub fn build_clear_claims<F: JoltField>(
     claims: impl IntoIterator<Item = (jolt::JoltOpeningId, F)>,
     _trace_length: usize,
 ) -> Result<ClearProofClaims<F>, VerifierError> {
@@ -653,7 +653,11 @@ mod packed {
     /// lattice stage-6b/7 shapes (the read-raf carries the fused-inc opening;
     /// booleanity carries the increment columns; there is no stage-6b inc
     /// slot).
-    pub(crate) fn build_packed_clear_claims<F: JoltField>(
+    /// Projects packed prover openings into the verifier's canonical clear claims.
+    ///
+    /// External packed provers use this together with the public proof converters
+    /// to assemble verifier-native proofs without duplicating protocol logic.
+    pub fn build_packed_clear_claims<F: JoltField>(
         claims: impl IntoIterator<Item = (jolt::JoltOpeningId, F)>,
     ) -> Result<ClearProofClaims<F>, VerifierError> {
         let claims = OpeningClaimMap {
@@ -836,4 +840,4 @@ mod packed {
 }
 
 #[cfg(feature = "akita")]
-pub(crate) use packed::build_packed_clear_claims;
+pub use packed::build_packed_clear_claims;
