@@ -173,8 +173,6 @@ pub fn configured_setup_seed_digest() -> [u8; 32] {
         .expect("the fixed Akita setup seed must serialize")
 }
 
-static CPU_BACKEND: OnceLock<CpuBackend> = OnceLock::new();
-
 pub(crate) type AkitaLayoutDigest = [u8; 32];
 
 /// Worker stack size for [`with_backend_pool`]. Stacks are lazily committed,
@@ -841,24 +839,11 @@ pub(crate) fn backend_stack<'a>(
 ) -> Result<BackendStack<'a>, OpeningsError> {
     let _span = info_span!("jolt_akita::make_backend_stack").entered();
     akita_prover::UniformProverStack::uniform(
-        CPU_BACKEND.get_or_init(|| CpuBackend::DEFAULT),
+        &CpuBackend::DEFAULT,
         prepared_backend_setup,
         backend_prover_setup.expanded.as_ref(),
     )
     .map_err(|err| OpeningsError::InvalidSetup(err.to_string()))
-}
-
-/// Sets the CPU commitment scratch budget before the first Akita operation.
-/// Resource limits affect memory use and CPU work, but not proof bytes.
-pub fn set_commit_scratch_bytes_per_worker(bytes: usize) -> Result<(), String> {
-    let backend = CpuBackend::with_resource_limits(
-        CpuBackend::DEFAULT_MAX_CACHED_RING_SWITCH_ELEMENTS,
-        bytes,
-    )
-    .map_err(|error| error.to_string())?;
-    CPU_BACKEND
-        .set(backend)
-        .map_err(|_| "the Akita CPU backend was already initialized".to_owned())
 }
 
 pub(crate) fn one_hot_polynomial<P>(

@@ -31,10 +31,12 @@ pub enum CommitmentConfig {
     /// Legacy packed one-hot advice protocol. Retained as a wire tombstone.
     Packed,
     /// Packed trace/program objects with direct advice-word commitments.
+    /// Retained as a wire tombstone: protocol version and encoding 1.
     PackedDenseAdvice,
     /// Packed dense advice with Akita precommitted-group batching for the
     /// trusted-advice and final `OneHotTrace` openings. Retained as a wire
-    /// tombstone: superseded by [`Self::PackedAllAdviceBatched`].
+    /// tombstone: superseded by [`Self::PackedAllAdviceBatched`]; protocol
+    /// version and encoding 2.
     PackedDenseAdviceBatched,
     /// Packed advice with Akita precommitted-group batching over the full
     /// canonical group order `[UntrustedAdvice, TrustedAdvice, OneHotTrace]`, so
@@ -70,10 +72,9 @@ pub const SELECTED_ZK_CONFIG: ZkConfig = ZkConfig::Transparent;
 #[cfg(feature = "akita")]
 pub const SELECTED_COMMITMENT_CONFIG: CommitmentConfig = CommitmentConfig::PackedAllAdviceBatched;
 
-pub const PACKED_DENSE_ADVICE_TRANSCRIPT_VERSION: u64 = 1;
-pub const PACKED_DENSE_ADVICE_ENCODING: u64 = 1;
-pub const PACKED_DENSE_ADVICE_BATCHED_TRANSCRIPT_VERSION: u64 = 2;
-pub const PACKED_DENSE_ADVICE_BATCHED_ENCODING: u64 = 2;
+/// Absorbed as `akita_protocol_version` / `akita_advice_encoding`, binding the
+/// advice wire format into Fiat-Shamir. Versions 1 and 2 are retired and must
+/// never be reused — see [`CommitmentConfig`]'s tombstone variants.
 pub const PACKED_ALL_ADVICE_BATCHED_TRANSCRIPT_VERSION: u64 = 3;
 pub const PACKED_ALL_ADVICE_BATCHED_ENCODING: u64 = 3;
 

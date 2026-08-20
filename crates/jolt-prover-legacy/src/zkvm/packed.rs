@@ -2517,8 +2517,6 @@ mod committed_tests {
         );
 
         crate::poly::commitment::dory::DoryGlobals::reset();
-        jolt_akita::set_commit_scratch_bytes_per_worker(16 << 20)
-            .expect("configure Akita CPU commitment scratch budget");
         let mut program = host::Program::new("sha2-chain-guest");
         program.set_func("sha2_chain");
         program.set_max_trusted_advice_size(trusted_advice.len() as u64);
