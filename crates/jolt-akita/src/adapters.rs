@@ -14,10 +14,7 @@ use jolt_field::CanonicalBytes;
 use jolt_openings::{OpeningsError, VerifierOpeningClaim};
 use jolt_poly::{MultilinearPoly, OneHotIndexOrder, OneHotPolynomial, Polynomial};
 use jolt_transcript::{AppendToTranscript, Label, LabelWithCount, Transcript, U64Word};
-use serde::{
-    de::{Error as SerdeDeError, SeqAccess, Visitor},
-    Deserialize, Deserializer, Serialize,
-};
+use serde::{Deserialize, Serialize};
 use tracing::info_span;
 
 use crate::trace_onehot::TracePackedOneHot;
@@ -37,91 +34,6 @@ const _: () = assert!(
 );
 pub const AKITA_ONE_HOT_K16: usize = 16;
 pub const AKITA_ONE_HOT_K256: usize = 256;
-
-const MAX_COMMITMENT_PAYLOAD_BYTES: usize = 128 * 1024 * 1024;
-const MAX_STATEMENT_BRIDGE_BYTES: usize = 64;
-const SCHEDULE_SELECTION_BYTES: usize = 32;
-const MAX_SERIALIZED_PROOF_SHAPE_BYTES: usize = 16 * 1024;
-const MAX_SERIALIZED_PROOF_BYTES: usize = 256 * 1024 * 1024;
-
-struct BoundedBytesVisitor<const MAX: usize>;
-
-impl<'de, const MAX: usize> Visitor<'de> for BoundedBytesVisitor<MAX> {
-    type Value = Vec<u8>;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "at most {MAX} bytes")
-    }
-
-    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
-        if sequence.size_hint().is_some_and(|len| len > MAX) {
-            return Err(A::Error::custom(format!(
-                "byte sequence exceeds protocol cap {MAX}"
-            )));
-        }
-        let mut bytes = Vec::with_capacity(sequence.size_hint().unwrap_or(0).min(MAX));
-        while let Some(byte) = sequence.next_element::<u8>()? {
-            if bytes.len() == MAX {
-                return Err(A::Error::custom(format!(
-                    "byte sequence exceeds protocol cap {MAX}"
-                )));
-            }
-            bytes.push(byte);
-        }
-        Ok(bytes)
-    }
-}
-
-fn deserialize_bounded_bytes<'de, D, const MAX: usize>(deserializer: D) -> Result<Vec<u8>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserializer.deserialize_seq(BoundedBytesVisitor::<MAX>)
-}
-
-fn deserialize_commitment_payload<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserialize_bounded_bytes::<D, MAX_COMMITMENT_PAYLOAD_BYTES>(deserializer)
-}
-
-fn deserialize_statement_bridge<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserialize_bounded_bytes::<D, MAX_STATEMENT_BRIDGE_BYTES>(deserializer)
-}
-
-fn deserialize_schedule_selection<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let bytes = deserialize_bounded_bytes::<D, SCHEDULE_SELECTION_BYTES>(deserializer)?;
-    if bytes.len() != SCHEDULE_SELECTION_BYTES {
-        return Err(D::Error::custom(format!(
-            "schedule selection must be exactly {SCHEDULE_SELECTION_BYTES} bytes"
-        )));
-    }
-    Ok(bytes)
-}
-
-fn deserialize_proof_shape<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserialize_bounded_bytes::<D, MAX_SERIALIZED_PROOF_SHAPE_BYTES>(deserializer)
-}
-
-fn deserialize_proof_body<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserialize_bounded_bytes::<D, MAX_SERIALIZED_PROOF_BYTES>(deserializer)
-}
 
 pub(crate) type AkitaBackendExtField = <AkitaConfig as CommitmentConfig>::ExtField;
 
@@ -603,7 +515,6 @@ pub struct AkitaCommitment {
     /// Field-coefficient count of the serialized backend commitment — the
     /// deserialization context [`akita_types::Commitment`] requires.
     pub(crate) backend_coeff_len: usize,
-    #[serde(deserialize_with = "deserialize_commitment_payload")]
     pub(crate) serialized_backend_bytes: Vec<u8>,
 }
 
@@ -715,16 +626,12 @@ impl AppendToTranscript for AkitaCommitment {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AkitaBatchProof {
-    #[serde(deserialize_with = "deserialize_statement_bridge")]
     pub(crate) statement_bridge: Vec<u8>,
     /// Fixed-width public identity of the exact generated row selected by the
     /// prover. The verifier resolves this digest under its configured catalog;
     /// the backend proof body does not encode the selection itself.
-    #[serde(deserialize_with = "deserialize_schedule_selection")]
     pub(crate) serialized_schedule_selection: Vec<u8>,
-    #[serde(deserialize_with = "deserialize_proof_shape")]
     pub(crate) serialized_akita_proof_shape: Vec<u8>,
-    #[serde(deserialize_with = "deserialize_proof_body")]
     pub(crate) serialized_akita_proof: Vec<u8>,
 }
 

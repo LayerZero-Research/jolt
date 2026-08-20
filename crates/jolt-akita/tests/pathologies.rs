@@ -220,14 +220,25 @@ fn akita_forged_shape_metadata_rejects_before_shape_backed_allocation() {
 
     // An oversized proof-shape blob must be rejected by the protocol cap
     // before shape deserialization ever runs.
-    let mut value = serde_json::to_value(&proof).expect("proof should serialize");
+    let mut oversized = proof.clone();
+    let mut value = serde_json::to_value(&oversized).expect("proof should serialize");
     *value
         .get_mut("serialized_akita_proof_shape")
         .expect("proof should expose the shape blob") =
         serde_json::to_value(vec![0u8; 64 * 1024]).expect("blob should serialize");
-    let err = serde_json::from_value::<AkitaBatchProof>(value)
-        .expect_err("oversized proof shape must reject during outer decoding");
-    assert!(err.to_string().contains("protocol cap"));
+    oversized = serde_json::from_value(value).expect("oversized proof should deserialize");
+    let mut transcript = Blake2bTranscript::new(b"akita-forged-metadata");
+    let err = <AkitaNativeBatching as BatchOpeningScheme>::verify_batch(
+        &verifier_setup,
+        &statement,
+        &oversized,
+        &mut transcript,
+    )
+    .expect_err("oversized shape blob should reject");
+    assert!(
+        matches!(&err, OpeningsError::InvalidBatch(message) if message.contains("protocol cap")),
+        "expected the shape-blob cap rejection, got: {err}"
+    );
 }
 
 #[test]
