@@ -109,9 +109,7 @@ pub trait CommitmentScheme: Commitment {
     // side-channel.
     fn prove_batch(
         _setup: &Self::ProverSetup,
-        _precommitted: Vec<
-            PrecommittedOpening<Self::Field, Self::Output, Self::OpeningHint>,
-        >,
+        _precommitted: Vec<PrecommittedOpening<Self::Field, Self::Output, Self::OpeningHint>>,
         _final_group: GroupOpeningClaim<Self::Field, Self::Output>,
         _final_hint: Self::OpeningHint,
         _transcript: &mut impl Transcript<Challenge = Self::Field>,

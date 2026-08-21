@@ -78,8 +78,6 @@ pub(crate) fn validate_precommitted_order(
     Ok(())
 }
 
-
-
 impl AkitaScheme {
     /// Returns true when the Akita backend sparse-ring path can represent a
     /// unit-valued sparse polynomial with this multilinear dimension.
@@ -297,38 +295,36 @@ impl AkitaScheme {
         Self::validate_commit_shape(setup, num_vars, 1)?;
         let (backend_prover_setup, prepared_backend_setup) = setup.one_hot_backend()?;
         let stack = backend_stack(backend_prover_setup, prepared_backend_setup)?;
-        let (backend_commitment, backend_hint) = with_backend_pool(|| match (
-            setup.one_hot_k(),
-            profiles.as_ref(),
-        ) {
-            (AKITA_ONE_HOT_K16, None) => AkitaOneHotK16BackendScheme::commit(
-                backend_prover_setup,
-                std::slice::from_ref(&source),
-                &stack,
-                akita_prover::GroupContext::scheduler_without_precommitted_groups(),
-            ),
-            (AKITA_ONE_HOT_K16, Some(profiles)) => AkitaOneHotK16BackendScheme::commit(
-                backend_prover_setup,
-                std::slice::from_ref(&source),
-                &stack,
-                akita_prover::GroupContext::scheduler_with_precommitted_groups(profiles),
-            ),
-            (AKITA_ONE_HOT_K256, None) => AkitaOneHotK256BackendScheme::commit(
-                backend_prover_setup,
-                std::slice::from_ref(&source),
-                &stack,
-                akita_prover::GroupContext::scheduler_without_precommitted_groups(),
-            ),
-            (AKITA_ONE_HOT_K256, Some(profiles)) => AkitaOneHotK256BackendScheme::commit(
-                backend_prover_setup,
-                std::slice::from_ref(&source),
-                &stack,
-                akita_prover::GroupContext::scheduler_with_precommitted_groups(profiles),
-            ),
-            _ => unreachable!("the one-hot setup geometry was validated during setup"),
-        })
-        .map(split_commit_output)
-        .map_err(commit_failed)?;
+        let (backend_commitment, backend_hint) =
+            with_backend_pool(|| match (setup.one_hot_k(), profiles.as_ref()) {
+                (AKITA_ONE_HOT_K16, None) => AkitaOneHotK16BackendScheme::commit(
+                    backend_prover_setup,
+                    std::slice::from_ref(&source),
+                    &stack,
+                    akita_prover::GroupContext::scheduler_without_precommitted_groups(),
+                ),
+                (AKITA_ONE_HOT_K16, Some(profiles)) => AkitaOneHotK16BackendScheme::commit(
+                    backend_prover_setup,
+                    std::slice::from_ref(&source),
+                    &stack,
+                    akita_prover::GroupContext::scheduler_with_precommitted_groups(profiles),
+                ),
+                (AKITA_ONE_HOT_K256, None) => AkitaOneHotK256BackendScheme::commit(
+                    backend_prover_setup,
+                    std::slice::from_ref(&source),
+                    &stack,
+                    akita_prover::GroupContext::scheduler_without_precommitted_groups(),
+                ),
+                (AKITA_ONE_HOT_K256, Some(profiles)) => AkitaOneHotK256BackendScheme::commit(
+                    backend_prover_setup,
+                    std::slice::from_ref(&source),
+                    &stack,
+                    akita_prover::GroupContext::scheduler_with_precommitted_groups(profiles),
+                ),
+                _ => unreachable!("the one-hot setup geometry was validated during setup"),
+            })
+            .map(split_commit_output)
+            .map_err(commit_failed)?;
         Self::package_commitment(
             layout_digest,
             num_vars,
@@ -784,9 +780,7 @@ impl CommitmentScheme for AkitaScheme {
 
     fn prove_batch(
         setup: &Self::ProverSetup,
-        precommitted: Vec<
-            PrecommittedOpening<Self::Field, Self::Output, Self::OpeningHint>,
-        >,
+        precommitted: Vec<PrecommittedOpening<Self::Field, Self::Output, Self::OpeningHint>>,
         final_group: GroupOpeningClaim<Self::Field, Self::Output>,
         final_hint: Self::OpeningHint,
         transcript: &mut impl Transcript<Challenge = Self::Field>,

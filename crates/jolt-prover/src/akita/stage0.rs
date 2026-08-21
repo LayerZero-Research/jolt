@@ -56,9 +56,7 @@ pub fn prove_stage0<F, PCS, VC, T, W>(
 ) -> Result<Stage0Output<PCS, T>, ProverError<F>>
 where
     F: Field,
-    PCS: CommitmentScheme<Field = F>
-        + TransparentObjectSetup
-        + jolt_akita::TraceOneHotCommitment,
+    PCS: CommitmentScheme<Field = F> + TransparentObjectSetup + jolt_akita::TraceOneHotCommitment,
     PCS::ProverSetup: GroupSetupMetadata,
     PCS::Output: Clone + AppendToTranscript + GroupCommitmentMetadata,
     VC: VectorCommitment<Field = F>,
@@ -277,11 +275,11 @@ where
                 committed.map_err(|error| VerifierError::FinalOpeningVerificationFailed {
                     reason: error.to_string(),
                 })?;
-            PCS::release_post_commit_residency(&preprocessing.pcs_setup).map_err(
-                |error| VerifierError::FinalOpeningVerificationFailed {
+            PCS::release_post_commit_residency(&preprocessing.pcs_setup).map_err(|error| {
+                VerifierError::FinalOpeningVerificationFailed {
                     reason: error.to_string(),
-                },
-            )?;
+                }
+            })?;
             Ok::<_, ProverError<F>>((commitment, hint))
         })?;
 
