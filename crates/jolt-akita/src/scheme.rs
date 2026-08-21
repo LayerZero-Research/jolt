@@ -5,8 +5,8 @@ use jolt_crypto::Commitment;
 use jolt_field::CanonicalBytes;
 use jolt_openings::{
     BatchOpeningScheme, CommitmentScheme, EvaluationClaim, GroupOpeningClaim, OpeningsError,
-    PrecommittedClaim, PrecommittedRole, PrecommittedTraceVerify, TransparentObjectSetup,
-    VerifierOpeningClaim, ZkBatchOpeningScheme, ZkOpeningScheme,
+    PrecommittedClaim, PrecommittedRole, TransparentObjectSetup, VerifierOpeningClaim,
+    ZkBatchOpeningScheme, ZkOpeningScheme,
 };
 use jolt_poly::{MultilinearPoly, OneHotPolynomial, Polynomial};
 use jolt_transcript::Transcript;
@@ -78,7 +78,7 @@ pub(crate) fn validate_precommitted_order(
 /// independently in canonical role order; the trace is committed last under
 /// their frozen profiles and every group is discharged by one backend proof at
 /// independent points.
-pub trait PrecommittedTraceBatching: TraceOneHotCommitment + PrecommittedTraceVerify {
+pub trait PrecommittedTraceBatching: TraceOneHotCommitment {
     /// Resolve the exact grouped row before constructing the potentially
     /// expensive final source. Pairs are in canonical precommitted order.
     fn validate_trace_precommits(
@@ -696,27 +696,6 @@ impl PrecommittedTraceBatching for AkitaScheme {
     }
 }
 
-impl PrecommittedTraceVerify for AkitaScheme {
-    fn verify_precommitted_trace_batch<T>(
-        setup: &Self::VerifierSetup,
-        precommitted: &[PrecommittedClaim<Self::Field, Self::Output>],
-        main: &GroupOpeningClaim<Self::Field, Self::Output>,
-        proof: &Self::Proof,
-        transcript: &mut T,
-    ) -> Result<(), OpeningsError>
-    where
-        T: Transcript<Challenge = Self::Field>,
-    {
-        AkitaNativeBatching::verify_precommitted_trace_batch(
-            setup,
-            precommitted,
-            main,
-            proof,
-            transcript,
-        )
-    }
-}
-
 struct CommittedOneHotShape {
     num_vars: usize,
 }
@@ -1005,6 +984,22 @@ impl CommitmentScheme for AkitaScheme {
             .collect();
         <AkitaNativeBatching as BatchOpeningScheme>::verify_batch(
             setup, &statement, proof, transcript,
+        )
+    }
+
+    fn verify_precommitted_batch(
+        setup: &Self::VerifierSetup,
+        precommitted: &[PrecommittedClaim<Self::Field, Self::Output>],
+        final_group: &GroupOpeningClaim<Self::Field, Self::Output>,
+        proof: &Self::Proof,
+        transcript: &mut impl Transcript<Challenge = Self::Field>,
+    ) -> Result<(), OpeningsError> {
+        AkitaNativeBatching::verify_precommitted_trace_batch(
+            setup,
+            precommitted,
+            final_group,
+            proof,
+            transcript,
         )
     }
 }

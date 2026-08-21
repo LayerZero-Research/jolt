@@ -138,6 +138,20 @@ pub trait CommitmentScheme: Commitment {
             "this commitment scheme has no native same-point batch opening".to_owned(),
         ))
     }
+
+    /// Verifies one proof opening independently committed groups at their
+    /// group-local points, followed by a final commitment group.
+    fn verify_precommitted_batch(
+        _setup: &Self::VerifierSetup,
+        _precommitted: &[PrecommittedClaim<Self::Field, Self::Output>],
+        _final_group: &GroupOpeningClaim<Self::Field, Self::Output>,
+        _proof: &Self::Proof,
+        _transcript: &mut impl Transcript<Challenge = Self::Field>,
+    ) -> Result<(), OpeningsError> {
+        Err(OpeningsError::InvalidBatch(
+            "this commitment scheme has no heterogeneous precommitted-group opening".to_owned(),
+        ))
+    }
 }
 
 /// Transparent derivation of a singleton commitment-object setup from the
@@ -799,21 +813,4 @@ impl<F, C> PrecommittedClaim<F, C> {
     pub fn new(role: PrecommittedRole, claim: GroupOpeningClaim<F, C>) -> Self {
         Self { role, claim }
     }
-}
-
-/// The verifier half of Jolt's grouped commitment path: check one backend proof
-/// discharging several independently committed groups at independent points.
-///
-/// Separate from the prover-side batching trait so a verify-only build never
-/// needs a scheme that can commit or prove.
-pub trait PrecommittedTraceVerify: CommitmentScheme {
-    fn verify_precommitted_trace_batch<T>(
-        setup: &Self::VerifierSetup,
-        precommitted: &[PrecommittedClaim<Self::Field, Self::Output>],
-        main: &GroupOpeningClaim<Self::Field, Self::Output>,
-        proof: &Self::Proof,
-        transcript: &mut T,
-    ) -> Result<(), OpeningsError>
-    where
-        T: Transcript<Challenge = Self::Field>;
 }

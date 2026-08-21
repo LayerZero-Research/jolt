@@ -28,20 +28,9 @@ pub enum CommitmentConfig {
     /// Per-polynomial commitments, RLC batch opening (requires additive
     /// homomorphism).
     Homomorphic,
-    /// Legacy packed one-hot advice protocol. Retained as a wire tombstone.
+    /// Packed one-hot trace and dense advice commitments with heterogeneous
+    /// Akita opening and verification.
     Packed,
-    /// Packed trace/program objects with direct advice-word commitments.
-    /// Retained as a wire tombstone: protocol version and encoding 1.
-    PackedDenseAdvice,
-    /// Packed dense advice with Akita precommitted-group batching for the
-    /// trusted-advice and final `OneHotTrace` openings. Retained as a wire
-    /// tombstone: superseded by [`Self::PackedAllAdviceBatched`]; protocol
-    /// version and encoding 2.
-    PackedDenseAdviceBatched,
-    /// Packed advice with Akita precommitted-group batching over the full
-    /// canonical group order `[UntrustedAdvice, TrustedAdvice, OneHotTrace]`, so
-    /// both advice objects and the trace share one joint opening proof.
-    PackedAllAdviceBatched,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,7 +59,7 @@ pub const SELECTED_ZK_CONFIG: ZkConfig = ZkConfig::BlindFold;
 pub const SELECTED_ZK_CONFIG: ZkConfig = ZkConfig::Transparent;
 
 #[cfg(feature = "akita")]
-pub const SELECTED_COMMITMENT_CONFIG: CommitmentConfig = CommitmentConfig::PackedAllAdviceBatched;
+pub const SELECTED_COMMITMENT_CONFIG: CommitmentConfig = CommitmentConfig::Packed;
 
 #[cfg(not(feature = "akita"))]
 pub const SELECTED_COMMITMENT_CONFIG: CommitmentConfig = CommitmentConfig::Homomorphic;

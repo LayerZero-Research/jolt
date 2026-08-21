@@ -22,7 +22,6 @@ use jolt_claims::protocols::jolt::{
 use jolt_field::{Field, FixedByteSize};
 use jolt_openings::{
     CommitmentScheme, EvaluationClaim, GroupOpeningClaim, PrecommittedClaim, PrecommittedRole,
-    PrecommittedTraceVerify,
 };
 use jolt_poly::Point;
 use jolt_transcript::{AppendToTranscript, Transcript};
@@ -233,7 +232,7 @@ pub fn verify<PCS, VC, T>(
     reconstruction: &ReconstructionClearOutput<PCS::Field>,
 ) -> Result<(), VerifierError>
 where
-    PCS: CommitmentScheme + PrecommittedTraceVerify,
+    PCS: CommitmentScheme,
     PCS::Output: Clone + AppendToTranscript + OneHotTraceCommitmentMetadata,
     PCS::VerifierSetup: OneHotTraceSetupMetadata,
     VC: jolt_crypto::VectorCommitment<Field = PCS::Field>,
@@ -338,7 +337,7 @@ where
             packed_claim.point.as_slice().to_vec(),
             vec![packed_claim.value],
         );
-        PCS::verify_precommitted_trace_batch(
+        PCS::verify_precommitted_batch(
             &preprocessing.pcs_setup,
             &precommitted,
             &main_group,

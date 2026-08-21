@@ -1860,7 +1860,7 @@ impl AkitaPackedProver<'_> {
         Ok(JoltProof {
             protocol: JoltProtocolConfig {
                 zk: ZkConfig::Transparent,
-                commitment: CommitmentConfig::PackedAllAdviceBatched,
+                commitment: CommitmentConfig::Packed,
             },
             commitments: commitment,
             stages,
