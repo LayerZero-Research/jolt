@@ -375,42 +375,13 @@ pub fn commit_advice<PCS>(
 where
     PCS: CommitmentScheme + TransparentObjectSetup,
 {
-    let setup = advice_setup::<PCS>(kind, max_advice_bytes)?;
-    commit_advice_with_setup::<PCS>(kind, advice_bytes, max_advice_bytes, setup)
-}
-
-/// Derives the transparent setup for one advice object without
-/// assembling or committing its witness.
-pub fn advice_setup<PCS>(
-    kind: JoltAdviceKind,
-    max_advice_bytes: usize,
-) -> Result<PCS::ProverSetup, ProverError<PCS::Field>>
-where
-    PCS: CommitmentScheme + TransparentObjectSetup,
-{
-    let word_vars = (max_advice_bytes / 8).next_power_of_two().ilog2() as usize;
-    let plan = advice_packing_plan(kind, word_vars).map_err(commit_failed)?;
-    PCS::transparent_object_setup(plan.packing().packed_num_vars(), plan.layout_digest())
-        .map(|(setup, _)| setup)
-        .map_err(commit_failed)
-}
-
-/// Assembles and commits an advice object under a setup derived earlier
-/// by [`advice_setup`].
-pub fn commit_advice_with_setup<PCS>(
-    kind: JoltAdviceKind,
-    advice_bytes: &[u8],
-    max_advice_bytes: usize,
-    setup: PCS::ProverSetup,
-) -> Result<AdviceObject<PCS>, ProverError<PCS::Field>>
-where
-    PCS: CommitmentScheme + TransparentObjectSetup,
-{
     let words = common::advice::canonical_advice_words(advice_bytes, max_advice_bytes)
         .map_err(commit_failed)?;
     let word_vars = words.len().ilog2() as usize;
     let plan = advice_packing_plan(kind, word_vars).map_err(commit_failed)?;
     let physical_vars = plan.packing().packed_num_vars();
+    let (setup, _) = PCS::transparent_object_setup(physical_vars, plan.layout_digest())
+        .map_err(commit_failed)?;
     let mut evaluations = vec![PCS::Field::default(); 1usize << physical_vars];
     for (evaluation, word) in evaluations.iter_mut().zip(words) {
         *evaluation = PCS::Field::from_u64(word);
