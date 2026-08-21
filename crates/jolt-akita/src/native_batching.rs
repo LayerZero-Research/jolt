@@ -1,5 +1,4 @@
-//! Adapts Akita's native same-point batched opening protocol to Jolt's
-//! [`BatchOpeningScheme`] trait.
+//! Adapts Akita's native batched opening protocols to Jolt.
 //!
 //! Two kinds of batching meet at this seam:
 //!
@@ -8,9 +7,9 @@
 //!   combination, claim reductions, or prefix packing) down to evaluation
 //!   claims about committed polynomials at a common point.
 //! - **Akita-native batching** is what this module delegates to: the Akita
-//!   backend proves every polynomial of a commitment group at that common
-//!   point in a single backend proof, using its own transcript and batching
-//!   rules.
+//!   backend proves one group at a common point, or a heterogeneous sequence
+//!   of independently committed groups at their group-local points, in one
+//!   backend proof.
 //!
 //! This adapter performs no claim combination of its own — it validates the
 //! statement shape, bridges Jolt's Fiat-Shamir transcript into Akita's, and
@@ -86,16 +85,11 @@ fn validate_grouped_claim(
     Ok(())
 }
 
-fn validate_precommitted_trace_statement(
+fn validate_trace_batch_statement(
     setup: &AkitaVerifierSetup,
     precommitted: &[PrecommittedClaim<AkitaField, AkitaCommitment>],
     main: &GroupOpeningClaim<AkitaField, AkitaCommitment>,
 ) -> Result<(), OpeningsError> {
-    if precommitted.is_empty() {
-        return Err(invalid_batch(
-            "Akita grouped opening requires at least one precommitted group",
-        ));
-    }
     validate_precommitted_order(precommitted.iter().map(|entry| entry.role))?;
     for entry in precommitted {
         validate_grouped_claim(entry.role.diagnostic_name(), &entry.claim, None)?;
@@ -201,7 +195,7 @@ where
 }
 
 impl AkitaNativeBatching {
-    pub(crate) fn prove_precommitted_trace_batch<T>(
+    pub(crate) fn prove_trace_batch<T>(
         setup: &AkitaProverSetup,
         precommitted: Vec<PrecommittedOpening<AkitaField, AkitaCommitment, AkitaProverHint>>,
         main: GroupOpeningClaim<AkitaField, AkitaCommitment>,
@@ -215,7 +209,7 @@ impl AkitaNativeBatching {
             .iter()
             .map(|(entry, _)| entry.clone())
             .collect::<Vec<_>>();
-        validate_precommitted_trace_statement(&setup.verifier, &precommitted_claims, &main)?;
+        validate_trace_batch_statement(&setup.verifier, &precommitted_claims, &main)?;
         for (entry, hint) in &precommitted {
             validate_grouped_claim(entry.role.diagnostic_name(), &entry.claim, Some(hint))?;
         }
@@ -358,7 +352,7 @@ impl AkitaNativeBatching {
         Ok(proof)
     }
 
-    pub(crate) fn verify_precommitted_trace_batch<T>(
+    pub(crate) fn verify_trace_batch<T>(
         setup: &AkitaVerifierSetup,
         precommitted: &[PrecommittedClaim<AkitaField, AkitaCommitment>],
         main: &GroupOpeningClaim<AkitaField, AkitaCommitment>,
@@ -368,7 +362,7 @@ impl AkitaNativeBatching {
     where
         T: Transcript<Challenge = AkitaField>,
     {
-        validate_precommitted_trace_statement(setup, precommitted, main)?;
+        validate_trace_batch_statement(setup, precommitted, main)?;
         let backend_main_point = reverse_point(&main.point);
         let precommitted_commitments = precommitted
             .iter()

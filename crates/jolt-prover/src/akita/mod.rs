@@ -14,10 +14,9 @@
 //! plus one packed opening per auxiliary object.
 //!
 //! Everything here stays generic over the scheme through the `jolt-openings`
-//! seams ([`commit_batch`](CommitmentScheme::commit_batch)/
-//! [`open_batch_from_hint`](CommitmentScheme::open_batch_from_hint) for the packed polynomial,
-//! [`TransparentObjectSetup`] for the auxiliary objects); the concrete Akita
-//! types bind at the call site.
+//! seams ([`commit_batch`](CommitmentScheme::commit_batch) for the packed
+//! polynomial, [`TransparentObjectSetup`] for the auxiliary objects); the
+//! concrete Akita types bind at the call site.
 
 use common::jolt_device::JoltDevice;
 use jolt_crypto::VectorCommitment;
@@ -223,7 +222,7 @@ where
     PCS: CommitmentScheme<Field = F>
         + TransparentObjectSetup
         + jolt_akita::TraceOneHotCommitment
-        + jolt_akita::PrecommittedTraceBatching,
+        + jolt_akita::PackedTraceBatching,
     PCS::ProverSetup: GroupSetupMetadata,
     PCS::Output: Clone + PartialEq + AppendToTranscript + GroupCommitmentMetadata,
     VC: VectorCommitment<Field = F>,

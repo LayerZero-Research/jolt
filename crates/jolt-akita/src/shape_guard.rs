@@ -131,11 +131,6 @@ pub(crate) fn deserialize_checked_grouped_backend_payload(
     ),
     OpeningsError,
 > {
-    if precommitted.is_empty() {
-        return Err(invalid_batch(
-            "Akita grouped opening requires at least one precommitted group",
-        ));
-    }
     let selection = deserialize_selection(proof)?;
     let mut group_layouts = precommitted
         .iter()

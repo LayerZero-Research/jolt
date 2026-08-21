@@ -23,7 +23,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Compress, Validate};
-use jolt_akita::PrecommittedTraceBatching;
+use jolt_akita::PackedTraceBatching;
 use jolt_claims::protocols::jolt::geometry::ra::JoltRaPolynomialLayout;
 use jolt_claims::protocols::jolt::lattice::{
     advice_packing_plan, precommitted_packing_plan, OneHotTraceLayoutPlan, OneHotTraceShape,
@@ -1784,34 +1784,21 @@ impl AkitaPackedProver<'_> {
             }
         }
 
-        let main_batch = if batch_precommitted.is_empty() {
-            AkitaScheme::open_one_hot_group_from_hint(
-                packed_claim.point.as_slice(),
-                std::slice::from_ref(&packed_claim.value),
-                object_setup,
-                hint,
-                &mut self.transcript,
-            )
-            .map_err(|error| VerifierError::FinalOpeningBatchFailed {
-                reason: error.to_string(),
-            })?
-        } else {
-            let main_group = GroupOpeningClaim::new(
-                commitment.clone(),
-                packed_claim.point.as_slice().to_vec(),
-                vec![packed_claim.value],
-            );
-            AkitaScheme::prove_precommitted_trace_batch(
-                object_setup,
-                batch_precommitted,
-                main_group,
-                hint,
-                &mut self.transcript,
-            )
-            .map_err(|error| VerifierError::FinalOpeningBatchFailed {
-                reason: error.to_string(),
-            })?
-        };
+        let main_group = GroupOpeningClaim::new(
+            commitment.clone(),
+            packed_claim.point.as_slice().to_vec(),
+            vec![packed_claim.value],
+        );
+        let main_batch = AkitaScheme::prove_trace_batch(
+            object_setup,
+            batch_precommitted,
+            main_group,
+            hint,
+            &mut self.transcript,
+        )
+        .map_err(|error| VerifierError::FinalOpeningBatchFailed {
+            reason: error.to_string(),
+        })?;
         let mut auxiliary = Vec::new();
         if let Some(program) = program {
             for object in &program.objects {

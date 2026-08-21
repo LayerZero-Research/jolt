@@ -321,31 +321,19 @@ where
         }
     }
 
-    if precommitted.is_empty() {
-        PCS::verify_batch(
-            one_hot_trace_commitment,
-            packed_claim.point.as_slice(),
-            std::slice::from_ref(&packed_claim.value),
-            &proof.main_batch,
-            &preprocessing.pcs_setup,
-            transcript,
-        )
-        .map_err(opening_failed)?;
-    } else {
-        let main_group = GroupOpeningClaim::new(
-            one_hot_trace_commitment.clone(),
-            packed_claim.point.as_slice().to_vec(),
-            vec![packed_claim.value],
-        );
-        PCS::verify_precommitted_batch(
-            &preprocessing.pcs_setup,
-            &precommitted,
-            &main_group,
-            &proof.main_batch,
-            transcript,
-        )
-        .map_err(opening_failed)?;
-    }
+    let main_group = GroupOpeningClaim::new(
+        one_hot_trace_commitment.clone(),
+        packed_claim.point.as_slice().to_vec(),
+        vec![packed_claim.value],
+    );
+    PCS::verify_batch(
+        &preprocessing.pcs_setup,
+        &precommitted,
+        &main_group,
+        &proof.main_batch,
+        transcript,
+    )
+    .map_err(opening_failed)?;
 
     let mut program_objects: Vec<ResolvedObject<'_, PCS>> = Vec::new();
     match (
@@ -427,10 +415,10 @@ where
             .ok_or_else(|| batch_failed("missing committed-program auxiliary proof"))?;
         validate_auxiliary_metadata(object.commitment, object.setup, &object.plan)?;
         let physical_claim = reduce_object(&object, &leaves, transcript)?;
-        PCS::verify_batch(
+        PCS::verify(
             object.commitment,
             physical_claim.point.as_slice(),
-            std::slice::from_ref(&physical_claim.value),
+            physical_claim.value,
             auxiliary_proof,
             object.setup,
             transcript,

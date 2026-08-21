@@ -124,24 +124,9 @@ pub trait CommitmentScheme: Commitment {
         ))
     }
 
-    /// Verifies a single proof opening every member of one commitment group
-    /// at a shared point.
+    /// Verifies one proof opening zero or more independently committed groups
+    /// at their group-local points, followed by a final commitment group.
     fn verify_batch(
-        _commitment: &Self::Output,
-        _point: &[Self::Field],
-        _evaluations: &[Self::Field],
-        _proof: &Self::Proof,
-        _setup: &Self::VerifierSetup,
-        _transcript: &mut impl Transcript<Challenge = Self::Field>,
-    ) -> Result<(), OpeningsError> {
-        Err(OpeningsError::InvalidBatch(
-            "this commitment scheme has no native same-point batch opening".to_owned(),
-        ))
-    }
-
-    /// Verifies one proof opening independently committed groups at their
-    /// group-local points, followed by a final commitment group.
-    fn verify_precommitted_batch(
         _setup: &Self::VerifierSetup,
         _precommitted: &[PrecommittedClaim<Self::Field, Self::Output>],
         _final_group: &GroupOpeningClaim<Self::Field, Self::Output>,
@@ -149,7 +134,7 @@ pub trait CommitmentScheme: Commitment {
         _transcript: &mut impl Transcript<Challenge = Self::Field>,
     ) -> Result<(), OpeningsError> {
         Err(OpeningsError::InvalidBatch(
-            "this commitment scheme has no heterogeneous precommitted-group opening".to_owned(),
+            "this commitment scheme has no native group-batch opening".to_owned(),
         ))
     }
 }

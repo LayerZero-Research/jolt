@@ -43,7 +43,7 @@ where
     PCS: CommitmentScheme<Field = F>
         + TransparentObjectSetup
         + jolt_akita::TraceOneHotCommitment
-        + jolt_akita::PrecommittedTraceBatching,
+        + jolt_akita::PackedTraceBatching,
     PCS::ProverSetup: GroupSetupMetadata,
     PCS::Output: Clone + PartialEq + AppendToTranscript + GroupCommitmentMetadata,
     VC: VectorCommitment<Field = F>,

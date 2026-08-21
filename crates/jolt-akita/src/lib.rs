@@ -42,7 +42,7 @@ pub use native_batching::{
     AkitaNativeBatchPolynomials, AkitaNativeBatchStatement, AkitaNativeBatching,
 };
 pub use scheme::{
-    AkitaScheme, PrecommittedOpening, PrecommittedTraceBatching, TraceOneHotCommitment,
+    AkitaScheme, PackedTraceBatching, PrecommittedOpening, TraceOneHotCommitment,
 };
 pub use trace_onehot::{no_selected_row, TraceOneHotRows, TracePackedOneHot};
 

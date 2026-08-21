@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use jolt_akita::PrecommittedTraceBatching;
+use jolt_akita::PackedTraceBatching;
 use jolt_claims::protocols::jolt::lattice::packing::{OneHotTraceShape, PrefixPackedObjectPlan};
 use jolt_claims::protocols::jolt::lattice::strategy::ONE_HOT_TRACE_LAYOUT;
 use jolt_claims::protocols::jolt::{JoltCommittedPolynomial, JoltRelationId};
@@ -91,7 +91,7 @@ pub fn prove_stage8<F, PCS, VC, T>(
 ) -> Result<AkitaJointOpeningProof<PCS::Proof>, ProverError<F>>
 where
     F: Field,
-    PCS: CommitmentScheme<Field = F> + PrecommittedTraceBatching,
+    PCS: CommitmentScheme<Field = F> + PackedTraceBatching,
     PCS::Output: Clone + AppendToTranscript,
     VC: VectorCommitment<Field = F>,
     T: Transcript<Challenge = F>,
@@ -165,38 +165,21 @@ where
         }
     }
 
-    let main_batch = if precommitted.is_empty() {
-        tracing::info_span!(
-            "CommitmentScheme::open_batch_from_hint",
-            packed_num_vars = plan.packing().packed_num_vars()
+    let main_group = GroupOpeningClaim::new(
+        one_hot_trace_commitment.clone(),
+        packed_claim.point.as_slice().to_vec(),
+        vec![packed_claim.value],
+    );
+    let main_batch = tracing::info_span!("akita_main_batched_prove").in_scope(|| {
+        PCS::prove_trace_batch(
+            &preprocessing.pcs_setup,
+            precommitted,
+            main_group,
+            one_hot_trace_hint,
+            transcript,
         )
-        .in_scope(|| {
-            PCS::open_batch_from_hint(
-                packed_claim.point.as_slice(),
-                std::slice::from_ref(&packed_claim.value),
-                &preprocessing.pcs_setup,
-                one_hot_trace_hint,
-                transcript,
-            )
-        })
-        .map_err(batch_failed::<F>)?
-    } else {
-        let main_group = GroupOpeningClaim::new(
-            one_hot_trace_commitment.clone(),
-            packed_claim.point.as_slice().to_vec(),
-            vec![packed_claim.value],
-        );
-        tracing::info_span!("akita_advice_main_batched_prove").in_scope(|| {
-            PCS::prove_precommitted_trace_batch(
-                &preprocessing.pcs_setup,
-                precommitted,
-                main_group,
-                one_hot_trace_hint,
-                transcript,
-            )
-            .map_err(batch_failed::<F>)
-        })?
-    };
+        .map_err(batch_failed::<F>)
+    })?;
 
     let mut auxiliary = Vec::new();
     if let Some(program) = program {
