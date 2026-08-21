@@ -58,8 +58,7 @@ where
     F: Field,
     PCS: CommitmentScheme<Field = F>
         + TransparentObjectSetup
-        + jolt_akita::TraceOneHotCommitment
-        + jolt_akita::PackedTraceBatching,
+        + jolt_akita::TraceOneHotCommitment,
     PCS::ProverSetup: GroupSetupMetadata,
     PCS::Output: Clone + AppendToTranscript + GroupCommitmentMetadata,
     VC: VectorCommitment<Field = F>,
@@ -245,16 +244,14 @@ where
     }
     // Resolve the exact grouped row before building the expensive final
     // source: an unschedulable precommit shape fails here, not minutes later.
-    if !precommitted.is_empty() {
-        PCS::validate_trace_precommits(
-            &preprocessing.pcs_setup,
-            &precommitted,
-            plan.packing().packed_num_vars(),
-        )
-        .map_err(|error| VerifierError::FinalOpeningVerificationFailed {
-            reason: error.to_string(),
-        })?;
-    }
+    PCS::validate_trace_precommits(
+        &preprocessing.pcs_setup,
+        &precommitted,
+        plan.packing().packed_num_vars(),
+    )
+    .map_err(|error| VerifierError::FinalOpeningVerificationFailed {
+        reason: error.to_string(),
+    })?;
 
     let (commitment, hint) =
         tracing::info_span!("akita_main_commit_with_precommitted").in_scope(|| {
@@ -269,22 +266,13 @@ where
                 .iter()
                 .map(|(_, _, hint)| *hint)
                 .collect::<Vec<_>>();
-            let committed = if precommitted_hints.is_empty() {
-                PCS::commit_trace_one_hot(
-                    &preprocessing.pcs_setup,
-                    preprocessing.pcs_setup.default_layout_digest(),
-                    plan.packing().slot_capacity(),
-                    packed_trace_rows,
-                )
-            } else {
-                PCS::commit_trace_one_hot_with_precommitted(
-                    &preprocessing.pcs_setup,
-                    preprocessing.pcs_setup.default_layout_digest(),
-                    plan.packing().slot_capacity(),
-                    packed_trace_rows,
-                    &precommitted_hints,
-                )
-            };
+            let committed = PCS::commit_trace_one_hot(
+                &preprocessing.pcs_setup,
+                preprocessing.pcs_setup.default_layout_digest(),
+                plan.packing().slot_capacity(),
+                packed_trace_rows,
+                &precommitted_hints,
+            );
             let (commitment, hint) =
                 committed.map_err(|error| VerifierError::FinalOpeningVerificationFailed {
                     reason: error.to_string(),

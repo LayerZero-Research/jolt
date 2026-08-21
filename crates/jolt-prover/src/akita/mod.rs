@@ -221,8 +221,7 @@ where
     F: Field + CanonicalBytes + AppendToTranscript,
     PCS: CommitmentScheme<Field = F>
         + TransparentObjectSetup
-        + jolt_akita::TraceOneHotCommitment
-        + jolt_akita::PackedTraceBatching,
+        + jolt_akita::TraceOneHotCommitment,
     PCS::ProverSetup: GroupSetupMetadata,
     PCS::Output: Clone + PartialEq + AppendToTranscript + GroupCommitmentMetadata,
     VC: VectorCommitment<Field = F>,

@@ -87,8 +87,7 @@ pub trait CommitmentScheme: Commitment {
     ) -> Result<(), OpeningsError>;
 
     /// Commits a group of polynomials as one commitment object whose members
-    /// are opened together at a shared point
-    /// ([`open_batch_from_hint`](Self::open_batch_from_hint)). Only schemes
+    /// are opened together at a shared point. Only schemes
     /// with a native commitment group (e.g. Akita's one-hot flavor) support
     /// this; `layout_digest` is the protocol-owned digest binding the ordered
     /// member identities.
@@ -102,25 +101,23 @@ pub trait CommitmentScheme: Commitment {
         ))
     }
 
-    /// Opens every member of one commitment group at a shared point in a
-    /// single proof, from the scheme's retained commit-time state: `hint` is
-    /// the committed object [`commit_batch`](Self::commit_batch) produced and
-    /// owns everything the opening consumes (witness forms plus any
-    /// commit-time opening data, e.g. Akita's Ajtai digit decompositions).
-    /// There is deliberately no polynomial argument — a scheme whose openings
-    /// cannot run from retained state alone does not implement this.
+    /// Proves one batch containing zero or more independently committed groups
+    /// followed by a final commitment group. Every opening runs from retained
+    /// commit-time state; there is deliberately no polynomial argument.
     // TODO(#1782): fold the retained-state contract into a first-class
     // committed-object type on this trait instead of the `OpeningHint`
     // side-channel.
-    fn open_batch_from_hint(
-        _point: &[Self::Field],
-        _evaluations: &[Self::Field],
+    fn prove_batch(
         _setup: &Self::ProverSetup,
-        _hint: Self::OpeningHint,
+        _precommitted: Vec<
+            PrecommittedOpening<Self::Field, Self::Output, Self::OpeningHint>,
+        >,
+        _final_group: GroupOpeningClaim<Self::Field, Self::Output>,
+        _final_hint: Self::OpeningHint,
         _transcript: &mut impl Transcript<Challenge = Self::Field>,
     ) -> Result<Self::Proof, OpeningsError> {
         Err(OpeningsError::InvalidBatch(
-            "this commitment scheme has no retained-state batch opening".to_owned(),
+            "this commitment scheme has no native group-batch opening".to_owned(),
         ))
     }
 
@@ -793,6 +790,10 @@ pub struct PrecommittedClaim<F, C> {
     pub role: PrecommittedRole,
     pub claim: GroupOpeningClaim<F, C>,
 }
+
+/// One precommitted group's public claim paired with the prover's retained
+/// opening hint.
+pub type PrecommittedOpening<F, C, H> = (PrecommittedClaim<F, C>, H);
 
 impl<F, C> PrecommittedClaim<F, C> {
     pub fn new(role: PrecommittedRole, claim: GroupOpeningClaim<F, C>) -> Self {

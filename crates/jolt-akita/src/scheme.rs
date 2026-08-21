@@ -5,8 +5,8 @@ use jolt_crypto::Commitment;
 use jolt_field::CanonicalBytes;
 use jolt_openings::{
     BatchOpeningScheme, CommitmentScheme, EvaluationClaim, GroupOpeningClaim, OpeningsError,
-    PrecommittedClaim, PrecommittedRole, TransparentObjectSetup, VerifierOpeningClaim,
-    ZkBatchOpeningScheme, ZkOpeningScheme,
+    PrecommittedClaim, PrecommittedOpening, PrecommittedRole, TransparentObjectSetup,
+    VerifierOpeningClaim, ZkBatchOpeningScheme, ZkOpeningScheme,
 };
 use jolt_poly::{MultilinearPoly, OneHotPolynomial, Polynomial};
 use jolt_transcript::Transcript;
@@ -37,20 +37,25 @@ fn split_commit_output(
 
 /// Prover seam for committing the packed trace directly from selected one-hot rows.
 pub trait TraceOneHotCommitment: CommitmentScheme {
+    /// Resolve the exact grouped row before constructing the potentially
+    /// expensive final source. Pairs are in canonical precommitted order.
+    fn validate_trace_precommits(
+        setup: &Self::ProverSetup,
+        precommitted: &[(PrecommittedRole, &Self::Output, &Self::OpeningHint)],
+        final_num_vars: usize,
+    ) -> Result<(), OpeningsError>;
+
     fn commit_trace_one_hot(
         setup: &Self::ProverSetup,
         layout_digest: [u8; 32],
         column_capacity: usize,
         rows: Arc<dyn TraceOneHotRows>,
+        precommitted_hints: &[&Self::OpeningHint],
     ) -> Result<(Self::Output, Self::OpeningHint), OpeningsError>;
 
     /// Releases backend state that can be rebuilt before the opening proof.
     fn release_post_commit_residency(setup: &Self::ProverSetup) -> Result<(), OpeningsError>;
 }
-
-/// One precommitted group's public claim paired with the prover's retained
-/// opening hint. The prover passes these in canonical role order.
-pub type PrecommittedOpening<F, C, H> = (PrecommittedClaim<F, C>, H);
 
 /// Strictly ascending roles make the ordered precommitted group list
 /// unambiguous and forbid duplicate or permuted groups.
@@ -73,36 +78,6 @@ pub(crate) fn validate_precommitted_order(
     Ok(())
 }
 
-/// Jolt's typed grouped Akita path. Optional precommitted groups appear in
-/// canonical role order before the final trace group, and one backend proof
-/// discharges every present group at its group-local point.
-pub trait PackedTraceBatching: TraceOneHotCommitment {
-    /// Resolve the exact grouped row before constructing the potentially
-    /// expensive final source. Pairs are in canonical precommitted order.
-    fn validate_trace_precommits(
-        setup: &Self::ProverSetup,
-        precommitted: &[(PrecommittedRole, &Self::Output, &Self::OpeningHint)],
-        final_num_vars: usize,
-    ) -> Result<(), OpeningsError>;
-
-    fn commit_trace_one_hot_with_precommitted(
-        setup: &Self::ProverSetup,
-        layout_digest: [u8; 32],
-        column_capacity: usize,
-        rows: Arc<dyn TraceOneHotRows>,
-        precommitted_hints: &[&Self::OpeningHint],
-    ) -> Result<(Self::Output, Self::OpeningHint), OpeningsError>;
-
-    fn prove_trace_batch<T>(
-        setup: &Self::ProverSetup,
-        precommitted: Vec<PrecommittedOpening<Self::Field, Self::Output, Self::OpeningHint>>,
-        main: GroupOpeningClaim<Self::Field, Self::Output>,
-        main_hint: Self::OpeningHint,
-        transcript: &mut T,
-    ) -> Result<Self::Proof, OpeningsError>
-    where
-        T: Transcript<Challenge = Self::Field>;
-}
 
 
 impl AkitaScheme {
@@ -118,6 +93,9 @@ impl AkitaScheme {
         final_num_vars: usize,
     ) -> Result<(), OpeningsError> {
         validate_precommitted_order(precommitted.iter().map(|(role, _, _)| *role))?;
+        if precommitted.is_empty() {
+            return Ok(());
+        }
         for (role, commitment, hint) in precommitted {
             if &hint.commitment != *commitment {
                 return Err(invalid_batch(format!(
@@ -301,55 +279,13 @@ impl AkitaScheme {
         layout_digest: [u8; 32],
         column_capacity: usize,
         rows: Arc<dyn TraceOneHotRows>,
-    ) -> Result<(AkitaCommitment, AkitaProverHint), OpeningsError> {
-        let source = TracePackedOneHot::new(
-            setup.one_hot_k(),
-            AKITA_SOURCE_RING_DIMENSION,
-            column_capacity,
-            rows,
-        )
-        .map_err(commit_failed)?;
-        let num_vars = akita_prover::RootPolyMeta::num_vars(&source);
-        Self::validate_commit_shape(setup, num_vars, 1)?;
-        let (backend_prover_setup, prepared_backend_setup) = setup.one_hot_backend()?;
-        let stack = backend_stack(backend_prover_setup, prepared_backend_setup)?;
-        let (backend_commitment, backend_hint) = with_backend_pool(|| match setup.one_hot_k() {
-            AKITA_ONE_HOT_K16 => AkitaOneHotK16BackendScheme::commit(
-                backend_prover_setup,
-                std::slice::from_ref(&source),
-                &stack,
-                akita_prover::GroupContext::scheduler_without_precommitted_groups(),
-            ),
-            AKITA_ONE_HOT_K256 => AkitaOneHotK256BackendScheme::commit(
-                backend_prover_setup,
-                std::slice::from_ref(&source),
-                &stack,
-                akita_prover::GroupContext::scheduler_without_precommitted_groups(),
-            ),
-            _ => unreachable!("the one-hot setup geometry was validated during setup"),
-        })
-        .map(split_commit_output)
-        .map_err(commit_failed)?;
-        Self::package_commitment(
-            layout_digest,
-            num_vars,
-            backend_commitment,
-            backend_hint,
-            AkitaHintPolynomials::TraceOneHot(vec![source].into()),
-        )
-    }
-
-    /// Contextual final commit for the ordered
-    /// `[dense precommits.., streamed trace final]` root.
-    pub fn commit_trace_one_hot_with_precommitted(
-        setup: &AkitaProverSetup,
-        layout_digest: [u8; 32],
-        column_capacity: usize,
-        rows: Arc<dyn TraceOneHotRows>,
         precommitted_hints: &[&AkitaProverHint],
     ) -> Result<(AkitaCommitment, AkitaProverHint), OpeningsError> {
-        let profiles = Self::precommitted_profiles(setup, precommitted_hints)?;
-
+        let profiles = if precommitted_hints.is_empty() {
+            None
+        } else {
+            Some(Self::precommitted_profiles(setup, precommitted_hints)?)
+        };
         let source = TracePackedOneHot::new(
             setup.one_hot_k(),
             AKITA_SOURCE_RING_DIMENSION,
@@ -361,18 +297,33 @@ impl AkitaScheme {
         Self::validate_commit_shape(setup, num_vars, 1)?;
         let (backend_prover_setup, prepared_backend_setup) = setup.one_hot_backend()?;
         let stack = backend_stack(backend_prover_setup, prepared_backend_setup)?;
-        let (backend_commitment, backend_hint) = with_backend_pool(|| match setup.one_hot_k() {
-            AKITA_ONE_HOT_K16 => AkitaOneHotK16BackendScheme::commit(
+        let (backend_commitment, backend_hint) = with_backend_pool(|| match (
+            setup.one_hot_k(),
+            profiles.as_ref(),
+        ) {
+            (AKITA_ONE_HOT_K16, None) => AkitaOneHotK16BackendScheme::commit(
                 backend_prover_setup,
                 std::slice::from_ref(&source),
                 &stack,
-                akita_prover::GroupContext::scheduler_with_precommitted_groups(&profiles),
+                akita_prover::GroupContext::scheduler_without_precommitted_groups(),
             ),
-            AKITA_ONE_HOT_K256 => AkitaOneHotK256BackendScheme::commit(
+            (AKITA_ONE_HOT_K16, Some(profiles)) => AkitaOneHotK16BackendScheme::commit(
                 backend_prover_setup,
                 std::slice::from_ref(&source),
                 &stack,
-                akita_prover::GroupContext::scheduler_with_precommitted_groups(&profiles),
+                akita_prover::GroupContext::scheduler_with_precommitted_groups(profiles),
+            ),
+            (AKITA_ONE_HOT_K256, None) => AkitaOneHotK256BackendScheme::commit(
+                backend_prover_setup,
+                std::slice::from_ref(&source),
+                &stack,
+                akita_prover::GroupContext::scheduler_without_precommitted_groups(),
+            ),
+            (AKITA_ONE_HOT_K256, Some(profiles)) => AkitaOneHotK256BackendScheme::commit(
+                backend_prover_setup,
+                std::slice::from_ref(&source),
+                &stack,
+                akita_prover::GroupContext::scheduler_with_precommitted_groups(profiles),
             ),
             _ => unreachable!("the one-hot setup geometry was validated during setup"),
         })
@@ -384,41 +335,6 @@ impl AkitaScheme {
             backend_commitment,
             backend_hint,
             AkitaHintPolynomials::TraceOneHot(vec![source].into()),
-        )
-    }
-
-    /// Opens committed one-hot columns directly from their hint. The hint
-    /// owns the witnesses after [`Self::commit_one_hot_group_owned`], so no
-    /// second Jolt-side allocation is required.
-    pub fn open_one_hot_group_from_hint(
-        point: &[AkitaField],
-        evaluations: &[AkitaField],
-        setup: &AkitaProverSetup,
-        hint: AkitaProverHint,
-        transcript: &mut impl Transcript<Challenge = AkitaField>,
-    ) -> Result<AkitaBatchProof, OpeningsError> {
-        let statement = evaluations
-            .iter()
-            .map(|evaluation| VerifierOpeningClaim {
-                commitment: hint.commitment.clone(),
-                evaluation: EvaluationClaim::new(point.to_vec(), *evaluation),
-            })
-            .collect();
-        let shapes = (0..evaluations.len())
-            .map(|_| CommittedOneHotShape {
-                num_vars: point.len(),
-            })
-            .collect::<Vec<_>>();
-        let polynomials: AkitaNativeBatchPolynomials<'_> = shapes
-            .iter()
-            .map(|shape| shape as &dyn MultilinearPoly<AkitaField>)
-            .collect();
-        <AkitaNativeBatching as BatchOpeningScheme>::prove_batch(
-            setup,
-            statement,
-            polynomials,
-            hint,
-            transcript,
         )
     }
 
@@ -601,55 +517,6 @@ impl AkitaScheme {
 }
 
 impl TraceOneHotCommitment for AkitaScheme {
-    fn commit_trace_one_hot(
-        setup: &Self::ProverSetup,
-        layout_digest: [u8; 32],
-        column_capacity: usize,
-        rows: Arc<dyn TraceOneHotRows>,
-    ) -> Result<(Self::Output, Self::OpeningHint), OpeningsError> {
-        let source = TracePackedOneHot::new(
-            setup.one_hot_k(),
-            AKITA_SOURCE_RING_DIMENSION,
-            column_capacity,
-            rows,
-        )
-        .map_err(commit_failed)?;
-        let num_vars = akita_prover::RootPolyMeta::num_vars(&source);
-        Self::validate_commit_shape(setup, num_vars, 1)?;
-        let (backend_prover_setup, prepared_backend_setup) = setup.one_hot_backend()?;
-        let stack = backend_stack(backend_prover_setup, prepared_backend_setup)?;
-        let (backend_commitment, backend_hint) = with_backend_pool(|| match setup.one_hot_k() {
-            AKITA_ONE_HOT_K16 => AkitaOneHotK16BackendScheme::commit(
-                backend_prover_setup,
-                std::slice::from_ref(&source),
-                &stack,
-                akita_prover::GroupContext::scheduler_without_precommitted_groups(),
-            ),
-            AKITA_ONE_HOT_K256 => AkitaOneHotK256BackendScheme::commit(
-                backend_prover_setup,
-                std::slice::from_ref(&source),
-                &stack,
-                akita_prover::GroupContext::scheduler_without_precommitted_groups(),
-            ),
-            _ => unreachable!("the one-hot setup geometry was validated during setup"),
-        })
-        .map(split_commit_output)
-        .map_err(commit_failed)?;
-        Self::package_commitment(
-            layout_digest,
-            num_vars,
-            backend_commitment,
-            backend_hint,
-            AkitaHintPolynomials::TraceOneHot(source),
-        )
-    }
-
-    fn release_post_commit_residency(setup: &Self::ProverSetup) -> Result<(), OpeningsError> {
-        setup.release_post_commit_ntt_residency()
-    }
-}
-
-impl PackedTraceBatching for AkitaScheme {
     fn validate_trace_precommits(
         setup: &Self::ProverSetup,
         precommitted: &[(PrecommittedRole, &Self::Output, &Self::OpeningHint)],
@@ -658,14 +525,14 @@ impl PackedTraceBatching for AkitaScheme {
         Self::validate_trace_precommits(setup, precommitted, final_num_vars)
     }
 
-    fn commit_trace_one_hot_with_precommitted(
+    fn commit_trace_one_hot(
         setup: &Self::ProverSetup,
         layout_digest: [u8; 32],
         column_capacity: usize,
         rows: Arc<dyn TraceOneHotRows>,
         precommitted_hints: &[&Self::OpeningHint],
     ) -> Result<(Self::Output, Self::OpeningHint), OpeningsError> {
-        Self::commit_trace_one_hot_with_precommitted(
+        Self::commit_trace_one_hot(
             setup,
             layout_digest,
             column_capacity,
@@ -674,45 +541,8 @@ impl PackedTraceBatching for AkitaScheme {
         )
     }
 
-    fn prove_trace_batch<T>(
-        setup: &Self::ProverSetup,
-        precommitted: Vec<PrecommittedOpening<Self::Field, Self::Output, Self::OpeningHint>>,
-        main: GroupOpeningClaim<Self::Field, Self::Output>,
-        main_hint: Self::OpeningHint,
-        transcript: &mut T,
-    ) -> Result<Self::Proof, OpeningsError>
-    where
-        T: Transcript<Challenge = Self::Field>,
-    {
-        AkitaNativeBatching::prove_trace_batch(
-            setup,
-            precommitted,
-            main,
-            main_hint,
-            transcript,
-        )
-    }
-}
-
-struct CommittedOneHotShape {
-    num_vars: usize,
-}
-
-impl MultilinearPoly<AkitaField> for CommittedOneHotShape {
-    fn num_vars(&self) -> usize {
-        self.num_vars
-    }
-
-    fn evaluate(&self, _point: &[AkitaField]) -> AkitaField {
-        unreachable!("hint-owned one-hot witness is evaluated by the Akita backend")
-    }
-
-    fn for_each_row(&self, _sigma: usize, _f: &mut dyn FnMut(usize, &[AkitaField])) {
-        unreachable!("hint-owned one-hot witness is streamed by the Akita backend")
-    }
-
-    fn is_one_hot(&self) -> bool {
-        true
+    fn release_post_commit_residency(setup: &Self::ProverSetup) -> Result<(), OpeningsError> {
+        setup.release_post_commit_ntt_residency()
     }
 }
 
@@ -952,17 +782,22 @@ impl CommitmentScheme for AkitaScheme {
         )
     }
 
-    /// The retained-state batch opening: the hint is the committed group
-    /// object [`Self::commit_one_hot_group`] produced, owning the backend
-    /// witness forms and the Ajtai commit's opening data.
-    fn open_batch_from_hint(
-        point: &[Self::Field],
-        evaluations: &[Self::Field],
+    fn prove_batch(
         setup: &Self::ProverSetup,
-        hint: Self::OpeningHint,
+        precommitted: Vec<
+            PrecommittedOpening<Self::Field, Self::Output, Self::OpeningHint>,
+        >,
+        final_group: GroupOpeningClaim<Self::Field, Self::Output>,
+        final_hint: Self::OpeningHint,
         transcript: &mut impl Transcript<Challenge = Self::Field>,
     ) -> Result<Self::Proof, OpeningsError> {
-        Self::open_one_hot_group_from_hint(point, evaluations, setup, hint, transcript)
+        AkitaNativeBatching::prove_trace_batch(
+            setup,
+            precommitted,
+            final_group,
+            final_hint,
+            transcript,
+        )
     }
 
     fn verify_batch(

@@ -23,7 +23,6 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Compress, Validate};
-use jolt_akita::PackedTraceBatching;
 use jolt_claims::protocols::jolt::geometry::ra::JoltRaPolynomialLayout;
 use jolt_claims::protocols::jolt::lattice::{
     advice_packing_plan, precommitted_packing_plan, OneHotTraceLayoutPlan, OneHotTraceShape,
@@ -1789,7 +1788,7 @@ impl AkitaPackedProver<'_> {
             packed_claim.point.as_slice().to_vec(),
             vec![packed_claim.value],
         );
-        let main_batch = AkitaScheme::prove_trace_batch(
+        let main_batch = <AkitaScheme as VerifierCommitmentScheme>::prove_batch(
             object_setup,
             batch_precommitted,
             main_group,

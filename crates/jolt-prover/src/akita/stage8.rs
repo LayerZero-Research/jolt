@@ -4,7 +4,6 @@
 
 use std::collections::BTreeMap;
 
-use jolt_akita::PackedTraceBatching;
 use jolt_claims::protocols::jolt::lattice::packing::{OneHotTraceShape, PrefixPackedObjectPlan};
 use jolt_claims::protocols::jolt::lattice::strategy::ONE_HOT_TRACE_LAYOUT;
 use jolt_claims::protocols::jolt::{JoltCommittedPolynomial, JoltRelationId};
@@ -91,7 +90,7 @@ pub fn prove_stage8<F, PCS, VC, T>(
 ) -> Result<AkitaJointOpeningProof<PCS::Proof>, ProverError<F>>
 where
     F: Field,
-    PCS: CommitmentScheme<Field = F> + PackedTraceBatching,
+    PCS: CommitmentScheme<Field = F>,
     PCS::Output: Clone + AppendToTranscript,
     VC: VectorCommitment<Field = F>,
     T: Transcript<Challenge = F>,
@@ -171,7 +170,7 @@ where
         vec![packed_claim.value],
     );
     let main_batch = tracing::info_span!("akita_main_batched_prove").in_scope(|| {
-        PCS::prove_trace_batch(
+        PCS::prove_batch(
             &preprocessing.pcs_setup,
             precommitted,
             main_group,
