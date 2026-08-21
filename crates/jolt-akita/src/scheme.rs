@@ -1,6 +1,5 @@
-use akita_config::CommitmentConfig;
 use akita_pcs::{ComputeBackendSetup, CpuBackend};
-use akita_types::{AkitaScheduleLookupKey, PolynomialGroupLayout, PrecommittedGroupProfiles};
+use akita_types::PrecommittedGroupProfiles;
 use jolt_crypto::Commitment;
 use jolt_field::CanonicalBytes;
 use jolt_openings::{
@@ -37,14 +36,6 @@ fn split_commit_output(
 
 /// Prover seam for committing the packed trace directly from selected one-hot rows.
 pub trait TraceOneHotCommitment: CommitmentScheme {
-    /// Resolve the exact grouped row before constructing the potentially
-    /// expensive final source. Pairs are in canonical precommitted order.
-    fn validate_trace_precommits(
-        setup: &Self::ProverSetup,
-        precommitted: &[(PrecommittedRole, &Self::Output, &Self::OpeningHint)],
-        final_num_vars: usize,
-    ) -> Result<(), OpeningsError>;
-
     fn commit_trace_one_hot(
         setup: &Self::ProverSetup,
         layout_digest: [u8; 32],
@@ -83,52 +74,6 @@ impl AkitaScheme {
     /// unit-valued sparse polynomial with this multilinear dimension.
     pub fn supports_unit_sparse_dimension(num_vars: usize) -> bool {
         domain_size(num_vars).is_some_and(|size| size >= AKITA_SOURCE_RING_DIMENSION)
-    }
-
-    pub fn validate_trace_precommits(
-        setup: &AkitaProverSetup,
-        precommitted: &[(PrecommittedRole, &AkitaCommitment, &AkitaProverHint)],
-        final_num_vars: usize,
-    ) -> Result<(), OpeningsError> {
-        validate_precommitted_order(precommitted.iter().map(|(role, _, _)| *role))?;
-        if precommitted.is_empty() {
-            return Ok(());
-        }
-        for (role, commitment, hint) in precommitted {
-            if &hint.commitment != *commitment {
-                return Err(invalid_batch(format!(
-                    "Akita {} precommit hint does not match its public commitment",
-                    role.diagnostic_name()
-                )));
-            }
-        }
-        let hints = precommitted
-            .iter()
-            .map(|(_, _, hint)| *hint)
-            .collect::<Vec<_>>();
-        let profiles = Self::precommitted_profiles(setup, &hints)?;
-        let key = AkitaScheduleLookupKey {
-            final_group: PolynomialGroupLayout::new(final_num_vars, 1),
-            precommitteds: profiles.as_slice().to_vec(),
-        };
-        let resolved = match setup.one_hot_k() {
-            AKITA_ONE_HOT_K256 => {
-                crate::adapters::AkitaOneHotK256Config::resolve_catalog_row_for_key(&key)
-            }
-            AKITA_ONE_HOT_K16 => {
-                crate::adapters::AkitaOneHotK16Config::resolve_catalog_row_for_key(&key)
-            }
-            _ => unreachable!("one-hot K was validated during setup"),
-        }
-        .map_err(akita_error)?;
-        if resolved.profiles().precommitteds != profiles.as_slice()
-            || resolved.profiles().final_group.group != key.final_group
-        {
-            return Err(invalid_batch(
-                "Akita grouped schedule does not match the precommitted prefix and final layout",
-            ));
-        }
-        Ok(())
     }
 
     pub fn commit_group(
@@ -513,14 +458,6 @@ impl AkitaScheme {
 }
 
 impl TraceOneHotCommitment for AkitaScheme {
-    fn validate_trace_precommits(
-        setup: &Self::ProverSetup,
-        precommitted: &[(PrecommittedRole, &Self::Output, &Self::OpeningHint)],
-        final_num_vars: usize,
-    ) -> Result<(), OpeningsError> {
-        Self::validate_trace_precommits(setup, precommitted, final_num_vars)
-    }
-
     fn commit_trace_one_hot(
         setup: &Self::ProverSetup,
         layout_digest: [u8; 32],

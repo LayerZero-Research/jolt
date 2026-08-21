@@ -52,11 +52,6 @@ fn validate_grouped_claim(
     claim: &GroupOpeningClaim<AkitaField, AkitaCommitment>,
     hint: Option<&AkitaProverHint>,
 ) -> Result<(), OpeningsError> {
-    if claim.evaluations.is_empty() {
-        return Err(invalid_batch(format!(
-            "Akita {role} group requires at least one evaluation"
-        )));
-    }
     if claim.point.len() != claim.commitment.num_vars {
         return Err(invalid_batch(format!(
             "Akita {role} point has {} variables but commitment has {}",
@@ -75,11 +70,6 @@ fn validate_grouped_claim(
         if hint.commitment != claim.commitment {
             return Err(invalid_batch(format!(
                 "Akita {role} hint does not match its public commitment"
-            )));
-        }
-        if hint.backend.is_none() {
-            return Err(invalid_batch(format!(
-                "Akita {role} hint is missing backend opening data"
             )));
         }
     }

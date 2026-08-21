@@ -737,14 +737,6 @@ pub struct GroupOpeningClaim<F, C> {
 }
 
 impl<F, C> GroupOpeningClaim<F, C> {
-    pub fn singleton(commitment: C, point: Vec<F>, evaluation: F) -> Self {
-        Self {
-            commitment,
-            point,
-            evaluations: vec![evaluation],
-        }
-    }
-
     pub fn new(commitment: C, point: Vec<F>, evaluations: Vec<F>) -> Self {
         Self {
             commitment,

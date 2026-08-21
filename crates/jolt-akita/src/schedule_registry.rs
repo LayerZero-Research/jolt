@@ -52,14 +52,6 @@ pub struct RegisteredRows {
 }
 
 impl RegisteredRows {
-    pub fn is_empty(&self) -> bool {
-        self.by_digest.is_empty()
-    }
-
-    pub fn len(&self) -> usize {
-        self.by_digest.len()
-    }
-
     /// The installed rows, in unspecified order.
     pub fn rows(&self) -> impl Iterator<Item = &ResolvedScheduleRow> {
         self.by_digest.values()
@@ -92,25 +84,6 @@ impl RegisteredRows {
         self.by_digest
             .values()
             .find(|row| row.profiles() == profiles)
-    }
-
-    /// Stable digest over the installed rows, order-independent. Prover and
-    /// verifier compare this to prove they provisioned the same set before the
-    /// grouped statement is bound.
-    pub fn set_digest(&self) -> [u8; 32] {
-        let mut digests: Vec<[u8; 32]> = self
-            .by_digest
-            .keys()
-            .map(|digest| *digest.as_bytes())
-            .collect();
-        digests.sort_unstable();
-        let mut bytes = Vec::with_capacity(40 + 32 * digests.len());
-        bytes.extend_from_slice(b"jolt-akita/provisioned-rows/v1");
-        bytes.extend_from_slice(&(digests.len() as u64).to_le_bytes());
-        for digest in &digests {
-            bytes.extend_from_slice(digest);
-        }
-        akita_types::instance_descriptor::digest_descriptor_bytes(&bytes)
     }
 }
 
@@ -597,7 +570,7 @@ mod tests {
             )
             .expect("provisioning must plan the whole range");
             assert_eq!(
-                rows.len(),
+                rows.rows().count(),
                 keys.len(),
                 "every final arity must be planned, since none is cataloged"
             );
@@ -628,7 +601,7 @@ mod tests {
                 [27],
             )
             .expect("provisioning an uncataloged key must plan it");
-            assert_eq!(rows.len(), 1);
+            assert_eq!(rows.rows().count(), 1);
 
             let by_key = JoltOneHotK16::resolve_catalog_row_for_key(key)
                 .expect("the provisioned row must now resolve by key");
@@ -658,7 +631,7 @@ mod tests {
                 provision_advice::<JoltOneHotK16>(trusted_only(uncataloged_trusted), range.clone())
                     .expect("a previously unseen advice capacity must provision");
             assert_eq!(
-                rows.len(),
+                rows.rows().count(),
                 expected,
                 "every final arity at an uncataloged prefix must be planned"
             );
@@ -691,7 +664,10 @@ mod tests {
                 .expect("first provisioning");
             let second = provision::<JoltOneHotK16>(&combinations, policy, [27])
                 .expect("re-provisioning an identical set must succeed");
-            assert_eq!(first.set_digest(), second.set_digest());
+            assert_eq!(first.rows().count(), second.rows().count());
+            for row in first.rows() {
+                assert!(second.by_selection(row.selection()).is_some());
+            }
             reset_for_tests();
         }
 
@@ -708,12 +684,6 @@ mod tests {
                 provision_advice::<JoltOneHotK16>(trusted_only(small), [27]).expect("small");
             let large_rows =
                 provision_advice::<JoltOneHotK16>(trusted_only(large), [27]).expect("large");
-            assert_ne!(
-                small_rows.set_digest(),
-                large_rows.set_digest(),
-                "different capacities must produce different row sets"
-            );
-
             for (layout, own) in [(small, &small_rows), (large, &large_rows)] {
                 let profile = dense_precommit_profile(layout).unwrap();
                 let key = AkitaScheduleLookupKey {

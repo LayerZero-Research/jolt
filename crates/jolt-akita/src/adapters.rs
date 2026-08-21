@@ -53,38 +53,6 @@ pub(crate) type AkitaBackendPreparedSetup = CpuPreparedSetup<AkitaField>;
 pub(crate) type AkitaBackendProverSetup = akita_prover::AkitaProverSetup<AkitaField>;
 pub(crate) type BackendStack<'a> = akita_prover::UniformProverStack<'a, AkitaField, CpuBackend>;
 
-#[expect(
-    clippy::expect_used,
-    reason = "Jolt's compile-time schedule catalogs are validated generated protocol constants"
-)]
-fn compute_catalog_identity_digest<Cfg: CommitmentConfig>() -> [u8; 32] {
-    let table = Cfg::schedule_catalog().expect("Jolt Akita config must have a schedule catalog");
-    let mut bytes = Vec::with_capacity(64 + 32 * table.entries.len());
-    bytes.extend_from_slice(b"jolt-akita/schedule-catalog/v1");
-    bytes.extend_from_slice(&akita_schedules::identity_digest(&table.identity));
-    bytes.extend_from_slice(&(table.entries.len() as u64).to_le_bytes());
-    for entry in table.entries {
-        let resolved = Cfg::resolve_catalog_row_for_key(&entry.to_runtime_lookup_key())
-            .expect("every generated catalog entry must resolve under its owning config");
-        bytes.extend_from_slice(resolved.selection().row_digest.as_bytes());
-    }
-    akita_types::instance_descriptor::digest_descriptor_bytes(&bytes)
-}
-
-static DENSE_CATALOG_DIGEST: OnceLock<[u8; 32]> = OnceLock::new();
-static ONE_HOT_K16_CATALOG_DIGEST: OnceLock<[u8; 32]> = OnceLock::new();
-static ONE_HOT_K256_CATALOG_DIGEST: OnceLock<[u8; 32]> = OnceLock::new();
-
-/// Identity of the fixed public matrix stream used by every Jolt Akita setup.
-#[expect(
-    clippy::expect_used,
-    reason = "serializing Akita's fixed in-memory sample setup seed has no fallible external input"
-)]
-pub fn configured_setup_seed_digest() -> [u8; 32] {
-    akita_types::setup_seed_digest(&akita_types::sample_akita_setup_seed())
-        .expect("the fixed Akita setup seed must serialize")
-}
-
 pub(crate) type AkitaLayoutDigest = [u8; 32];
 
 /// Worker stack size for [`with_backend_pool`]. Stacks are lazily committed,
@@ -253,10 +221,6 @@ impl AkitaProverSetup {
         self.verifier.one_hot_k
     }
 
-    pub fn catalog_identity_digest(&self, flavor: AkitaBackendFlavor) -> [u8; 32] {
-        self.verifier.catalog_identity_digest(flavor)
-    }
-
     /// Releases transformed setup slots after the trace commitment. Later
     /// opening work rebuilds the slots on first use.
     pub fn release_post_commit_ntt_residency(&self) -> Result<(), OpeningsError> {
@@ -338,24 +302,6 @@ impl AkitaVerifierSetup {
 
     pub fn one_hot_k(&self) -> usize {
         self.one_hot_k
-    }
-
-    /// Identity of the compile-time schedule catalog selected for this setup
-    /// and backend flavor. This is verifier-owned protocol data, never read
-    /// from the proof.
-    pub fn catalog_identity_digest(&self, flavor: AkitaBackendFlavor) -> [u8; 32] {
-        match flavor {
-            AkitaBackendFlavor::Dense => {
-                *DENSE_CATALOG_DIGEST.get_or_init(compute_catalog_identity_digest::<AkitaConfig>)
-            }
-            AkitaBackendFlavor::OneHot => match self.one_hot_k {
-                AKITA_ONE_HOT_K16 => *ONE_HOT_K16_CATALOG_DIGEST
-                    .get_or_init(compute_catalog_identity_digest::<AkitaOneHotK16Config>),
-                AKITA_ONE_HOT_K256 => *ONE_HOT_K256_CATALOG_DIGEST
-                    .get_or_init(compute_catalog_identity_digest::<AkitaOneHotK256Config>),
-                _ => [0; 32],
-            },
-        }
     }
 
     /// Primes the lazy key cache with freshly built backend keys, so
@@ -463,10 +409,6 @@ pub(crate) fn append_verifier_setup<T: Transcript>(
     transcript.append(&U64Word(setup.max_total_batch_polys as u64));
     transcript.append(&U64Word(setup.one_hot_k as u64));
     transcript.append_bytes(&setup.default_layout_digest);
-    transcript.append(&Label(b"akita_setup_family"));
-    transcript.append_bytes(&configured_setup_seed_digest());
-    transcript.append(&Label(b"akita_catalog_identity"));
-    transcript.append_bytes(&setup.catalog_identity_digest(flavor));
 }
 
 /// Binds the batch statement (commitment group, point, per-claim data) into

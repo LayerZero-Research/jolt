@@ -478,14 +478,12 @@ pub fn advice_physical_num_vars(
 /// folds provisioned rows into the matrix capacity, so a row installed
 /// afterwards would not be covered.
 ///
-/// Returns the row-set digest, which prover and verifier compare to prove they
-/// provisioned the same rows.
 pub fn provision_advice_schedules(
     max_untrusted_advice_bytes: usize,
     max_trusted_advice_bytes: usize,
     one_hot_k: usize,
     max_final_num_vars: usize,
-) -> Result<[u8; 32], VerifierError> {
+) -> Result<(), VerifierError> {
     let untrusted_physical_vars = (max_untrusted_advice_bytes > 0)
         .then(|| advice_physical_num_vars(JoltAdviceKind::Untrusted, max_untrusted_advice_bytes))
         .transpose()?;
@@ -498,7 +496,7 @@ pub fn provision_advice_schedules(
         one_hot_k,
         max_final_num_vars,
     )
-    .map(|rows| rows.set_digest())
+    .map(|_| ())
     .map_err(|error| VerifierError::FinalOpeningVerificationFailed {
         reason: error.to_string(),
     })
@@ -1459,18 +1457,6 @@ impl AkitaPackedProver<'_> {
             .get_advice_opening(advice_kind, SumcheckId::AdviceClaimReduction)
             .ok_or_else(|| batch_failed("missing final dense advice claim".to_string()))?;
         let logical_point = point.r.iter().map(|value| value.0).collect::<Vec<_>>();
-        let logical_words = object
-            .words
-            .iter()
-            .map(|word| AkitaField::from_u64(*word))
-            .collect();
-        let logical_polynomial = jolt_poly::Polynomial::new(logical_words);
-        if logical_polynomial.evaluate(&logical_point) != value.0 {
-            return Err(batch_failed(
-                "final advice reduction claim does not evaluate to the committed dense word polynomial"
-                    .to_string(),
-            ));
-        }
         let claims = BTreeMap::from([(
             match kind {
                 JoltAdviceKind::Trusted => JoltCommittedPolynomial::TrustedAdvice,
@@ -1524,50 +1510,6 @@ impl AkitaPackedProver<'_> {
             !self.program_io.trusted_advice.is_empty(),
             "the precommitted dense trusted-advice object must be passed exactly when trusted advice exists"
         );
-        if let Some(object) = trusted_advice {
-            let canonical_words = common::advice::canonical_advice_words(
-                &self.program_io.trusted_advice,
-                self.program_io.memory_layout.max_trusted_advice_size as usize,
-            )
-            .map_err(|error| VerifierError::FinalOpeningBatchFailed {
-                reason: error.to_string(),
-            })?;
-            if object.words != canonical_words {
-                return Err(VerifierError::FinalOpeningBatchFailed {
-                    reason: "trusted-advice precommit does not match the execution advice bytes"
-                        .to_string(),
-                });
-            }
-            let expected_word_vars = object.words.len().log_2();
-            let expected_plan = advice_packing_plan(JoltAdviceKind::Trusted, expected_word_vars)
-                .map_err(|error| VerifierError::FinalOpeningBatchFailed {
-                    reason: error.to_string(),
-                })?;
-            let evaluations = object.polynomial.evals();
-            if object.plan.layout_digest() != expected_plan.layout_digest()
-                || object.plan.packing().ids() != expected_plan.packing().ids()
-                || object.commitment.layout_digest() != expected_plan.layout_digest()
-                || object.commitment.num_vars() != expected_plan.packing().packed_num_vars()
-                || object.commitment.poly_count() != 1
-                || object.setup.max_num_vars() != object.commitment.num_vars()
-                || object.setup.max_num_polys_per_commitment_group() != 1
-                || object.setup.default_layout_digest() != expected_plan.layout_digest()
-                || evaluations.len() != 1usize << expected_plan.packing().packed_num_vars()
-                || evaluations[..object.words.len()]
-                    .iter()
-                    .zip(&object.words)
-                    .any(|(evaluation, word)| *evaluation != AkitaField::from_u64(*word))
-                || evaluations[object.words.len()..]
-                    .iter()
-                    .any(|evaluation| *evaluation != AkitaField::zero())
-            {
-                return Err(VerifierError::FinalOpeningBatchFailed {
-                    reason: "trusted-advice precommit artifact has inconsistent shape or source"
-                        .to_string(),
-                });
-            }
-        }
-
         let preprocessing_digest = self.preprocessing.shared.digest();
         fiat_shamir_preamble(
             &self.program_io,
@@ -1615,16 +1557,6 @@ impl AkitaPackedProver<'_> {
                 &object.commitment,
                 &object.hint,
             ));
-        }
-        if !precommitted.is_empty() {
-            AkitaScheme::validate_trace_precommits(
-                object_setup,
-                &precommitted,
-                plan.packing().packed_num_vars(),
-            )
-            .map_err(|error| VerifierError::FinalOpeningVerificationFailed {
-                reason: error.to_string(),
-            })?;
         }
         let one_hot_trace_witness = self.assemble_one_hot_trace(&plan, &fused_cycles);
         let precommitted_hints = precommitted

@@ -15,10 +15,10 @@ use akita_config::{effective_batched_schedule, CommitmentConfig};
 use akita_pcs::AkitaError;
 use akita_schedules::ResolvedScheduleRow;
 use akita_types::{
-    relation_rhs_layout_for, sumcheck_rounds, AkitaScheduleLookupKey, CommittedGroupParams,
-    CommittedGroupProfile, CompressionChainPlan, DigitRangePlan, ExtensionOpeningReductionShape,
-    FoldSchedule, LevelProofShape, NextWitnessBindingShape, OpeningClaimsLayout,
-    OpeningScheduleSelection, PolynomialGroupLayout, RecursiveFoldParams, TerminalLevelProofShape,
+    relation_rhs_layout_for, sumcheck_rounds, CommittedGroupParams, CommittedGroupProfile,
+    CompressionChainPlan, DigitRangePlan, ExtensionOpeningReductionShape, FoldSchedule,
+    LevelProofShape, NextWitnessBindingShape, OpeningClaimsLayout, OpeningScheduleSelection,
+    PolynomialGroupLayout, RecursiveFoldParams, TerminalLevelProofShape,
 };
 
 use crate::adapters::{
@@ -154,25 +154,6 @@ pub(crate) fn deserialize_checked_grouped_backend_payload(
     }
     .map_err(|err| invalid_batch(format!("Akita grouped schedule resolution failed: {err}")))?;
     let profiles = resolved.profiles();
-    if profiles.precommitteds.len() != precommitted.len() {
-        return Err(invalid_batch(format!(
-            "Akita grouped row has {} precommitted groups but the statement has {}",
-            profiles.precommitteds.len(),
-            precommitted.len()
-        )));
-    }
-    for (commitment, profile) in precommitted.iter().zip(profiles.precommitteds.iter()) {
-        if profile.group != PolynomialGroupLayout::new(commitment.num_vars, commitment.poly_count) {
-            return Err(invalid_batch(
-                "Akita grouped row profiles do not match the public commitments",
-            ));
-        }
-    }
-    if profiles.final_group.group != PolynomialGroupLayout::new(main.num_vars, main.poly_count) {
-        return Err(invalid_batch(
-            "Akita grouped row profiles do not match the public commitments",
-        ));
-    }
 
     let mut precommitted_backend = Vec::with_capacity(precommitted.len());
     for (commitment, profile) in precommitted.iter().zip(profiles.precommitteds.iter()) {
@@ -268,15 +249,7 @@ fn resolve_schedule_row<Cfg>(
 where
     Cfg: CommitmentConfig<Field = AkitaField, ExtField = AkitaField>,
 {
-    let expected = AkitaScheduleLookupKey::single(layout.root_final_group_layout()?);
     let resolved = Cfg::resolve_schedule_selection(selection)?;
-    if resolved.profiles().precommitteds != expected.precommitteds
-        || resolved.profiles().final_group.group != expected.final_group
-    {
-        return Err(AkitaError::InvalidInput(
-            "schedule selection does not describe the scalar opening statement".to_string(),
-        ));
-    }
     effective_batched_schedule::<Cfg>(resolved, layout, backend_point)
 }
 
@@ -539,6 +512,7 @@ mod tests {
 
     use super::*;
     use crate::adapters::serialize_akita;
+    use akita_types::AkitaScheduleLookupKey;
 
     fn dense_commitment(num_vars: usize, poly_count: usize) -> AkitaCommitment {
         AkitaCommitment {

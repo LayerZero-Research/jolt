@@ -89,7 +89,7 @@ fn grouped_advice_rows_are_planned_not_cataloged() {
         [key.final_group.num_vars()],
     )
     .expect("preprocessing must plan the production grouped row");
-    assert_eq!(rows.len(), 1);
+    assert_eq!(rows.rows().count(), 1);
 
     let resolved = JoltOneHotK256::resolve_catalog_row_for_key(&key)
         .expect("the provisioned row must resolve by key");
@@ -117,7 +117,7 @@ fn two_precommit_grouped_advice_row_is_planned() {
         [key.final_group.num_vars()],
     )
     .expect("preprocessing must plan the two-precommit grouped row");
-    assert_eq!(rows.len(), 1);
+    assert_eq!(rows.rows().count(), 1);
 
     let resolved = JoltOneHotK256::resolve_catalog_row_for_key(&key)
         .expect("the provisioned row must resolve by key");

@@ -13,8 +13,7 @@ use jolt_claims::protocols::jolt::JoltRelationId;
 use jolt_crypto::VectorCommitment;
 use jolt_field::Field;
 use jolt_openings::{
-    CommitmentScheme, GroupCommitmentMetadata, GroupSetupMetadata, PrecommittedRole,
-    TransparentObjectSetup,
+    CommitmentScheme, GroupSetupMetadata, PrecommittedRole, TransparentObjectSetup,
 };
 use jolt_transcript::{AppendToTranscript, Transcript};
 use jolt_verifier::{
@@ -58,7 +57,7 @@ where
     F: Field,
     PCS: CommitmentScheme<Field = F> + TransparentObjectSetup + jolt_akita::TraceOneHotCommitment,
     PCS::ProverSetup: GroupSetupMetadata,
-    PCS::Output: Clone + AppendToTranscript + GroupCommitmentMetadata,
+    PCS::Output: Clone + AppendToTranscript,
     VC: VectorCommitment<Field = F>,
     T: Transcript<Challenge = F>,
     W: JoltWitnessPlane<F>,
@@ -71,44 +70,6 @@ where
         return Err(ProverError::Unsupported {
             reason: "trusted-advice object presence disagrees with the trusted advice bytes",
         });
-    }
-    if let Some(object) = trusted_advice {
-        if object.plan.packing().ids()
-            != [jolt_claims::protocols::jolt::JoltCommittedPolynomial::TrustedAdvice]
-            || object.commitment.layout_digest() != object.plan.layout_digest()
-            || object.commitment.num_vars() != object.plan.packing().packed_num_vars()
-            || object.commitment.poly_count() != 1
-            || object.setup.max_num_vars() != object.commitment.num_vars()
-            || object.setup.max_num_polys_per_commitment_group() != 1
-            || object.setup.default_layout_digest() != object.plan.layout_digest()
-        {
-            return Err(ProverError::Unsupported {
-                reason: "trusted-advice precommit artifact has inconsistent shape metadata",
-            });
-        }
-        let words = common::advice::canonical_advice_words(
-            &public_io.trusted_advice,
-            public_io.memory_layout.max_trusted_advice_size as usize,
-        )
-        .map_err(|_| ProverError::Unsupported {
-            reason: "trusted-advice bytes do not fit the scheduled precommit capacity",
-        })?;
-        let expected_word_vars = words.len().ilog2() as usize;
-        let evaluations = object.polynomial.evals();
-        if object.word_vars != expected_word_vars
-            || evaluations.len() != 1usize << object.plan.packing().packed_num_vars()
-            || evaluations[..words.len()]
-                .iter()
-                .zip(words)
-                .any(|(evaluation, word)| *evaluation != F::from_u64(word))
-            || evaluations[1usize << expected_word_vars..]
-                .iter()
-                .any(|evaluation| *evaluation != F::default())
-        {
-            return Err(ProverError::Unsupported {
-                reason: "trusted-advice precommit artifact does not match the public advice bytes",
-            });
-        }
     }
     if preprocessing.committed_program.is_some()
         != preprocessing.verifier.program.committed().is_some()
@@ -240,17 +201,6 @@ where
             reason: "the packed setup's dimensions disagree with the canonical OneHotTrace shape",
         });
     }
-    // Resolve the exact grouped row before building the expensive final
-    // source: an unschedulable precommit shape fails here, not minutes later.
-    PCS::validate_trace_precommits(
-        &preprocessing.pcs_setup,
-        &precommitted,
-        plan.packing().packed_num_vars(),
-    )
-    .map_err(|error| VerifierError::FinalOpeningVerificationFailed {
-        reason: error.to_string(),
-    })?;
-
     let (commitment, hint) =
         tracing::info_span!("akita_main_commit_with_precommitted").in_scope(|| {
             let packed_trace_rows = assemble_one_hot_trace_rows(
