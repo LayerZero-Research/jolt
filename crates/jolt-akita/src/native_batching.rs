@@ -243,15 +243,14 @@ impl AkitaNativeBatching {
             precommitted_backend.push(backend);
         }
         let main_source = match &main_hint.polynomials {
-            AkitaHintPolynomials::TraceOneHot(polys) if polys.len() == 1 => {
-                GroupedRootSource::Trace(std::sync::Arc::clone(polys))
+            AkitaHintPolynomials::TraceOneHot(poly) => {
+                GroupedRootSource::Trace(vec![poly.clone()].into())
             }
             AkitaHintPolynomials::OneHot(polys) if polys.len() == 1 => {
                 GroupedRootSource::OneHot(std::sync::Arc::clone(polys))
             }
             AkitaHintPolynomials::Dense(_)
             | AkitaHintPolynomials::OneHot(_)
-            | AkitaHintPolynomials::TraceOneHot(_)
             | AkitaHintPolynomials::SparseUnit(_) => {
                 return Err(invalid_batch(
                     "Akita main-trace hint must retain one one-hot source",

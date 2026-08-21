@@ -330,7 +330,7 @@ impl AkitaScheme {
             num_vars,
             backend_commitment,
             backend_hint,
-            AkitaHintPolynomials::TraceOneHot(vec![source].into()),
+            AkitaHintPolynomials::TraceOneHot(source),
         )
     }
 
