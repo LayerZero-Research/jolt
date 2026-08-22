@@ -14,9 +14,9 @@
 > `[UntrustedAdvice, TrustedAdvice, OneHotTrace]`. The old advice IDs remain
 > only as positional-codec tombstones. One-hot trace and committed-program
 > reconstruction remain active. See
-> [`akita-dense-advice-batching.md`](./akita-dense-advice-batching.md) for the
-> current advice format, batch-opening flow, and preprocessing-time schedule
-> provisioning design.
+> [LayerZero-Research/jolt#34](https://github.com/LayerZero-Research/jolt/pull/34)
+> for the current advice format, batch-opening flow, and preprocessing-time
+> schedule provisioning design.
 
 ## Purpose
 
