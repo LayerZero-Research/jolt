@@ -30,7 +30,10 @@ use jolt_claims::protocols::jolt::lattice::relations::{
 };
 use jolt_claims::protocols::jolt::TracePolynomialOrder;
 use jolt_field::Field;
-use jolt_prover_legacy::zkvm::packed::{AkitaField, AkitaJoltProof, AkitaScheme};
+use jolt_prover_legacy::zkvm::packed::{
+    AkitaField, AkitaJoltProof, AkitaScheme, AkitaTranscript, AkitaVc,
+};
+use jolt_verifier::preprocessing::ProgramPreprocessing;
 use jolt_verifier::proof::{ClearProofClaims, JoltProofClaims};
 use jolt_verifier::stages::{
     stage1::{
@@ -685,17 +688,15 @@ fn akita_proof_shape_tampers_reject() {
 
     let committed = akita_committed_muldiv_case();
     let mut preprocessing = committed.preprocessing.clone();
-    let jolt_verifier::preprocessing::ProgramPreprocessing::Committed(program) =
-        &mut preprocessing.program
-    else {
+    let ProgramPreprocessing::Committed(program) = &mut preprocessing.program else {
         panic!("committed fixture must carry committed preprocessing");
     };
     program.direct_program_commitments.swap(0, 1);
     assert_rejects(jolt_verifier::verify::<
         AkitaField,
         AkitaScheme,
-        jolt_prover_legacy::zkvm::packed::AkitaVc,
-        jolt_prover_legacy::zkvm::packed::AkitaTranscript,
+        AkitaVc,
+        AkitaTranscript,
     >(
         &preprocessing,
         &committed.public_io,
@@ -704,9 +705,7 @@ fn akita_proof_shape_tampers_reject() {
     ));
 
     let mut preprocessing = committed.preprocessing.clone();
-    let jolt_verifier::preprocessing::ProgramPreprocessing::Committed(program) =
-        &mut preprocessing.program
-    else {
+    let ProgramPreprocessing::Committed(program) = &mut preprocessing.program else {
         panic!("committed fixture must carry committed preprocessing");
     };
     program.trace_order = match program.trace_order {
@@ -716,8 +715,8 @@ fn akita_proof_shape_tampers_reject() {
     assert_rejects(jolt_verifier::verify::<
         AkitaField,
         AkitaScheme,
-        jolt_prover_legacy::zkvm::packed::AkitaVc,
-        jolt_prover_legacy::zkvm::packed::AkitaTranscript,
+        AkitaVc,
+        AkitaTranscript,
     >(
         &preprocessing,
         &committed.public_io,
@@ -731,12 +730,7 @@ fn akita_proof_shape_tampers_reject() {
 #[test]
 fn akita_advice_commitment_presence_rejects() {
     let advice = akita_advice_case();
-    let result = jolt_verifier::verify::<
-        AkitaField,
-        AkitaScheme,
-        jolt_prover_legacy::zkvm::packed::AkitaVc,
-        jolt_prover_legacy::zkvm::packed::AkitaTranscript,
-    >(
+    let result = jolt_verifier::verify::<AkitaField, AkitaScheme, AkitaVc, AkitaTranscript>(
         &advice.preprocessing,
         &advice.public_io,
         &advice.proof,

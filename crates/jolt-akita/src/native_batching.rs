@@ -28,7 +28,7 @@ use akita_types::{
 };
 use jolt_openings::{
     BatchOpeningScheme, GroupOpeningClaim, OpeningsError, PrecommittedClaim, PrecommittedOpening,
-    PrecommittedRole, VerifierOpeningClaim,
+    VerifierOpeningClaim,
 };
 use jolt_poly::MultilinearPoly;
 use jolt_transcript::{AppendToTranscript, Label, LabelWithCount, Transcript, U64Word};
@@ -172,27 +172,19 @@ where
     transcript.append(&LabelWithCount(b"akita_groups", group_count as u64));
     let groups = precommitted
         .iter()
-        .map(|entry| {
-            (
-                Some(entry.role),
-                entry.role.transcript_label(),
-                true,
-                &entry.claim,
-            )
-        })
-        .chain(std::iter::once((
-            None,
-            b"main_trace".as_slice(),
-            false,
-            main,
-        )));
-    for (index, (precommitted_role, role, is_precommitted, claim)) in groups.enumerate() {
+        .map(|entry| (Some(entry.role), &entry.claim))
+        .chain(std::iter::once((None, main)));
+    for (index, (role, claim)) in groups.enumerate() {
         transcript.append(&U64Word(index as u64));
-        transcript.append_bytes(role);
-        if let Some(role_index) = precommitted_role.and_then(PrecommittedRole::transcript_index) {
-            transcript.append(&U64Word(role_index as u64));
+        if let Some(role) = role {
+            transcript.append_bytes(role.transcript_label());
+            if let Some(role_index) = role.transcript_index() {
+                transcript.append(&U64Word(role_index));
+            }
+        } else {
+            transcript.append_bytes(b"main_trace");
         }
-        transcript.append(&U64Word(u64::from(is_precommitted)));
+        transcript.append(&U64Word(u64::from(role.is_some())));
         claim.commitment.append_to_transcript(transcript);
         transcript.append_values(b"akita_group_point", &claim.point);
         transcript.append(&LabelWithCount(

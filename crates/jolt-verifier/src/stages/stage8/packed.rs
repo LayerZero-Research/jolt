@@ -15,7 +15,7 @@ use jolt_claims::protocols::jolt::lattice::strategy::{
     OneHotTraceLayoutPlan, ONE_HOT_TRACE_LAYOUT,
 };
 use jolt_claims::protocols::jolt::{JoltAdviceKind, JoltCommittedPolynomial, JoltOneHotConfig};
-use jolt_field::Field;
+use jolt_field::JoltField;
 use jolt_openings::{
     CommitmentScheme, EvaluationClaim, GroupOpeningClaim, PrecommittedClaim, PrecommittedRole,
 };
@@ -320,19 +320,18 @@ where
         ));
     }
 
-    // Canonical public batch order precedes OneHotTrace.
     let capacity = 2usize
         .checked_add(plans.len())
         .ok_or_else(|| batch_failed("precommitted group capacity overflows"))?;
     let mut precommitted = Vec::with_capacity(capacity);
     for (role, object, claim) in [
         (
-            PrecommittedRole::UntrustedAdvice,
+            JoltAdviceKind::Untrusted.precommitted_role(),
             untrusted.as_ref(),
             untrusted_claim.as_ref(),
         ),
         (
-            PrecommittedRole::TrustedAdvice,
+            JoltAdviceKind::Trusted.precommitted_role(),
             trusted.as_ref(),
             trusted_claim.as_ref(),
         ),
@@ -350,10 +349,11 @@ where
     }
 
     if let Some(committed) = committed {
-        for ((plan, commitment), setup) in plans
+        for (object_index, ((plan, commitment), setup)) in plans
             .into_iter()
             .zip(&committed.direct_program_commitments)
             .zip(&preprocessing.direct_program_setups)
+            .enumerate()
         {
             let object: ResolvedObject<'_, PCS> = ResolvedObject {
                 plan,
@@ -370,10 +370,17 @@ where
                 .copied()
                 .ok_or_else(|| batch_failed("direct program object has no polynomial id"))?;
             let role = match id {
-                JoltCommittedPolynomial::BytecodeChunk(index) => {
-                    PrecommittedRole::BytecodeChunk(index)
-                }
-                JoltCommittedPolynomial::ProgramImageInit => PrecommittedRole::ProgramImageInit,
+                JoltCommittedPolynomial::BytecodeChunk(index) => PrecommittedRole::new_indexed(
+                    2 + object_index as u64,
+                    b"bytecode_chunk",
+                    "bytecode-chunk",
+                    index as u64,
+                ),
+                JoltCommittedPolynomial::ProgramImageInit => PrecommittedRole::new(
+                    2 + object_index as u64,
+                    b"program_image_init",
+                    "program-image-init",
+                ),
                 JoltCommittedPolynomial::RdInc
                 | JoltCommittedPolynomial::RamInc
                 | JoltCommittedPolynomial::InstructionRa(_)
@@ -420,7 +427,7 @@ where
 /// column's leaf claim, its point mapped to the committed row-major order,
 /// all required to share one canonical opening point. Shared verbatim by the
 /// packed prover's stage 8, so both sides derive the same packed statement.
-pub fn one_hot_trace_packed_claims<F: Field>(
+pub fn one_hot_trace_packed_claims<F: JoltField>(
     plan: &OneHotTraceLayoutPlan,
     chunk_width: usize,
     leaves: &BTreeMap<JoltCommittedPolynomial, EvaluationClaim<F>>,
@@ -454,7 +461,7 @@ pub fn one_hot_trace_packed_claims<F: Field>(
 /// One auxiliary object's leaf claims: each of the plan's canonical columns
 /// paired with its resolved leaf claim. Shared verbatim by the packed
 /// prover's stage 8, so both sides fail on the same missing leaf.
-pub fn object_leaf_claims<F: Field>(
+pub fn object_leaf_claims<F: JoltField>(
     plan: &PrefixPackedObjectPlan,
     leaves: &BTreeMap<JoltCommittedPolynomial, EvaluationClaim<F>>,
 ) -> Result<BTreeMap<JoltCommittedPolynomial, EvaluationClaim<F>>, VerifierError> {
@@ -479,17 +486,17 @@ pub fn object_leaf_claims<F: Field>(
 /// reductions and stage 7, keyed by committed polynomial. The canonical
 /// object plans check coverage, point arity, and suffix compatibility.
 /// Shared verbatim by the packed prover's stage 8.
-pub fn leaf_claims<F: Field>(
+pub fn leaf_claims<F: JoltField>(
     schedule: &PrecommittedSchedule,
     stage6b: &Stage6bClearOutput<F>,
     stage7: &Stage7ClearOutput<F>,
 ) -> Result<BTreeMap<JoltCommittedPolynomial, EvaluationClaim<F>>, VerifierError> {
     use JoltCommittedPolynomial as Poly;
 
-    fn leaf<F: Field>(value: F, point: &[F]) -> EvaluationClaim<F> {
+    fn leaf<F: JoltField>(value: F, point: &[F]) -> EvaluationClaim<F> {
         EvaluationClaim::new(Point::high_to_low(point.to_vec()), value)
     }
-    fn insert<F: Field>(
+    fn insert<F: JoltField>(
         leaves: &mut BTreeMap<JoltCommittedPolynomial, EvaluationClaim<F>>,
         polynomial: JoltCommittedPolynomial,
         claim: EvaluationClaim<F>,
@@ -501,7 +508,7 @@ pub fn leaf_claims<F: Field>(
         }
         Ok(())
     }
-    fn insert_indexed<F: Field>(
+    fn insert_indexed<F: JoltField>(
         leaves: &mut BTreeMap<JoltCommittedPolynomial, EvaluationClaim<F>>,
         values: &[F],
         points: &[Vec<F>],
