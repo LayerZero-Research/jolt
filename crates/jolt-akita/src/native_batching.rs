@@ -330,32 +330,39 @@ impl AkitaNativeBatching {
         let (backend_prover_setup, prepared_backend_setup) = setup.one_hot_backend()?;
         let stack = backend_stack(backend_prover_setup, prepared_backend_setup)?;
         let releasing_stack = ReleaseRootNttAfterFold::new(&stack);
-        let backend_proof = with_backend_pool(|| match setup.one_hot_k() {
-            AKITA_ONE_HOT_K256 => setup
-                .verifier
-                .one_hot_k256_scheme()
-                .map_err(|error| AkitaError::InvalidSetup(error.to_string()))?
-                .batched_prove(
-                    backend_prover_setup,
-                    opening,
-                    &releasing_stack,
-                    &mut akita_transcript,
-                    BasisMode::Lagrange,
-                ),
-            AKITA_ONE_HOT_K16 => setup
-                .verifier
-                .one_hot_k16_scheme()
-                .map_err(|error| AkitaError::InvalidSetup(error.to_string()))?
-                .batched_prove(
-                    backend_prover_setup,
-                    opening,
-                    &releasing_stack,
-                    &mut akita_transcript,
-                    BasisMode::Lagrange,
-                ),
-            _ => unreachable!("one-hot K was validated by setup"),
-        })
-        .map_err(prove_failed)?;
+        let capture_requested = crate::trace_onehot::companion::trace_fold_capture_requested();
+        let (backend_proof, captured_challenges) = with_backend_pool(|| {
+            crate::trace_onehot::companion::with_worker_trace_fold_capture(
+                capture_requested,
+                || match setup.one_hot_k() {
+                    AKITA_ONE_HOT_K256 => setup
+                        .verifier
+                        .one_hot_k256_scheme()
+                        .map_err(|error| AkitaError::InvalidSetup(error.to_string()))?
+                        .batched_prove(
+                            backend_prover_setup,
+                            opening,
+                            &releasing_stack,
+                            &mut akita_transcript,
+                            BasisMode::Lagrange,
+                        ),
+                    AKITA_ONE_HOT_K16 => setup
+                        .verifier
+                        .one_hot_k16_scheme()
+                        .map_err(|error| AkitaError::InvalidSetup(error.to_string()))?
+                        .batched_prove(
+                            backend_prover_setup,
+                            opening,
+                            &releasing_stack,
+                            &mut akita_transcript,
+                            BasisMode::Lagrange,
+                        ),
+                    _ => unreachable!("one-hot K was validated by setup"),
+                },
+            )
+        });
+        crate::trace_onehot::companion::publish_trace_fold_challenges(captured_challenges);
+        let backend_proof = backend_proof.map_err(prove_failed)?;
         let proof = AkitaBatchProof::new(selection, serialize_akita(&backend_proof)?);
         Ok(proof)
     }

@@ -13,6 +13,7 @@ use jolt_field::ExtField;
 use rayon::prelude::*;
 
 use super::commit::commit_packed;
+use super::companion::capture_trace_fold_challenges;
 use super::decomposition::decompose_fold_packed;
 use super::opening::opening_fold_packed;
 use super::source::{TracePackedOneHotBatchView, TracePackedOneHotView};
@@ -49,6 +50,7 @@ impl<const D: usize> OpeningFoldKernel<TracePackedOneHotView<'_, D>, AkitaField,
         source: TracePackedOneHotView<'_, D>,
         plan: DecomposeFoldPlan<'_>,
     ) -> Result<DecomposeFoldWitness<AkitaField>, AkitaError> {
+        capture_trace_fold_challenges::<D>(plan.challenges)?;
         decompose_fold_packed::<D>(
             source.source(),
             plan.challenges,
@@ -74,14 +76,17 @@ impl<const D: usize> OpeningBatchKernel<TracePackedOneHotBatchView<'_, D>, Akita
                 num_positions_per_block,
                 num_digits,
                 ..
-            } => Ok(BatchDecomposeFoldOutcome::Fused(
-                decompose_fold_packed::<D>(
-                    source,
-                    challenges,
-                    num_positions_per_block,
-                    num_digits,
-                )?,
-            )),
+            } => {
+                capture_trace_fold_challenges::<D>(challenges)?;
+                Ok(BatchDecomposeFoldOutcome::Fused(
+                    decompose_fold_packed::<D>(
+                        source,
+                        challenges,
+                        num_positions_per_block,
+                        num_digits,
+                    )?,
+                ))
+            }
         }
     }
 }

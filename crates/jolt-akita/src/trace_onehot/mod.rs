@@ -21,6 +21,7 @@ const K256_ROW_BATCH: usize = 1 << 13;
 const _: () = assert!(K256_ROW_BATCH <= i16::MAX as usize);
 
 mod commit;
+pub(crate) mod companion;
 mod decomposition;
 mod grouped;
 mod kernels;
@@ -31,6 +32,9 @@ mod traversal;
 #[cfg(test)]
 mod tests;
 
+pub use companion::{
+    begin_trace_fold_challenge_capture, take_trace_fold_challenges, TraceFoldChallenges,
+};
 pub(crate) use grouped::GroupedRootSource;
 pub use source::{no_selected_row, TraceOneHotRows, TracePackedOneHot};
 
