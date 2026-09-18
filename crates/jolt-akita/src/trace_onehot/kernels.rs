@@ -50,13 +50,14 @@ impl<const D: usize> OpeningFoldKernel<TracePackedOneHotView<'_, D>, AkitaField,
         source: TracePackedOneHotView<'_, D>,
         plan: DecomposeFoldPlan<'_>,
     ) -> Result<DecomposeFoldWitness<AkitaField>, AkitaError> {
-        capture_trace_fold_challenges::<D>(plan.challenges)?;
-        decompose_fold_packed::<D>(
+        let witness = decompose_fold_packed::<D>(
             source.source(),
             plan.challenges,
             plan.num_positions_per_block,
             plan.num_digits,
-        )
+        )?;
+        capture_trace_fold_challenges::<D>(plan.challenges, &witness)?;
+        Ok(witness)
     }
 }
 
@@ -77,15 +78,14 @@ impl<const D: usize> OpeningBatchKernel<TracePackedOneHotBatchView<'_, D>, Akita
                 num_digits,
                 ..
             } => {
-                capture_trace_fold_challenges::<D>(challenges)?;
-                Ok(BatchDecomposeFoldOutcome::Fused(
-                    decompose_fold_packed::<D>(
-                        source,
-                        challenges,
-                        num_positions_per_block,
-                        num_digits,
-                    )?,
-                ))
+                let witness = decompose_fold_packed::<D>(
+                    source,
+                    challenges,
+                    num_positions_per_block,
+                    num_digits,
+                )?;
+                capture_trace_fold_challenges::<D>(challenges, &witness)?;
+                Ok(BatchDecomposeFoldOutcome::Fused(witness))
             }
         }
     }

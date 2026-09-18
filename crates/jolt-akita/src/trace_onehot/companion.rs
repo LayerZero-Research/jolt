@@ -1,7 +1,22 @@
 use std::cell::RefCell;
 
+use akita_algebra::ring::cyclotomic::BalancedDecomposePow2Params;
+use akita_algebra::CyclotomicRing;
 use akita_challenges::SparseChallenge;
 use akita_error::AkitaError;
+use akita_prover::compute::{
+    DigitRowsComputeBackend, SubringCoefficientPackingPartials, SubringCoefficientPackingPlan,
+};
+use akita_prover::{CpuBackend, DecomposeFoldWitness};
+use akita_types::{
+    BasisMode, CompressionChainPlan, DigitBlocks, OpeningMethod,
+    PreparedSubringCoefficientPackingPoint, SubringCoefficientPackingGeometry,
+};
+use jolt_field::{CanonicalEncoding, One};
+
+use super::traversal::coefficient_packing_partials_packed;
+use crate::adapters::{AkitaHintPolynomials, AkitaProverHint};
+use crate::{AkitaField, AkitaProverSetup};
 
 #[derive(Debug, Clone)]
 pub struct TraceFoldChallenges {
@@ -9,6 +24,7 @@ pub struct TraceFoldChallenges {
     pub offsets: Vec<u32>,
     pub positions: Vec<u32>,
     pub coefficients: Vec<i8>,
+    pub z_coefficients: Vec<i32>,
 }
 
 #[derive(Default)]
@@ -79,6 +95,7 @@ pub(crate) fn publish_trace_fold_challenges(challenges: Option<TraceFoldChalleng
 
 pub(super) fn capture_trace_fold_challenges<const D: usize>(
     challenges: &[SparseChallenge],
+    witness: &DecomposeFoldWitness<AkitaField>,
 ) -> Result<(), AkitaError> {
     CAPTURE.with(|capture| {
         let mut state = capture.borrow_mut();
@@ -113,14 +130,161 @@ pub(super) fn capture_trace_fold_challenges<const D: usize>(
             offsets,
             positions,
             coefficients,
+            z_coefficients: witness.centered_coeffs_flat().to_vec(),
         });
         Ok(())
     })
 }
 
+/// Reconstruct the uncompressed outer commitment image retained by Rust Akita's
+/// real root commitment hint.
+pub fn reference_commit_u(hint: &AkitaProverHint) -> Result<Vec<AkitaField>, AkitaError> {
+    let (committed, backend_hint) = hint.backend.as_ref().ok_or_else(|| {
+        AkitaError::InvalidInput("the Akita companion hint has no backend commitment".into())
+    })?;
+    let profile = committed.profile();
+    let coefficient_count = profile
+        .outer_slice_count
+        .get()
+        .checked_mul(profile.outer.matrix.output_rank())
+        .and_then(|count| count.checked_mul(profile.outer.matrix.ring_dimension()))
+        .ok_or_else(|| AkitaError::InvalidInput("outer image length overflow".into()))?;
+    let plan = CompressionChainPlan::for_complete_source(
+        profile.outer.matrix.sis_modulus_profile(),
+        coefficient_count,
+    )?;
+    let witness = backend_hint.outer_compression_witness(&plan)?;
+    witness
+        .stages()
+        .first()
+        .ok_or(AkitaError::InvalidProof)?
+        .recompose::<AkitaField>()
+}
+
+/// Compute the Rust Akita trace group's `v = D * e_hat` reference at the
+/// exact opening point sent to the GPU companion.
+pub fn reference_compute_v(
+    setup: &AkitaProverSetup,
+    hint: &AkitaProverHint,
+    params: &akita_types::CommittedGroupParams,
+    opening_point: &[AkitaField],
+) -> Result<Vec<AkitaField>, AkitaError> {
+    let source = match &hint.polynomials {
+        AkitaHintPolynomials::TraceOneHot(source) => source,
+        _ => {
+            return Err(AkitaError::InvalidInput(
+                "the Akita companion v reference requires a packed trace hint".into(),
+            ))
+        }
+    };
+    let challenge_subring_dimension = match params.opening_method() {
+        OpeningMethod::SubringCoefficientPacking {
+            challenge_subring_dimension,
+        } => challenge_subring_dimension,
+        OpeningMethod::EvaluationTrace => {
+            return Err(AkitaError::InvalidSetup(
+                "the Akita companion v reference requires coefficient packing".into(),
+            ))
+        }
+    };
+    let (_, prepared) = setup
+        .one_hot_backend()
+        .map_err(|error| AkitaError::InvalidSetup(error.to_string()))?;
+    akita_types::dispatch_for_field!(
+        akita_types::ProtocolDispatchSlot::Role(akita_types::RingRole::Inner),
+        AkitaField,
+        params.inner().matrix.ring_dimension(),
+        |D_A| {
+            let geometry =
+                SubringCoefficientPackingGeometry::try_new(1, D_A, challenge_subring_dimension)?;
+            let live_positions = source.total_field_elems() / D_A;
+            let point = PreparedSubringCoefficientPackingPoint::new(
+                geometry,
+                BasisMode::Lagrange,
+                live_positions,
+                params.own_group().num_positions_per_block(),
+                source.num_vars,
+                opening_point,
+            )?;
+            let coordinates = coefficient_packing_partials_packed::<AkitaField, D_A>(
+                source,
+                SubringCoefficientPackingPlan { point: &point },
+            )?;
+            let partials = SubringCoefficientPackingPartials::new(
+                geometry,
+                point.num_live_blocks(),
+                coordinates,
+            )?;
+            akita_types::dispatch_for_field!(
+                akita_types::ProtocolDispatchSlot::Role(akita_types::RingRole::Opening),
+                AkitaField,
+                params.open().matrix.ring_dimension(),
+                |D_D| {
+                    let digits = materialize_d_input::<D_D>(params, &partials)?;
+                    let rows = CpuBackend::DEFAULT.digit_rows(
+                        prepared,
+                        params.open().matrix.output_rank(),
+                        &[digits.typed_planes::<D_D>()?],
+                        params.own_group().log_basis_open(),
+                    )?;
+                    let [rows] = rows
+                        .try_into()
+                        .map_err(|_: Vec<_>| AkitaError::InvalidProof)?;
+                    Ok::<_, AkitaError>(
+                        rows.into_iter()
+                            .flat_map(|row| row.coefficients().to_vec())
+                            .collect(),
+                    )
+                }
+            )
+        }
+    )
+}
+
+fn materialize_d_input<const D: usize>(
+    params: &akita_types::CommittedGroupParams,
+    partials: &SubringCoefficientPackingPartials<AkitaField>,
+) -> Result<DigitBlocks, AkitaError> {
+    let geometry = partials.geometry();
+    if !geometry.partial_base_field_width().is_multiple_of(D) {
+        return Err(AkitaError::InvalidSetup(
+            "coefficient-packing width is not divisible by the D ring".into(),
+        ));
+    }
+    let subcolumns = geometry.partial_base_field_width() / D;
+    let num_digits = params.own_group().num_digits_open();
+    let planes_per_block = subcolumns
+        .checked_mul(num_digits)
+        .ok_or_else(|| AkitaError::InvalidInput("D input plane count overflow".into()))?;
+    let mut digits = DigitBlocks::zeroed(vec![planes_per_block; partials.num_live_blocks()], D)?;
+    let modulus = (-AkitaField::one())
+        .to_u128_checked()
+        .expect("Akita field modulus fits u128")
+        + 1;
+    let decomposition =
+        BalancedDecomposePow2Params::new(num_digits, params.own_group().log_basis_open(), modulus);
+    let planes = digits.typed_planes_mut::<D>()?;
+    for block in 0..partials.num_live_blocks() {
+        let block_start = block * geometry.partial_base_field_width();
+        for subcolumn in 0..subcolumns {
+            let start = block_start + subcolumn * D;
+            let ring = CyclotomicRing::<AkitaField, D>::from_slice(
+                &partials.coordinates()[start..start + D],
+            );
+            let plane_start = block * planes_per_block + subcolumn * num_digits;
+            ring.balanced_decompose_pow2_i8_into_with_params(
+                &mut planes[plane_start..plane_start + num_digits],
+                &decomposition,
+            );
+        }
+    }
+    Ok(digits)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jolt_field::Zero;
 
     #[test]
     fn sparse_challenges_cross_the_backend_pool_boundary() {
@@ -137,7 +301,11 @@ mod tests {
             },
         ];
         let ((), captured) = with_worker_trace_fold_capture(requested, || {
-            capture_trace_fold_challenges::<64>(&challenges).unwrap();
+            let witness = DecomposeFoldWitness::from_coefficient_parts(
+                vec![[AkitaField::zero(); 64]],
+                vec![[0; 64]],
+            );
+            capture_trace_fold_challenges::<64>(&challenges, &witness).unwrap();
         });
         publish_trace_fold_challenges(captured);
 
@@ -146,5 +314,6 @@ mod tests {
         assert_eq!(captured.offsets, [0, 2, 3]);
         assert_eq!(captured.positions, [1, 7, 3]);
         assert_eq!(captured.coefficients, [1, -1, 1]);
+        assert_eq!(captured.z_coefficients, [0; 64]);
     }
 }
