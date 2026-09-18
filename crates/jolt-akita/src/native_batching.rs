@@ -330,7 +330,7 @@ impl AkitaNativeBatching {
         let (backend_prover_setup, prepared_backend_setup) = setup.one_hot_backend()?;
         let stack = backend_stack(backend_prover_setup, prepared_backend_setup)?;
         let releasing_stack = ReleaseRootNttAfterFold::new(&stack);
-        let capture_requested = crate::trace_onehot::companion::trace_fold_capture_requested();
+        let capture_requested = crate::trace_onehot::companion::trace_fold_capture_request();
         let (backend_proof, captured_challenges) = with_backend_pool(|| {
             crate::trace_onehot::companion::with_worker_trace_fold_capture(
                 capture_requested,
