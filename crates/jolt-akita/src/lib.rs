@@ -49,8 +49,8 @@ pub use native_batching::{
 pub use schedule_registry::PrecommittedScheduleParams;
 pub use scheme::{AkitaScheme, TraceOneHotCommitment};
 pub use trace_onehot::{
-    begin_trace_fold_challenge_capture, no_selected_row, reference_commit_u, reference_compute_v,
-    take_trace_fold_challenges, TraceFoldChallenges, TraceOneHotRows, TracePackedOneHot,
+    begin_trace_fold_challenge_capture, no_selected_row, take_trace_fold_challenges,
+    TraceFoldChallenges, TraceOneHotRows, TracePackedOneHot,
 };
 
 /// Jolt↔Akita basis-order bridging, exposed so benchmarks measuring the raw

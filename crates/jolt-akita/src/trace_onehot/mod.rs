@@ -33,8 +33,7 @@ mod traversal;
 mod tests;
 
 pub use companion::{
-    begin_trace_fold_challenge_capture, reference_commit_u, reference_compute_v,
-    take_trace_fold_challenges, TraceFoldChallenges,
+    begin_trace_fold_challenge_capture, take_trace_fold_challenges, TraceFoldChallenges,
 };
 pub(crate) use grouped::GroupedRootSource;
 pub use source::{no_selected_row, TraceOneHotRows, TracePackedOneHot};
