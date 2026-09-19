@@ -1,12 +1,18 @@
+use std::any::Any;
+
 use akita_error::AkitaError;
 use akita_prover::compute::{
     CommitInnerPlan, DecomposeFoldBatchPlan, DecomposeFoldPlan, OpeningBatchKernel,
-    OpeningFoldKernel, OpeningFoldOutput, OpeningFoldPlan, RootCommitKernel,
-    SubringCoefficientPackingBatchKernel, SubringCoefficientPackingPartials,
-    SubringCoefficientPackingPlan,
+    OpeningFoldKernel, OpeningFoldOutput, OpeningFoldPlan, SubringCoefficientPackingBatchKernel,
+    SubringCoefficientPackingPartials, SubringCoefficientPackingPlan,
 };
 use akita_prover::{
-    BatchDecomposeFoldOutcome, CommitInnerWitness, CpuBackend, DecomposeFoldWitness,
+    cpu_external_inner_commitment_capability, cpu_external_inner_prepared_setup,
+    AvailablePolynomialTypes, BackendKindId, BatchDecomposeFoldOutcome, CommitInnerWitness,
+    CommitSourceClass, CommitSourceDescriptor, CommitmentSource, CpuBackend, CpuPreparedSetup,
+    DecomposeFoldWitness, ExternalInnerCommitmentCapability, ExternalInnerCommitmentInput,
+    ExternalInnerCommitmentOperation, ExternalOperationIdentity, PolynomialRepresentation,
+    PolynomialTypeSelection, PreparedExternalInnerCommitment,
 };
 use akita_types::FpExtEncoding;
 use jolt_field::ExtField;
@@ -15,21 +21,109 @@ use rayon::prelude::*;
 use super::commit::commit_packed;
 use super::decomposition::decompose_fold_packed;
 use super::opening::opening_fold_packed;
-use super::source::{TracePackedOneHotBatchView, TracePackedOneHotView};
+use super::source::{TracePackedOneHot, TracePackedOneHotBatchView, TracePackedOneHotView};
 use super::traversal::coefficient_packing_partials_packed;
 use crate::AkitaField;
 
-impl<const D: usize> RootCommitKernel<TracePackedOneHotView<'_, D>, AkitaField, D> for CpuBackend {
-    fn commit_inner_group(
+struct TracePackedCommitAlgorithm;
+
+struct TracePackedCommitOperation;
+
+static TRACE_PACKED_COMMIT_OPERATION: TracePackedCommitOperation = TracePackedCommitOperation;
+
+impl ExternalInnerCommitmentOperation<AkitaField> for TracePackedCommitOperation {
+    fn identity(&self) -> ExternalOperationIdentity {
+        ExternalOperationIdentity::of::<
+            TracePackedOneHot,
+            TracePackedCommitAlgorithm,
+            CpuPreparedSetup<AkitaField>,
+        >()
+    }
+
+    fn commit_group(
         &self,
-        prepared: &Self::PreparedSetup,
-        sources: Vec<TracePackedOneHotView<'_, D>>,
-        plan: CommitInnerPlan,
+        plan: &CommitInnerPlan,
+        sources: &[ExternalInnerCommitmentInput<'_>],
+        context: &dyn Any,
     ) -> Result<Vec<CommitInnerWitness<AkitaField>>, AkitaError> {
-        sources
-            .into_par_iter()
-            .map(|source| commit_packed::<D>(self, prepared, source.source(), plan))
-            .collect()
+        let prepared = cpu_external_inner_prepared_setup::<AkitaField>(context)?;
+        akita_types::dispatch_for_field!(
+            akita_types::ProtocolDispatchSlot::Role(akita_types::RingRole::Inner),
+            AkitaField,
+            plan.ring_dimension,
+            |D| sources
+                .par_iter()
+                .map(|source| {
+                    commit_packed::<D>(
+                        &CpuBackend::DEFAULT,
+                        prepared,
+                        source.payload::<TracePackedOneHot>()?,
+                        *plan,
+                    )
+                })
+                .collect()
+        )
+    }
+}
+
+impl CommitmentSource<AkitaField> for TracePackedOneHot {
+    fn descriptor(&self) -> Result<CommitSourceDescriptor, AkitaError> {
+        let logical_len = self.total_field_elems();
+        CommitSourceDescriptor::new(
+            self.num_vars,
+            logical_len,
+            logical_len,
+            CommitSourceClass::OneHot {
+                chunk_size: self.one_hot_k,
+            },
+            "jolt_trace_onehot",
+        )
+    }
+
+    fn committed_centered_reach(
+        &self,
+        _modulus: u128,
+        _centering_threshold: u128,
+    ) -> Result<(u128, u128), AkitaError> {
+        Ok((0, 1))
+    }
+
+    fn available_polynomial_types(
+        &self,
+        _plan: &CommitInnerPlan,
+    ) -> Result<AvailablePolynomialTypes, AkitaError> {
+        AvailablePolynomialTypes::new(Vec::new())
+    }
+
+    fn represent_as(
+        &self,
+        _selected: PolynomialTypeSelection,
+        _plan: &CommitInnerPlan,
+    ) -> Result<PolynomialRepresentation<'_, AkitaField>, AkitaError> {
+        Err(AkitaError::InvalidInput(
+            "trace one-hot uses its streamed external commitment operation".to_string(),
+        ))
+    }
+
+    fn external_inner_commitment_capability(
+        &self,
+        backend: BackendKindId,
+        _plan: &CommitInnerPlan,
+    ) -> Result<Option<ExternalInnerCommitmentCapability>, AkitaError> {
+        let capability = cpu_external_inner_commitment_capability::<
+            TracePackedOneHot,
+            TracePackedCommitAlgorithm,
+            AkitaField,
+        >("jolt-trace-onehot")?;
+        Ok((backend == capability.backend()).then_some(capability))
+    }
+
+    fn prepare_external_inner_commitment(
+        &self,
+        selected: ExternalInnerCommitmentCapability,
+        _plan: &CommitInnerPlan,
+    ) -> Result<PreparedExternalInnerCommitment<'_, AkitaField>, AkitaError> {
+        PreparedExternalInnerCommitment::new(selected, self, &TRACE_PACKED_COMMIT_OPERATION, None)
     }
 }
 

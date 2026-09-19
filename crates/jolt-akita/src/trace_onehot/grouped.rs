@@ -3,14 +3,13 @@ use std::sync::Arc;
 use akita_error::AkitaError;
 use akita_prover::backend::{DenseBatchView, DenseView, OneHotBatchView, OneHotView};
 use akita_prover::compute::{
-    CommitInnerPlan, DecomposeFoldBatchPlan, DecomposeFoldPlan, OpeningBatchKernel,
-    OpeningFoldKernel, OpeningFoldOutput, OpeningFoldPlan, RootCommitKernel,
-    SubringCoefficientPackingBatchKernel, SubringCoefficientPackingPartials,
-    SubringCoefficientPackingPlan,
+    DecomposeFoldBatchPlan, DecomposeFoldPlan, OpeningBatchKernel, OpeningFoldKernel,
+    OpeningFoldOutput, OpeningFoldPlan, SubringCoefficientPackingBatchKernel,
+    SubringCoefficientPackingPartials, SubringCoefficientPackingPlan,
 };
 use akita_prover::{
-    BatchDecomposeFoldOutcome, CommitInnerWitness, CpuBackend, DecomposeFoldWitness, DensePoly,
-    OneHotPoly, RootCommitSource, RootOpeningSource, RootPolyMeta, RootPolyShape,
+    BatchDecomposeFoldOutcome, CpuBackend, DecomposeFoldWitness, DensePoly, OneHotPoly,
+    RootOpeningSource, RootPolyMeta, RootPolyShape,
 };
 use akita_types::FpExtEncoding;
 use jolt_field::{ExtField, MulBaseUnreduced};
@@ -107,41 +106,6 @@ impl<const D: usize> RootPolyShape<AkitaField, D> for GroupedRootSource {
     }
 }
 
-impl<const D: usize> RootCommitSource<AkitaField, D> for GroupedRootSource {
-    type CommitView<'view>
-        = GroupedRootView<'view, D>
-    where
-        Self: 'view;
-
-    fn commit_view(&self) -> Result<Self::CommitView<'_>, AkitaError> {
-        Ok(GroupedRootView { source: self })
-    }
-
-    fn committed_centered_reach(
-        &self,
-        modulus: u128,
-        centering_threshold: u128,
-    ) -> Result<(u128, u128), AkitaError> {
-        match self {
-            Self::Dense(polys) => RootCommitSource::<AkitaField, D>::committed_centered_reach(
-                grouped_singleton(polys),
-                modulus,
-                centering_threshold,
-            ),
-            Self::OneHot(polys) => RootCommitSource::<AkitaField, D>::committed_centered_reach(
-                grouped_singleton(polys),
-                modulus,
-                centering_threshold,
-            ),
-            Self::Trace(polys) => RootCommitSource::<AkitaField, D>::committed_centered_reach(
-                grouped_singleton(polys),
-                modulus,
-                centering_threshold,
-            ),
-        }
-    }
-}
-
 impl<const D: usize> RootOpeningSource<AkitaField, D> for GroupedRootSource {
     type OpeningView<'view>
         = GroupedRootView<'view, D>
@@ -160,74 +124,6 @@ impl<const D: usize> RootOpeningSource<AkitaField, D> for GroupedRootSource {
         polys: &'view [&'view Self],
     ) -> Result<Self::OpeningBatchView<'view>, AkitaError> {
         Ok(GroupedRootBatchView { sources: polys })
-    }
-}
-
-impl<const D: usize> RootCommitKernel<GroupedRootView<'_, D>, AkitaField, D> for CpuBackend {
-    fn commit_inner_group(
-        &self,
-        prepared: &Self::PreparedSetup,
-        sources: Vec<GroupedRootView<'_, D>>,
-        plan: CommitInnerPlan,
-    ) -> Result<Vec<CommitInnerWitness<AkitaField>>, AkitaError> {
-        let Some(first) = sources.first() else {
-            return Err(AkitaError::InvalidInput(
-                "grouped root commitment requires a nonempty group".to_string(),
-            ));
-        };
-        match first.source {
-            GroupedRootSource::Dense(_) => {
-                let dense = sources
-                    .into_iter()
-                    .map(|source| match source.source {
-                        GroupedRootSource::Dense(polys) => grouped_singleton(polys).commit_view(),
-                        GroupedRootSource::OneHot(_) | GroupedRootSource::Trace(_) => {
-                            Err(AkitaError::InvalidInput(
-                                "grouped root commitment groups must be representation-homogeneous"
-                                    .to_string(),
-                            ))
-                        }
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                RootCommitKernel::<DenseView<'_, AkitaField, D>, AkitaField, D>::commit_inner_group(
-                    self, prepared, dense, plan,
-                )
-            }
-            GroupedRootSource::OneHot(_) => {
-                let one_hot = sources
-                    .into_iter()
-                    .map(|source| match source.source {
-                        GroupedRootSource::OneHot(polys) => grouped_singleton(polys).commit_view(),
-                        GroupedRootSource::Dense(_) | GroupedRootSource::Trace(_) => {
-                            Err(AkitaError::InvalidInput(
-                                "grouped root commitment groups must be representation-homogeneous"
-                                    .to_string(),
-                            ))
-                        }
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                RootCommitKernel::<OneHotView<'_, AkitaField, D, u8>, AkitaField, D>::commit_inner_group(
-                    self, prepared, one_hot, plan,
-                )
-            }
-            GroupedRootSource::Trace(_) => {
-                let trace = sources
-                    .into_iter()
-                    .map(|source| match source.source {
-                        GroupedRootSource::Trace(polys) => grouped_singleton(polys).commit_view(),
-                        GroupedRootSource::Dense(_) | GroupedRootSource::OneHot(_) => {
-                            Err(AkitaError::InvalidInput(
-                                "grouped root commitment groups must be representation-homogeneous"
-                                    .to_string(),
-                            ))
-                        }
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                RootCommitKernel::<TracePackedOneHotView<'_, D>, AkitaField, D>::commit_inner_group(
-                    self, prepared, trace, plan,
-                )
-            }
-        }
     }
 }
 

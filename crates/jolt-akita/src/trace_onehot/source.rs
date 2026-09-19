@@ -4,7 +4,7 @@ use std::{
 };
 
 use akita_error::AkitaError;
-use akita_prover::{RootCommitSource, RootOpeningSource, RootPolyMeta, RootPolyShape};
+use akita_prover::{RootOpeningSource, RootPolyMeta, RootPolyShape};
 
 use super::NO_SELECTED_ROW;
 use crate::AkitaField;
@@ -189,28 +189,6 @@ impl<const D: usize> RootPolyShape<AkitaField, D> for TracePackedOneHot {
 
     fn onehot_chunk_size(&self) -> Option<usize> {
         Some(self.one_hot_k)
-    }
-}
-
-impl<const D: usize> RootCommitSource<AkitaField, D> for TracePackedOneHot {
-    type CommitView<'a>
-        = TracePackedOneHotView<'a, D>
-    where
-        Self: 'a;
-
-    fn commit_view(&self) -> Result<Self::CommitView<'_>, AkitaError> {
-        validate_dimension::<D>(self.one_hot_k)?;
-        Ok(TracePackedOneHotView { source: self })
-    }
-
-    /// The packed trace stores hot positions, so every coefficient it commits is
-    /// `0` or `1` and no scan is possible or needed.
-    fn committed_centered_reach(
-        &self,
-        _modulus: u128,
-        _centering_threshold: u128,
-    ) -> Result<(u128, u128), AkitaError> {
-        Ok((0, 1))
     }
 }
 
