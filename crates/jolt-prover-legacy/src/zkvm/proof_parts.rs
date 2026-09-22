@@ -1,3 +1,5 @@
+//! Prover-owned proof containers used by the external proof-assembly seam.
+
 #[cfg(not(feature = "zk"))]
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -32,7 +34,11 @@ use crate::{
     },
 };
 
-pub(crate) struct JoltProofParts<
+/// The prover-native parts consumed when assembling a verifier proof.
+///
+/// This type is public so external prover backends can reuse Jolt's canonical
+/// verifier assembly without copying the protocol conversion logic.
+pub struct JoltProofParts<
     F: JoltField,
     C: JoltCurve<F = F>,
     PCS: CommitmentScheme<Field = F>,
@@ -63,7 +69,8 @@ pub(crate) struct JoltProofParts<
 }
 
 #[cfg(not(feature = "zk"))]
-pub(crate) struct ProverOpeningClaims<F: JoltField>(pub Openings<F>);
+/// Opening claims carried by an external prover into verifier-proof assembly.
+pub struct ProverOpeningClaims<F: JoltField>(pub Openings<F>);
 
 #[cfg(not(feature = "zk"))]
 impl<F: JoltField> CanonicalSerialize for ProverOpeningClaims<F> {
