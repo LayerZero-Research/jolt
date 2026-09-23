@@ -122,6 +122,11 @@ where
     ) -> Result<CpuFoldResponses, AkitaError> {
         let source = source.source();
         let (num_positions_per_block, num_digits, _) = plan.scalar_params();
+        if num_positions_per_block == 0 {
+            return Err(AkitaError::InvalidInput(
+                "batched decompose_fold requires positive block geometry".to_string(),
+            ));
+        }
         let num_blocks = RootPolyShape::<AkitaField, D>::num_ring_elems(source)
             .div_ceil(num_positions_per_block);
         let _ = plan.validate_uniform_batch(std::iter::once(num_blocks))?;

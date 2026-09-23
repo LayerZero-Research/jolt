@@ -31,8 +31,9 @@ use jolt_witness::{JoltVmWitnessConfig, JoltVmWitnessInputs, TraceBackend};
 use super::guest_fixtures::{prepare_guest, PreparedGuest};
 
 static VERIFIER_FIXTURE_LOCK: Mutex<()> = Mutex::new(());
-// Modular preprocessing has a different encoded shape from the retired prover.
-const FIXTURE_MAGIC: &[u8; 8] = b"JVCF0004";
+// Program digests derive from the serde encoding (`ProgramPreprocessing::digest`);
+// fixtures carrying the legacy digest layout must regenerate.
+const FIXTURE_MAGIC: &[u8; 8] = b"JVCF0005";
 const REGENERATE_ARTIFACTS_ENV: &str = "JOLT_VERIFIER_REGENERATE_VERIFIER_FIXTURES";
 const VERIFIER_FIXTURE_LOCK_FILE: &str = "jolt-verifier-fixtures.lock";
 
@@ -145,6 +146,7 @@ pub struct ZkVerifierFixtureCase {
     pub preprocessing: VerifierFixturePreprocessing,
     pub public_io: JoltDevice,
     pub proof: VerifierFixtureProof,
+    pub trusted_advice_commitment: Option<DoryCommitment>,
 }
 
 #[cfg(feature = "zk")]
@@ -154,7 +156,7 @@ impl ZkVerifierFixtureCase {
             &self.preprocessing,
             &self.public_io,
             &self.proof,
-            None,
+            self.trusted_advice_commitment.as_ref(),
         )
     }
 }
@@ -229,6 +231,17 @@ pub fn fresh_zk_muldiv_case() -> ZkVerifierFixtureCase {
     zk_case_from_parts(generate_muldiv())
 }
 
+#[cfg(feature = "zk")]
+pub fn zk_advice_consumer_case() -> ZkVerifierFixtureCase {
+    let _guard = verifier_fixture_lock();
+    let fixture = load_or_generate_fixture(VerifierFixtureKind::ZkAdviceConsumer, || {
+        let fixture = generate_advice_consumer();
+        assert_verifier_accepts(&fixture, fixture.proof.clone(), fixture.public_io.clone());
+        fixture
+    });
+    zk_case_from_parts(fixture)
+}
+
 #[cfg(not(feature = "zk"))]
 pub fn standard_advice_consumer_case() -> VerifierFixtureCase {
     let _guard = verifier_fixture_lock();
@@ -301,6 +314,7 @@ fn zk_case_from_parts(fixture: GeneratedVerifierFixture) -> ZkVerifierFixtureCas
         preprocessing: fixture.preprocessing,
         public_io: fixture.public_io,
         proof: fixture.proof,
+        trusted_advice_commitment: fixture.trusted_advice_commitment,
     }
 }
 
@@ -326,6 +340,13 @@ struct GeneratedVerifierFixture {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "zk",
+    expect(
+        clippy::enum_variant_names,
+        reason = "only the Zk-prefixed variants survive the cfg in ZK builds"
+    )
+)]
 enum VerifierFixtureKind {
     #[cfg(not(feature = "zk"))]
     MulDivSmall,
@@ -347,6 +368,8 @@ enum VerifierFixtureKind {
     ZkMulDivSmall,
     #[cfg(feature = "zk")]
     ZkCommittedMulDivSmall,
+    #[cfg(feature = "zk")]
+    ZkAdviceConsumer,
 }
 
 impl VerifierFixtureKind {
@@ -375,6 +398,8 @@ impl VerifierFixtureKind {
             Self::ZkMulDivSmall => "zk-muldiv-small-degree-bound",
             #[cfg(feature = "zk")]
             Self::ZkCommittedMulDivSmall => "zk-committed-muldiv-small-degree-bound",
+            #[cfg(feature = "zk")]
+            Self::ZkAdviceConsumer => "zk-advice-consumer-degree-bound",
         }
     }
 }
@@ -582,7 +607,6 @@ fn generate_sha2_small() -> GeneratedVerifierFixture {
     )
 }
 
-#[cfg(not(feature = "zk"))]
 fn generate_advice_consumer() -> GeneratedVerifierFixture {
     generate_advice_consumer_with_committed_program(false)
 }
@@ -592,7 +616,6 @@ fn generate_committed_advice_consumer() -> GeneratedVerifierFixture {
     generate_advice_consumer_with_committed_program(true)
 }
 
-#[cfg(not(feature = "zk"))]
 fn generate_advice_consumer_with_committed_program(
     committed_program: bool,
 ) -> GeneratedVerifierFixture {
@@ -608,7 +631,7 @@ fn generate_advice_consumer_with_committed_program(
     } else {
         let shared =
             JoltSharedPreprocessing::new(run.program_preprocessing).expect("shared preprocessing");
-        jolt_prover::dory::from_shared(shared)
+        jolt_prover::dory::from_shared(shared).expect("Dory preprocessing")
     };
     prove_prepared(
         run.program,
@@ -668,7 +691,7 @@ fn generate_verifier_fixture_with_order(
     config.trace_polynomial_order = order;
     let shared =
         JoltSharedPreprocessing::new(run.program_preprocessing).expect("shared preprocessing");
-    let preprocessing = jolt_prover::dory::from_shared(shared);
+    let preprocessing = jolt_prover::dory::from_shared(shared).expect("Dory preprocessing");
     prove_prepared(
         run.program,
         run.trace,
