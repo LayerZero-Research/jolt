@@ -41,7 +41,7 @@ use akita_pcs::{
     AkitaCommitmentScheme, AkitaProverSetup as BackendProverSetup, CommitmentHandle, CpuBackend,
     DensePoly, GroupContext, OneHotPoly,
 };
-use akita_prover::SelectedProverOpeningData;
+use akita_prover::{CommitmentHandleMetadata, SelectedProverOpeningData};
 use akita_transcript::AkitaTranscript;
 use akita_types::{BasisMode, CommittedGroup, OpeningClaims, PolynomialGroupClaims};
 use criterion::{criterion_group, BatchSize, BenchmarkGroup, BenchmarkId, Criterion};
@@ -83,7 +83,8 @@ type BackendScheme = AkitaCommitmentScheme<AkitaConfig>;
 type OneHotBackendScheme = AkitaCommitmentScheme<AkitaOneHotConfig>;
 type BackendCommitment = CommittedGroup<AkitaField>;
 type BackendDensePoly = DensePoly<AkitaField>;
-type BackendHint = CommitmentHandle<AkitaField, AkitaField>;
+type DenseBackendHint = CommitmentHandle<AkitaField, AkitaField, AkitaConfig>;
+type OneHotBackendHint = CommitmentHandle<AkitaField, AkitaField, AkitaOneHotConfig>;
 type BackendSetup = BackendProverSetup<AkitaField>;
 type BackendOneHotPoly = OneHotPoly<AkitaField, u8>;
 
@@ -125,10 +126,10 @@ impl DataPath {
 struct AkitaProverBenchSetup {
     dense_scheme: BackendScheme,
     dense_prover: BackendSetup,
-    dense_backend: CpuBackend,
+    dense_backend: CpuBackend<AkitaConfig>,
     one_hot_scheme: OneHotBackendScheme,
     one_hot_prover: BackendSetup,
-    one_hot_backend: CpuBackend,
+    one_hot_backend: CpuBackend<AkitaOneHotConfig>,
 }
 
 struct AkitaCase {
@@ -355,7 +356,7 @@ fn akita_case(num_vars: usize) -> AkitaCase {
             let backend_prover = dense_scheme
                 .setup_prover(num_vars, NUM_POLYS)
                 .expect("Akita backend setup should succeed");
-            let backend = CpuBackend::new::<AkitaConfig>(
+            let backend = CpuBackend::<AkitaConfig>::new(
                 backend_prover.expanded.clone(),
                 dense_scheme.schedules(),
             )
@@ -363,7 +364,7 @@ fn akita_case(num_vars: usize) -> AkitaCase {
             let one_hot_backend_prover = one_hot_scheme
                 .setup_prover(num_vars, NUM_POLYS)
                 .expect("Akita one-hot backend setup should succeed");
-            let one_hot_backend = CpuBackend::new::<AkitaOneHotConfig>(
+            let one_hot_backend = CpuBackend::<AkitaOneHotConfig>::new(
                 one_hot_backend_prover.expanded.clone(),
                 one_hot_scheme.schedules(),
             )
@@ -603,15 +604,15 @@ fn wrapper_open(
 fn akita_prover_commit_dense(
     setup: &AkitaProverBenchSetup,
     poly: &BackendDensePoly,
-) -> (BackendCommitment, BackendHint) {
+) -> (BackendCommitment, DenseBackendHint) {
     with_akita_pool(|| {
         let source = setup
             .dense_backend
-            .import_source::<AkitaConfig, _>(vec![black_box(poly.clone())])
+            .import_source::<_>(vec![black_box(poly.clone())])
             .expect("Akita backend dense import should succeed");
         let output = setup
             .dense_backend
-            .commit::<AkitaConfig>(
+            .commit(
                 &source,
                 GroupContext::scheduler_without_precommitted_groups(),
             )
@@ -623,15 +624,15 @@ fn akita_prover_commit_dense(
 fn akita_prover_commit_one_hot(
     setup: &AkitaProverBenchSetup,
     poly: &BackendOneHotPoly,
-) -> (BackendCommitment, BackendHint) {
+) -> (BackendCommitment, OneHotBackendHint) {
     with_akita_pool(|| {
         let source = setup
             .one_hot_backend
-            .import_source::<AkitaOneHotConfig, _>(vec![black_box(poly.clone())])
+            .import_source::<_>(vec![black_box(poly.clone())])
             .expect("Akita backend one-hot import should succeed");
         let output = setup
             .one_hot_backend
-            .commit::<AkitaOneHotConfig>(
+            .commit(
                 &source,
                 GroupContext::scheduler_without_precommitted_groups(),
             )
@@ -640,15 +641,16 @@ fn akita_prover_commit_one_hot(
     })
 }
 
-fn akita_prover_claims<'a, Cfg>(
+fn akita_prover_claims<'a, Cfg, H>(
     schedules: &TrustedScheduleCatalog<Cfg>,
     point: &[AkitaField],
     evaluations: Vec<AkitaField>,
     commitment: &BackendCommitment,
-    hint: BackendHint,
-) -> SelectedProverOpeningData<'a, AkitaField, BackendHint, AkitaField>
+    hint: H,
+) -> SelectedProverOpeningData<'a, AkitaField, H, AkitaField>
 where
     Cfg: CommitmentConfig<Field = AkitaField, ExtField = AkitaField>,
+    H: CommitmentHandleMetadata,
 {
     let group = PolynomialGroupClaims::new(point.to_vec(), evaluations, commitment.clone())
         .expect("prover group claims");
@@ -661,7 +663,7 @@ fn akita_prover_open_dense(
     case: &AkitaCase,
     evaluation: AkitaField,
     commitment: BackendCommitment,
-    hint: BackendHint,
+    hint: DenseBackendHint,
 ) -> akita_types::AkitaBatchedProof<AkitaField, AkitaField> {
     with_akita_pool(|| {
         let mut transcript = AkitaTranscript::<AkitaField>::new(b"jolt-akita/native-bench");
@@ -669,7 +671,7 @@ fn akita_prover_open_dense(
             .dense_scheme
             .batched_prove(
                 &case.akita_prover_setup.dense_prover,
-                akita_prover_claims::<AkitaConfig>(
+                akita_prover_claims::<AkitaConfig, _>(
                     case.akita_prover_setup.dense_scheme.schedules(),
                     &case.point,
                     vec![evaluation],
@@ -688,7 +690,7 @@ fn akita_prover_open_one_hot(
     case: &AkitaCase,
     evaluation: AkitaField,
     commitment: BackendCommitment,
-    hint: BackendHint,
+    hint: OneHotBackendHint,
 ) -> akita_types::AkitaBatchedProof<AkitaField, AkitaField> {
     with_akita_pool(|| {
         let backend_point = reverse_point(&case.point);
@@ -697,7 +699,7 @@ fn akita_prover_open_one_hot(
             .one_hot_scheme
             .batched_prove(
                 &case.akita_prover_setup.one_hot_prover,
-                akita_prover_claims::<AkitaOneHotConfig>(
+                akita_prover_claims::<AkitaOneHotConfig, _>(
                     case.akita_prover_setup.one_hot_scheme.schedules(),
                     &backend_point,
                     vec![evaluation],
