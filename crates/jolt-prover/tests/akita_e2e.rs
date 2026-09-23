@@ -15,7 +15,6 @@ mod akita_tests {
     use jolt_claims::protocols::jolt::{JoltOneHotConfig, TracePolynomialOrder};
     use jolt_field::Ring;
     use jolt_host::{JoltProgramSource, Program};
-    use jolt_kernels::ReferenceBackend;
     use jolt_program::execution::{JoltProgram, OwnedTrace, TraceInputs, TraceOutput};
     use jolt_program::preprocess::JoltProgramPreprocessing;
     use jolt_prover::akita::preprocessing::{
@@ -153,17 +152,8 @@ mod akita_tests {
             witness_config(&config, untrusted_advice, has_trusted_advice),
             JoltVmWitnessInputs::new(&run.program, &program_preprocessing, run.trace),
         );
-        let mut backend = JoltAkitaBackend::optimized();
-        if config.rw_config.ram_rw_phase1_num_rounds == 0
-            && config.rw_config.registers_rw_phase1_num_rounds == 0
-        {
-            backend.base.ram_read_write = Box::new(ReferenceBackend);
-            backend.base.ram_raf_evaluation = Box::new(ReferenceBackend);
-            backend.base.ram_output_check = Box::new(ReferenceBackend);
-            backend.base.registers_read_write = Box::new(ReferenceBackend);
-        }
         let proof = akita::prove::<AkitaField, AkitaScheme, AkitaVc, AkitaTranscript, _>(
-            &backend,
+            &JoltAkitaBackend::optimized(),
             &preprocessing,
             &config,
             trusted.as_ref(),
