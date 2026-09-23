@@ -294,13 +294,127 @@ macro_rules! with_one_hot_scheme {
 pub(crate) use with_one_hot_scheme;
 pub(crate) type AkitaBackendCommitment = AkitaBackendCommittedGroup<AkitaField>;
 pub(crate) type AkitaBackendCommitmentPayload = AkitaBackendRingCommitment<AkitaField>;
-pub(crate) type AkitaBackendHint = CommitmentHandle<AkitaField, AkitaBackendExtField>;
 pub(crate) type AkitaBackendProof = AkitaBackendBatchProof<AkitaField, AkitaBackendExtField>;
 pub(crate) type AkitaBackendProofShape = AkitaBatchedProofShape;
 pub(crate) type AkitaBackendVerifier = AkitaBackendVerifierSetup<AkitaField>;
 pub(crate) type AkitaBackendDensePoly = DensePoly<AkitaField>;
 pub(crate) type AkitaBackendOneHotPoly = OneHotPoly<AkitaField, u8>;
 pub(crate) type AkitaBackendProverSetup = BackendProverSetup<AkitaField>;
+
+type DenseBackend = CpuBackend<AkitaConfig>;
+type DenseBackendHint = CommitmentHandle<AkitaField, AkitaBackendExtField, AkitaConfig>;
+
+#[derive(Clone, Debug)]
+pub(crate) enum AkitaOneHotBackend {
+    K16Single(Arc<CpuBackend<JoltOneHotK16>>),
+    K16W2R2(Arc<CpuBackend<JoltOneHotK16W2R2>>),
+    K16W4R2(Arc<CpuBackend<JoltOneHotK16W4R2>>),
+    K16W8R2(Arc<CpuBackend<JoltOneHotK16MultiChunk>>),
+    K256Single(Arc<CpuBackend<JoltOneHotK256>>),
+    K256W2R2(Arc<CpuBackend<JoltOneHotK256W2R2>>),
+    K256W4R2(Arc<CpuBackend<JoltOneHotK256W4R2>>),
+    K256W8R2(Arc<CpuBackend<JoltOneHotK256MultiChunk>>),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum AkitaOneHotBackendHint {
+    K16Single(CommitmentHandle<AkitaField, AkitaBackendExtField, JoltOneHotK16>),
+    K16W2R2(CommitmentHandle<AkitaField, AkitaBackendExtField, JoltOneHotK16W2R2>),
+    K16W4R2(CommitmentHandle<AkitaField, AkitaBackendExtField, JoltOneHotK16W4R2>),
+    K16W8R2(CommitmentHandle<AkitaField, AkitaBackendExtField, JoltOneHotK16MultiChunk>),
+    K256Single(CommitmentHandle<AkitaField, AkitaBackendExtField, JoltOneHotK256>),
+    K256W2R2(CommitmentHandle<AkitaField, AkitaBackendExtField, JoltOneHotK256W2R2>),
+    K256W4R2(CommitmentHandle<AkitaField, AkitaBackendExtField, JoltOneHotK256W4R2>),
+    K256W8R2(CommitmentHandle<AkitaField, AkitaBackendExtField, JoltOneHotK256MultiChunk>),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum AkitaBackendHint {
+    Dense(DenseBackendHint),
+    OneHot(AkitaOneHotBackendHint),
+}
+
+impl AkitaBackendHint {
+    pub(crate) fn into_dense(self) -> Result<DenseBackendHint, OpeningsError> {
+        match self {
+            Self::Dense(hint) => Ok(hint),
+            Self::OneHot(_) => Err(invalid_batch("expected an Akita dense backend hint")),
+        }
+    }
+}
+
+pub(crate) trait AkitaOneHotConfig:
+    CommitmentConfig<Field = AkitaField, ExtField = AkitaBackendExtField> + Sized
+{
+    fn wrap_backend(backend: CpuBackend<Self>) -> AkitaOneHotBackend;
+
+    fn backend(backend: &AkitaOneHotBackend) -> Option<&CpuBackend<Self>>;
+
+    fn wrap_hint(
+        hint: CommitmentHandle<AkitaField, AkitaBackendExtField, Self>,
+    ) -> AkitaBackendHint;
+
+    fn into_hint(
+        hint: AkitaBackendHint,
+    ) -> Result<CommitmentHandle<AkitaField, AkitaBackendExtField, Self>, OpeningsError>;
+}
+
+macro_rules! impl_one_hot_config {
+    ($cfg:ty, $variant:ident) => {
+        impl AkitaOneHotConfig for $cfg {
+            fn wrap_backend(backend: CpuBackend<Self>) -> AkitaOneHotBackend {
+                AkitaOneHotBackend::$variant(Arc::new(backend))
+            }
+
+            fn backend(backend: &AkitaOneHotBackend) -> Option<&CpuBackend<Self>> {
+                match backend {
+                    AkitaOneHotBackend::$variant(backend) => Some(backend),
+                    _ => None,
+                }
+            }
+
+            fn wrap_hint(
+                hint: CommitmentHandle<AkitaField, AkitaBackendExtField, Self>,
+            ) -> AkitaBackendHint {
+                AkitaBackendHint::OneHot(AkitaOneHotBackendHint::$variant(hint))
+            }
+
+            fn into_hint(
+                hint: AkitaBackendHint,
+            ) -> Result<CommitmentHandle<AkitaField, AkitaBackendExtField, Self>, OpeningsError>
+            {
+                match hint {
+                    AkitaBackendHint::OneHot(AkitaOneHotBackendHint::$variant(hint)) => Ok(hint),
+                    _ => Err(invalid_batch("Akita one-hot backend hint config mismatch")),
+                }
+            }
+        }
+    };
+}
+
+impl_one_hot_config!(JoltOneHotK16, K16Single);
+impl_one_hot_config!(JoltOneHotK16W2R2, K16W2R2);
+impl_one_hot_config!(JoltOneHotK16W4R2, K16W4R2);
+impl_one_hot_config!(JoltOneHotK16MultiChunk, K16W8R2);
+impl_one_hot_config!(JoltOneHotK256, K256Single);
+impl_one_hot_config!(JoltOneHotK256W2R2, K256W2R2);
+impl_one_hot_config!(JoltOneHotK256W4R2, K256W4R2);
+impl_one_hot_config!(JoltOneHotK256MultiChunk, K256W8R2);
+
+impl AkitaOneHotBackend {
+    fn trim_caches(&self) -> Result<usize, AkitaError> {
+        match self {
+            Self::K16Single(backend) => backend.trim_caches(),
+            Self::K16W2R2(backend) => backend.trim_caches(),
+            Self::K16W4R2(backend) => backend.trim_caches(),
+            Self::K16W8R2(backend) => backend.trim_caches(),
+            Self::K256Single(backend) => backend.trim_caches(),
+            Self::K256W2R2(backend) => backend.trim_caches(),
+            Self::K256W4R2(backend) => backend.trim_caches(),
+            Self::K256W8R2(backend) => backend.trim_caches(),
+        }
+    }
+}
 
 pub(crate) type AkitaLayoutDigest = [u8; 32];
 const SCHEDULE_SELECTION_BYTES: usize = 32;
@@ -563,9 +677,9 @@ impl AkitaSetupParams {
 #[derive(Clone, Debug)]
 pub struct AkitaProverSetup {
     pub(crate) backend_prover_setup: Option<Arc<AkitaBackendProverSetup>>,
-    pub(crate) backend: Option<Arc<CpuBackend>>,
+    pub(crate) backend: Option<Arc<DenseBackend>>,
     pub(crate) one_hot_backend_prover_setup: Option<Arc<AkitaBackendProverSetup>>,
-    pub(crate) one_hot_backend: Option<Arc<CpuBackend>>,
+    pub(crate) one_hot_backend: Option<AkitaOneHotBackend>,
     pub(crate) schedule_artifacts: Arc<AkitaScheduleArtifacts>,
     pub(crate) verifier: AkitaVerifierSetup,
 }
@@ -594,10 +708,12 @@ impl AkitaProverSetup {
     /// Releases transformed setup slots after the trace commitment. Later
     /// opening work rebuilds the slots on first use.
     pub fn release_post_commit_ntt_residency(&self) -> Result<(), OpeningsError> {
-        for backend in [self.backend.as_deref(), self.one_hot_backend.as_deref()]
-            .into_iter()
-            .flatten()
-        {
+        if let Some(backend) = self.backend.as_deref() {
+            let _ = backend
+                .trim_caches()
+                .map_err(|error| OpeningsError::InvalidSetup(error.to_string()))?;
+        }
+        if let Some(backend) = &self.one_hot_backend {
             let _ = backend
                 .trim_caches()
                 .map_err(|error| OpeningsError::InvalidSetup(error.to_string()))?;
@@ -607,7 +723,7 @@ impl AkitaProverSetup {
 
     pub(crate) fn dense_backend(
         &self,
-    ) -> Result<(&AkitaBackendProverSetup, &CpuBackend), OpeningsError> {
+    ) -> Result<(&AkitaBackendProverSetup, &DenseBackend), OpeningsError> {
         self.backend_prover_setup
             .as_deref()
             .zip(self.backend.as_deref())
@@ -618,17 +734,19 @@ impl AkitaProverSetup {
             })
     }
 
-    pub(crate) fn one_hot_backend(
+    pub(crate) fn one_hot_backend<Cfg: AkitaOneHotConfig>(
         &self,
-    ) -> Result<(&AkitaBackendProverSetup, &CpuBackend), OpeningsError> {
+    ) -> Result<(&AkitaBackendProverSetup, &CpuBackend<Cfg>), OpeningsError> {
         let prover_setup = self
             .one_hot_backend_prover_setup
             .as_deref()
             .ok_or_else(|| invalid_batch("Akita setup has no one-hot backend"))?;
         let backend = self
             .one_hot_backend
-            .as_deref()
+            .as_ref()
             .ok_or_else(|| invalid_batch("Akita setup has no one-hot backend"))?;
+        let backend = Cfg::backend(backend)
+            .ok_or_else(|| invalid_batch("Akita one-hot backend config mismatch"))?;
         Ok((prover_setup, backend))
     }
 }

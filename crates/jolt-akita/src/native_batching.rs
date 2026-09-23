@@ -16,7 +16,7 @@
 //! embeds the backend proof bytes wholesale.
 
 use akita_config::{CommitmentConfig, TrustedScheduleCatalog};
-use akita_pcs::{AkitaError, AkitaTranscript};
+use akita_pcs::{AkitaError, AkitaTranscript, CommitmentHandle};
 use akita_prover::SelectedProverOpeningData;
 use akita_types::{
     BasisMode, GroupBatchStatement, OpeningClaims, OpeningScheduleSelection, PolynomialGroupClaims,
@@ -34,7 +34,8 @@ use crate::adapters::{
     invalid_batch, prove_failed, reverse_point, serialize_akita, with_backend_pool,
     with_one_hot_scheme, AkitaBackendCommitment, AkitaBackendExtField, AkitaBackendFlavor,
     AkitaBackendHint, AkitaBackendProof, AkitaBatchProof, AkitaCommitment, AkitaConfig, AkitaField,
-    AkitaProverHint, AkitaProverSetup, AkitaVerifierSetup, AKITA_ONE_HOT_K16, AKITA_ONE_HOT_K256,
+    AkitaOneHotConfig, AkitaProverHint, AkitaProverSetup, AkitaVerifierSetup, AKITA_ONE_HOT_K16,
+    AKITA_ONE_HOT_K256,
 };
 use crate::scheme::validate_precommitted_order;
 
@@ -213,9 +214,8 @@ impl AkitaNativeBatching {
         }
         validate_grouped_hint("main-trace", &main, &main_hint)?;
 
-        let (_, one_hot_backend) = setup.one_hot_backend()?;
         let mut group_claims = Vec::with_capacity(precommitted.len() + 1);
-        let mut backend_hints = Vec::with_capacity(precommitted.len() + 1);
+        let mut dense_backend_hints = Vec::with_capacity(precommitted.len());
         for (entry, hint) in precommitted {
             let (backend_commitment, backend_hint) = hint.backend.ok_or_else(|| {
                 invalid_batch(format!(
@@ -231,10 +231,7 @@ impl AkitaNativeBatching {
                 )
                 .map_err(akita_error)?,
             );
-            backend_hints.push(
-                with_backend_pool(|| one_hot_backend.import_commitment(&backend_hint))
-                    .map_err(akita_error)?,
-            );
+            dense_backend_hints.push(backend_hint.into_dense()?);
         }
         let (main_backend_commitment, main_backend_hint) = main_hint
             .backend
@@ -247,13 +244,18 @@ impl AkitaNativeBatching {
             )
             .map_err(akita_error)?,
         );
-        backend_hints.push(main_backend_hint);
         let claims = OpeningClaims::from_groups(group_claims).map_err(akita_error)?;
 
         let (selection, backend_proof) = with_backend_pool(move || {
             let scheme = setup.verifier.one_hot_scheme()?;
-            let (backend_prover_setup, backend) = setup.one_hot_backend()?;
             with_one_hot_scheme!(scheme, |scheme, Cfg| {
+                let (backend_prover_setup, backend) = setup.one_hot_backend::<Cfg>()?;
+                let mut backend_hints = dense_backend_hints
+                    .iter()
+                    .map(|hint| backend.import_commitment(hint))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(akita_error)?;
+                backend_hints.push(Cfg::into_hint(main_backend_hint)?);
                 let opening = SelectedProverOpeningData::from_committed_claims::<Cfg>(
                     claims,
                     backend_hints,
@@ -346,6 +348,13 @@ impl AkitaNativeBatching {
 pub type AkitaNativeBatchStatement = Vec<VerifierOpeningClaim<AkitaField, AkitaCommitment>>;
 
 pub type AkitaNativeBatchPolynomials<'a> = Vec<&'a (dyn MultilinearPoly<AkitaField> + 'a)>;
+
+type AkitaBackendOpeningData<'a, Cfg> = SelectedProverOpeningData<
+    'a,
+    AkitaBackendExtField,
+    CommitmentHandle<AkitaField, AkitaBackendExtField, Cfg>,
+    AkitaField,
+>;
 
 struct ValidatedStatement<'a> {
     commitment: &'a AkitaCommitment,
@@ -488,11 +497,8 @@ fn single_group_batch<'a, Cfg>(
     point: &[AkitaField],
     evaluations: &[AkitaField],
     backend_commitment: AkitaBackendCommitment,
-    backend_hint: AkitaBackendHint,
-) -> Result<
-    SelectedProverOpeningData<'a, AkitaBackendExtField, AkitaBackendHint, AkitaField>,
-    AkitaError,
->
+    backend_hint: CommitmentHandle<AkitaField, AkitaBackendExtField, Cfg>,
+) -> Result<AkitaBackendOpeningData<'a, Cfg>, AkitaError>
 where
     Cfg: CommitmentConfig<Field = AkitaField, ExtField = AkitaBackendExtField>,
 {
@@ -512,10 +518,11 @@ fn prove_one_hot(
     backend_hint: AkitaBackendHint,
     akita_transcript: &mut AkitaTranscript<AkitaField>,
 ) -> Result<(OpeningScheduleSelection, AkitaBackendProof), OpeningsError> {
-    let (backend_prover_setup, backend) = setup.one_hot_backend()?;
     let backend_point = reverse_point(point);
     let scheme = setup.verifier.one_hot_scheme()?;
     with_one_hot_scheme!(scheme, |scheme, Cfg| {
+        let (backend_prover_setup, backend) = setup.one_hot_backend::<Cfg>()?;
+        let backend_hint = Cfg::into_hint(backend_hint)?;
         let opening = single_group_batch::<Cfg>(
             scheme.schedules(),
             &backend_point,
@@ -591,6 +598,7 @@ impl BatchOpeningScheme for AkitaNativeBatching {
             .collect();
         let (selection, backend_proof) = match commitment.backend_flavor {
             AkitaBackendFlavor::Dense => {
+                let backend_hint = backend_hint.into_dense()?;
                 let opening = single_group_batch::<AkitaConfig>(
                     setup.verifier.dense_scheme()?.schedules(),
                     point,
