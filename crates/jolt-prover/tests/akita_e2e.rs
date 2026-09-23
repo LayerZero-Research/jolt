@@ -156,6 +156,7 @@ mod muldiv {
     use std::sync::Arc;
 
     use jolt_field::Ring;
+    use jolt_kernels::ReferenceBackend;
     use jolt_openings::CommitmentScheme as VerifierCommitmentScheme;
     use jolt_program::execution::JoltProgram;
     use jolt_prover::akita;
@@ -184,6 +185,15 @@ mod muldiv {
     /// the fused-inc pipeline's claim wires.
     #[test]
     fn muldiv_e2e_akita() {
+        check_muldiv_e2e(false);
+    }
+
+    #[test]
+    fn muldiv_address_first_e2e_akita() {
+        check_muldiv_e2e(true);
+    }
+
+    fn check_muldiv_e2e(address_first: bool) {
         let mut program = host::Program::new("muldiv-guest");
         let inputs = postcard::to_stdvec(&[9u32, 5u32, 3u32]).expect("serialize inputs");
         let guest = support::packed_guest(&mut program, &inputs, &[], &[]);
@@ -234,7 +244,17 @@ mod muldiv {
             &[],
             &[],
         );
-        let config = support::derive_config(&trace_output, memory_layout, &verifier_preprocessing);
+        let mut config =
+            support::derive_config(&trace_output, memory_layout, &verifier_preprocessing);
+        let mut backend = akita::JoltAkitaBackend::optimized();
+        if address_first {
+            config.rw_config.ram_rw_phase1_num_rounds = 0;
+            config.rw_config.registers_rw_phase1_num_rounds = 0;
+            backend.base.ram_read_write = Box::new(ReferenceBackend);
+            backend.base.ram_raf_evaluation = Box::new(ReferenceBackend);
+            backend.base.ram_output_check = Box::new(ReferenceBackend);
+            backend.base.registers_read_write = Box::new(ReferenceBackend);
+        }
         let witness = TraceBackend::<jolt_program::execution::OwnedTrace>::from_compact(
             support::witness_config(&config),
             JoltVmWitnessInputs::new(&jolt_program, &program_preprocessing, trace_output),
@@ -244,7 +264,6 @@ mod muldiv {
             pcs_setup: object_setup,
             committed_program: None,
         };
-        let backend = akita::JoltAkitaBackend::optimized();
         let proof = akita::prove::<AkitaField, AkitaScheme, AkitaVc, AkitaTranscript, _>(
             &backend,
             &prover_preprocessing,
