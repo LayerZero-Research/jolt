@@ -20,6 +20,7 @@ use jolt_verifier::stages::stage8::packed::{
 use jolt_verifier::{CheckedInputs, VerifierError};
 
 use super::witness::{AdviceObject, DirectProgramObjects};
+use super::AkitaPcsCompanion;
 use crate::{JoltProverPreprocessing, ProverConfig, ProverError};
 
 fn batch_failed<F: JoltField>(reason: impl ToString) -> ProverError<F> {
@@ -46,7 +47,7 @@ where
 
 #[expect(clippy::too_many_arguments, reason = "the stage's upstream carriers")]
 #[tracing::instrument(skip_all)]
-pub fn prove_stage8<F, PCS, VC, T>(
+pub fn prove_stage8<F, PCS, VC, T, C>(
     checked: &CheckedInputs,
     config: &ProverConfig,
     preprocessing: &JoltProverPreprocessing<PCS, VC>,
@@ -59,6 +60,7 @@ pub fn prove_stage8<F, PCS, VC, T>(
     stage6b: &Stage6bClearOutput<F>,
     stage7: &Stage7ClearOutput<F>,
     transcript: &mut T,
+    companion: &mut C,
 ) -> Result<PCS::Proof, ProverError<F>>
 where
     F: JoltField,
@@ -66,6 +68,7 @@ where
     PCS::Output: Clone + AppendToTranscript,
     VC: VectorCommitment<Field = F>,
     T: Transcript<Challenge = F>,
+    C: AkitaPcsCompanion<F, PCS>,
 {
     let log_t = checked.trace_length.ilog2() as usize;
     let chunk_width = config.one_hot_config.committed_chunk_bits();
@@ -141,6 +144,9 @@ where
         packed_claim.point.as_slice().to_vec(),
         vec![packed_claim.value],
     );
+    companion
+        .open_trace(packed_claim.point.as_slice(), packed_claim.value)
+        .map_err(ProverError::AkitaCompanion)?;
     tracing::info_span!("akita_main_batched_prove").in_scope(|| {
         PCS::prove_batch(
             &preprocessing.pcs_setup,

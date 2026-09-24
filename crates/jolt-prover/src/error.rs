@@ -23,6 +23,12 @@ pub enum ProverError<F: JoltField> {
     #[error(transparent)]
     Witness(#[from] jolt_witness::WitnessError),
 
+    /// A proof-scoped Akita PCS companion failed or disagreed with the native
+    /// Rust commitment.
+    #[cfg(feature = "akita")]
+    #[error("Akita PCS companion failed: {0}")]
+    AkitaCompanion(String),
+
     /// A capability the modular prover does not implement yet, or an input
     /// regime it rejects up front. Recoverable in principle: the caller may
     /// fall back to another prover.

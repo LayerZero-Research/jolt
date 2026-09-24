@@ -17,7 +17,7 @@ use jolt_witness::JoltWitnessPlane;
 use super::stage0::prove_stage0;
 use super::stage8::prove_stage8;
 use super::witness::AdviceObject;
-use super::JoltAkitaBackend;
+use super::{AkitaPcsCompanion, JoltAkitaBackend};
 use crate::stages::stage1::prove_stage1;
 use crate::stages::stage2::prove_stage2;
 use crate::stages::stage3::prove_stage3;
@@ -30,13 +30,14 @@ use crate::{JoltProverPreprocessing, ProofMode, ProverConfig, ProverError};
 
 /// See [`super::prove`].
 #[tracing::instrument(skip_all, name = "jolt_prover::prove", fields(trace_length = config.trace_length))]
-pub fn prove<F, PCS, VC, T, W>(
+pub fn prove<F, PCS, VC, T, W, C>(
     backend: &JoltAkitaBackend<F, PCS>,
     preprocessing: &JoltProverPreprocessing<PCS, VC>,
     config: &ProverConfig,
     trusted_advice: Option<&AdviceObject<PCS>>,
     witness: &W,
     public_io: &JoltDevice,
+    companion: &mut C,
 ) -> Result<JoltProof<PCS, VC>, ProverError<F>>
 where
     F: JoltField + CanonicalBytes + AppendToTranscript,
@@ -47,18 +48,20 @@ where
     VC::Output: Clone + AppendToTranscript,
     T: Transcript<Challenge = F>,
     W: JoltWitnessPlane<F>,
+    C: AkitaPcsCompanion<F, PCS>,
 {
     // The packed path is transparent-only (`akita` and `zk` are mutually
     // exclusive), so the mode context carries nothing; the shared stage
     // recipes still thread it to mint their clear recorders.
     let mode = ProofMode::<VC>::new(None)?;
     let mut session = backend.begin_proof();
-    let stage0 = prove_stage0::<F, PCS, VC, T, W>(
+    let stage0 = prove_stage0::<F, PCS, VC, T, W, C>(
         preprocessing,
         config,
         trusted_advice,
         witness,
         public_io,
+        companion,
     )?;
     let checked = stage0.checked;
     let mut transcript = stage0.transcript;
@@ -159,7 +162,7 @@ where
         witness,
         &mut transcript,
     )?;
-    let joint_opening_proof = prove_stage8::<F, PCS, VC, T>(
+    let joint_opening_proof = prove_stage8::<F, PCS, VC, T, C>(
         &checked,
         config,
         preprocessing,
@@ -175,6 +178,7 @@ where
         &stage6b.clear_output,
         &stage7.clear_output,
         &mut transcript,
+        companion,
     )?;
 
     Ok(JoltProof {

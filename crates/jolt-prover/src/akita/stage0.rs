@@ -17,6 +17,7 @@ use jolt_verifier::{
 use jolt_witness::JoltWitnessPlane;
 
 use super::witness::{assemble_one_hot_trace_rows, commit_advice, AdviceObject};
+use super::AkitaPcsCompanion;
 use crate::{JoltProverPreprocessing, ProverConfig, ProverError};
 
 /// Outputs retained for later prover stages.
@@ -33,21 +34,23 @@ where
 
 /// Validate inputs, commit the packed objects, and seed the transcript.
 #[tracing::instrument(skip_all)]
-pub fn prove_stage0<F, PCS, VC, T, W>(
+pub fn prove_stage0<F, PCS, VC, T, W, C>(
     preprocessing: &JoltProverPreprocessing<PCS, VC>,
     config: &ProverConfig,
     trusted_advice: Option<&AdviceObject<PCS>>,
     witness: &W,
     public_io: &JoltDevice,
+    companion: &mut C,
 ) -> Result<Stage0Output<PCS, T>, ProverError<F>>
 where
     F: JoltField,
     PCS: CommitmentScheme<Field = F> + TransparentObjectSetup + TraceOneHotCommitment,
     PCS::ProverSetup: GroupSetupMetadata,
-    PCS::Output: Clone + AppendToTranscript,
+    PCS::Output: Clone + PartialEq + AppendToTranscript,
     VC: VectorCommitment<Field = F>,
     T: Transcript<Challenge = F>,
     W: JoltWitnessPlane<F>,
+    C: AkitaPcsCompanion<F, PCS>,
 {
     if trusted_advice.is_some() == public_io.trusted_advice.is_empty() {
         return Err(ProverError::Unsupported {
@@ -190,6 +193,17 @@ where
             reason: "the packed setup's dimensions disagree with the canonical OneHotTrace shape",
         });
     }
+    let precommitted_hints = precommitted
+        .iter()
+        .map(|(_, _, hint)| *hint)
+        .collect::<Vec<_>>();
+    let companion_commitment = companion
+        .commit_trace(
+            &preprocessing.pcs_setup,
+            plan.layout_digest(),
+            !precommitted_hints.is_empty(),
+        )
+        .map_err(ProverError::AkitaCompanion)?;
     let (commitment, hint) =
         tracing::info_span!("akita_main_commit_with_precommitted").in_scope(|| {
             let packed_trace_rows = assemble_one_hot_trace_rows(
@@ -199,10 +213,6 @@ where
                 log_k_chunk,
                 log_t,
             )?;
-            let precommitted_hints = precommitted
-                .iter()
-                .map(|(_, _, hint)| *hint)
-                .collect::<Vec<_>>();
             let committed = PCS::commit_trace_one_hot(
                 &preprocessing.pcs_setup,
                 preprocessing.pcs_setup.default_layout_digest(),
@@ -221,6 +231,14 @@ where
             })?;
             Ok::<_, ProverError<F>>((commitment, hint))
         })?;
+    if companion_commitment
+        .as_ref()
+        .is_some_and(|resident| resident != &commitment)
+    {
+        return Err(ProverError::AkitaCompanion(
+            "resident commitment differs from the native Rust commitment".to_owned(),
+        ));
+    }
 
     absorb_packed_commitments(
         &commitment,

@@ -18,9 +18,11 @@ use crate::{JoltProverPreprocessing, ProverConfig, ProverError};
 mod prover;
 mod setup;
 pub use setup::one_hot_trace_setup_shape;
+mod companion;
 mod stage0;
 mod stage8;
 pub mod witness;
+pub use companion::{AkitaPcsCompanion, NoAkitaPcsCompanion};
 use witness::AdviceObject;
 
 /// The packed slot registry: the akita analog of a bare [`JoltBackend`]. A
@@ -189,12 +191,61 @@ where
     T: Transcript<Challenge = F>,
     W: JoltWitnessPlane<F>,
 {
-    prover::prove::<F, PCS, VC, T, W>(
+    let mut companion = NoAkitaPcsCompanion;
+    prove_with_companion::<F, PCS, VC, T, W, _>(
         backend,
         preprocessing,
         config,
         trusted_advice,
         witness,
         public_io,
+        &mut companion,
     )
+}
+
+/// Prove one execution while mirroring Akita's PCS boundaries to a resident
+/// companion. The native Rust PCS still produces the proof consumed by the
+/// verifier; the companion is an independently checked execution backend.
+pub fn prove_with_companion<F, PCS, VC, T, W, C>(
+    backend: &JoltAkitaBackend<F, PCS>,
+    preprocessing: &JoltProverPreprocessing<PCS, VC>,
+    config: &ProverConfig,
+    trusted_advice: Option<&AdviceObject<PCS>>,
+    witness: &W,
+    public_io: &JoltDevice,
+    companion: &mut C,
+) -> Result<JoltProof<PCS, VC>, ProverError<F>>
+where
+    F: JoltField + CanonicalBytes + AppendToTranscript,
+    PCS: CommitmentScheme<Field = F> + TransparentObjectSetup + TraceOneHotCommitment,
+    PCS::ProverSetup: GroupSetupMetadata,
+    PCS::Output: Clone + PartialEq + AppendToTranscript + GroupCommitmentMetadata,
+    VC: VectorCommitment<Field = F>,
+    VC::Output: Clone + AppendToTranscript,
+    T: Transcript<Challenge = F>,
+    W: JoltWitnessPlane<F>,
+    C: AkitaPcsCompanion<F, PCS>,
+{
+    let proof = prover::prove::<F, PCS, VC, T, W, C>(
+        backend,
+        preprocessing,
+        config,
+        trusted_advice,
+        witness,
+        public_io,
+        companion,
+    );
+    let shutdown = companion.shutdown().map_err(ProverError::AkitaCompanion);
+    match proof {
+        Ok(proof) => {
+            shutdown?;
+            Ok(proof)
+        }
+        Err(error) => {
+            if let Err(shutdown_error) = shutdown {
+                tracing::warn!(%shutdown_error, "Akita PCS companion shutdown failed after proving error");
+            }
+            Err(error)
+        }
+    }
 }
