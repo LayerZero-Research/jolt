@@ -83,6 +83,78 @@ pub(crate) fn validate_precommitted_order(
 }
 
 impl AkitaScheme {
+    /// Derive the public verifier setup without constructing a CPU prover
+    /// backend. External prover backends use this to share Akita's exact wire
+    /// format and schedule selection without instantiating the native prover.
+    pub fn verifier_only_setup(
+        params: &AkitaSetupParams,
+    ) -> Result<AkitaVerifierSetup, OpeningsError> {
+        if params.flavor == AkitaSetupFlavor::Dense
+            && params.one_hot_chunk_profile.num_chunks() != 1
+        {
+            return Err(OpeningsError::InvalidSetup(
+                "dense-only Akita setup cannot select one-hot witness chunking".to_owned(),
+            ));
+        }
+        if params
+            .precommitted_schedule
+            .as_ref()
+            .is_some_and(|request| request.final_num_vars() != params.max_num_vars)
+        {
+            return Err(OpeningsError::InvalidSetup(
+                "the grouped schedule request final arity must equal setup max_num_vars".to_owned(),
+            ));
+        }
+        let artifacts = &params.schedule_artifacts;
+        let dense_catalog = artifacts.dense_catalog().map_err(invalid_setup)?;
+        let dense_schedule_artifact = || dense_catalog.to_artifact_bytes().map_err(invalid_setup);
+        let one_hot_schedule_artifact = || {
+            let base = artifacts
+                .one_hot_catalog_for_profile(params.one_hot_k, params.one_hot_chunk_profile)
+                .map_err(invalid_setup)?;
+            let catalog = params
+                .precommitted_schedule
+                .as_ref()
+                .map_or_else(
+                    || Ok(base.clone()),
+                    |precommitted| {
+                        precommitted.extend_catalog(
+                            &dense_catalog,
+                            &base,
+                            params.one_hot_k,
+                            params.one_hot_chunk_profile,
+                        )
+                    },
+                )
+                .map_err(invalid_setup)?;
+            catalog.to_artifact_bytes().map_err(invalid_setup)
+        };
+        let schedule_artifacts = match params.flavor {
+            AkitaSetupFlavor::Both => AkitaVerifierScheduleArtifacts::Both {
+                dense: dense_schedule_artifact()?,
+                one_hot: one_hot_schedule_artifact()?,
+            },
+            AkitaSetupFlavor::OneHot => AkitaVerifierScheduleArtifacts::OneHot {
+                one_hot: one_hot_schedule_artifact()?,
+            },
+            AkitaSetupFlavor::Dense => AkitaVerifierScheduleArtifacts::Dense {
+                dense: dense_schedule_artifact()?,
+            },
+        };
+        let _ = validate_one_hot_k(params.one_hot_k)
+            .map_err(|err| OpeningsError::InvalidSetup(err.to_string()))?;
+        Ok(AkitaVerifierSetup {
+            max_num_vars: params.max_num_vars,
+            max_num_polys_per_commitment_group: params.max_num_polys_per_commitment_group,
+            max_total_batch_polys: params.max_total_batch_polys,
+            default_layout_digest: params.default_layout_digest,
+            one_hot_k: params.one_hot_k,
+            one_hot_chunk_profile: params.one_hot_chunk_profile,
+            schedule_artifacts,
+            backend_cache: BackendVerifierCache::default(),
+        })
+    }
+
     pub fn commit_group(
         setup: &AkitaProverSetup,
         layout_digest: [u8; 32],
@@ -459,70 +531,9 @@ impl CommitmentScheme for AkitaScheme {
     fn setup(
         params: Self::SetupParams,
     ) -> Result<(Self::ProverSetup, Self::VerifierSetup), OpeningsError> {
-        if params.flavor == AkitaSetupFlavor::Dense
-            && params.one_hot_chunk_profile.num_chunks() != 1
-        {
-            return Err(OpeningsError::InvalidSetup(
-                "dense-only Akita setup cannot select one-hot witness chunking".to_owned(),
-            ));
-        }
-        if params
-            .precommitted_schedule
-            .as_ref()
-            .is_some_and(|request| request.final_num_vars() != params.max_num_vars)
-        {
-            return Err(OpeningsError::InvalidSetup(
-                "the grouped schedule request final arity must equal setup max_num_vars".to_owned(),
-            ));
-        }
-        let artifacts = &params.schedule_artifacts;
-        let dense_catalog = artifacts.dense_catalog().map_err(invalid_setup)?;
-        let dense_schedule_artifact = || dense_catalog.to_artifact_bytes().map_err(invalid_setup);
-        let one_hot_schedule_artifact = || {
-            let base = artifacts
-                .one_hot_catalog_for_profile(params.one_hot_k, params.one_hot_chunk_profile)
-                .map_err(invalid_setup)?;
-            let catalog = params
-                .precommitted_schedule
-                .as_ref()
-                .map_or_else(
-                    || Ok(base.clone()),
-                    |precommitted| {
-                        precommitted.extend_catalog(
-                            &dense_catalog,
-                            &base,
-                            params.one_hot_k,
-                            params.one_hot_chunk_profile,
-                        )
-                    },
-                )
-                .map_err(invalid_setup)?;
-            catalog.to_artifact_bytes().map_err(invalid_setup)
-        };
-        let schedule_artifacts = match params.flavor {
-            AkitaSetupFlavor::Both => AkitaVerifierScheduleArtifacts::Both {
-                dense: dense_schedule_artifact()?,
-                one_hot: one_hot_schedule_artifact()?,
-            },
-            AkitaSetupFlavor::OneHot => AkitaVerifierScheduleArtifacts::OneHot {
-                one_hot: one_hot_schedule_artifact()?,
-            },
-            AkitaSetupFlavor::Dense => AkitaVerifierScheduleArtifacts::Dense {
-                dense: dense_schedule_artifact()?,
-            },
-        };
         let one_hot_log_k = validate_one_hot_k(params.one_hot_k)
             .map_err(|err| OpeningsError::InvalidSetup(err.to_string()))?;
-        let verifier = AkitaVerifierSetup {
-            max_num_vars: params.max_num_vars,
-            max_num_polys_per_commitment_group: params.max_num_polys_per_commitment_group,
-            max_total_batch_polys: params.max_total_batch_polys,
-            default_layout_digest: params.default_layout_digest,
-            one_hot_k: params.one_hot_k,
-            one_hot_chunk_profile: params.one_hot_chunk_profile,
-            schedule_artifacts,
-            backend_cache: BackendVerifierCache::default(),
-        };
+        let verifier = Self::verifier_only_setup(&params)?;
         let (backend_prover_setup, backend, backend_verifier_setup) =
             if params.flavor == AkitaSetupFlavor::OneHot {
                 (None, None, None)

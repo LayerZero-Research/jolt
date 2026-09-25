@@ -581,6 +581,22 @@ pub(crate) enum AkitaSetupFlavor {
 }
 
 impl AkitaSetupParams {
+    pub fn max_num_vars(&self) -> usize {
+        self.max_num_vars
+    }
+
+    pub fn max_num_polys_per_commitment_group(&self) -> usize {
+        self.max_num_polys_per_commitment_group
+    }
+
+    pub fn default_layout_digest(&self) -> [u8; 32] {
+        self.default_layout_digest
+    }
+
+    pub fn schedule_artifacts(&self) -> &Arc<AkitaScheduleArtifacts> {
+        &self.schedule_artifacts
+    }
+
     pub fn new(
         max_num_vars: usize,
         max_num_polys_per_commitment_group: usize,
@@ -1144,6 +1160,28 @@ impl jolt_openings::GroupSetupMetadata for AkitaProverSetup {
 }
 
 impl AkitaCommitment {
+    /// Wrap a serialized one-hot backend commitment in Jolt's public wire
+    /// metadata. External prover backends use this after committing the exact
+    /// protocol-owned layout.
+    pub fn from_one_hot_backend(
+        layout_digest: [u8; 32],
+        num_vars: usize,
+        poly_count: usize,
+        one_hot_k: usize,
+        backend_coeff_len: usize,
+        serialized_backend_bytes: Vec<u8>,
+    ) -> Self {
+        Self {
+            backend_flavor: AkitaBackendFlavor::OneHot,
+            layout_digest,
+            num_vars,
+            poly_count,
+            one_hot_k,
+            backend_coeff_len,
+            serialized_backend_bytes,
+        }
+    }
+
     pub fn backend_flavor(&self) -> AkitaBackendFlavor {
         self.backend_flavor
     }
