@@ -1,6 +1,9 @@
 use akita_pcs::{AkitaError, ComputeBackendSetup};
 use akita_prover::{CommitOutput, CommitmentSource, CpuBackend, GroupContext};
-use akita_types::PrecommittedGroupProfiles;
+use akita_types::{
+    AkitaExpandedSetup, AkitaScheduleLookupKey, CommittedGroup, CommittedGroupParams,
+    OpeningClaimsLayout, PrecommittedGroupProfiles,
+};
 use jolt_crypto::Commitment;
 use jolt_field::CanonicalBytes;
 use jolt_openings::{
@@ -18,10 +21,11 @@ use crate::adapters::{
     invalid_batch, invalid_setup, one_hot_polynomial, owned_one_hot_polynomial, serialize_akita,
     transparent_zk_error, validate_one_hot_k, with_backend_pool, AkitaBackendCommitment,
     AkitaBackendDensePoly, AkitaBackendFlavor, AkitaBackendHint, AkitaBackendOneHotPoly,
-    AkitaBatchProof, AkitaCommitment, AkitaField, AkitaHidingCommitment, AkitaHintPolynomials,
-    AkitaLayoutDigest, AkitaProverHint, AkitaProverSetup, AkitaScheduleArtifacts, AkitaSetupFlavor,
-    AkitaSetupParams, AkitaVerifierScheduleArtifacts, AkitaVerifierSetup, BackendVerifierCache,
-    AKITA_ONE_HOT_K16, AKITA_ONE_HOT_K256, AKITA_SOURCE_RING_DIMENSION,
+    AkitaBackendPreparedSetup, AkitaBatchProof, AkitaCommitment, AkitaField, AkitaHidingCommitment,
+    AkitaHintPolynomials, AkitaLayoutDigest, AkitaProverHint, AkitaProverSetup,
+    AkitaScheduleArtifacts, AkitaSetupFlavor, AkitaSetupParams, AkitaVerifierScheduleArtifacts,
+    AkitaVerifierSetup, BackendVerifierCache, AKITA_ONE_HOT_K16, AKITA_ONE_HOT_K256,
+    AKITA_SOURCE_RING_DIMENSION,
 };
 use crate::native_batching::{AkitaNativeBatchPolynomials, AkitaNativeBatching};
 use crate::trace_onehot::{TraceOneHotRows, TracePackedOneHot};
@@ -71,6 +75,71 @@ pub(crate) fn validate_precommitted_order(
 }
 
 impl AkitaScheme {
+    /// Package a commitment computed from an externally resident one-hot trace.
+    /// The caller supplies the backend group; no opening hint is manufactured.
+    pub fn commit_external_trace(
+        setup: &AkitaProverSetup,
+        layout_digest: [u8; 32],
+        num_vars: usize,
+        commit: impl FnOnce(
+            &CommittedGroupParams,
+            &AkitaExpandedSetup<AkitaField>,
+            &AkitaBackendPreparedSetup,
+        ) -> Result<CommittedGroup<AkitaField>, OpeningsError>,
+    ) -> Result<AkitaCommitment, OpeningsError> {
+        Self::validate_commit_shape(setup, num_vars, 1)?;
+        if layout_digest != setup.default_layout_digest() {
+            return Err(invalid_batch(
+                "external trace layout digest differs from setup",
+            ));
+        }
+        let layout = OpeningClaimsLayout::new(num_vars, 1)
+            .and_then(|layout| layout.root_final_group_layout())
+            .map_err(akita_error)?;
+        let key = AkitaScheduleLookupKey::single(layout);
+        let root = match setup.one_hot_k() {
+            AKITA_ONE_HOT_K16 => setup
+                .verifier
+                .one_hot_k16_scheme()?
+                .schedules()
+                .catalog()
+                .resolve_key(&key)
+                .map_err(akita_error)?
+                .schedule()
+                .root
+                .params
+                .clone(),
+            AKITA_ONE_HOT_K256 => setup
+                .verifier
+                .one_hot_k256_scheme()?
+                .schedules()
+                .catalog()
+                .resolve_key(&key)
+                .map_err(akita_error)?
+                .schedule()
+                .root
+                .params
+                .clone(),
+            _ => return Err(invalid_batch("unsupported one-hot K for external trace")),
+        };
+        let (backend_setup, prepared) = setup.one_hot_backend()?;
+        let group = commit(&root, backend_setup.expanded.as_ref(), prepared)?;
+        if group.profile() != &root.own_group().profile {
+            return Err(invalid_batch(
+                "external trace commitment profile differs from root",
+            ));
+        }
+        Ok(AkitaCommitment {
+            backend_flavor: AkitaBackendFlavor::OneHot,
+            layout_digest,
+            num_vars,
+            poly_count: 1,
+            one_hot_k: setup.one_hot_k(),
+            backend_coeff_len: group.rows().coeff_len(),
+            serialized_backend_bytes: serialize_akita(group.commitment())?,
+        })
+    }
+
     pub fn commit_group(
         setup: &AkitaProverSetup,
         layout_digest: [u8; 32],
@@ -1073,6 +1142,34 @@ mod tests {
     #[test]
     fn one_hot_k256_roundtrip() {
         one_hot_roundtrip(AKITA_ONE_HOT_K256);
+    }
+
+    #[test]
+    fn external_one_hot_group_uses_the_same_public_commitment_wrapper() {
+        for one_hot_k in [AKITA_ONE_HOT_K16, AKITA_ONE_HOT_K256] {
+            let num_vars = one_hot_k.ilog2() as usize + 8;
+            let (setup, _) = AkitaScheme::setup(AkitaSetupParams::one_hot_only(
+                num_vars,
+                1,
+                [4; 32],
+                one_hot_k,
+                AkitaScheduleArtifacts::shared_from_default_directory(),
+            ))
+            .unwrap();
+            let indices = (0..256usize)
+                .map(|row| Some((row % one_hot_k) as u8))
+                .collect();
+            let polynomial = OneHotPolynomial::new(one_hot_k, indices);
+            let (reference, mut hint) =
+                AkitaScheme::commit_one_hot_group(&setup, [4; 32], &[polynomial]).unwrap();
+            let (backend_group, _) = hint.backend.take().unwrap();
+            let external =
+                AkitaScheme::commit_external_trace(&setup, [4; 32], num_vars, |_, _, _| {
+                    Ok(backend_group)
+                })
+                .unwrap();
+            assert_eq!(external, reference);
+        }
     }
 
     /// A serde roundtrip drops the primed key cache; the transported setup

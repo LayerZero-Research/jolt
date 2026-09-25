@@ -7,7 +7,8 @@ use jolt_crypto::VectorCommitment;
 use jolt_field::{CanonicalBytes, JoltField};
 use jolt_kernels::{JoltBackend, KernelSlots, ProofSession, ReferenceBackend};
 use jolt_openings::{
-    CommitmentScheme, GroupCommitmentMetadata, GroupSetupMetadata, TransparentObjectSetup,
+    CommitmentScheme, GroupCommitmentMetadata, GroupSetupMetadata, OpeningsError,
+    TransparentObjectSetup,
 };
 use jolt_transcript::{AppendToTranscript, Transcript};
 use jolt_verifier::proof::JoltProof;
@@ -43,6 +44,18 @@ where
 {
     /// The shared stage 1–7 slot registry (naive-served).
     pub base: JoltBackend<F, PCS>,
+    /// An optional commitment source for a trace already resident outside Rust.
+    /// Its result has no opening hint until that backend implements opening.
+    pub trace_commit: Option<Box<dyn PackedTraceCommitter<PCS>>>,
+}
+
+pub trait PackedTraceCommitter<PCS: CommitmentScheme>: Send + Sync {
+    fn commit(
+        &self,
+        setup: &PCS::ProverSetup,
+        layout_digest: [u8; 32],
+        num_vars: usize,
+    ) -> Result<PCS::Output, OpeningsError>;
 }
 
 /// The packed path's stand-in for the streaming witness-commit slot: stage 0
@@ -95,6 +108,7 @@ where
     /// commit lives in stage 0).
     pub fn reference() -> Self {
         Self {
+            trace_commit: None,
             base: JoltBackend {
                 commit: Box::new(PackedCommitStub),
                 round_scheduler: Box::new(ReferenceBackend),
@@ -197,4 +211,35 @@ where
         witness,
         public_io,
     )
+}
+
+/// Run the packed prover through Stage 0 and return its public commitment.
+/// This entry point has no opening proof; resident backends use it while their
+/// opening hint and Stage 8 implementation are still unavailable.
+pub fn commit_only<F, PCS, VC, T, W>(
+    backend: &JoltAkitaBackend<F, PCS>,
+    preprocessing: &JoltProverPreprocessing<PCS, VC>,
+    config: &ProverConfig,
+    trusted_advice: Option<&AdviceObject<PCS>>,
+    witness: &W,
+    public_io: &JoltDevice,
+) -> Result<PCS::Output, ProverError<F>>
+where
+    F: JoltField,
+    PCS: CommitmentScheme<Field = F> + TransparentObjectSetup + TraceOneHotCommitment,
+    PCS::ProverSetup: GroupSetupMetadata,
+    PCS::Output: Clone + AppendToTranscript,
+    VC: VectorCommitment<Field = F>,
+    T: Transcript<Challenge = F>,
+    W: JoltWitnessPlane<F>,
+{
+    Ok(stage0::prove_stage0::<F, PCS, VC, T, W>(
+        backend,
+        preprocessing,
+        config,
+        trusted_advice,
+        witness,
+        public_io,
+    )?
+    .commitment)
 }

@@ -17,6 +17,7 @@ use jolt_verifier::{
 use jolt_witness::JoltWitnessPlane;
 
 use super::witness::{assemble_one_hot_trace_rows, commit_advice, AdviceObject};
+use super::JoltAkitaBackend;
 use crate::{JoltProverPreprocessing, ProverConfig, ProverError};
 
 /// Outputs retained for later prover stages.
@@ -27,13 +28,14 @@ where
     pub checked: CheckedInputs,
     pub transcript: T,
     pub commitment: PCS::Output,
-    pub hint: PCS::OpeningHint,
+    pub hint: Option<PCS::OpeningHint>,
     pub untrusted_advice: Option<AdviceObject<PCS>>,
 }
 
 /// Validate inputs, commit the packed objects, and seed the transcript.
 #[tracing::instrument(skip_all)]
 pub fn prove_stage0<F, PCS, VC, T, W>(
+    backend: &JoltAkitaBackend<F, PCS>,
     preprocessing: &JoltProverPreprocessing<PCS, VC>,
     config: &ProverConfig,
     trusted_advice: Option<&AdviceObject<PCS>>,
@@ -192,28 +194,48 @@ where
     }
     let (commitment, hint) =
         tracing::info_span!("akita_main_commit_with_precommitted").in_scope(|| {
-            let packed_trace_rows = assemble_one_hot_trace_rows(
-                witness,
-                &plan,
-                formula_dimensions.ra_layout,
-                log_k_chunk,
-                log_t,
-            )?;
             let precommitted_hints = precommitted
                 .iter()
                 .map(|(_, _, hint)| *hint)
                 .collect::<Vec<_>>();
-            let committed = PCS::commit_trace_one_hot(
-                &preprocessing.pcs_setup,
-                preprocessing.pcs_setup.default_layout_digest(),
-                plan.packing().slot_capacity(),
-                packed_trace_rows,
-                &precommitted_hints,
-            );
-            let (commitment, hint) =
-                committed.map_err(|error| VerifierError::FinalOpeningVerificationFailed {
-                    reason: error.to_string(),
+            let (commitment, hint) = if let Some(committer) = backend.trace_commit.as_deref() {
+                if !precommitted_hints.is_empty() {
+                    return Err(ProverError::Unsupported {
+                        reason: "resident Akita commitment does not support precommitted groups",
+                    });
+                }
+                let commitment = committer
+                    .commit(
+                        &preprocessing.pcs_setup,
+                        canonical_digest,
+                        plan.packing().packed_num_vars(),
+                    )
+                    .map_err(|error| VerifierError::FinalOpeningVerificationFailed {
+                        reason: error.to_string(),
+                    })?;
+                (commitment, None)
+            } else {
+                let packed_trace_rows = assemble_one_hot_trace_rows(
+                    witness,
+                    &plan,
+                    formula_dimensions.ra_layout,
+                    log_k_chunk,
+                    log_t,
+                )?;
+                let (commitment, hint) = PCS::commit_trace_one_hot(
+                    &preprocessing.pcs_setup,
+                    canonical_digest,
+                    plan.packing().slot_capacity(),
+                    packed_trace_rows,
+                    &precommitted_hints,
+                )
+                .map_err(|error| {
+                    VerifierError::FinalOpeningVerificationFailed {
+                        reason: error.to_string(),
+                    }
                 })?;
+                (commitment, Some(hint))
+            };
             PCS::release_post_commit_residency(&preprocessing.pcs_setup).map_err(|error| {
                 VerifierError::FinalOpeningVerificationFailed {
                     reason: error.to_string(),

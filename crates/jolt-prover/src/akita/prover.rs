@@ -54,6 +54,7 @@ where
     let mode = ProofMode::<VC>::new(None)?;
     let mut session = backend.begin_proof();
     let stage0 = prove_stage0::<F, PCS, VC, T, W>(
+        backend,
         preprocessing,
         config,
         trusted_advice,
@@ -159,12 +160,15 @@ where
         witness,
         &mut transcript,
     )?;
+    let opening_hint = stage0.hint.ok_or(ProverError::Unsupported {
+        reason: "resident Akita commitment has no opening hint",
+    })?;
     let joint_opening_proof = prove_stage8::<F, PCS, VC, T>(
         &checked,
         config,
         preprocessing,
         &stage0.commitment,
-        stage0.hint,
+        opening_hint,
         stage0.untrusted_advice.as_ref(),
         trusted_advice,
         preprocessing
