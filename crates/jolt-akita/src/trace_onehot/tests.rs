@@ -5,25 +5,45 @@
 )]
 
 use super::*;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use akita_algebra::CyclotomicRing;
-use akita_challenges::SparseChallenge;
+use akita_challenges::{Challenges, SparseChallenge};
 use akita_error::AkitaError;
-use akita_prover::backend::OneHotBatchView;
-use akita_prover::compute::{
-    DecomposeFoldBatchPlan, DecomposeFoldPlan, OpeningBatchKernel, OpeningFoldKernel,
-    OpeningFoldPlan, SubringCoefficientPackingBatchKernel, SubringCoefficientPackingPlan,
+use akita_pcs::{
+    custom_source::{
+        DecomposeFoldBatchPlan, DecomposeFoldPlan, OneHotBatchView, OpeningBatchKernel,
+        OpeningFoldKernel, OpeningFoldPlan, RootOpeningSource, RootPolyMeta, RootPolyShape,
+        SubringCoefficientPackingBatchKernel, SubringCoefficientPackingPlan,
+    },
+    CpuBackend, OneHotPoly,
 };
-use akita_prover::{CpuBackend, OneHotPoly, RootOpeningSource, RootPolyMeta, RootPolyShape};
 use akita_types::{
     BasisMode, PreparedSubringCoefficientPackingPoint, SubringCoefficientPackingGeometry,
 };
 use jolt_field::{One, Ring};
+use jolt_openings::CommitmentScheme;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::source::{TracePackedOneHotBatchView, TracePackedOneHotView};
-use crate::AkitaField;
+use crate::{
+    configs::JoltOneHotK16, AkitaField, AkitaProverSetup, AkitaScheduleArtifacts, AkitaScheme,
+    AkitaSetupParams, AKITA_ONE_HOT_K16,
+};
+
+fn kernel_backend() -> &'static CpuBackend<JoltOneHotK16> {
+    static SETUP: OnceLock<AkitaProverSetup> = OnceLock::new();
+    SETUP
+        .get_or_init(|| {
+            let artifacts = AkitaScheduleArtifacts::shared_from_default_directory();
+            let params =
+                AkitaSetupParams::one_hot_only(14, 1, [0; 32], AKITA_ONE_HOT_K16, artifacts);
+            AkitaScheme::setup(params).unwrap().0
+        })
+        .one_hot_backend::<JoltOneHotK16>()
+        .unwrap()
+        .1
+}
 
 #[derive(Debug)]
 struct TestRows {
@@ -290,28 +310,29 @@ fn assert_opening_kernels_match_materialized<const D: usize>(
         position_weights: &position_weights,
         num_positions_per_block: num_positions,
     };
-    let backend = CpuBackend::DEFAULT;
-    let streamed = <CpuBackend as OpeningFoldKernel<
-            TracePackedOneHotView<'_, D>,
-            AkitaField,
-            D,
-        >>::evaluate_and_fold(
-            &backend,
-            None,
-            <TracePackedOneHot as RootOpeningSource<AkitaField, D>>::opening_view(&source).unwrap(),
-            fold_plan,
-        )
-        .unwrap();
-    let materialized = <CpuBackend as OpeningFoldKernel<_, AkitaField, D>>::evaluate_and_fold(
-        &backend,
+    let backend = kernel_backend();
+    let streamed = <CpuBackend<JoltOneHotK16> as OpeningFoldKernel<
+        TracePackedOneHotView<'_, D>,
+        AkitaField,
+        D,
+    >>::evaluate_and_fold(
+        backend,
         None,
-        <OneHotPoly<AkitaField, u8> as RootOpeningSource<AkitaField, D>>::opening_view(
-            &materialized_source,
-        )
-        .unwrap(),
+        <TracePackedOneHot as RootOpeningSource<AkitaField, D>>::opening_view(&source).unwrap(),
         fold_plan,
     )
     .unwrap();
+    let materialized =
+        <CpuBackend<JoltOneHotK16> as OpeningFoldKernel<_, AkitaField, D>>::evaluate_and_fold(
+            backend,
+            None,
+            <OneHotPoly<AkitaField, u8> as RootOpeningSource<AkitaField, D>>::opening_view(
+                &materialized_source,
+            )
+            .unwrap(),
+            fold_plan,
+        )
+        .unwrap();
     assert_eq!(streamed, materialized);
 
     let challenges = (0..num_blocks)
@@ -326,35 +347,38 @@ fn assert_opening_kernels_match_materialized<const D: usize>(
         num_digits: 2,
         log_basis: 3,
     };
-    let streamed = <CpuBackend as OpeningFoldKernel<
-            TracePackedOneHotView<'_, D>,
-            AkitaField,
-            D,
-        >>::decompose_fold(
-            &backend,
-            None,
-            <TracePackedOneHot as RootOpeningSource<AkitaField, D>>::opening_view(&source).unwrap(),
-            decompose_plan,
-        )
-        .unwrap();
-    let materialized = <CpuBackend as OpeningFoldKernel<_, AkitaField, D>>::decompose_fold(
-        &backend,
+    let streamed = <CpuBackend<JoltOneHotK16> as OpeningFoldKernel<
+        TracePackedOneHotView<'_, D>,
+        AkitaField,
+        D,
+    >>::decompose_fold(
+        backend,
         None,
-        <OneHotPoly<AkitaField, u8> as RootOpeningSource<AkitaField, D>>::opening_view(
-            &materialized_source,
-        )
-        .unwrap(),
+        <TracePackedOneHot as RootOpeningSource<AkitaField, D>>::opening_view(&source).unwrap(),
         decompose_plan,
     )
     .unwrap();
+    let materialized =
+        <CpuBackend<JoltOneHotK16> as OpeningFoldKernel<_, AkitaField, D>>::decompose_fold(
+            backend,
+            None,
+            <OneHotPoly<AkitaField, u8> as RootOpeningSource<AkitaField, D>>::opening_view(
+                &materialized_source,
+            )
+            .unwrap(),
+            decompose_plan,
+        )
+        .unwrap();
     assert_eq!(streamed, materialized);
     let view =
         <TracePackedOneHot as RootOpeningSource<AkitaField, D>>::opening_view(&source).unwrap();
     let source = view.source();
+    let block_range = 0..num_blocks;
+    let full_range = std::slice::from_ref(&block_range);
     let dense = decompose_fold_packed::<D>(
         source,
         &challenges,
-        1,
+        full_range,
         num_positions,
         2,
         DecomposeRotationMode::Dense,
@@ -365,7 +389,7 @@ fn assert_opening_kernels_match_materialized<const D: usize>(
     let sparse = decompose_fold_packed::<D>(
         source,
         &challenges,
-        1,
+        full_range,
         num_positions,
         2,
         DecomposeRotationMode::Sparse,
@@ -376,7 +400,7 @@ fn assert_opening_kernels_match_materialized<const D: usize>(
     let compact = decompose_fold_packed::<D>(
         source,
         &challenges,
-        1,
+        full_range,
         num_positions,
         2,
         DecomposeRotationMode::Compact,
@@ -390,36 +414,46 @@ fn assert_opening_kernels_match_materialized<const D: usize>(
 
     let trace_sources = [source];
     let materialized_sources = [&materialized_source];
+    let challenge_batch = Challenges::from_sparse(challenges.clone(), num_blocks, 1).unwrap();
     for num_chunks in [1, 2, 4, 8]
         .into_iter()
         .filter(|&num_chunks| num_chunks <= num_blocks)
     {
-        let batch_plan = DecomposeFoldBatchPlan::Sparse {
-            challenges: &challenges,
-            challenges_per_poly: num_blocks,
-            num_chunks,
-            num_positions_per_block: num_positions,
-            num_digits: 2,
-            log_basis: 3,
+        let chunk_ranges = akita_types::dyadic_block_ranges(num_blocks, num_chunks).unwrap();
+        let batch_plan = if num_chunks == 1 {
+            DecomposeFoldBatchPlan::Sparse {
+                challenges: &challenges,
+                num_positions_per_block: num_positions,
+                num_digits: 2,
+                log_basis: 3,
+            }
+        } else {
+            DecomposeFoldBatchPlan::SparseChunked {
+                challenges: &challenge_batch,
+                chunk_ranges: &chunk_ranges,
+                num_positions_per_block: num_positions,
+                num_digits: 2,
+                log_basis: 3,
+            }
         };
-        let streamed_chunks = <CpuBackend as OpeningBatchKernel<
+        let streamed_chunks = <CpuBackend<JoltOneHotK16> as OpeningBatchKernel<
             TracePackedOneHotBatchView<'_, D>,
             AkitaField,
             D,
         >>::decompose_fold_batch(
-            &backend,
+            backend,
             None,
             <TracePackedOneHot as RootOpeningSource<AkitaField, D>>::opening_batch(&trace_sources)
                 .unwrap(),
             batch_plan,
         )
         .unwrap();
-        let materialized_chunks = <CpuBackend as OpeningBatchKernel<
+        let materialized_chunks = <CpuBackend<JoltOneHotK16> as OpeningBatchKernel<
             OneHotBatchView<'_, AkitaField, D, u8>,
             AkitaField,
             D,
         >>::decompose_fold_batch(
-            &backend,
+            backend,
             None,
             <OneHotPoly<AkitaField, u8> as RootOpeningSource<AkitaField, D>>::opening_batch(
                 &materialized_sources,
@@ -428,6 +462,7 @@ fn assert_opening_kernels_match_materialized<const D: usize>(
             batch_plan,
         )
         .unwrap();
+        assert_eq!(streamed_chunks.chunk_count(), num_chunks);
         assert_eq!(streamed_chunks, materialized_chunks);
     }
 
@@ -442,12 +477,12 @@ fn assert_opening_kernels_match_materialized<const D: usize>(
         <TracePackedOneHot as RootOpeningSource<AkitaField, D>>::opening_batch(&trace_sources)
             .unwrap();
     let streamed =
-        <CpuBackend as SubringCoefficientPackingBatchKernel<
+        <CpuBackend<JoltOneHotK16> as SubringCoefficientPackingBatchKernel<
             TracePackedOneHotBatchView<'_, D>,
             AkitaField,
             AkitaField,
             D,
-        >>::coefficient_packing_partials_batch(&backend, None, trace_view, packing_plan)
+        >>::coefficient_packing_partials_batch(backend, None, trace_view, packing_plan)
         .unwrap();
     let materialized_sources = [&materialized_source];
     let materialized_view =
@@ -455,13 +490,13 @@ fn assert_opening_kernels_match_materialized<const D: usize>(
             &materialized_sources,
         )
         .unwrap();
-    let materialized = <CpuBackend as SubringCoefficientPackingBatchKernel<
+    let materialized = <CpuBackend<JoltOneHotK16> as SubringCoefficientPackingBatchKernel<
         OneHotBatchView<'_, AkitaField, D, u8>,
         AkitaField,
         AkitaField,
         D,
     >>::coefficient_packing_partials_batch(
-        &backend, None, materialized_view, packing_plan
+        backend, None, materialized_view, packing_plan
     )
     .unwrap();
     assert_eq!(streamed, materialized);
@@ -512,18 +547,16 @@ fn batch_decompose_rejects_zero_positions_per_block() {
     )
     .unwrap();
     let sources = [&source];
-    let result = <CpuBackend as OpeningBatchKernel<
+    let result = <CpuBackend<JoltOneHotK16> as OpeningBatchKernel<
         TracePackedOneHotBatchView<'_, D>,
         AkitaField,
         D,
     >>::decompose_fold_batch(
-        &CpuBackend::DEFAULT,
+        kernel_backend(),
         None,
         <TracePackedOneHot as RootOpeningSource<AkitaField, D>>::opening_batch(&sources).unwrap(),
         DecomposeFoldBatchPlan::Sparse {
             challenges: &[],
-            challenges_per_poly: 1,
-            num_chunks: 1,
             num_positions_per_block: 0,
             num_digits: 2,
             log_basis: 3,
@@ -587,25 +620,24 @@ fn chunked_decompose_reads_each_trace_row_once() {
         })
         .collect::<Vec<_>>();
     let sources = [&source];
-    let chunks = <CpuBackend as OpeningBatchKernel<
+    let chunks = <CpuBackend<JoltOneHotK16> as OpeningBatchKernel<
         TracePackedOneHotBatchView<'_, D>,
         AkitaField,
         D,
     >>::decompose_fold_batch(
-        &CpuBackend::DEFAULT,
+        kernel_backend(),
         None,
         <TracePackedOneHot as RootOpeningSource<AkitaField, D>>::opening_batch(&sources).unwrap(),
-        DecomposeFoldBatchPlan::Sparse {
-            challenges: &challenges,
-            challenges_per_poly: num_blocks,
-            num_chunks: 2,
+        DecomposeFoldBatchPlan::SparseChunked {
+            challenges: &Challenges::from_sparse(challenges, num_blocks, 1).unwrap(),
+            chunk_ranges: &akita_types::dyadic_block_ranges(num_blocks, 2).unwrap(),
             num_positions_per_block: NUM_POSITIONS,
             num_digits: 2,
             log_basis: 3,
         },
     )
     .unwrap();
-    assert_eq!(chunks.len(), 2);
+    assert_eq!(chunks.chunk_count(), 2);
     assert_eq!(fills.load(Ordering::Relaxed), ROWS);
 }
 
