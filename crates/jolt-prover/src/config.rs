@@ -1,14 +1,17 @@
 //! Per-proof configuration, derived from the execution trace.
 //!
-//! These five values are exactly the proof's wire config block
+//! The five proof-shape values are exactly the proof's wire config block
 //! (`JoltProof::{trace_length, ram_K, rw_config, one_hot_config,
-//! trace_polynomial_order}`) plus the Fiat-Shamir preamble inputs. The
-//! derivation policies here must match `jolt-prover-legacy`'s choices
+//! trace_polynomial_order}`) plus the Fiat-Shamir preamble inputs. Akita's
+//! one-hot chunk profile is a setup choice carried by its verifier setup. The
+//! remaining derivation policies must match `jolt-prover-legacy`'s choices
 //! byte-for-byte while it remains the parity oracle; the byte-diff harness
 //! pins them.
 
 use common::constants::{ONEHOT_CHUNK_THRESHOLD_LOG_T, REGISTER_COUNT, XLEN};
 use common::jolt_device::MemoryLayout;
+#[cfg(feature = "akita")]
+use jolt_akita::AkitaOneHotChunkProfile;
 use jolt_claims::protocols::jolt::{JoltOneHotConfig, JoltReadWriteConfig, TracePolynomialOrder};
 use jolt_field::JoltField;
 use jolt_program::execution::{RamAccess, TraceRow};
@@ -51,6 +54,10 @@ pub struct ProverConfig {
     /// preprocessing bakes this order into its chunk commitments — it must
     /// be chosen before preprocessing and match here (stage 0 checks).
     pub trace_polynomial_order: TracePolynomialOrder,
+    /// Akita setup profile for the one-hot trace. The verifier setup carries
+    /// the selected profile; it is not part of the proof's wire config block.
+    #[cfg(feature = "akita")]
+    pub one_hot_chunk_profile: AkitaOneHotChunkProfile,
 }
 
 impl ProverConfig {
@@ -153,6 +160,8 @@ impl ProverConfig {
             rw_config: read_write_config(log_T, ram_K.ilog2() as usize),
             one_hot_config: one_hot_config(log_T),
             trace_polynomial_order: TracePolynomialOrder::CycleMajor,
+            #[cfg(feature = "akita")]
+            one_hot_chunk_profile: AkitaOneHotChunkProfile::Single,
         })
     }
 
