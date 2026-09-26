@@ -17,11 +17,10 @@ use crate::adapters::{
     invalid_setup, one_hot_polynomial, owned_one_hot_polynomial, serialize_akita,
     transparent_zk_error, validate_one_hot_k, with_backend_pool, with_one_hot_scheme,
     AkitaBackendCommitment, AkitaBackendDensePoly, AkitaBackendExtField, AkitaBackendFlavor,
-    AkitaBackendHint, AkitaBackendOneHotPoly, AkitaBatchProof, AkitaCommitment, AkitaConfig,
-    AkitaField, AkitaHidingCommitment, AkitaLayoutDigest, AkitaOneHotConfig, AkitaProverHint,
-    AkitaProverSetup, AkitaScheduleArtifacts, AkitaSetupFlavor, AkitaSetupParams,
-    AkitaVerifierScheduleArtifacts, AkitaVerifierSetup, BackendVerifierCache,
-    AKITA_SOURCE_RING_DIMENSION,
+    AkitaBackendHint, AkitaBackendOneHotPoly, AkitaBatchProof, AkitaCommitment, AkitaField,
+    AkitaHidingCommitment, AkitaLayoutDigest, AkitaOneHotConfig, AkitaProverHint, AkitaProverSetup,
+    AkitaScheduleArtifacts, AkitaSetupFlavor, AkitaSetupParams, AkitaVerifierScheduleArtifacts,
+    AkitaVerifierSetup, BackendVerifierCache, AKITA_SOURCE_RING_DIMENSION,
 };
 use crate::native_batching::{AkitaNativeBatchPolynomials, AkitaNativeBatching};
 use crate::trace_onehot::{TraceOneHotRows, TracePackedOneHot};
@@ -30,7 +29,7 @@ use crate::trace_onehot::{TraceOneHotRows, TracePackedOneHot};
 pub struct AkitaScheme;
 
 fn split_dense_commit_output(
-    output: CommitOutput<AkitaField, AkitaBackendExtField, AkitaConfig>,
+    output: CommitOutput<AkitaField, AkitaBackendExtField>,
 ) -> (AkitaBackendCommitment, AkitaBackendHint) {
     (
         output.committed_group,
@@ -39,7 +38,7 @@ fn split_dense_commit_output(
 }
 
 fn split_one_hot_commit_output<Cfg: AkitaOneHotConfig>(
-    output: CommitOutput<AkitaField, AkitaBackendExtField, Cfg>,
+    output: CommitOutput<AkitaField, AkitaBackendExtField>,
 ) -> (AkitaBackendCommitment, AkitaBackendHint) {
     (
         output.committed_group,
@@ -256,13 +255,13 @@ impl AkitaScheme {
         );
         let scheme = setup.verifier.one_hot_scheme()?;
         let (backend_commitment, backend_hint) = with_backend_pool(|| {
-            with_one_hot_scheme!(scheme, |_scheme, Cfg| {
+            with_one_hot_scheme!(scheme, |scheme, Cfg| {
                 let (_, backend) = setup
                     .one_hot_backend::<Cfg>()
                     .map_err(|error| AkitaError::InvalidSetup(error.to_string()))?;
                 backend
                     .import_source(vec![source])
-                    .and_then(|source| backend.commit(&source, context))
+                    .and_then(|source| backend.commit(scheme.schedules(), &source, context))
                     .map(split_one_hot_commit_output::<Cfg>)
             })
         })
@@ -289,13 +288,13 @@ impl AkitaScheme {
         );
         let scheme = setup.verifier.one_hot_scheme()?;
         with_backend_pool(|| {
-            with_one_hot_scheme!(scheme, |_scheme, Cfg| {
+            with_one_hot_scheme!(scheme, |scheme, Cfg| {
                 let (_, backend) = setup
                     .one_hot_backend::<Cfg>()
                     .map_err(|error| AkitaError::InvalidSetup(error.to_string()))?;
                 backend
                     .import_source(polynomials)
-                    .and_then(|source| backend.commit(&source, context))
+                    .and_then(|source| backend.commit(scheme.schedules(), &source, context))
                     .map(split_one_hot_commit_output::<Cfg>)
             })
         })
@@ -399,10 +398,12 @@ impl AkitaScheme {
         dense: Vec<AkitaBackendDensePoly>,
     ) -> Result<(AkitaCommitment, AkitaProverHint), OpeningsError> {
         let (_, backend) = setup.dense_backend()?;
+        let scheme = setup.verifier.dense_scheme()?;
         let poly_count = dense.len();
         let (backend_commitment, backend_hint) = with_backend_pool(|| {
             backend.import_source(dense).and_then(|source| {
                 backend.commit(
+                    scheme.schedules(),
                     &source,
                     GroupContext::scheduler_without_precommitted_groups(),
                 )
@@ -533,9 +534,8 @@ impl CommitmentScheme for AkitaScheme {
                 })
                 .map_err(invalid_setup)?;
                 let backend = with_backend_pool(|| {
-                    CpuBackend::<AkitaConfig>::new(
+                    CpuBackend::<AkitaField, AkitaBackendExtField>::new(
                         backend_prover_setup.expanded.clone(),
-                        scheme.schedules(),
                     )
                 })
                 .map_err(invalid_setup)?;
@@ -558,10 +558,9 @@ impl CommitmentScheme for AkitaScheme {
                 .map_err(invalid_setup)?;
                 let scheme = verifier.one_hot_scheme()?;
                 let backend = with_backend_pool(|| {
-                    with_one_hot_scheme!(scheme, |scheme, Cfg| {
-                        CpuBackend::<Cfg>::new(
+                    with_one_hot_scheme!(scheme, |_scheme, Cfg| {
+                        CpuBackend::<AkitaField, AkitaBackendExtField>::new(
                             backend_prover_setup.expanded.clone(),
-                            scheme.schedules(),
                         )
                         .map(Cfg::wrap_backend)
                     })
@@ -1116,8 +1115,8 @@ mod tests {
         assert_eq!(
             legacy_transcript.state(),
             [
-                101, 3, 31, 117, 58, 205, 115, 86, 217, 136, 6, 160, 110, 234, 45, 130, 211, 169,
-                20, 96, 242, 154, 76, 46, 77, 138, 49, 109, 187, 54, 107, 118,
+                56, 62, 28, 92, 200, 2, 9, 24, 55, 172, 110, 219, 108, 67, 71, 41, 217, 10, 18, 66,
+                118, 190, 142, 225, 180, 29, 26, 230, 39, 220, 242, 93,
             ]
         );
         assert_eq!(current_transcript.state(), legacy_transcript.state());

@@ -93,11 +93,12 @@ dependencies = [
 [[package]]
 name = "akita-algebra"
 version = "0.1.0"
-source = "git+https://github.com/LayerZero-Labs/akita.git?rev=a5f3629b1aa10ed7dad501f616ffab3e0ad94060#a5f3629b1aa10ed7dad501f616ffab3e0ad94060"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=703d858077a717c112f150564f539ea86f2d3020#703d858077a717c112f150564f539ea86f2d3020"
 dependencies = [
  "akita-error",
  "akita-serialization",
  "jolt-field",
+ "jolt-poly 0.1.0 (git+https://github.com/a16z/jolt?rev=e290a0d10a30f16dafd4b1ef65f3ebbb497b8f6c)",
  "rand_core 0.6.4",
  "rayon",
  "tracing",
@@ -106,7 +107,7 @@ dependencies = [
 [[package]]
 name = "akita-challenges"
 version = "0.1.0"
-source = "git+https://github.com/LayerZero-Labs/akita.git?rev=a5f3629b1aa10ed7dad501f616ffab3e0ad94060#a5f3629b1aa10ed7dad501f616ffab3e0ad94060"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=703d858077a717c112f150564f539ea86f2d3020#703d858077a717c112f150564f539ea86f2d3020"
 dependencies = [
  "akita-error",
  "akita-transcript",
@@ -114,13 +115,12 @@ dependencies = [
  "keccak 0.1.6",
  "serde",
  "smallvec",
- "tracing",
 ]
 
 [[package]]
 name = "akita-config"
 version = "0.1.0"
-source = "git+https://github.com/LayerZero-Labs/akita.git?rev=a5f3629b1aa10ed7dad501f616ffab3e0ad94060#a5f3629b1aa10ed7dad501f616ffab3e0ad94060"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=703d858077a717c112f150564f539ea86f2d3020#703d858077a717c112f150564f539ea86f2d3020"
 dependencies = [
  "akita-challenges",
  "akita-error",
@@ -134,7 +134,7 @@ dependencies = [
 [[package]]
 name = "akita-cpu-backend"
 version = "0.1.0"
-source = "git+https://github.com/LayerZero-Labs/akita.git?rev=a5f3629b1aa10ed7dad501f616ffab3e0ad94060#a5f3629b1aa10ed7dad501f616ffab3e0ad94060"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=703d858077a717c112f150564f539ea86f2d3020#703d858077a717c112f150564f539ea86f2d3020"
 dependencies = [
  "akita-algebra",
  "akita-challenges",
@@ -146,6 +146,7 @@ dependencies = [
  "akita-transcript",
  "akita-types",
  "jolt-field",
+ "jolt-poly 0.1.0 (git+https://github.com/a16z/jolt?rev=e290a0d10a30f16dafd4b1ef65f3ebbb497b8f6c)",
  "rayon",
  "tracing",
 ]
@@ -153,7 +154,7 @@ dependencies = [
 [[package]]
 name = "akita-error"
 version = "0.1.0"
-source = "git+https://github.com/LayerZero-Labs/akita.git?rev=a5f3629b1aa10ed7dad501f616ffab3e0ad94060#a5f3629b1aa10ed7dad501f616ffab3e0ad94060"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=703d858077a717c112f150564f539ea86f2d3020#703d858077a717c112f150564f539ea86f2d3020"
 dependencies = [
  "thiserror 2.0.20",
 ]
@@ -161,7 +162,7 @@ dependencies = [
 [[package]]
 name = "akita-pcs"
 version = "0.1.0"
-source = "git+https://github.com/LayerZero-Labs/akita.git?rev=a5f3629b1aa10ed7dad501f616ffab3e0ad94060#a5f3629b1aa10ed7dad501f616ffab3e0ad94060"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=703d858077a717c112f150564f539ea86f2d3020#703d858077a717c112f150564f539ea86f2d3020"
 dependencies = [
  "akita-algebra",
  "akita-challenges",
@@ -171,7 +172,6 @@ dependencies = [
  "akita-prover",
  "akita-serialization",
  "akita-setup",
- "akita-sumcheck",
  "akita-transcript",
  "akita-types",
  "akita-verifier",
@@ -183,7 +183,7 @@ dependencies = [
 [[package]]
 name = "akita-planner"
 version = "0.1.0"
-source = "git+https://github.com/LayerZero-Labs/akita.git?rev=a5f3629b1aa10ed7dad501f616ffab3e0ad94060#a5f3629b1aa10ed7dad501f616ffab3e0ad94060"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=703d858077a717c112f150564f539ea86f2d3020#703d858077a717c112f150564f539ea86f2d3020"
 dependencies = [
  "akita-challenges",
  "akita-error",
@@ -195,7 +195,7 @@ dependencies = [
 [[package]]
 name = "akita-prover"
 version = "0.1.0"
-source = "git+https://github.com/LayerZero-Labs/akita.git?rev=a5f3629b1aa10ed7dad501f616ffab3e0ad94060#a5f3629b1aa10ed7dad501f616ffab3e0ad94060"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=703d858077a717c112f150564f539ea86f2d3020#703d858077a717c112f150564f539ea86f2d3020"
 dependencies = [
  "akita-algebra",
  "akita-challenges",
@@ -206,13 +206,14 @@ dependencies = [
  "akita-transcript",
  "akita-types",
  "jolt-field",
+ "jolt-poly 0.1.0 (git+https://github.com/a16z/jolt?rev=e290a0d10a30f16dafd4b1ef65f3ebbb497b8f6c)",
  "tracing",
 ]
 
 [[package]]
 name = "akita-schedules"
 version = "0.1.0"
-source = "git+https://github.com/LayerZero-Labs/akita.git?rev=a5f3629b1aa10ed7dad501f616ffab3e0ad94060#a5f3629b1aa10ed7dad501f616ffab3e0ad94060"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=703d858077a717c112f150564f539ea86f2d3020#703d858077a717c112f150564f539ea86f2d3020"
 dependencies = [
  "akita-challenges",
  "akita-error",
@@ -224,16 +225,17 @@ dependencies = [
 [[package]]
 name = "akita-serialization"
 version = "0.1.0"
-source = "git+https://github.com/LayerZero-Labs/akita.git?rev=a5f3629b1aa10ed7dad501f616ffab3e0ad94060#a5f3629b1aa10ed7dad501f616ffab3e0ad94060"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=703d858077a717c112f150564f539ea86f2d3020#703d858077a717c112f150564f539ea86f2d3020"
 dependencies = [
  "jolt-field",
+ "jolt-poly 0.1.0 (git+https://github.com/a16z/jolt?rev=e290a0d10a30f16dafd4b1ef65f3ebbb497b8f6c)",
  "thiserror 2.0.20",
 ]
 
 [[package]]
 name = "akita-setup"
 version = "0.1.0"
-source = "git+https://github.com/LayerZero-Labs/akita.git?rev=a5f3629b1aa10ed7dad501f616ffab3e0ad94060#a5f3629b1aa10ed7dad501f616ffab3e0ad94060"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=703d858077a717c112f150564f539ea86f2d3020#703d858077a717c112f150564f539ea86f2d3020"
 dependencies = [
  "akita-config",
  "akita-cpu-backend",
@@ -247,24 +249,21 @@ dependencies = [
 [[package]]
 name = "akita-sumcheck"
 version = "0.1.0"
-source = "git+https://github.com/LayerZero-Labs/akita.git?rev=a5f3629b1aa10ed7dad501f616ffab3e0ad94060#a5f3629b1aa10ed7dad501f616ffab3e0ad94060"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=703d858077a717c112f150564f539ea86f2d3020#703d858077a717c112f150564f539ea86f2d3020"
 dependencies = [
  "akita-algebra",
  "akita-error",
  "akita-serialization",
  "akita-transcript",
  "jolt-field",
- "rayon",
- "tracing",
+ "jolt-poly 0.1.0 (git+https://github.com/a16z/jolt?rev=e290a0d10a30f16dafd4b1ef65f3ebbb497b8f6c)",
 ]
 
 [[package]]
 name = "akita-transcript"
 version = "0.1.0"
-source = "git+https://github.com/LayerZero-Labs/akita.git?rev=a5f3629b1aa10ed7dad501f616ffab3e0ad94060#a5f3629b1aa10ed7dad501f616ffab3e0ad94060"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=703d858077a717c112f150564f539ea86f2d3020#703d858077a717c112f150564f539ea86f2d3020"
 dependencies = [
- "akita-serialization",
- "blake2 0.11.0",
  "jolt-field",
  "spongefish",
 ]
@@ -272,7 +271,7 @@ dependencies = [
 [[package]]
 name = "akita-types"
 version = "0.1.0"
-source = "git+https://github.com/LayerZero-Labs/akita.git?rev=a5f3629b1aa10ed7dad501f616ffab3e0ad94060#a5f3629b1aa10ed7dad501f616ffab3e0ad94060"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=703d858077a717c112f150564f539ea86f2d3020#703d858077a717c112f150564f539ea86f2d3020"
 dependencies = [
  "akita-algebra",
  "akita-challenges",
@@ -282,6 +281,7 @@ dependencies = [
  "akita-transcript",
  "blake2 0.11.0",
  "jolt-field",
+ "jolt-poly 0.1.0 (git+https://github.com/a16z/jolt?rev=e290a0d10a30f16dafd4b1ef65f3ebbb497b8f6c)",
  "num-traits",
  "rand_core 0.6.4",
  "rayon",
@@ -294,7 +294,7 @@ dependencies = [
 [[package]]
 name = "akita-verifier"
 version = "0.1.0"
-source = "git+https://github.com/LayerZero-Labs/akita.git?rev=a5f3629b1aa10ed7dad501f616ffab3e0ad94060#a5f3629b1aa10ed7dad501f616ffab3e0ad94060"
+source = "git+https://github.com/LayerZero-Labs/akita.git?rev=703d858077a717c112f150564f539ea86f2d3020#703d858077a717c112f150564f539ea86f2d3020"
 dependencies = [
  "akita-algebra",
  "akita-challenges",
@@ -305,6 +305,7 @@ dependencies = [
  "akita-transcript",
  "akita-types",
  "jolt-field",
+ "jolt-poly 0.1.0 (git+https://github.com/a16z/jolt?rev=e290a0d10a30f16dafd4b1ef65f3ebbb497b8f6c)",
  "rayon",
  "tracing",
 ]
@@ -815,7 +816,7 @@ dependencies = [
  "fnv",
  "hashbrown 0.15.5",
  "itertools 0.13.0",
- "num-bigint",
+ "num-bigint 0.4.6",
  "num-integer",
  "num-traits",
  "rayon",
@@ -833,7 +834,7 @@ dependencies = [
  "ark-serialize 0.3.0",
  "ark-std 0.3.0",
  "derivative",
- "num-bigint",
+ "num-bigint 0.4.6",
  "num-traits",
  "paste",
  "rustc_version 0.3.3",
@@ -853,7 +854,7 @@ dependencies = [
  "derivative",
  "digest 0.10.7",
  "itertools 0.10.5",
- "num-bigint",
+ "num-bigint 0.4.6",
  "num-traits",
  "paste",
  "rustc_version 0.4.1",
@@ -874,7 +875,7 @@ dependencies = [
  "digest 0.10.7",
  "educe",
  "itertools 0.13.0",
- "num-bigint",
+ "num-bigint 0.4.6",
  "num-traits",
  "paste",
  "rayon",
@@ -893,7 +894,7 @@ dependencies = [
  "ark-std 0.6.0",
  "digest 0.10.7",
  "educe",
- "num-bigint",
+ "num-bigint 0.4.6",
  "num-traits",
  "zeroize",
 ]
@@ -943,7 +944,7 @@ version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db2fd794a08ccb318058009eefdf15bcaaaaf6f8161eb3345f907222bac38b20"
 dependencies = [
- "num-bigint",
+ "num-bigint 0.4.6",
  "num-traits",
  "quote",
  "syn 1.0.109",
@@ -955,7 +956,7 @@ version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7abe79b0e4288889c4574159ab790824d0033b9fdcb2a112a3182fac2e514565"
 dependencies = [
- "num-bigint",
+ "num-bigint 0.4.6",
  "num-traits",
  "proc-macro2",
  "quote",
@@ -967,7 +968,7 @@ name = "ark-ff-macros"
 version = "0.5.0"
 source = "git+https://github.com/a16z/arkworks-algebra?branch=dev%2Ftwist-shout#76bb3a4518928f1ff7f15875f940d614bb9845e6"
 dependencies = [
- "num-bigint",
+ "num-bigint 0.4.6",
  "num-traits",
  "proc-macro2",
  "quote",
@@ -980,7 +981,7 @@ version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4a0691ed21ef00ef89c1e9bda832eba493dda3ec2f8d892fb25b705f73f06bb8"
 dependencies = [
- "num-bigint",
+ "num-bigint 0.4.6",
  "num-traits",
  "proc-macro2",
  "quote",
@@ -1050,7 +1051,7 @@ checksum = "adb7b85a02b83d2f22f89bd5cac66c9c89474240cb6207cb1efc16d098e822a5"
 dependencies = [
  "ark-std 0.4.0",
  "digest 0.10.7",
- "num-bigint",
+ "num-bigint 0.4.6",
 ]
 
 [[package]]
@@ -1062,7 +1063,7 @@ dependencies = [
  "ark-std 0.5.0",
  "arrayvec",
  "digest 0.10.7",
- "num-bigint",
+ "num-bigint 0.4.6",
  "rayon",
 ]
 
@@ -1075,7 +1076,7 @@ dependencies = [
  "ark-serialize-derive 0.6.0",
  "ark-std 0.6.0",
  "digest 0.10.7",
- "num-bigint",
+ "num-bigint 0.4.6",
  "serde_with",
 ]
 
@@ -1703,7 +1704,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2459,7 +2460,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3129,7 +3130,7 @@ dependencies = [
  "jolt-crypto",
  "jolt-field",
  "jolt-openings",
- "jolt-poly",
+ "jolt-poly 0.1.0",
  "jolt-transcript",
  "rayon",
  "serde",
@@ -3144,11 +3145,11 @@ dependencies = [
  "jolt-claims",
  "jolt-crypto",
  "jolt-field",
- "jolt-poly",
+ "jolt-poly 0.1.0",
  "jolt-r1cs",
  "jolt-sumcheck",
  "jolt-transcript",
- "jolt-utils",
+ "jolt-utils 0.1.0",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
  "rayon",
@@ -3167,9 +3168,9 @@ dependencies = [
  "jolt-field",
  "jolt-lookup-tables",
  "jolt-openings",
- "jolt-poly",
+ "jolt-poly 0.1.0",
  "jolt-riscv",
- "jolt-utils",
+ "jolt-utils 0.1.0",
  "serde",
  "thiserror 2.0.20",
 ]
@@ -3195,9 +3196,9 @@ dependencies = [
  "bincode 2.0.1",
  "criterion",
  "jolt-field",
- "jolt-poly",
+ "jolt-poly 0.1.0",
  "jolt-transcript",
- "num-bigint",
+ "num-bigint 0.4.6",
  "num-integer",
  "num-traits",
  "rand_chacha 0.3.1",
@@ -3214,7 +3215,6 @@ dependencies = [
  "akita-config",
  "akita-pcs",
  "akita-prover",
- "akita-transcript",
  "akita-types",
  "ark-bn254",
  "ark-ec",
@@ -3226,7 +3226,7 @@ dependencies = [
  "jolt-field",
  "jolt-openings",
  "jolt-optimizations",
- "jolt-poly",
+ "jolt-poly 0.1.0",
  "jolt-profiling",
  "jolt-transcript",
  "rand_chacha 0.3.1",
@@ -3258,7 +3258,7 @@ dependencies = [
  "jolt-inlines-keccak256",
  "jolt-inlines-secp256k1",
  "jolt-inlines-sha2",
- "jolt-poly",
+ "jolt-poly 0.1.0",
  "jolt-program",
  "jolt-prover",
  "jolt-riscv",
@@ -3301,7 +3301,7 @@ dependencies = [
  "bincode 2.0.1",
  "cc",
  "criterion",
- "num-bigint",
+ "num-bigint 0.4.6",
  "num-traits",
  "rand 0.8.7",
  "rand_chacha 0.3.1",
@@ -3384,7 +3384,7 @@ dependencies = [
  "ark-ff 0.5.0",
  "ark-grumpkin",
  "jolt-inlines-sdk",
- "num-bigint",
+ "num-bigint 0.4.6",
  "num-integer",
  "serde",
  "tracer",
@@ -3410,7 +3410,7 @@ dependencies = [
  "ark-ff 0.5.0",
  "ark-secp256r1",
  "jolt-inlines-sdk",
- "num-bigint",
+ "num-bigint 0.4.6",
  "p256",
  "rand 0.8.7",
  "serde",
@@ -3426,7 +3426,7 @@ dependencies = [
  "jolt-platform",
  "jolt-program",
  "jolt-riscv",
- "num-bigint",
+ "num-bigint 0.4.6",
  "rand 0.8.7",
  "tracer",
 ]
@@ -3438,7 +3438,7 @@ dependencies = [
  "ark-ff 0.5.0",
  "ark-secp256k1",
  "jolt-inlines-sdk",
- "num-bigint",
+ "num-bigint 0.4.6",
  "num-integer",
  "serde",
  "tracer",
@@ -3466,13 +3466,13 @@ dependencies = [
  "jolt-kernels-derive",
  "jolt-lookup-tables",
  "jolt-openings",
- "jolt-poly",
+ "jolt-poly 0.1.0",
  "jolt-program",
  "jolt-r1cs",
  "jolt-riscv",
  "jolt-sumcheck",
  "jolt-transcript",
- "jolt-utils",
+ "jolt-utils 0.1.0",
  "jolt-verifier",
  "jolt-witness",
  "libc",
@@ -3520,7 +3520,7 @@ dependencies = [
  "jolt-crypto",
  "jolt-dory",
  "jolt-field",
- "jolt-poly",
+ "jolt-poly 0.1.0",
  "jolt-transcript",
  "rand 0.8.7",
  "rand_chacha 0.3.1",
@@ -3541,7 +3541,7 @@ dependencies = [
  "ark-serialize 0.5.0",
  "ark-std 0.5.0",
  "arrayvec",
- "num-bigint",
+ "num-bigint 0.4.6",
  "num-integer",
  "num-rational",
  "num-traits",
@@ -3566,12 +3566,26 @@ dependencies = [
  "criterion",
  "jolt-field",
  "jolt-transcript",
- "jolt-utils",
+ "jolt-utils 0.1.0",
  "num-traits",
  "rand 0.8.7",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
  "rayon",
+ "serde",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
+name = "jolt-poly"
+version = "0.1.0"
+source = "git+https://github.com/a16z/jolt?rev=e290a0d10a30f16dafd4b1ef65f3ebbb497b8f6c#e290a0d10a30f16dafd4b1ef65f3ebbb497b8f6c"
+dependencies = [
+ "jolt-field",
+ "jolt-utils 0.1.0 (git+https://github.com/a16z/jolt?rev=e290a0d10a30f16dafd4b1ef65f3ebbb497b8f6c)",
+ "num-traits",
+ "rand_core 0.6.4",
  "serde",
  "thiserror 2.0.20",
  "tracing",
@@ -3631,7 +3645,7 @@ dependencies = [
  "jolt-kernels",
  "jolt-lookup-tables",
  "jolt-openings",
- "jolt-poly",
+ "jolt-poly 0.1.0",
  "jolt-profiling",
  "jolt-program",
  "jolt-riscv",
@@ -3657,7 +3671,7 @@ version = "0.1.0"
 dependencies = [
  "jolt-claims",
  "jolt-field",
- "jolt-poly",
+ "jolt-poly 0.1.0",
  "num-traits",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
@@ -3722,7 +3736,7 @@ dependencies = [
  "bincode 2.0.1",
  "jolt-crypto",
  "jolt-field",
- "jolt-poly",
+ "jolt-poly 0.1.0",
  "jolt-r1cs",
  "jolt-transcript",
  "num-traits",
@@ -3776,6 +3790,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "jolt-utils"
+version = "0.1.0"
+source = "git+https://github.com/a16z/jolt?rev=e290a0d10a30f16dafd4b1ef65f3ebbb497b8f6c#e290a0d10a30f16dafd4b1ef65f3ebbb497b8f6c"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "jolt-verifier"
 version = "0.1.0"
 dependencies = [
@@ -3794,7 +3816,7 @@ dependencies = [
  "jolt-host",
  "jolt-lookup-tables",
  "jolt-openings",
- "jolt-poly",
+ "jolt-poly 0.1.0",
  "jolt-program",
  "jolt-prover",
  "jolt-r1cs",
@@ -3832,7 +3854,7 @@ dependencies = [
  "jolt-lookup-tables",
  "jolt-program",
  "jolt-riscv",
- "jolt-utils",
+ "jolt-utils 0.1.0",
  "jolt-witness-derive",
  "rayon",
  "thiserror 2.0.20",
@@ -3954,7 +3976,7 @@ checksum = "47a1ccadd0bb5a32c196da536fd72c59183de24a055f6bf0513bf845fefab862"
 dependencies = [
  "ark-bn254",
  "ark-ff 0.5.0",
- "num-bigint",
+ "num-bigint 0.4.6",
  "thiserror 1.0.69",
 ]
 
@@ -4268,7 +4290,7 @@ version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "35bd024e8b2ff75562e5f34e7f4905839deb4b22955ef5e73d2fea1b9813cb23"
 dependencies = [
- "num-bigint",
+ "num-bigint 0.4.6",
  "num-complex",
  "num-integer",
  "num-iter",
@@ -4281,6 +4303,16 @@ name = "num-bigint"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a5e44f723f1133c9deac646763579fdb3ac745e418f2a7af9cd0c431da1f20b9"
+dependencies = [
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
+name = "num-bigint"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93e7820bc0a80a0238e650327316f929ba18d5be054b647490a3a6a339f3e7c0"
 dependencies = [
  "num-integer",
  "num-traits",
@@ -4348,7 +4380,7 @@ version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f83d14da390562dca69fc84082e73e548e1ad308d24accdedd2720017cb37824"
 dependencies = [
- "num-bigint",
+ "num-bigint 0.4.6",
  "num-integer",
  "num-traits",
 ]
@@ -4554,9 +4586,9 @@ dependencies = [
 
 [[package]]
 name = "p3-challenger"
-version = "0.5.3"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8972ccd1d5dc90e46cdb1f2ab4ee2bae49b3917e5e98aa533f0c2b779c010445"
+checksum = "84d5d5e1ecf2c80b09b48ce870e8abd08b643454101c5dc9d0fd71bfbd78224d"
 dependencies = [
  "p3-field",
  "p3-maybe-rayon",
@@ -4568,27 +4600,27 @@ dependencies = [
 
 [[package]]
 name = "p3-dft"
-version = "0.5.3"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17771aca44632f9cc11f2718d7ea7ec06794946c4190ef3a985bfc893f14c18a"
+checksum = "4321a952da2721ecd85ca593ea189798dfb4e439a2cc1378ce1442091880f173"
 dependencies = [
- "itertools 0.14.0",
+ "itertools 0.15.0",
  "p3-field",
  "p3-matrix",
  "p3-maybe-rayon",
  "p3-util",
- "spin 0.10.1",
+ "spin 0.12.3",
  "tracing",
 ]
 
 [[package]]
 name = "p3-field"
-version = "0.5.3"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f3eb24d0591fd4d282d89cbe4e4efba5571c699375006f80b2cbf53ce83461c"
+checksum = "53db75d38e04fc255826f388eca9d05976733dc9754aa3db411bc9ea1a37c1a0"
 dependencies = [
- "itertools 0.14.0",
- "num-bigint",
+ "itertools 0.15.0",
+ "num-bigint 0.5.1",
  "p3-maybe-rayon",
  "p3-util",
  "paste",
@@ -4599,9 +4631,9 @@ dependencies = [
 
 [[package]]
 name = "p3-koala-bear"
-version = "0.5.3"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61e31d7adaecf270811e3f4b52dc12214235a5427b976a49a45f73d542fc0a2d"
+checksum = "70cbc82137c157673e2d33d95f936a94ce237a790d46e0a2b3165dccfc385dd6"
 dependencies = [
  "p3-challenger",
  "p3-field",
@@ -4615,11 +4647,11 @@ dependencies = [
 
 [[package]]
 name = "p3-matrix"
-version = "0.5.3"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea9c94c0714944e7b8a9a62e6340b1e3e1d3f8ecfd3e35c08798360200e73eff"
+checksum = "473eb920c446a6f4536e0d3528fbdca2a23c0e24e1d0d7767452e6d385dd335c"
 dependencies = [
- "itertools 0.14.0",
+ "itertools 0.15.0",
  "p3-field",
  "p3-maybe-rayon",
  "p3-util",
@@ -4630,15 +4662,15 @@ dependencies = [
 
 [[package]]
 name = "p3-maybe-rayon"
-version = "0.5.3"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eebc233a34b1ab0273f35b4052fa2eeb3114b22ba4575bd7da00716e878ffb77"
+checksum = "e6fddfd435f96394769414cf5590b77058aa506659bf20d6592e9d1989e04440"
 
 [[package]]
 name = "p3-mds"
-version = "0.5.3"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b5441fa8116246ec9e6c835f15273cb27777ca572960ec87476b67fef13e01e"
+checksum = "551ba0ab2cccd89f85a99450224898aff224e323bbf61f777ba6344f0896ef10"
 dependencies = [
  "p3-dft",
  "p3-field",
@@ -4649,12 +4681,12 @@ dependencies = [
 
 [[package]]
 name = "p3-monty-31"
-version = "0.5.3"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8724f330ea6d19dd4f2436aa0f88b5fcbf88f0f55ca7fccd3fea8b736dbcddad"
+checksum = "871f635f7340cd0868b17e43e0c98fefdafdaed90469d0725caf6d8372a2a47c"
 dependencies = [
- "itertools 0.14.0",
- "num-bigint",
+ "itertools 0.15.0",
+ "num-bigint 0.5.1",
  "p3-dft",
  "p3-field",
  "p3-matrix",
@@ -4667,26 +4699,27 @@ dependencies = [
  "paste",
  "rand 0.10.2",
  "serde",
- "spin 0.10.1",
+ "spin 0.12.3",
  "tracing",
 ]
 
 [[package]]
 name = "p3-poseidon1"
-version = "0.5.3"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04e2a562fea210baae390a32f9ecf0dd8724ae3f4352d1c8e413077b6f00a162"
+checksum = "8d0d304e9a1f29c0d66534aa84e69528e2118351fdce08dcf5898af4e0fecc32"
 dependencies = [
  "p3-field",
+ "p3-mds",
  "p3-symmetric",
  "rand 0.10.2",
 ]
 
 [[package]]
 name = "p3-poseidon2"
-version = "0.5.3"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06394851c161d17e4aa4ad2aad5557d32f14cadd1dc838f965d8e1821a63b8c5"
+checksum = "43eb8a73a26d14becaed1c67c3e8a047e4311d7909b402383c82ca9643ba17c6"
 dependencies = [
  "p3-field",
  "p3-mds",
@@ -4697,11 +4730,11 @@ dependencies = [
 
 [[package]]
 name = "p3-symmetric"
-version = "0.5.3"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ac1a276d421f8ef3361bb7d8c39a02c93c6b3f10eeaa559cc4c50222f9a5b82"
+checksum = "2015ea80cad969b6aabf27a04884286fe1354393b166d968ee0d80a95126b2a4"
 dependencies = [
- "itertools 0.14.0",
+ "itertools 0.15.0",
  "p3-field",
  "p3-util",
  "serde",
@@ -4709,12 +4742,11 @@ dependencies = [
 
 [[package]]
 name = "p3-util"
-version = "0.5.3"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d08a58162a4c264269ef454f0b28dcda89939490eecacb2b2cf5b00f719b80f6"
+checksum = "6c5466fc40e6df89d3b291a2eff16b33e68e8571207790370137ec18090aadab"
 dependencies = [
  "serde",
- "transpose",
 ]
 
 [[package]]
@@ -5649,7 +5681,7 @@ dependencies = [
  "bytes",
  "fastrlp 0.3.1",
  "fastrlp 0.4.0",
- "num-bigint",
+ "num-bigint 0.4.6",
  "num-integer",
  "num-traits",
  "parity-scale-codec",
@@ -5749,7 +5781,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6308,6 +6340,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "spin"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0134f9043ed38b087ac4f7d4af44c79e2c9e5094421fe3164f435ce585953b10"
+dependencies = [
+ "lock_api",
+]
+
+[[package]]
 name = "spinners"
 version = "4.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6345,14 +6386,14 @@ checksum = "3a0219bd7d979d58245a4f41f695e1ac9f8befdffadd7f61f1bae9e39abc6620"
 
 [[package]]
 name = "spongefish"
-version = "0.7.0"
-source = "git+https://github.com/arkworks-rs/spongefish?rev=d2d190b1329d35ac9577438d05aed4f17a57b9f9#d2d190b1329d35ac9577438d05aed4f17a57b9f9"
+version = "0.7.4"
+source = "git+https://github.com/arkworks-rs/spongefish?rev=ef9741346a150039427d9e0c02d6b2d73e93ec81#ef9741346a150039427d9e0c02d6b2d73e93ec81"
 dependencies = [
  "ark-ff 0.6.0",
  "ark-serialize 0.6.0",
  "blake2 0.11.0",
  "digest 0.11.3",
- "keccak 0.1.6",
+ "keccak 0.2.0",
  "p3-koala-bear",
  "rand 0.8.7",
  "sha2 0.11.0",
@@ -6394,12 +6435,6 @@ name = "str_stack"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9091b6114800a5f2141aee1d1b9d6ca3592ac062dc5decb3764ec5895a47b4eb"
-
-[[package]]
-name = "strength_reduce"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe895eb47f22e2ddd4dabc02bce419d2e643c8e3b585c78158b349195bc24d82"
 
 [[package]]
 name = "strsim"
@@ -6576,7 +6611,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6867,16 +6902,6 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-log",
-]
-
-[[package]]
-name = "transpose"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ad61aed86bc3faea4300c7aee358b4c6d0c8d6ccc36524c96e4c92ccf26e77e"
-dependencies = [
- "num-integer",
- "strength_reduce",
 ]
 
 [[package]]
@@ -7225,7 +7250,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7781,7 +7806,7 @@ dependencies = [
  "jolt-lookup-tables",
  "jolt-r1cs",
  "jolt-riscv",
- "num-bigint",
+ "num-bigint 0.4.6",
  "proptest",
  "rand_core 0.6.4",
  "regex",

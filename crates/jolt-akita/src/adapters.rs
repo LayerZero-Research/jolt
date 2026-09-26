@@ -12,11 +12,10 @@ use std::{cell::Cell, num::NonZeroUsize};
 use akita_config::{CommitmentConfig, TrustedScheduleCatalog};
 use akita_pcs::{
     AkitaCommitmentScheme, AkitaDeserialize, AkitaError, AkitaProverSetup as BackendProverSetup,
-    AkitaSerialize, AkitaTranscript, CommitmentHandle, CpuBackend, DensePoly, OneHotPoly,
+    AkitaSerialize, CommitmentHandle, CpuBackend, DensePoly, OneHotPoly,
 };
 use akita_schedules::ValidatedScheduleCatalog;
 use akita_types::{
-    AkitaBatchedProof as AkitaBackendBatchProof, AkitaBatchedProofShape,
     AkitaVerifierSetup as AkitaBackendVerifierSetup, Commitment as AkitaBackendRingCommitment,
     CommittedGroup as AkitaBackendCommittedGroup, OpeningScheduleSelection, ScheduleRowDigest,
 };
@@ -308,38 +307,36 @@ macro_rules! with_one_hot_scheme {
 pub(crate) use with_one_hot_scheme;
 pub(crate) type AkitaBackendCommitment = AkitaBackendCommittedGroup<AkitaField>;
 pub(crate) type AkitaBackendCommitmentPayload = AkitaBackendRingCommitment<AkitaField>;
-pub(crate) type AkitaBackendProof = AkitaBackendBatchProof<AkitaField, AkitaBackendExtField>;
-pub(crate) type AkitaBackendProofShape = AkitaBatchedProofShape;
 pub(crate) type AkitaBackendVerifier = AkitaBackendVerifierSetup<AkitaField>;
 pub(crate) type AkitaBackendDensePoly = DensePoly<AkitaField>;
 pub(crate) type AkitaBackendOneHotPoly = OneHotPoly<AkitaField, u8>;
 pub(crate) type AkitaBackendProverSetup = BackendProverSetup<AkitaField>;
 
-type DenseBackend = CpuBackend<AkitaConfig>;
-type DenseBackendHint = CommitmentHandle<AkitaField, AkitaBackendExtField, AkitaConfig>;
+type DenseBackend = CpuBackend<AkitaField, AkitaBackendExtField>;
+type DenseBackendHint = CommitmentHandle<AkitaField, AkitaBackendExtField>;
 
 #[derive(Clone, Debug)]
 pub(crate) enum AkitaOneHotBackend {
-    K16Single(Arc<CpuBackend<JoltOneHotK16>>),
-    K16W2R2(Arc<CpuBackend<JoltOneHotK16W2R2>>),
-    K16W4R2(Arc<CpuBackend<JoltOneHotK16W4R2>>),
-    K16W8R2(Arc<CpuBackend<JoltOneHotK16MultiChunk>>),
-    K256Single(Arc<CpuBackend<JoltOneHotK256>>),
-    K256W2R2(Arc<CpuBackend<JoltOneHotK256W2R2>>),
-    K256W4R2(Arc<CpuBackend<JoltOneHotK256W4R2>>),
-    K256W8R2(Arc<CpuBackend<JoltOneHotK256MultiChunk>>),
+    K16Single(Arc<CpuBackend<AkitaField, AkitaBackendExtField>>),
+    K16W2R2(Arc<CpuBackend<AkitaField, AkitaBackendExtField>>),
+    K16W4R2(Arc<CpuBackend<AkitaField, AkitaBackendExtField>>),
+    K16W8R2(Arc<CpuBackend<AkitaField, AkitaBackendExtField>>),
+    K256Single(Arc<CpuBackend<AkitaField, AkitaBackendExtField>>),
+    K256W2R2(Arc<CpuBackend<AkitaField, AkitaBackendExtField>>),
+    K256W4R2(Arc<CpuBackend<AkitaField, AkitaBackendExtField>>),
+    K256W8R2(Arc<CpuBackend<AkitaField, AkitaBackendExtField>>),
 }
 
 #[derive(Clone, Debug)]
 pub(crate) enum AkitaOneHotBackendHint {
-    K16Single(CommitmentHandle<AkitaField, AkitaBackendExtField, JoltOneHotK16>),
-    K16W2R2(CommitmentHandle<AkitaField, AkitaBackendExtField, JoltOneHotK16W2R2>),
-    K16W4R2(CommitmentHandle<AkitaField, AkitaBackendExtField, JoltOneHotK16W4R2>),
-    K16W8R2(CommitmentHandle<AkitaField, AkitaBackendExtField, JoltOneHotK16MultiChunk>),
-    K256Single(CommitmentHandle<AkitaField, AkitaBackendExtField, JoltOneHotK256>),
-    K256W2R2(CommitmentHandle<AkitaField, AkitaBackendExtField, JoltOneHotK256W2R2>),
-    K256W4R2(CommitmentHandle<AkitaField, AkitaBackendExtField, JoltOneHotK256W4R2>),
-    K256W8R2(CommitmentHandle<AkitaField, AkitaBackendExtField, JoltOneHotK256MultiChunk>),
+    K16Single(CommitmentHandle<AkitaField, AkitaBackendExtField>),
+    K16W2R2(CommitmentHandle<AkitaField, AkitaBackendExtField>),
+    K16W4R2(CommitmentHandle<AkitaField, AkitaBackendExtField>),
+    K16W8R2(CommitmentHandle<AkitaField, AkitaBackendExtField>),
+    K256Single(CommitmentHandle<AkitaField, AkitaBackendExtField>),
+    K256W2R2(CommitmentHandle<AkitaField, AkitaBackendExtField>),
+    K256W4R2(CommitmentHandle<AkitaField, AkitaBackendExtField>),
+    K256W8R2(CommitmentHandle<AkitaField, AkitaBackendExtField>),
 }
 
 #[derive(Clone, Debug)]
@@ -360,27 +357,31 @@ impl AkitaBackendHint {
 pub(crate) trait AkitaOneHotConfig:
     CommitmentConfig<Field = AkitaField, ExtField = AkitaBackendExtField> + Sized
 {
-    fn wrap_backend(backend: CpuBackend<Self>) -> AkitaOneHotBackend;
+    fn wrap_backend(backend: CpuBackend<AkitaField, AkitaBackendExtField>) -> AkitaOneHotBackend;
 
-    fn backend(backend: &AkitaOneHotBackend) -> Option<&CpuBackend<Self>>;
+    fn backend(
+        backend: &AkitaOneHotBackend,
+    ) -> Option<&CpuBackend<AkitaField, AkitaBackendExtField>>;
 
-    fn wrap_hint(
-        hint: CommitmentHandle<AkitaField, AkitaBackendExtField, Self>,
-    ) -> AkitaBackendHint;
+    fn wrap_hint(hint: CommitmentHandle<AkitaField, AkitaBackendExtField>) -> AkitaBackendHint;
 
     fn into_hint(
         hint: AkitaBackendHint,
-    ) -> Result<CommitmentHandle<AkitaField, AkitaBackendExtField, Self>, OpeningsError>;
+    ) -> Result<CommitmentHandle<AkitaField, AkitaBackendExtField>, OpeningsError>;
 }
 
 macro_rules! impl_one_hot_config {
     ($cfg:ty, $variant:ident) => {
         impl AkitaOneHotConfig for $cfg {
-            fn wrap_backend(backend: CpuBackend<Self>) -> AkitaOneHotBackend {
+            fn wrap_backend(
+                backend: CpuBackend<AkitaField, AkitaBackendExtField>,
+            ) -> AkitaOneHotBackend {
                 AkitaOneHotBackend::$variant(Arc::new(backend))
             }
 
-            fn backend(backend: &AkitaOneHotBackend) -> Option<&CpuBackend<Self>> {
+            fn backend(
+                backend: &AkitaOneHotBackend,
+            ) -> Option<&CpuBackend<AkitaField, AkitaBackendExtField>> {
                 match backend {
                     AkitaOneHotBackend::$variant(backend) => Some(backend),
                     _ => None,
@@ -388,15 +389,14 @@ macro_rules! impl_one_hot_config {
             }
 
             fn wrap_hint(
-                hint: CommitmentHandle<AkitaField, AkitaBackendExtField, Self>,
+                hint: CommitmentHandle<AkitaField, AkitaBackendExtField>,
             ) -> AkitaBackendHint {
                 AkitaBackendHint::OneHot(AkitaOneHotBackendHint::$variant(hint))
             }
 
             fn into_hint(
                 hint: AkitaBackendHint,
-            ) -> Result<CommitmentHandle<AkitaField, AkitaBackendExtField, Self>, OpeningsError>
-            {
+            ) -> Result<CommitmentHandle<AkitaField, AkitaBackendExtField>, OpeningsError> {
                 match hint {
                     AkitaBackendHint::OneHot(AkitaOneHotBackendHint::$variant(hint)) => Ok(hint),
                     _ => Err(invalid_batch("Akita one-hot backend hint config mismatch")),
@@ -750,7 +750,13 @@ impl AkitaProverSetup {
 
     pub(crate) fn one_hot_backend<Cfg: AkitaOneHotConfig>(
         &self,
-    ) -> Result<(&AkitaBackendProverSetup, &CpuBackend<Cfg>), OpeningsError> {
+    ) -> Result<
+        (
+            &AkitaBackendProverSetup,
+            &CpuBackend<AkitaField, AkitaBackendExtField>,
+        ),
+        OpeningsError,
+    > {
         let prover_setup = self
             .one_hot_backend_prover_setup
             .as_deref()
@@ -1464,19 +1470,14 @@ pub(crate) fn transparent_zk_error() -> OpeningsError {
 /// uses it to domain-separate the nested Akita transcript. No subsequent Jolt
 /// challenge consumes the terminal opening proof, so reabsorbing that proof
 /// into the outer transcript could not affect acceptance.
-pub(crate) fn bridged_akita_transcript<T>(
-    jolt_transcript: &mut T,
-    session_label: &[u8],
-) -> AkitaTranscript<AkitaField>
+pub(crate) fn bridged_akita_session<T>(jolt_transcript: &mut T, session_label: &[u8]) -> Vec<u8>
 where
     T: Transcript<Challenge = AkitaField>,
 {
     let bridge = jolt_transcript.challenge_scalar();
     let bridge_bytes = bridge.to_bytes_le_vec();
-    // Akita replaces its sponge state when it binds the concrete instance but
-    // preserves the session label, so the cross-protocol bridge belongs here.
     let mut bridged_session_label = Vec::with_capacity(session_label.len() + bridge_bytes.len());
     bridged_session_label.extend_from_slice(session_label);
     bridged_session_label.extend_from_slice(&bridge_bytes);
-    AkitaTranscript::new(&bridged_session_label)
+    bridged_session_label
 }

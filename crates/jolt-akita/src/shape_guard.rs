@@ -1,40 +1,39 @@
-//! Pre-deserialization validation of proof-controlled Akita payload shapes.
+//! Validation of proof-controlled Akita commitment payload shapes.
 //!
 //! Commitment lengths arrive inside the prover-controlled Jolt proof. The
-//! backend proof shape is derived from Akita's trusted schedule before a
-//! backend deserializer can reserve payload-sized buffers.
+//! native Spongefish proof stream is decoded by Akita's verifier.
 
-use akita_config::{derive_transcript_grinding_plan, CommitmentConfig, TrustedScheduleCatalog};
+use akita_config::{CommitmentConfig, TrustedScheduleCatalog};
 use akita_pcs::AkitaError;
 use akita_schedules::ResolvedScheduleRow;
 use akita_types::{
-    canonical_proof_shape, CompressionChainPlan, FoldSchedule, GroupCommitPhaseParams,
-    OpeningClaimsLayout, OpeningScheduleSelection, PolynomialGroupLayout,
+    CompressionChainPlan, GroupCommitPhaseParams, OpeningClaimsLayout, OpeningScheduleSelection,
+    PolynomialGroupLayout,
 };
 use jolt_field::Zero;
 use jolt_openings::OpeningsError;
 
 use crate::adapters::{
     deserialize_akita, invalid_batch, AkitaBackendCommitment, AkitaBackendCommitmentPayload,
-    AkitaBackendProof, AkitaBackendProofShape, AkitaBatchProof, AkitaCommitment, AkitaField,
+    AkitaBatchProof, AkitaCommitment, AkitaField,
 };
 
-/// Deserializes the backend commitment and proof only after their declared
-/// shapes have been derived from the trusted resolved schedule.
-pub(crate) fn deserialize_checked_backend_payload<Cfg>(
+type CheckedGroupedPayload<'a> = (
+    OpeningScheduleSelection,
+    Vec<AkitaBackendCommitment>,
+    AkitaBackendCommitment,
+    &'a [u8],
+);
+
+/// Deserializes the backend commitment after its shape has been checked against
+/// the trusted resolved schedule.
+pub(crate) fn deserialize_checked_backend_payload<'a, Cfg>(
     schedules: &TrustedScheduleCatalog<Cfg>,
     commitment: &AkitaCommitment,
-    proof: &AkitaBatchProof,
+    proof: &'a AkitaBatchProof,
     statement_len: usize,
     backend_point: &[AkitaField],
-) -> Result<
-    (
-        OpeningScheduleSelection,
-        AkitaBackendCommitment,
-        AkitaBackendProof,
-    ),
-    OpeningsError,
->
+) -> Result<(OpeningScheduleSelection, AkitaBackendCommitment, &'a [u8]), OpeningsError>
 where
     Cfg: CommitmentConfig<Field = AkitaField, ExtField = AkitaField>,
 {
@@ -50,26 +49,21 @@ where
     )?;
     let backend_commitment =
         AkitaBackendCommitment::new(resolved.profiles().final_group, backend_payload);
-    let backend_proof = deserialize_checked_proof::<Cfg>(resolved, &layout, proof)?;
-    Ok((resolved.selection(), backend_commitment, backend_proof))
+    Ok((
+        resolved.selection(),
+        backend_commitment,
+        &proof.backend_proof,
+    ))
 }
 
 /// Guard and decode the ordered grouped root in public order
 /// `[dense precommits.., final streamed one-hot]`.
-pub(crate) fn deserialize_checked_grouped_backend_payload<Cfg>(
+pub(crate) fn deserialize_checked_grouped_backend_payload<'a, Cfg>(
     schedules: &TrustedScheduleCatalog<Cfg>,
     precommitted: &[&AkitaCommitment],
     main: &AkitaCommitment,
-    proof: &AkitaBatchProof,
-) -> Result<
-    (
-        OpeningScheduleSelection,
-        Vec<AkitaBackendCommitment>,
-        AkitaBackendCommitment,
-        AkitaBackendProof,
-    ),
-    OpeningsError,
->
+    proof: &'a AkitaBatchProof,
+) -> Result<CheckedGroupedPayload<'a>, OpeningsError>
 where
     Cfg: CommitmentConfig<Field = AkitaField, ExtField = AkitaField>,
 {
@@ -100,36 +94,12 @@ where
         &main.backend_coeff_len,
     )?;
     let main_backend = AkitaBackendCommitment::new(profiles.final_group, main_payload);
-    let backend_proof = deserialize_checked_proof::<Cfg>(resolved, &layout, proof)?;
-
     Ok((
         resolved.selection(),
         precommitted_backend,
         main_backend,
-        backend_proof,
+        &proof.backend_proof,
     ))
-}
-
-fn deserialize_checked_proof<Cfg>(
-    resolved: &ResolvedScheduleRow,
-    layout: &OpeningClaimsLayout,
-    proof: &AkitaBatchProof,
-) -> Result<AkitaBackendProof, OpeningsError>
-where
-    Cfg: CommitmentConfig<Field = AkitaField, ExtField = AkitaField>,
-{
-    let proof_shape = derive_proof_shape::<Cfg>(resolved.schedule(), layout)?;
-    proof_shape
-        .validate_decode_budget(
-            proof.backend_proof.len(),
-            field_elem_bytes(),
-            field_elem_bytes(),
-        )
-        .map_err(|err| {
-            invalid_batch(format!("Akita proof shape exceeds its byte budget: {err}"))
-        })?;
-    let backend_proof = deserialize_akita::<AkitaBackendProof>(&proof.backend_proof, &proof_shape)?;
-    Ok(backend_proof)
 }
 
 fn resolve_schedule_row<'a, Cfg>(
@@ -189,19 +159,6 @@ fn expected_commitment_coeff_len_for_profile(
 fn field_elem_bytes() -> usize {
     use akita_pcs::AkitaSerialize;
     AkitaField::zero().compressed_size()
-}
-
-fn derive_proof_shape<Cfg>(
-    schedule: &FoldSchedule,
-    layout: &OpeningClaimsLayout,
-) -> Result<AkitaBackendProofShape, OpeningsError>
-where
-    Cfg: CommitmentConfig<Field = AkitaField, ExtField = AkitaField>,
-{
-    let grinding_plan = derive_transcript_grinding_plan::<Cfg>(schedule, layout)
-        .map_err(|err| invalid_batch(format!("Akita grinding plan is invalid: {err}")))?;
-    canonical_proof_shape(schedule, layout, Cfg::EXT_DEGREE, &grinding_plan)
-        .map_err(|err| invalid_batch(format!("Akita schedule proof shape is invalid: {err}")))
 }
 
 #[cfg(test)]

@@ -8,7 +8,7 @@
 //! see [`crate::prover::OptimizedChallenge`].
 //!
 //! This module keeps only `BytesMsg`, the length-prefixed byte string
-//! framing that spongefish 0.6 does not provide.
+//! framing needed by Jolt's transcript messages.
 
 use spongefish::{Encoding, NargDeserialize, VerificationError, VerificationResult};
 
