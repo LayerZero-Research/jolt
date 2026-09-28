@@ -295,12 +295,20 @@ pub fn commit_with_capacity(
     })
     .map_err(fail(Stage::Commit))?;
     let (reference_commitment, _) = stats::time("commit_reference", || {
-        AkitaScheme::commit_one_hot_group_owned_with_precommitted(
-            &prover_setup,
-            request.layout_digest,
-            vec![materialized.clone()],
-            &hints,
-        )
+        if hints.is_empty() {
+            AkitaScheme::commit_one_hot_group_owned(
+                &prover_setup,
+                request.layout_digest,
+                vec![materialized.clone()],
+            )
+        } else {
+            AkitaScheme::commit_one_hot_group_owned_with_precommitted(
+                &prover_setup,
+                request.layout_digest,
+                vec![materialized.clone()],
+                &hints,
+            )
+        }
     })
     .map_err(fail(Stage::Commit))?;
     assert_eq!(
