@@ -9,6 +9,8 @@ guest = []
 
 [dependencies]
 jolt = { package = "jolt-sdk", path = "../../../jolt-sdk" }
+# `alloc` lets the no_std guest deserialize `Vec<u8>` arguments.
+serde = { version = "1", default-features = false, features = ["alloc"] }
 
 [lib]
 test = false

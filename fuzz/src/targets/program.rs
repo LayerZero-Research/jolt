@@ -124,13 +124,18 @@ fn max_log_t() -> usize {
         .unwrap_or(18)
 }
 
-pub fn run(data: &[u8]) {
-    env::init();
+pub fn decode(data: &[u8]) -> (&'static Guest, Options, Args) {
     let mut reader = Reader::new(data);
     let set = guest_set();
     let guest = set[usize::from(reader.u8()) % set.len()];
     let options = Options::decode(&mut reader);
     let args = (guest.args)(&mut reader);
+    (guest, options, args)
+}
+
+pub fn run(data: &[u8]) {
+    env::init();
+    let (guest, options, args) = decode(data);
     env::on_large_stack(|| check(guest, &args, &options));
 }
 

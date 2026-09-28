@@ -9,6 +9,12 @@
 //!                                          sweep (phases: geometry, advice,
 //!                                          program, all)
 //! jolt-fuzz-dev build-guests OUT_DIR      build every guest ELF (jolt CLI)
+//! jolt-fuzz-dev bundles OUT_DIR           honest verifier bundles (needs guests)
+//! jolt-fuzz-dev planning-case LOG_T K LOG_BYTECODE LOG_RAM_K U T [CHUNKS IMAGE]
+//!                                          plan, commit, prove, and verify one
+//!                                          shape with no size cap (U/T: log2
+//!                                          advice bytes or `-`; K: 16, 256, or
+//!                                          `p` for production)
 //! jolt-fuzz-dev grid-sweep [MIN] [MAX] [FAMILY]
 //!                                          every catalog row with MIN..=MAX
 //!                                          variables (k16, k256, dense)
@@ -93,6 +99,64 @@ fn seeds(out: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn planning_case(args: &[String]) -> Result<(), String> {
+    use jolt_akita_fuzz::opening::{Fill, Witness};
+    use jolt_akita_fuzz::shape::{Chunking, CommittedProgram, Shape};
+    let number = |index: usize| -> Result<usize, String> {
+        args.get(index)
+            .ok_or("planning-case LOG_T K LOG_BYTECODE LOG_RAM_K U T [CHUNKS IMAGE]")?
+            .parse()
+            .map_err(|e| format!("argument {index}: {e}"))
+    };
+    let advice = |index: usize| -> Result<Option<u64>, String> {
+        match args.get(index).map(String::as_str) {
+            None | Some("-") => Ok(None),
+            Some(value) => value
+                .parse::<u32>()
+                .map(|log| Some(1u64 << log))
+                .map_err(|e| e.to_string()),
+        }
+    };
+    let chunking = match args.get(1).map(String::as_str) {
+        Some("16") => Chunking::Forced { log_k_chunk: 4 },
+        Some("256") => Chunking::Forced { log_k_chunk: 8 },
+        _ => Chunking::Production,
+    };
+    let shape = Shape {
+        log_t: number(0)?,
+        chunking,
+        log_bytecode_len: number(2)?,
+        log_ram_k: number(3)?,
+        untrusted_advice_bytes: advice(4)?,
+        trusted_advice_bytes: advice(5)?,
+        program: match (args.get(6), args.get(7)) {
+            (Some(chunks), Some(image)) => Some(CommittedProgram {
+                log_chunks: chunks.parse().map_err(|e| format!("CHUNKS: {e}"))?,
+                image_words: image.parse().map_err(|e| format!("IMAGE: {e}"))?,
+            }),
+            _ => None,
+        },
+    };
+    std::env::set_var(
+        jolt_akita_fuzz::env::MAX_CASE_COEFFS_ENV,
+        u128::MAX.to_string(),
+    );
+    jolt_akita_fuzz::env::init();
+    eprintln!("{shape} (in contract: {})", shape.in_contract());
+    let started = Instant::now();
+    let witness = Witness {
+        seed: 1,
+        dense: Fill::Random,
+        trace: Fill::Random,
+        columns: 63,
+        zero_committed_columns: 1,
+        point: Fill::Random,
+    };
+    targets::planning::check(&shape, &witness);
+    eprintln!("ok in {:.1}s", started.elapsed().as_secs_f64());
+    Ok(())
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let arg = |index: usize| args.get(index).map(String::as_str);
@@ -124,6 +188,11 @@ fn main() {
             Some(dir) => jolt_akita_fuzz::programs::build_all(Path::new(dir)),
             None => Err("build-guests OUT_DIR".to_string()),
         },
+        Some("bundles") => match arg(1) {
+            Some(dir) => jolt_akita_fuzz::targets::verifier::write_bundles(Path::new(dir)),
+            None => Err("bundles OUT_DIR".to_string()),
+        },
+        Some("planning-case") => planning_case(&args[1..]),
         Some("grid-sweep") => grid_sweep::run(
             arg(1).and_then(|v| v.parse().ok()).unwrap_or(0),
             arg(2).and_then(|v| v.parse().ok()).unwrap_or(22),
@@ -131,7 +200,7 @@ fn main() {
         ),
         Some("plan-sweep") => sweep::run(arg(1).unwrap_or("all"), arg(2).map(PathBuf::from)),
         _ => Err(
-            "usage: jolt-fuzz-dev list|seeds|smoke|replay|build-guests|plan-sweep|grid-sweep ..."
+            "usage: jolt-fuzz-dev list|seeds|smoke|replay|build-guests|planning-case|bundles|plan-sweep|grid-sweep ..."
                 .to_string(),
         ),
     };

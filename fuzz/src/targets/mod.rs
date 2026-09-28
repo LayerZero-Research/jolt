@@ -3,6 +3,7 @@
 pub mod grid;
 pub mod planning;
 pub mod program;
+pub mod verifier;
 
 /// A target's engine-independent entry point.
 pub type Target = fn(&[u8]);
@@ -20,6 +21,7 @@ pub fn seeds(name: &str) -> Vec<(String, Vec<u8>)> {
         "planning" => planning::seeds(),
         "grid" => grid::seeds(),
         "program" => program::seeds(),
+        "verifier" => verifier::seeds(),
         _ => Vec::new(),
     }
 }
