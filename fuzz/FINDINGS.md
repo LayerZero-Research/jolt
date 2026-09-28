@@ -62,10 +62,11 @@ assignments (with identical groups collapsed into multisets,
 grows combinatorially with the group count. The same code is on Akita `main`
 (`candidates.rs:139`).
 
-Status: open. The fix is either Jolt-side (bound the chunk count, or the
-chunk-plus-advice group count, to what planning admits, and document it) or
-Akita-side (a planner search that does not enumerate the product). Awaiting a
-decision.
+Status: open. Planned fix: Akita-side, a precommit-opening search that does
+not enumerate the product (the cap exists only to bound that enumeration), then
+re-run `plan-sweep program` to confirm every in-contract chunk count plans. To
+be written once tests can run again; a Jolt-side cap would turn documented
+supported programs into rejected ones.
 
 ## J-2 (High, liveness): advice larger than the trace group fails at proving
 
@@ -94,8 +95,8 @@ such statements outright (`native_batching.rs`, "arity exceeds grouped setup
 capacity"). The setup capacity and the exact final dimension are the same
 field (`AkitaSetupParams::max_num_vars`).
 
-Status: fix written, not yet tested: branch `fix/akita-grouped-setup-capacity`
-(off `main`). The one-hot backend setup capacity becomes the final arity
+Status: draft PR https://github.com/LayerZero-Research/jolt/pull/49 (branch
+`fix/akita-grouped-setup-capacity`, off `main`), not yet tested. The one-hot backend setup capacity becomes the final arity
 raised to the largest precommitted group in the setup's exact catalog
 (`AkitaVerifierSetup::one_hot_backend_num_vars`), used by setup, verifier key
 re-derivation after transport, and the grouped-statement arity check. Its test
@@ -119,8 +120,10 @@ advice arities. The README documents that grouped preprocessing "fails closed"
 when the frozen skeleton cannot admit the profiles, but not where; the
 documented advice limit is 34.
 
-Status: open (documented failure mode, undocumented boundary). Awaiting a
-decision.
+Status: open (documented failure mode, undocumented boundary). Planned fix:
+Akita-side schedule adaptation for large precommitted groups on offloaded rows,
+checked by re-running `plan-sweep advice`; until then the boundary above is the
+effective limit.
 
 ## J-4 (Low, liveness): the packed trace's selector capacity bounds bytecode and RAM together
 
