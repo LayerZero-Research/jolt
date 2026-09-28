@@ -11,6 +11,7 @@ cargo-fuzz = true
 # `scripts/fuzz.py` (which discovers `crates/*/fuzz` and `*/fuzz` only).
 [workspace]
 members = [".", "runner", "devtool"]
+exclude = ["guests"]
 
 [lib]
 path = "src/lib.rs"

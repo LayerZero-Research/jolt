@@ -17,6 +17,7 @@ pub mod gen;
 pub mod input;
 pub mod liveness;
 pub mod opening;
+pub mod programs;
 pub mod shape;
 pub mod stats;
 pub mod targets;

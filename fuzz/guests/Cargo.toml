@@ -1,0 +1,19 @@
+# Guests built for the campaign. A separate workspace so `jolt build -p`
+# resolves them without adding members to the root workspace; run it from
+# this directory (`jolt-fuzz-dev build-guests` does).
+[workspace]
+members = ["interp"]
+resolver = "2"
+
+[profile.release]
+debug = 1
+lto = "fat"
+
+[patch.crates-io]
+ark-bn254 = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+ark-ff = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+ark-ec = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+ark-serialize = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+
+[patch."https://github.com/a16z/jolt"]
+jolt-field = { path = "../../crates/jolt-field" }

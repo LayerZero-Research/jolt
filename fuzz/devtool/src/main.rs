@@ -8,6 +8,7 @@
 //! jolt-fuzz-dev plan-sweep [PHASE] [CSV]   exhaustive preprocessing-planning
 //!                                          sweep (phases: geometry, advice,
 //!                                          program, all)
+//! jolt-fuzz-dev build-guests OUT_DIR      build every guest ELF (jolt CLI)
 //! jolt-fuzz-dev grid-sweep [MIN] [MAX] [FAMILY]
 //!                                          every catalog row with MIN..=MAX
 //!                                          variables (k16, k256, dense)
@@ -119,6 +120,10 @@ fn main() {
             ),
             None => Err("replay TARGET FILE...".to_string()),
         },
+        Some("build-guests") => match arg(1) {
+            Some(dir) => jolt_akita_fuzz::programs::build_all(Path::new(dir)),
+            None => Err("build-guests OUT_DIR".to_string()),
+        },
         Some("grid-sweep") => grid_sweep::run(
             arg(1).and_then(|v| v.parse().ok()).unwrap_or(0),
             arg(2).and_then(|v| v.parse().ok()).unwrap_or(22),
@@ -126,7 +131,8 @@ fn main() {
         ),
         Some("plan-sweep") => sweep::run(arg(1).unwrap_or("all"), arg(2).map(PathBuf::from)),
         _ => Err(
-            "usage: jolt-fuzz-dev list|seeds|smoke|replay|plan-sweep|grid-sweep ...".to_string(),
+            "usage: jolt-fuzz-dev list|seeds|smoke|replay|build-guests|plan-sweep|grid-sweep ..."
+                .to_string(),
         ),
     };
     if let Err(message) = result {

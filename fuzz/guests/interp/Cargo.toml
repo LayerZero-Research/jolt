@@ -1,0 +1,22 @@
+[package]
+name = "jolt-fuzz-interp-guest"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+guest = []
+
+[dependencies]
+jolt = { package = "jolt-sdk", path = "../../../jolt-sdk" }
+
+[lib]
+test = false
+doctest = false
+bench = false
+
+[[bin]]
+name = "jolt-fuzz-interp-guest"
+path = "src/main.rs"
+test = false
+bench = false
