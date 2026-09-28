@@ -2,8 +2,9 @@
 //! the `grid` target in release mode, including the setup-offloaded rows too
 //! large for an instrumented iteration.
 //!
-//! Each row runs with an all-zero, an all-maximal, and a random witness at the
-//! largest selector capacity, printing its fold-grind peaks. A failing row is
+//! Each row runs with zero entries committed at row zero, the identically zero
+//! polynomial, an all-maximal, and a random witness at the largest selector
+//! capacity, printing its fold-grind peaks. A failing row is
 //! reported and the sweep continues; the exit status is nonzero if any failed.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -30,25 +31,26 @@ pub fn run(min_log2: usize, max_log2: usize, family: Option<&str>) -> Result<(),
         let _ = liveness::take_peak();
         let started = Instant::now();
         let mut failures = Vec::new();
-        for (index, fill) in [Fill::Zero, Fill::Max, Fill::Random]
-            .into_iter()
-            .enumerate()
-        {
+        // (label, fill, zero-row mask): zero rows committed, the identically
+        // zero polynomial, all-maximal, and random.
+        let cases = [
+            ("zero-rows", Fill::Zero, u64::MAX),
+            ("zero-poly", Fill::Zero, 0),
+            ("max", Fill::Max, 1),
+            ("random", Fill::Random, 1),
+        ];
+        for (index, (label, fill, mask)) in cases.into_iter().enumerate() {
             let witness = Witness {
                 seed: 0x5eed + index as u64,
                 dense: fill,
                 trace: fill,
                 columns: 63,
-                zero_committed_columns: if matches!(fill, Fill::Zero) {
-                    u64::MAX
-                } else {
-                    1
-                },
+                zero_committed_columns: mask,
                 point: fill,
             };
             let digest = [row.num_vars as u8; 32];
             if catch_unwind(AssertUnwindSafe(|| grid::check(*row, 6, digest, &witness))).is_err() {
-                failures.push(format!("{fill:?}"));
+                failures.push(label);
             }
         }
         let peak = liveness::take_peak();
