@@ -1,0 +1,74 @@
+[package]
+name = "jolt-akita-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# A standalone workspace: the campaign is driven by its own runner, not by
+# `scripts/fuzz.py` (which discovers `crates/*/fuzz` and `*/fuzz` only).
+[workspace]
+members = [".", "runner", "devtool"]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Pinned exactly as the root workspace pins them (Cargo.toml `akita-*`), so the
+# fuzzed Akita is the one Jolt ships. `response-model-diagnostics` adds the
+# fold-response reports the liveness oracle reads; it changes no proof bytes.
+akita-config = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "252abb895046cc1d5b9955a26a2ad2318148ac26", default-features = false }
+akita-pcs = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "252abb895046cc1d5b9955a26a2ad2318148ac26", default-features = false, features = ["parallel", "transcript-blake2b", "response-model-diagnostics"] }
+akita-prover = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "252abb895046cc1d5b9955a26a2ad2318148ac26", default-features = false, features = ["parallel", "response-model-diagnostics"] }
+akita-schedules = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "252abb895046cc1d5b9955a26a2ad2318148ac26", default-features = false }
+akita-types = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "252abb895046cc1d5b9955a26a2ad2318148ac26", default-features = false }
+bincode = { version = "2", features = ["serde"] }
+common = { path = "../common", default-features = false, features = ["std"] }
+jolt-akita = { path = "../crates/jolt-akita" }
+jolt-claims = { path = "../crates/jolt-claims", features = ["akita"] }
+jolt-field = { path = "../crates/jolt-field", default-features = false, features = ["solinas"] }
+jolt-host = { path = "../crates/jolt-host" }
+jolt-inlines-keccak256 = { path = "../jolt-inlines/keccak256", features = ["host"] }
+jolt-inlines-sha2 = { path = "../jolt-inlines/sha2", features = ["host"] }
+jolt-openings = { path = "../crates/jolt-openings" }
+jolt-poly = { path = "../crates/jolt-poly" }
+jolt-program = { path = "../crates/jolt-program" }
+jolt-prover = { path = "../crates/jolt-prover", features = ["akita", "prover-fixtures"] }
+jolt-transcript = { path = "../crates/jolt-transcript", default-features = false, features = ["transcript-blake2b"] }
+jolt-verifier = { path = "../crates/jolt-verifier", features = ["akita"] }
+jolt-witness = { path = "../crates/jolt-witness" }
+libfuzzer-sys = "0.4.12"
+postcard = { version = "1.0.8", features = ["use-std"] }
+rayon = "1.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracer = { path = "../tracer" }
+tracing = "0.1"
+
+# cargo-fuzz builds with `--release`; keep assertions, overflow checks, and
+# line tables so findings carry actionable diagnostics. Fat LTO (the root
+# workspace's release setting) is off: it multiplies the ASan build time.
+[profile.release]
+debug = 1
+debug-assertions = true
+overflow-checks = true
+lto = "off"
+
+[patch.crates-io]
+ark-bn254 = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+ark-ff = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+ark-ec = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+ark-serialize = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+
+# Same shared field identity as the root workspace.
+[patch."https://github.com/a16z/jolt"]
+jolt-field = { path = "../crates/jolt-field" }
+
+[[bin]]
+name = "fuzz_all"
+path = "fuzz_targets/fuzz_all.rs"
+test = false
+doc = false
+bench = false

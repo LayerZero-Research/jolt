@@ -1,0 +1,40 @@
+# Canonical registry of campaign targets.
+#
+# Every `[target.<name>]` must be an entry of `jolt_akita_fuzz::targets::ALL`;
+# `jolt-fuzz prepare` rejects a mismatch. The runner schedules *lanes* (a
+# target, or one of its variants) onto CPU slots in proportion to `weight`.
+#
+# Limits are per libFuzzer process:
+#   timeout_s        libFuzzer -timeout: one input slower than this is a finding
+#   rss_limit_mb     libFuzzer -rss_limit_mb (sampled about once per second)
+#   malloc_limit_mb  libFuzzer -malloc_limit_mb (checked on every allocation)
+#   max_len          libFuzzer -max_len, sized to the target's input encoding
+#   threads          internal Rayon threads (JOLT_FUZZ_THREADS); the lane
+#                    reserves this many CPU slots
+#   kind             primitive | end_to_end | boundary (reporting only)
+
+[defaults]
+timeout_s = 600
+rss_limit_mb = 12288
+malloc_limit_mb = 12288
+max_len = 4096
+threads = 2
+weight = 1.0
+value_profile = false
+
+[target.planning]
+kind = "end_to_end"
+description = "Production preprocessing shapes (trace, advice, committed program) -> grouped Akita planning; small shapes also commit/prove/verify"
+weight = 3.0
+max_len = 256
+
+[target.grid]
+kind = "end_to_end"
+description = "Every base catalog row (K16, K256, dense-bounded) through Jolt's Akita setups with honest witnesses and the fold-margin oracle"
+weight = 3.0
+max_len = 256
+variants = [
+  { name = "k16", env = { JOLT_FUZZ_GRID_FAMILY = "k16" } },
+  { name = "k256", env = { JOLT_FUZZ_GRID_FAMILY = "k256" } },
+  { name = "dense", env = { JOLT_FUZZ_GRID_FAMILY = "dense" } },
+]

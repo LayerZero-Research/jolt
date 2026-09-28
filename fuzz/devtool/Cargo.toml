@@ -1,0 +1,16 @@
+[package]
+name = "jolt-fuzz-dev"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Uninstrumented developer tool over the harness library: seed generation,
+# smoke/replay runs without libFuzzer, and exhaustive sweeps. `jolt-fuzz
+# prepare` uses it to generate seeds; it is not part of the distribution.
+[[bin]]
+name = "jolt-fuzz-dev"
+path = "src/main.rs"
+
+[dependencies]
+jolt-akita-fuzz = { path = ".." }
+rayon = "1.12"
