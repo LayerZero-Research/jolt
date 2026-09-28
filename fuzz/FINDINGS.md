@@ -101,8 +101,8 @@ raised to the largest precommitted group in the setup's exact catalog
 (`AkitaVerifierSetup::one_hot_backend_num_vars`), used by setup, verifier key
 re-derivation after transport, and the grouped-statement arity check. Its test
 (`crates/jolt-akita/tests/grouped_capacity.rs`: final arity 16, trusted advice
-arity 22, in process and serde-transported) must run on the campaign host
-before a PR opens.
+arity 22, in process and serde-transported) must pass on the campaign host
+before the PR leaves draft.
 
 ## J-3 (Medium, liveness): large advice fails to plan on setup-offloaded trace rows
 
