@@ -107,7 +107,7 @@ impl Fill {
         }
     }
 
-    fn word(self, rng: &mut SplitMix64) -> u64 {
+    pub fn word(self, rng: &mut SplitMix64) -> u64 {
         match self {
             Fill::Zero => 0,
             Fill::Max => u64::MAX,
@@ -124,7 +124,7 @@ impl Fill {
     }
 
     /// Selected one-hot row in `0..k`; `Max` selects the last row.
-    fn selected(self, rng: &mut SplitMix64, k: usize) -> u8 {
+    pub fn selected(self, rng: &mut SplitMix64, k: usize) -> u8 {
         match self {
             Fill::Zero => 0,
             Fill::Max => (k - 1) as u8,

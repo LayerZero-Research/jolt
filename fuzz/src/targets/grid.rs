@@ -238,10 +238,13 @@ fn group_row(
             (0..row.num_polys)
                 .map(|_| {
                     let rows = 1usize << (row.num_vars - k.trailing_zeros() as usize);
+                    // Byte zero is "no entry" unless the zero-row mask (bit 0)
+                    // commits it, as in the packed trace.
+                    let keep_zero = witness.zero_committed_columns & 1 == 1;
                     let indices = (0..rows)
                         .map(|_| {
-                            let value = rng.next_u64();
-                            (value % 5 != 0).then_some(((value >> 8) % k as u64) as u8)
+                            let selected = witness.trace.selected(&mut rng, k);
+                            (selected != 0 || keep_zero).then_some(selected)
                         })
                         .collect();
                     OneHotPolynomial::new(k, indices)
@@ -253,7 +256,7 @@ fn group_row(
                 .map(|_| {
                     Polynomial::new(
                         (0..1usize << row.num_vars)
-                            .map(|_| AkitaField::from_u64(rng.next_u64()))
+                            .map(|_| AkitaField::from_u64(witness.dense.word(&mut rng)))
                             .collect(),
                     )
                 })
