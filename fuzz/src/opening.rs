@@ -267,6 +267,12 @@ pub fn commit_with_capacity(
         })?;
     let num_rows = 1usize << log_rows;
     let num_columns = 1 + usize::from(witness.columns) % capacity.min(64);
+    if std::env::var_os("JOLT_FUZZ_OPENING_LOG").is_some() {
+        eprintln!(
+            "opening: final {} K={} capacity {capacity} rows {num_rows} columns {num_columns} precommitted {count}",
+            shape.num_vars, request.one_hot_k
+        );
+    }
     let mut selected = vec![0u8; num_rows * num_columns];
     for byte in &mut selected {
         *byte = witness.trace.selected(&mut rng, request.one_hot_k);

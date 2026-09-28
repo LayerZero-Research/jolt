@@ -163,7 +163,9 @@ pub fn check(row: Row, log_capacity: u8, digest: [u8; 32], witness: &Witness) {
     });
     match result {
         Ok(()) => stats::count("rows_verified"),
-        Err(failure) => panic!("liveness: catalog row {context} failed at {failure}"),
+        Err(failure) => panic!(
+            "liveness: catalog row {context} failed at {failure} (log_capacity byte {log_capacity}, witness {witness:?})"
+        ),
     }
 }
 
