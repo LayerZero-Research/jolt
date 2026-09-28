@@ -39,21 +39,30 @@ fn random_bytes(seed: u64, len: usize) -> Vec<u8> {
     (0..len).map(|_| rng.next_u64() as u8).collect()
 }
 
+/// Run `count` pseudo-random inputs, saving each panicking one to
+/// `smoke-failures/<target>-<index>.bin` and continuing.
 fn smoke(name: &str, count: usize, seed: u64) -> Result<(), String> {
     let run = targets::by_name(name).ok_or_else(|| format!("unknown target {name}"))?;
     let mut rng = SplitMix64::new(seed);
     let started = Instant::now();
+    let mut failures = 0usize;
     for index in 0..count {
         let len = (rng.next_u64() % 4096) as usize;
         let data = random_bytes(rng.next_u64(), len);
         let one = Instant::now();
-        run(&data);
-        if index < 3 || one.elapsed().as_secs_f64() > 5.0 {
+        if std::panic::catch_unwind(|| run(&data)).is_err() {
+            failures += 1;
+            let dir = Path::new("smoke-failures");
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+            let path = dir.join(format!("{name}-{seed}-{index}.bin"));
+            std::fs::write(&path, &data).map_err(|e| e.to_string())?;
+            eprintln!("input {index}: FAILED, saved {}", path.display());
+        } else if index < 3 || one.elapsed().as_secs_f64() > 5.0 {
             eprintln!("input {index}: {:.3}s", one.elapsed().as_secs_f64());
         }
     }
     eprintln!(
-        "{name}: {count} inputs in {:.2}s",
+        "{name}: {count} inputs in {:.2}s, {failures} failed",
         started.elapsed().as_secs_f64()
     );
     Ok(())
