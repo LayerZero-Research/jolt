@@ -1,8 +1,8 @@
 //! `jolt-fuzz`: standalone Jolt + Akita fuzzing campaign runner.
 //!
 //! The executable lives at the root of a prepared distribution
-//! (`jolt-fuzz prepare`), next to `bin/` (instrumented targets),
-//! `seeds/`, `artifacts/schedules/`, and `campaign/targets.toml`.
+//! (`jolt-fuzz prepare`), next to `bin/` (instrumented targets), `seeds/`,
+//! `artifacts/{schedules,guests,bundles}/`, and `campaign/targets.toml`.
 
 mod commands;
 mod findings;

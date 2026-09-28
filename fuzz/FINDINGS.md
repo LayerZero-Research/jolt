@@ -167,6 +167,16 @@ are public `jolt-akita` APIs.
 Status: under triage. Being re-checked against Akita `main`, whose proof
 stream replaced the typed proof layer the pinned revision uses.
 
+## Operational note: endpoint detection on the campaign host (2026-09-28)
+
+CrowdStrike Falcon on the development host killed shell commands that wrote
+small binary fuzz inputs to `/tmp` with `printf "\x.."` and classified them as
+malware staging. The campaign itself was not running. Fuzzing on that host is
+paused until its security team confirms. Inputs are now produced only by
+`jolt-fuzz-dev` into the campaign's own directories; a libFuzzer campaign
+still writes many binary files, so its directories need the security team's
+agreement before `run`.
+
 ## Harness corrections (not product defects)
 
 - The reference prover backend refuses shapes whose dense address-by-cycle
