@@ -132,7 +132,7 @@ impl Fill {
             Fill::Sparse => {
                 let value = rng.next_u64();
                 if value % 8 == 0 {
-                    (value >> 8) as u8 % k as u8
+                    ((value >> 8) % k as u64) as u8
                 } else {
                     0
                 }

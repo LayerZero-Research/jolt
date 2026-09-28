@@ -239,7 +239,7 @@ fn group_row(
                     let indices = (0..rows)
                         .map(|_| {
                             let value = rng.next_u64();
-                            (value % 5 != 0).then_some((value >> 8) as u8 % k as u8)
+                            (value % 5 != 0).then_some(((value >> 8) % k as u64) as u8)
                         })
                         .collect();
                     OneHotPolynomial::new(k, indices)
