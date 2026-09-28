@@ -145,7 +145,14 @@ pub fn run(options: Prepare) -> Result<(), String> {
     if dist.exists() {
         std::fs::remove_dir_all(dist).map_err(|e| format!("clear {}: {e}", dist.display()))?;
     }
-    for sub in ["bin", "campaign", "artifacts/schedules", "seeds"] {
+    for sub in [
+        "bin",
+        "campaign",
+        "artifacts/schedules",
+        "artifacts/guests",
+        "artifacts/bundles",
+        "seeds",
+    ] {
         std::fs::create_dir_all(dist.join(sub)).map_err(|e| e.to_string())?;
     }
     let built = fuzz.join("target").join(&triple).join("release");
@@ -178,6 +185,36 @@ pub fn run(options: Prepare) -> Result<(), String> {
 
     // Seeds use the packaged artifacts so their case selectors match the
     // catalogs the campaign will load.
+    // Guests are built with the `jolt` CLI; bundles are honest proofs of them.
+    let run_dev = |args: &[&std::ffi::OsStr], what: &str| -> Result<(), String> {
+        let status = Command::new(&dev)
+            .args(args)
+            .env("JOLT_FUZZ_ARTIFACTS", dist.join("artifacts/schedules"))
+            .env("JOLT_FUZZ_GUESTS", dist.join("artifacts/guests"))
+            .status()
+            .map_err(|e| format!("jolt-fuzz-dev {what}: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("jolt-fuzz-dev {what} failed"))
+        }
+    };
+    println!("building guests");
+    run_dev(
+        &[
+            "build-guests".as_ref(),
+            dist.join("artifacts/guests").as_os_str(),
+        ],
+        "build-guests",
+    )?;
+    println!("proving honest verifier bundles");
+    run_dev(
+        &[
+            "bundles".as_ref(),
+            dist.join("artifacts/bundles").as_os_str(),
+        ],
+        "bundles",
+    )?;
     println!("generating seeds");
     let seeded = Command::new(&dev)
         .arg("seeds")

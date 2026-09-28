@@ -189,13 +189,6 @@ fn u32_small_args(reader: &mut Reader<'_>) -> Args {
     }
 }
 
-fn i32_small_args(reader: &mut Reader<'_>) -> Args {
-    Args {
-        inputs: encode(&(i32::from(reader.u8()) % 32)),
-        ..Args::default()
-    }
-}
-
 fn no_args(_: &mut Reader<'_>) -> Args {
     Args::default()
 }
@@ -314,18 +307,6 @@ pub const GUESTS: &[Guest] = &[
     ),
     example("alloc", "alloc-guest", None, 32 * KIB, u32_small_args),
     example("random", "random-guest", None, 64 * KIB, two_u32_args),
-    Guest {
-        std: true,
-        stack_size: MIB,
-        heap_size: 32 * MIB,
-        ..example(
-            "stdlib",
-            "stdlib-guest",
-            Some("string_concat"),
-            0,
-            i32_small_args,
-        )
-    },
 ];
 
 pub fn by_key(key: &str) -> Option<&'static Guest> {

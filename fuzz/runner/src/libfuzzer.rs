@@ -78,6 +78,17 @@ pub fn environment(
         "JOLT_FUZZ_ARTIFACTS".into(),
         artifacts_dir.display().to_string(),
     );
+    // Guest ELFs and honest verifier bundles ship next to the schedules.
+    if let Some(root) = artifacts_dir.parent() {
+        env.insert(
+            "JOLT_FUZZ_GUESTS".into(),
+            root.join("guests").display().to_string(),
+        );
+        env.insert(
+            "JOLT_FUZZ_BUNDLES".into(),
+            root.join("bundles").display().to_string(),
+        );
+    }
     env.insert(
         "JOLT_FUZZ_STATS_FILE".into(),
         stats_file.display().to_string(),

@@ -38,3 +38,27 @@ variants = [
   { name = "k256", env = { JOLT_FUZZ_GRID_FAMILY = "k256" } },
   { name = "dense", env = { JOLT_FUZZ_GRID_FAMILY = "dense" } },
 ]
+
+[target.program]
+kind = "end_to_end"
+description = "Guest programs (e2e examples and the fuzzer-programmable interpreter) through Jolt's Akita preprocess/prove/verify under varied prover options"
+weight = 6.0
+max_len = 4096
+threads = 4
+rss_limit_mb = 20480
+malloc_limit_mb = 20480
+timeout_s = 1200
+variants = [
+  { name = "interp", env = { JOLT_FUZZ_GUEST_SET = "interp" } },
+  { name = "examples", env = { JOLT_FUZZ_GUEST_SET = "examples" } },
+]
+
+[target.verifier]
+kind = "boundary"
+description = "Jolt verifier on edited proof, preprocessing, public I/O, and commitment bytes of honest bundles: no panic; only honest bundles verify"
+weight = 3.0
+max_len = 512
+threads = 1
+timeout_s = 300
+rss_limit_mb = 8192
+malloc_limit_mb = 4096

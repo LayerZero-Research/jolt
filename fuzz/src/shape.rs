@@ -16,9 +16,10 @@ use std::fmt;
 use common::constants::ONEHOT_CHUNK_THRESHOLD_LOG_T;
 use jolt_akita::schedule_registry::provision_precommitted_for_k;
 use jolt_akita::{AkitaScheduleArtifacts, PrecommittedScheduleParams};
+use jolt_claims::protocols::jolt::geometry::claim_reductions::bytecode::committed_lane_vars;
 use jolt_claims::protocols::jolt::lattice::{
     advice_packing_plan, committed_program_packing_plan, OneHotTraceSetupShape,
-    PrefixPackedObjectPlan, ADVICE_MAX_PHYSICAL_VARS,
+    PrefixPackedObjectPlan, ADVICE_MAX_PHYSICAL_VARS, DIRECT_PROGRAM_MAX_PHYSICAL_VARS,
 };
 use jolt_claims::protocols::jolt::{
     JoltAdviceKind, JoltOneHotConfig, JoltReadWriteConfig, TracePolynomialOrder,
@@ -220,8 +221,8 @@ impl Shape {
     /// - advice capacities a power of two (`MemoryLayout::new` asserts it)
     ///   whose physical arity is at most 34 (`ADVICE_MAX_PHYSICAL_VARS`);
     /// - a committed program with a power-of-two chunk count at most 256
-    ///   dividing the bytecode length, and arities at most 34
-    ///   (`precommitted_packing_plan`).
+    ///   dividing the bytecode length, and chunk and image arities at most 34
+    ///   (`DIRECT_PROGRAM_MAX_PHYSICAL_VARS`, `precommitted_packing_plan`).
     pub fn in_contract(&self) -> bool {
         let max_log_t = match self.log_k_chunk() {
             4 => MAX_LOG_T_K16,
@@ -236,6 +237,8 @@ impl Shape {
         let program_ok = self.program.is_none_or(|program| {
             program.log_chunks <= MAX_LOG_CHUNKS
                 && program.log_chunks <= self.log_bytecode_len
+                && committed_lane_vars() + self.log_bytecode_len - program.log_chunks
+                    <= DIRECT_PROGRAM_MAX_PHYSICAL_VARS
                 && program.image_words >= 1
                 && program
                     .image_words

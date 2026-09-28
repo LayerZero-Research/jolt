@@ -388,6 +388,17 @@ pub fn validate_dist(dist: &Path, lanes: &[Lane]) -> Vec<String> {
             problems.push(format!("missing seeds/{target}"));
         }
     }
+    for (dir, what) in [
+        ("artifacts/guests", "guest ELFs"),
+        ("artifacts/bundles", "verifier bundles"),
+    ] {
+        let present = std::fs::read_dir(dist.join(dir))
+            .map(|entries| entries.flatten().next().is_some())
+            .unwrap_or(false);
+        if !present {
+            problems.push(format!("missing {dir} ({what})"));
+        }
+    }
     let schedules = std::fs::read_dir(dist.join("artifacts/schedules"))
         .map(|e| e.flatten().count())
         .unwrap_or(0);
