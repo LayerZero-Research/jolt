@@ -288,7 +288,16 @@ pub fn prove(guest: &Guest, args: &Args, options: &Options) -> Result<Option<Pro
     );
     let backend = match options.backend {
         Backend::Optimized => JoltAkitaBackend::optimized(),
-        Backend::Reference => JoltAkitaBackend::reference(),
+        // The reference tier materializes a dense address-by-cycle grid and
+        // refuses shapes above 32 GiB ("a test oracle sized for small
+        // traces"); larger shapes use the optimized tier.
+        Backend::Reference if config.trace_length.ilog2() + config.ram_K.ilog2() <= 30 => {
+            JoltAkitaBackend::reference()
+        }
+        Backend::Reference => {
+            stats::count("reference_backend_too_large");
+            JoltAkitaBackend::optimized()
+        }
     };
     let context = format!("{} {options:?}", guest.key);
     let proof = stats::time("prove", || {

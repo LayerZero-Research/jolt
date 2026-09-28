@@ -13,6 +13,7 @@ pub const ALL: &[(&str, Target)] = &[
     ("planning", planning::run),
     ("grid", grid::run),
     ("program", program::run),
+    ("verifier", verifier::run),
 ];
 
 /// Structured seeds a target contributes beyond the generic ones.
