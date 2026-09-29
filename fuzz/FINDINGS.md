@@ -20,8 +20,9 @@ trigger a finding:
 | – | J-5 | Medium | Not reachable from the Jolt prover; public `jolt-akita` APIs only, pinned Akita only | Akita bump |
 | – | J-6 | Medium | Crafted verifier-preprocessing bytes (the schedule catalog they carry); not proof bytes | Akita #91 (Akita F-5); needs a pin at or after `cc1042c2` |
 
-None of them lets a proof of a false statement verify; each fails with a clean
-error.
+None of them lets a proof of a false statement verify. J-1 to J-5 fail with a
+clean error; J-6 is a panic (a crash of the verifier process), reachable only
+from crafted verifier preprocessing.
 
 "In contract" means every documented Jolt limit admits the input:
 `log_T` in `12..=24` (K=16) or `12..=30` (K=256), advice capacities a power of
