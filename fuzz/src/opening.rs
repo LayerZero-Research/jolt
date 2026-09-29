@@ -114,7 +114,7 @@ impl Fill {
             Fill::Random => rng.next_u64(),
             Fill::Sparse => {
                 let value = rng.next_u64();
-                if value % 16 == 0 {
+                if value.is_multiple_of(16) {
                     value
                 } else {
                     0
@@ -131,7 +131,7 @@ impl Fill {
             Fill::Random => (rng.next_u64() % k as u64) as u8,
             Fill::Sparse => {
                 let value = rng.next_u64();
-                if value % 8 == 0 {
+                if value.is_multiple_of(8) {
                     ((value >> 8) % k as u64) as u8
                 } else {
                     0
@@ -282,11 +282,17 @@ pub fn commit_with_capacity(
     } else {
         (1u64 << num_columns) - 1
     };
+    let mut zero_committed_columns = witness.zero_committed_columns & mask;
+    if zero_committed_columns == 0 && selected.iter().all(|&byte| byte == 0) {
+        // An empty trace is the zero polynomial (FINDINGS J-5).
+        zero_committed_columns = 1;
+        stats::count(crate::targets::grid::KNOWN_ZERO_POLYNOMIAL);
+    }
     let rows = Arc::new(TraceRows {
         num_rows,
         num_columns,
         selected,
-        zero_committed_columns: witness.zero_committed_columns & mask,
+        zero_committed_columns,
     });
     let materialized = rows.materialize(request.one_hot_k, capacity);
     let hints: Vec<&AkitaProverHint> = precommitted.iter().map(|(_, hint)| hint).collect();

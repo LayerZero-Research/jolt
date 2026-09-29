@@ -163,7 +163,7 @@ fn advice_consumer_args(reader: &mut Reader<'_>) -> Args {
     // The guest asserts `trusted + untrusted == public_sum`; a mismatch is a
     // guest panic, which is still a statement Jolt must prove.
     let (trusted, untrusted) = (reader.u64() >> 2, reader.u64() >> 2);
-    let sum = if reader.u8() % 8 == 0 {
+    let sum = if reader.u8().is_multiple_of(8) {
         reader.u64()
     } else {
         trusted + untrusted

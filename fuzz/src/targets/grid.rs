@@ -35,6 +35,12 @@ use crate::{artifacts, env, liveness, stats, transport};
 
 pub const FAMILY_ENV: &str = "JOLT_FUZZ_GRID_FAMILY";
 
+/// Counter for identically zero committed polynomials the harness replaces
+/// with one nonzero entry: openings of the zero polynomial fail verification
+/// on the pinned Akita revision (FINDINGS J-5, fixed upstream by the proof
+/// stream the Akita bump brings), so they are excluded until that bump.
+pub const KNOWN_ZERO_POLYNOMIAL: &str = "known_zero_polynomial_adjusted";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Family {
     OneHot(usize),
@@ -241,12 +247,16 @@ fn group_row(
                     // Byte zero is "no entry" unless the zero-row mask (bit 0)
                     // commits it, as in the packed trace.
                     let keep_zero = witness.zero_committed_columns & 1 == 1;
-                    let indices = (0..rows)
+                    let mut indices: Vec<Option<u8>> = (0..rows)
                         .map(|_| {
                             let selected = witness.trace.selected(&mut rng, k);
                             (selected != 0 || keep_zero).then_some(selected)
                         })
                         .collect();
+                    if indices.iter().all(Option::is_none) {
+                        indices[0] = Some(0);
+                        stats::count(KNOWN_ZERO_POLYNOMIAL);
+                    }
                     OneHotPolynomial::new(k, indices)
                 })
                 .collect(),
@@ -254,11 +264,17 @@ fn group_row(
         Family::Dense => Group::Dense(
             (0..row.num_polys)
                 .map(|_| {
-                    Polynomial::new(
-                        (0..1usize << row.num_vars)
-                            .map(|_| AkitaField::from_u64(witness.dense.word(&mut rng)))
-                            .collect(),
-                    )
+                    let mut evaluations: Vec<AkitaField> = (0..1usize << row.num_vars)
+                        .map(|_| AkitaField::from_u64(witness.dense.word(&mut rng)))
+                        .collect();
+                    if evaluations
+                        .iter()
+                        .all(|value| *value == AkitaField::from_u64(0))
+                    {
+                        evaluations[0] = AkitaField::from_u64(1);
+                        stats::count(KNOWN_ZERO_POLYNOMIAL);
+                    }
+                    Polynomial::new(evaluations)
                 })
                 .collect(),
         ),

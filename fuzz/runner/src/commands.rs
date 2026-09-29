@@ -276,9 +276,7 @@ pub fn reproduce(
     inputs: &[PathBuf],
 ) -> Result<i32, String> {
     let (lane, paths, _) = resolve(store, lanes, spec, inputs)?;
-    let scratch = store
-        .tmp
-        .join(format!("reproduce-{}", std::process::id()));
+    let scratch = store.tmp.join(format!("reproduce-{}", std::process::id()));
     std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
     let mut args = libfuzzer::base_args(
         &dist.join("bin").join(libfuzzer::BINARY),

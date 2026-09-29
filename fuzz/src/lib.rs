@@ -13,7 +13,6 @@ extern crate jolt_inlines_sha2;
 
 pub mod artifacts;
 pub mod env;
-pub mod gen;
 pub mod input;
 pub mod liveness;
 pub mod opening;

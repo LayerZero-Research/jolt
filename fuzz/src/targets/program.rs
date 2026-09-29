@@ -126,8 +126,16 @@ fn max_log_t() -> usize {
 
 pub fn decode(data: &[u8]) -> (&'static Guest, Options, Args) {
     let mut reader = Reader::new(data);
+    // The byte names a guest of the full table, so a seed means the same guest
+    // in every lane that includes it; other guests map into the lane's set.
+    let selector = usize::from(reader.u8());
     let set = guest_set();
-    let guest = set[usize::from(reader.u8()) % set.len()];
+    let named = &GUESTS[selector % GUESTS.len()];
+    let guest = if set.iter().any(|guest| std::ptr::eq(*guest, named)) {
+        named
+    } else {
+        set[selector % set.len()]
+    };
     let options = Options::decode(&mut reader);
     let args = (guest.args)(&mut reader);
     (guest, options, args)
@@ -412,6 +420,11 @@ pub fn seeds() -> Vec<(String, Vec<u8>)> {
     let mut seeds = Vec::new();
     for (index, guest) in GUESTS.iter().enumerate() {
         for (name, options) in variants {
+            // A known J-1 reproduction (committed program with large advice
+            // capacities); as a seed it would stop the lane at startup.
+            if guest.key == "interp-advice-large" && options.committed.is_some() {
+                continue;
+            }
             let mut bytes = vec![index as u8];
             bytes.extend(options.encode());
             bytes.extend(std::iter::repeat_n(0x11u8, 64));
