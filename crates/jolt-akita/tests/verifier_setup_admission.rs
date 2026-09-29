@@ -13,6 +13,7 @@ mod support;
 use jolt_akita::{AkitaScheme, AkitaVerifierSetup};
 use jolt_openings::CommitmentScheme;
 use jolt_transcript::{Blake2bTranscript, Transcript};
+use serde_json::Value;
 use support::{f, layout, polynomial, setup_for};
 
 /// The verifier setup's JSON with the dense catalog's first terminal digit
@@ -21,7 +22,7 @@ fn setup_with_terminal_log_basis(setup: &AkitaVerifierSetup, log_basis: u32) -> 
     let mut value = serde_json::to_value(setup).expect("verifier setup JSON");
     let dense = &mut value["schedule_artifacts"]["both"]["dense"];
     let bytes: Vec<u8> = serde_json::from_value(dense.clone()).expect("dense catalog bytes");
-    let mut catalog: serde_json::Value = serde_json::from_slice(&bytes).expect("catalog JSON");
+    let mut catalog: Value = serde_json::from_slice(&bytes).expect("catalog JSON");
     catalog["rows"][0]["schedule"]["terminal"]["inner"]["digits"]["log_basis"] = log_basis.into();
     *dense = serde_json::to_value(serde_json::to_vec_pretty(&catalog).expect("catalog JSON"))
         .expect("dense catalog bytes");
