@@ -62,11 +62,14 @@ assignments (with identical groups collapsed into multisets,
 grows combinatorially with the group count. The same code is on Akita `main`
 (`candidates.rs:139`).
 
-Status: open. Planned fix: Akita-side, a precommit-opening search that does
-not enumerate the product (the cap exists only to bound that enumeration), then
-re-run `plan-sweep program` to confirm every in-contract chunk count plans. To
-be written once tests can run again; a Jolt-side cap would turn documented
-supported programs into rejected ones.
+Status: fix in Akita draft PR https://github.com/LayerZero-Labs/akita/pull/119
+(branch `fix/adapted-precommit-uniform-fallback`, off Akita `main`): when the
+multiset product exceeds the budget the adapted root searches one opening per
+class of interchangeable groups, and `MAX_ADAPTED_PRECOMMIT_WIDTH` becomes 512
+(a 256-chunk program with its image and both advice objects needs 259). Its
+test adapts the full width of interchangeable producers; `akita-planner` and the
+Akita workspace (CI feature set) pass. Jolt picks it up with its Akita bump;
+re-run `plan-sweep program` then.
 
 ## J-2 (High, liveness): advice larger than the trace group fails at proving
 
@@ -120,10 +123,14 @@ advice arities. The README documents that grouped preprocessing "fails closed"
 when the frozen skeleton cannot admit the profiles, but not where; the
 documented advice limit is 34.
 
-Status: open (documented failure mode, undocumented boundary). Planned fix:
-Akita-side schedule adaptation for large precommitted groups on offloaded rows,
-checked by re-running `plan-sweep advice`; until then the boundary above is the
-effective limit.
+Status: by design, boundary undocumented. Adaptation freezes the selected
+trace row's skeleton (recursive depth, per-level dimensions, and the
+setup-offload topology) and fails closed when a precommitted group no longer
+fits it, as the schedules README states; the setup field budget is not
+involved (`setup_field_budget` is `None` for these configs). A very large
+advice object enlarges the root output past what the frozen offloaded levels
+admit. No code fix: the effective limit is the boundary above, and
+`ADVICE_MAX_PHYSICAL_VARS = 34` overstates it for `log_T >= 21`.
 
 ## J-4 (Low, liveness): the packed trace's selector capacity bounds bytecode and RAM together
 
@@ -147,9 +154,10 @@ Independent of `log_T`. Smallest failing RAM domain by bytecode length:
 `ram_K` counts 8-byte words, so `2^33` is a 64 GiB address span; default
 layouts use about `2^22`. Not documented as a limit.
 
-Status: open (limit far outside ordinary layouts).
+Status: by design (the packed selector capacity is a fixed 64 or 32 columns);
+the limit is undocumented but far outside ordinary layouts. No code fix.
 
-## J-5 (Medium, under triage): openings of an identically zero polynomial fail verification
+## J-5 (Medium, pinned Akita only): openings of an identically zero polynomial fail verification
 
 An honest opening whose committed polynomial is identically zero fails
 verification with `Akita payload has trailing bytes after deserialization`:
@@ -167,8 +175,14 @@ advice), and a production `OneHotTrace` is never empty (RAM columns commit
 every row), so the Jolt prover does not reach this; the affected entry points
 are public `jolt-akita` APIs.
 
-Status: under triage. Being re-checked against Akita `main`, whose proof
-stream replaced the typed proof layer the pinned revision uses.
+Status: does not reproduce on Akita `main`. Akita's own fuzzer, replaying its
+all-zero inputs through `pcs_dense`, `pcs_onehot`, and `pcs_batch` (zero tables,
+verified from the serialized proof bytes by `batched_verify(proof: &[u8], ..)`),
+passes on `fuzzer` = `main` + fuzz. The typed proof layer the pinned revision
+uses was replaced by the Spongefish proof stream (Akita #37, #67), which Jolt's
+Akita bump (LayerZero-Research/jolt#39, pin `703d8580`) includes. No PR; until
+the bump the harness replaces an identically zero final polynomial by one
+nonzero entry and counts it (`known_zero_polynomial_adjusted`).
 
 ## Operational note: endpoint detection on the campaign host (2026-09-28)
 
@@ -181,6 +195,14 @@ still writes many binary files, so its directories need the security team's
 agreement before `run`.
 
 ## Harness corrections (not product defects)
+
+- The first campaign run reported three "malleability" findings in the
+  `verifier` lane (non-canonical commitment and public-I/O bytes accepted).
+  All three were bytes appended after a valid object, which the harness's
+  decoder ignored; with trailing bytes rejected they replay cleanly.
+- Seeds longer than a lane's `max_len` were stored untruncated, so a seed that
+  hit a known finding was never quarantined (libFuzzer runs and names artifacts
+  after the first `max_len` bytes) and its lane backed off instead of fuzzing.
 
 - The reference prover backend refuses shapes whose dense address-by-cycle
   grid exceeds 32 GiB ("a test oracle sized for small traces"); the `program`
