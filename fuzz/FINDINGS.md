@@ -99,13 +99,16 @@ capacity"). The setup capacity and the exact final dimension are the same
 field (`AkitaSetupParams::max_num_vars`).
 
 Status: draft PR https://github.com/LayerZero-Research/jolt/pull/49 (branch
-`fix/akita-grouped-setup-capacity`, off `main`), not yet tested. The one-hot backend setup capacity becomes the final arity
-raised to the largest precommitted group in the setup's exact catalog
-(`AkitaVerifierSetup::one_hot_backend_num_vars`), used by setup, verifier key
-re-derivation after transport, and the grouped-statement arity check. Its test
-(`crates/jolt-akita/tests/grouped_capacity.rs`: final arity 16, trusted advice
-arity 22, in process and serde-transported) must pass on the campaign host
-before the PR leaves draft.
+`fix/akita-grouped-setup-capacity`, off `main`). The one-hot backend setup
+capacity becomes the final arity raised to the largest precommitted group in
+the setup's exact catalog (`AkitaVerifierSetup::one_hot_backend_num_vars`),
+used by setup, verifier key re-derivation after transport, and the
+grouped-statement arity check (consulted only for objects above the final
+arity). Tested on the campaign host: `jolt-akita` 77/77 including the new
+`grouped_capacity` test (final arity 16, trusted advice arity 22, in process and
+serde-transported); `jolt-prover --features akita,prover-fixtures` 26/27, the
+one failure being `e2e_matrix::akita::stdlib`, whose std-mode guest toolchain
+cannot be built on that host (it passes in CI).
 
 ## J-3 (Medium, liveness): large advice fails to plan on setup-offloaded trace rows
 
