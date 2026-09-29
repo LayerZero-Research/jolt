@@ -18,6 +18,7 @@ trigger a finding:
 | 3 | J-3 | Medium | Deployment choices only (advice capacity at `log_T >= 21`) | none (by design) |
 | 4 | J-4 | Low | Deployment choices only (very large bytecode and RAM domains) | none (by design) |
 | – | J-5 | Medium | Not reachable from the Jolt prover; public `jolt-akita` APIs only, pinned Akita only | Akita bump |
+| – | J-6 | Medium | Crafted verifier-preprocessing bytes (the schedule catalog they carry); not proof bytes | Akita #91 (Akita F-5); needs a pin at or after `cc1042c2` |
 
 None of them lets a proof of a false statement verify; each fails with a clean
 error.
@@ -201,6 +202,25 @@ Akita bump (LayerZero-Research/jolt#39, pin `703d8580`) includes. No PR; until
 the bump the harness replaces an identically zero final polynomial by one
 nonzero entry and counts it (`known_zero_polynomial_adjusted`).
 
+## J-6 (Medium, robustness, already fixed upstream): verifier panics on a crafted schedule catalog in the verifier preprocessing
+
+Found by the `verifier` lane (campaign `dd8fbf74a114`, finding
+`panic-verifier-a398686ab8d7`, reproducible). `AkitaVerifierSetup`
+serializes the exact schedule catalog; a preprocessing whose catalog has a
+zero `log_basis` makes the verifier panic in admission instead of returning an
+error:
+
+```text
+panicked at akita-types/src/sis/decomposition_digits.rs:249:5: invalid log_basis
+```
+
+This is the Akita campaign's F-5 (second site), fixed upstream by Akita #91
+(`cc1042c2`). Jolt `main` pins `252abb89`, before it, and so does the pin of
+LayerZero-Research/jolt#39 (`703d8580`): the planned bump does not include the
+fix; Jolt needs a pin at or after `cc1042c2`. Reachable only from verifier
+preprocessing bytes, which deployments normally produce themselves; the effect
+is a crash, never an accepted proof. No new PR (already addressed upstream).
+
 ## Operational note: endpoint detection on the campaign host (2026-09-28)
 
 CrowdStrike Falcon on the development host killed shell commands that wrote
@@ -212,6 +232,11 @@ still writes many binary files, so its directories need the security team's
 agreement before `run`.
 
 ## Harness corrections (not product defects)
+
+- A `program@examples` input timed out under ASan (1 324 s against a
+  1 200 s limit); it proves and verifies in 78 s in release. It used the
+  reference prover backend (the naive test oracle), which the target now uses
+  only for smaller shapes.
 
 - The first campaign run reported three "malleability" findings in the
   `verifier` lane (non-canonical commitment and public-I/O bytes accepted).

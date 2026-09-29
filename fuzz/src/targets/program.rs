@@ -298,8 +298,9 @@ pub fn prove(guest: &Guest, args: &Args, options: &Options) -> Result<Option<Pro
         Backend::Optimized => JoltAkitaBackend::optimized(),
         // The reference tier materializes a dense address-by-cycle grid and
         // refuses shapes above 32 GiB ("a test oracle sized for small
-        // traces"); larger shapes use the optimized tier.
-        Backend::Reference if config.trace_length.ilog2() + config.ram_K.ilog2() <= 30 => {
+        // traces"); it is also slow enough under ASan to exceed the lane
+        // timeout well before that, so larger shapes use the optimized tier.
+        Backend::Reference if config.trace_length.ilog2() + config.ram_K.ilog2() <= 26 => {
             JoltAkitaBackend::reference()
         }
         Backend::Reference => {
