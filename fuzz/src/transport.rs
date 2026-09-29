@@ -8,11 +8,12 @@ pub fn encode<T: Serialize>(value: &T) -> Vec<u8> {
         .expect("honest objects serialize")
 }
 
-/// Decode untrusted bytes; `None` for anything bincode rejects.
+/// Decode untrusted bytes; `None` for anything bincode rejects or for bytes
+/// left over after the object (a wire object is exactly its encoding).
 pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Option<T> {
     bincode::serde::decode_from_slice(bytes, bincode::config::standard())
         .ok()
-        .map(|(value, _)| value)
+        .and_then(|(value, consumed)| (consumed == bytes.len()).then_some(value))
 }
 
 /// Encode, decode, and require the decoded value to re-encode to the same
