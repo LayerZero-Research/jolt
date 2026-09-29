@@ -18,7 +18,7 @@ trigger a finding:
 | 3 | J-3 | Medium | Deployment choices only (advice capacity at `log_T >= 21`) | none (by design) |
 | 4 | J-4 | Low | Deployment choices only (very large bytecode and RAM domains) | none (by design) |
 | – | J-5 | Medium | Not reachable from the Jolt prover; public `jolt-akita` APIs only, pinned Akita only | Akita bump |
-| – | J-6 | Medium | Crafted verifier-preprocessing bytes (the schedule catalog they carry); not proof bytes | Akita #91 (Akita F-5); needs a pin at or after `cc1042c2` |
+| – | J-6 | Medium | Crafted verifier-preprocessing bytes (the schedule catalog they carry); not proof bytes | LayerZero-Research/jolt#50 (pin with Akita #91) |
 
 None of them lets a proof of a false statement verify. J-1 to J-5 fail with a
 clean error; J-6 is a panic (a crash of the verifier process), reachable only
@@ -220,7 +220,14 @@ This is the Akita campaign's F-5 (second site), fixed upstream by Akita #91
 LayerZero-Research/jolt#39 (`703d8580`): the planned bump does not include the
 fix; Jolt needs a pin at or after `cc1042c2`. Reachable only from verifier
 preprocessing bytes, which deployments normally produce themselves; the effect
-is a crash, never an accepted proof. No new PR (already addressed upstream).
+is a crash, never an accepted proof.
+
+Status: no Akita PR (fixed upstream). Jolt draft PR
+https://github.com/LayerZero-Research/jolt/pull/50, based on #39's branch,
+moves the pin from `703d8580` to `e432abf9` (Akita #91 and #92; only the
+revision changes), with a test that verifies an honest opening against a
+transported verifier setup whose catalog `log_basis` is 0, 128, and
+`u32::MAX`. Clippy passes in both modes; the tests still have to run.
 
 ## Operational note: endpoint detection on the campaign host (2026-09-28)
 
