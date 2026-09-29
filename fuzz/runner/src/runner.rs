@@ -343,7 +343,11 @@ impl Runner {
             if !entry.file_type()?.is_file() {
                 continue;
             }
-            let data = std::fs::read(entry.path())?;
+            // libFuzzer runs at most `max_len` bytes of an input and names
+            // crash artifacts after those bytes, so the corpus copy must be the
+            // truncated input for a crashing seed to be quarantined.
+            let mut data = std::fs::read(entry.path())?;
+            data.truncate(lane.max_len as usize);
             let digest = libfuzzer::sha1_hex(&data);
             if !corpus.join(&digest).exists() && !quarantine.join(&digest).exists() {
                 std::fs::write(corpus.join(&digest), data)?;
