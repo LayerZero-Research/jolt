@@ -8,6 +8,20 @@ the documented contract, how it was verified, and its status. Severity:
 production does not reach), **Low** (limits far outside practical use, or
 documentation).
 
+Entries are numbered in discovery order. Triage order also weighs who can
+trigger a finding:
+
+| Priority | Finding | Severity | Triggered by | Fix |
+|---|---|---|---|---|
+| 1 | J-2 | High | Runtime inputs: an execution short enough to pad to a trace below the advice arity, on a guest with a large advice capacity | LayerZero-Research/jolt#49 |
+| 2 | J-1 | High | Deployment choices only (chunk count, program size, advice kinds); fails at preprocessing, before any proof | LayerZero-Labs/akita#119 |
+| 3 | J-3 | Medium | Deployment choices only (advice capacity at `log_T >= 21`) | none (by design) |
+| 4 | J-4 | Low | Deployment choices only (very large bytecode and RAM domains) | none (by design) |
+| – | J-5 | Medium | Not reachable from the Jolt prover; public `jolt-akita` APIs only, pinned Akita only | Akita bump |
+
+None of them lets a proof of a false statement verify; each fails with a clean
+error.
+
 "In contract" means every documented Jolt limit admits the input:
 `log_T` in `12..=24` (K=16) or `12..=30` (K=256), advice capacities a power of
 two with physical arity at most 34 (`ADVICE_MAX_PHYSICAL_VARS`), committed
