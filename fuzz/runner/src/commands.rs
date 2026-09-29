@@ -256,11 +256,12 @@ fn resolve<'a>(
     Ok((lane_for(lanes, spec)?, inputs.to_vec(), None))
 }
 
-fn env_for(dist: &Path, lane: &Lane) -> Vec<(String, String)> {
+fn env_for(dist: &Path, store: &Store, lane: &Lane) -> Vec<(String, String)> {
     let mut env = libfuzzer::environment(
         lane,
         &dist.join("artifacts/schedules"),
         Path::new("/dev/null"),
+        &store.tmp,
         symbolizer(dist).as_deref(),
     );
     env.insert("RUST_BACKTRACE".into(), "full".into());
@@ -275,7 +276,9 @@ pub fn reproduce(
     inputs: &[PathBuf],
 ) -> Result<i32, String> {
     let (lane, paths, _) = resolve(store, lanes, spec, inputs)?;
-    let scratch = std::env::temp_dir().join(format!("jolt-fuzz-reproduce-{}", std::process::id()));
+    let scratch = store
+        .tmp
+        .join(format!("reproduce-{}", std::process::id()));
     std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
     let mut args = libfuzzer::base_args(
         &dist.join("bin").join(libfuzzer::BINARY),
@@ -286,7 +289,7 @@ pub fn reproduce(
         &scratch,
     );
     args.extend(paths.iter().map(|path| path.display().to_string()));
-    let env = env_for(dist, lane);
+    let env = env_for(dist, store, lane);
     let shown: Vec<String> = lane.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
     println!("+ {} {}", shown.join(" "), args.join(" "));
     let status = Command::new(&args[0])
@@ -327,7 +330,7 @@ pub fn minimize(
     println!("+ {}", args.join(" "));
     let status = Command::new(&args[0])
         .args(&args[1..])
-        .envs(env_for(dist, lane))
+        .envs(env_for(dist, store, lane))
         .current_dir(&work)
         .status()
         .map_err(|e| e.to_string())?;

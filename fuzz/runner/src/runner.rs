@@ -464,6 +464,7 @@ impl Runner {
             lane,
             &self.dist.join("artifacts/schedules"),
             &stats_file,
+            &self.store.tmp,
             self.symbolizer.as_deref(),
         );
         let mut log = RotatingLog::open(

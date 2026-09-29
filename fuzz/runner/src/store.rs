@@ -78,6 +78,9 @@ pub struct Store {
     pub logs: PathBuf,
     pub stats: PathBuf,
     pub exports: PathBuf,
+    /// Scratch space for workers (`TMPDIR`), so no campaign file lands in
+    /// the system temporary directory.
+    pub tmp: PathBuf,
     pub state_path: PathBuf,
     pub live_path: PathBuf,
     pub campaign_path: PathBuf,
@@ -94,6 +97,7 @@ impl Store {
             logs: root.join("logs"),
             stats: root.join("stats"),
             exports: root.join("exports"),
+            tmp: root.join("tmp"),
             state_path: root.join("state.json"),
             live_path: root.join("live.json"),
             campaign_path: root.join("campaign.json"),
@@ -109,6 +113,7 @@ impl Store {
             &self.logs,
             &self.stats,
             &self.exports,
+            &self.tmp,
         ] {
             fs::create_dir_all(dir)?;
         }

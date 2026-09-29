@@ -68,9 +68,13 @@ pub fn environment(
     lane: &Lane,
     artifacts_dir: &Path,
     stats_file: &Path,
+    tmp_dir: &Path,
     symbolizer: Option<&Path>,
 ) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
+    // libFuzzer's merge control files and any other temporary file stay in
+    // the campaign's own directory.
+    env.insert("TMPDIR".into(), tmp_dir.display().to_string());
     env.insert("JOLT_FUZZ_TARGET".into(), lane.target.clone());
     env.insert("JOLT_FUZZ_THREADS".into(), lane.threads.to_string());
     env.insert("RAYON_NUM_THREADS".into(), lane.threads.to_string());

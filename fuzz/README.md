@@ -160,7 +160,9 @@ Scheduling, limits, and failure handling are the Akita runner's:
 - **Shutdown and resume.** `SIGINT`/`SIGTERM` stops workers and saves state;
   rerunning resumes corpora, findings, quarantine, and per-lane totals.
 
-Environment the runner sets for each worker: `JOLT_FUZZ_TARGET`,
+Environment the runner sets for each worker: `TMPDIR` (the output
+directory's `tmp/`, so libFuzzer's merge files and every other temporary file
+stay inside the campaign directory), `JOLT_FUZZ_TARGET`,
 `JOLT_FUZZ_THREADS`, `JOLT_FUZZ_ARTIFACTS`, `JOLT_FUZZ_GUESTS`,
 `JOLT_FUZZ_BUNDLES`, `JOLT_FUZZ_STATS_FILE`, and lane variant variables
 (`JOLT_FUZZ_GRID_FAMILY`, `JOLT_FUZZ_GUEST_SET`). Harness limits read from the
@@ -233,6 +235,7 @@ findings/<id>/            meta.json, sample-N.input, sample-N.txt, replay.txt
 quarantine/<target>/      corpus inputs removed because they crash
 corpus-archive/<target>/  inputs dropped by compaction
 logs/<lane>/              per-job libFuzzer output (capped)
+tmp/                      worker TMPDIR and reproduce scratch
 stats/<lane>/             reach counters of running jobs
 exports/                  archives written by `export`
 ```
