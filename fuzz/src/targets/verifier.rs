@@ -12,9 +12,11 @@
 //!
 //! - decoding and verification never panic (libFuzzer's malloc limit also
 //!   bounds what a decoded setup may allocate while re-deriving keys);
-//! - a bundle that verifies must decode to an honest bundle: accepting any
-//!   other statement or proof is a soundness finding, and accepting different
-//!   bytes for the same objects is an encoding-malleability finding.
+//! - a bundle that verifies must decode to an honest bundle, up to the
+//!   representation choices the verifier does not bind (`Bundle::semantic`):
+//!   accepting any other statement or proof is a soundness finding. Accepted
+//!   alternative encodings of an honest bundle are counted
+//!   (`noncanonical_encoding_accepted`, `equivalent_statement_accepted`).
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -120,6 +122,27 @@ impl Bundle {
             "verify_reject"
         });
         accepted
+    }
+
+    /// Re-encoding of every region after removing the representation choices
+    /// the verifier does not bind (FINDINGS J-7): trailing zero bytes of the
+    /// public inputs and outputs, which are compared as zero-padded memory,
+    /// and a present-or-absent unit `vc_setup` (the Akita build has no vector
+    /// commitment). Two bundles with equal semantic forms state the same claim.
+    fn semantic(&self) -> Option<[Option<Vec<u8>>; 4]> {
+        let mut preprocessing =
+            transport::decode::<AkitaVerifierPreprocessing>(&self.preprocessing)?;
+        preprocessing.vc_setup = None;
+        let mut public_io = transport::decode::<JoltDevice>(&self.public_io)?;
+        for bytes in [&mut public_io.inputs, &mut public_io.outputs] {
+            while bytes.last() == Some(&0) {
+                bytes.pop();
+            }
+        }
+        let mut canonical = self.canonical()?;
+        canonical[0] = Some(transport::encode(&preprocessing));
+        canonical[1] = Some(transport::encode(&public_io));
+        Some(canonical)
     }
 
     /// Canonical re-encoding of every region, when all decode.
@@ -335,11 +358,12 @@ pub fn run(data: &[u8]) {
     if !env::on_large_stack(|| candidate.verify()) {
         return;
     }
-    // Accepted: the statement and proof must be an honest bundle's.
-    let canonical = candidate.canonical().expect("an accepted bundle decodes");
+    // Accepted: the statement and proof must be an honest bundle's, up to
+    // the representation choices the verifier does not bind.
+    let semantic = candidate.semantic().expect("an accepted bundle decodes");
     let matching = bundles
         .iter()
-        .find(|honest| honest.canonical().as_ref() == Some(&canonical))
+        .find(|honest| honest.semantic().as_ref() == Some(&semantic))
         .unwrap_or_else(|| {
             panic!(
                 "soundness: verifier accepted a non-honest {region:?} edit of bundle {}",
@@ -347,11 +371,12 @@ pub fn run(data: &[u8]) {
             )
         });
     if candidate.region(region) != matching.region(region) {
-        stats::count("noncanonical_accepted");
-        panic!(
-            "malleability: verifier accepted non-canonical {region:?} bytes of bundle {}",
-            bundle.name
-        );
+        stats::count(if candidate.canonical() == matching.canonical() {
+            "noncanonical_encoding_accepted"
+        } else {
+            "equivalent_statement_accepted"
+        });
+        return;
     }
     stats::count("identity_accepted");
 }

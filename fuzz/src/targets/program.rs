@@ -68,7 +68,7 @@ impl Options {
         Self {
             committed: (flags & 1 != 0).then_some(committed % 4),
             trace_slack: (flags >> 1) % 3,
-            force_k256: flags & 0x08 != 0 && reader.u8() % 4 == 0,
+            force_k256: flags & 0x08 != 0 && reader.u8().is_multiple_of(4),
             ram_address_first: flags & 0x10 != 0,
             registers_address_first: flags & 0x20 != 0,
             backend: if flags & 0xc0 == 0xc0 {

@@ -302,14 +302,14 @@ impl Shape {
         let log_ram_k = edge_biased(reader, 1, 40, &[16, 20, 22, 24, 28, 32]);
         let advice = |reader: &mut Reader<'_>| {
             let tag = reader.u8();
-            (tag % 3 != 0).then(|| {
+            (!tag.is_multiple_of(3)).then(|| {
                 let log_bytes = edge_biased(reader, 3, 40, &[3, 12, 17, 20, 26, 37]);
                 1u64 << log_bytes
             })
         };
         let untrusted_advice_bytes = advice(reader);
         let trusted_advice_bytes = advice(reader);
-        let program = (reader.u8() % 2 == 0).then(|| CommittedProgram {
+        let program = reader.u8().is_multiple_of(2).then(|| CommittedProgram {
             log_chunks: edge_biased(reader, 0, MAX_LOG_CHUNKS, &[0, 1, 7, 8]),
             image_words: match reader.u8() % 4 {
                 0 => 1 << edge_biased(reader, 0, 34, &[0, 13, 14, 20]),
@@ -339,7 +339,7 @@ fn edge_biased(reader: &mut Reader<'_>, min: usize, max: usize, edges: &[usize])
     let tag = reader.u8();
     let value = reader.u8() as usize;
     let span = max - min + 1;
-    if tag % 2 == 0 && !edges.is_empty() {
+    if tag.is_multiple_of(2) && !edges.is_empty() {
         let edge = edges[value % edges.len()];
         let jitter = usize::from(tag >> 1) % 3;
         (edge + jitter).saturating_sub(1).clamp(min, max)
