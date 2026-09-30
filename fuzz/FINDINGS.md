@@ -228,7 +228,8 @@ https://github.com/LayerZero-Research/jolt/pull/50, based on #39's branch,
 moves the pin from `703d8580` to `e432abf9` (Akita #91 and #92; only the
 revision changes), with a test that verifies an honest opening against a
 transported verifier setup whose catalog `log_basis` is 0, 128, and
-`u32::MAX`. Clippy passes in both modes; the tests still have to run.
+`u32::MAX`. CI passes (all Akita test jobs); the test panics with "invalid
+log_basis" when the pin is reverted, and passes with it.
 
 ## J-7 (Low, encoding): the verifier accepts several encodings of one public statement
 
