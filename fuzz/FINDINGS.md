@@ -14,8 +14,8 @@ trigger a finding:
 | Priority | Finding | Severity | Triggered by | Fix |
 |---|---|---|---|---|
 | 1 | J-2 | High | Runtime inputs: an execution short enough to pad to a trace below the advice arity, on a guest with a large advice capacity | LayerZero-Research/jolt#49 |
-| 2 | J-1 | High | Deployment choices only (chunk count, program size, advice kinds); fails at preprocessing, before any proof | LayerZero-Labs/akita#119 |
-| 3 | J-3 | Medium | Deployment choices only (advice capacity at `log_T >= 21`) | none (by design) |
+| 2 | J-1 | High | Deployment choices only (chunk count, program size, advice kinds); fails at preprocessing, before any proof | LayerZero-Labs/akita#127 (merged; supersedes #119) |
+| 3 | J-3 | Medium | Deployment choices only (advice capacity at `log_T >= 21`) | LayerZero-Labs/akita#127 (merged; adaptation falls back to the full search) |
 | 4 | J-4 | Low | Deployment choices only (very large bytecode and RAM domains) | none (by design) |
 | – | J-5 | Medium | Not reachable from the Jolt prover; public `jolt-akita` APIs only, pinned Akita only | Akita bump |
 | – | J-6 | Medium | Crafted verifier-preprocessing bytes (the schedule catalog they carry); not proof bytes | LayerZero-Research/jolt#50 (pin with Akita #91) |
@@ -79,14 +79,13 @@ assignments (with identical groups collapsed into multisets,
 grows combinatorially with the group count. The same code is on Akita `main`
 (`candidates.rs:139`).
 
-Status: fix in Akita draft PR https://github.com/LayerZero-Labs/akita/pull/119
-(branch `fix/adapted-precommit-uniform-fallback`, off Akita `main`): when the
-multiset product exceeds the budget the adapted root searches one opening per
-class of interchangeable groups, and `MAX_ADAPTED_PRECOMMIT_WIDTH` becomes 512
-(a 256-chunk program with its image and both advice objects needs 259). Its
-test adapts the full width of interchangeable producers; `akita-planner` and the
-Akita workspace (CI feature set) pass. Jolt picks it up with its Akita bump;
-re-run `plan-sweep program` then.
+Status: fixed upstream by LayerZero-Labs/akita#127 (merged 2026-09-30 as
+`aae97147`, superseding the campaign's #119): one root opening per class of
+interchangeable producers in both searches, no planner-local producer cap, and
+a fallback from guided adaptation to the full search. Jolt needs an Akita pin at
+or after `aae97147`, which crosses Akita's breaking type and verifier refactors
+(#89, #94), so it is more than a pin change. To verify through Jolt: re-run
+`plan-sweep program` on that revision.
 
 ## J-2 (High, liveness): advice larger than the trace group fails at proving
 
@@ -143,14 +142,11 @@ advice arities. The README documents that grouped preprocessing "fails closed"
 when the frozen skeleton cannot admit the profiles, but not where; the
 documented advice limit is 34.
 
-Status: by design, boundary undocumented. Adaptation freezes the selected
-trace row's skeleton (recursive depth, per-level dimensions, and the
-setup-offload topology) and fails closed when a precommitted group no longer
-fits it, as the schedules README states; the setup field budget is not
-involved (`setup_field_budget` is `None` for these configs). A very large
-advice object enlarges the root output past what the frozen offloaded levels
-admit. No code fix: the effective limit is the boundary above, and
-`ADVICE_MAX_PHYSICAL_VARS = 34` overstates it for `log_T >= 21`.
+Status: fixed upstream by LayerZero-Labs/akita#127 (`aae97147`): when the
+frozen skeleton cannot serve a grouped request, guided adaptation now falls
+back to the full `find_schedule` search instead of failing. (Before #127 this
+was the documented fail-closed behavior.) To verify through Jolt: re-run
+`plan-sweep advice` on a revision at or after `aae97147`.
 
 ## J-4 (Low, liveness): the packed trace's selector capacity bounds bytecode and RAM together
 
