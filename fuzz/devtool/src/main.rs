@@ -109,6 +109,17 @@ fn seeds(out: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn explain_verifier(paths: &[String]) -> Result<(), String> {
+    for path in paths {
+        let data = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
+        println!(
+            "== {path}\n{}",
+            jolt_akita_fuzz::targets::verifier::explain(&data)
+        );
+    }
+    Ok(())
+}
+
 fn planning_case(args: &[String]) -> Result<(), String> {
     use jolt_akita_fuzz::opening::{Fill, Witness};
     use jolt_akita_fuzz::shape::{Chunking, CommittedProgram, Shape};
@@ -202,13 +213,7 @@ fn main() {
             Some(dir) => jolt_akita_fuzz::targets::verifier::write_bundles(Path::new(dir)),
             None => Err("bundles OUT_DIR".to_string()),
         },
-        Some("explain-verifier") => {
-            for path in &args[1..] {
-                let data = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
-                println!("== {path}\n{}", jolt_akita_fuzz::targets::verifier::explain(&data));
-            }
-            Ok(())
-        }
+        Some("explain-verifier") => explain_verifier(&args[1..]),
         Some("planning-case") => planning_case(&args[1..]),
         Some("grid-sweep") => grid_sweep::run(
             arg(1).and_then(|v| v.parse().ok()).unwrap_or(0),
