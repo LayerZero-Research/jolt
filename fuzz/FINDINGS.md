@@ -19,6 +19,7 @@ trigger a finding:
 | 4 | J-4 | Low | Deployment choices only (very large bytecode and RAM domains) | none (by design) |
 | – | J-5 | Medium | Not reachable from the Jolt prover; public `jolt-akita` APIs only, pinned Akita only | Akita bump |
 | – | J-6 | Medium | Crafted verifier-preprocessing bytes (the schedule catalog they carry); not proof bytes | LayerZero-Research/jolt#50 (pin with Akita #91) |
+| – | J-7 | Low | Whoever relays a proof: alternative encodings of the same public statement verify | none (representation, not soundness) |
 
 None of them lets a proof of a false statement verify. J-1 to J-5 fail with a
 clean error; J-6 is a panic (a crash of the verifier process), reachable only
@@ -229,6 +230,31 @@ revision changes), with a test that verifies an honest opening against a
 transported verifier setup whose catalog `log_basis` is 0, 128, and
 `u32::MAX`. Clippy passes in both modes; the tests still have to run.
 
+## J-7 (Low, encoding): the verifier accepts several encodings of one public statement
+
+The `verifier` lane (campaign `dd8fbf74a114`, after about 6 million
+executions) reported four "non-honest edit accepted" and one "non-canonical
+bytes accepted" inputs. Triaged with `jolt-fuzz-dev explain-verifier`, each
+decodes to a statement the verifier treats as the honest one:
+
+- **Public outputs and inputs up to trailing zeros.** An honest `outputs` of
+  zero bytes and an empty `outputs` both verify: the verifier compares them as
+  zero-padded memory (as Jolt's e2e tests do: expected prefix, then zeros).
+  An application that decodes `JoltDevice::outputs` must pad or trim the same
+  way; a party relaying a proof can add or remove trailing zeros, which can
+  make a length-sensitive decoder fail but cannot change the proved memory.
+- **`vc_setup: Some(())` for `None`.** On the Akita build `VC` is
+  `NoVectorCommitment` (`Setup = ()`); the field carries no information, is
+  not part of the preprocessing digest, and is not used by the verifier. The
+  last preprocessing byte (the `Option` tag) is free.
+- **Non-minimal bincode encodings** of the same `JoltDevice`.
+
+None lets a false statement verify. The oracle now compares accepted bundles
+up to these choices (`Bundle::semantic`) and counts them
+(`equivalent_statement_accepted`, `noncanonical_encoding_accepted`); any
+other accepted edit is still a soundness finding. Not re-checked on the Dory
+builds (`vc_setup` is a real setup there and is outside this campaign).
+
 ## Operational note: endpoint detection on the campaign host (2026-09-28)
 
 CrowdStrike Falcon on the development host killed shell commands that wrote
@@ -240,6 +266,9 @@ still writes many binary files, so its directories need the security team's
 agreement before `run`.
 
 ## Harness corrections (not product defects)
+
+- The verifier oracle required accepted bundles to re-encode byte for byte to
+  an honest one; it now compares up to the equivalences recorded in J-7.
 
 - A `program@examples` input timed out under ASan (1 324 s against a
   1 200 s limit); it proves and verifies in 78 s in release. It used the
