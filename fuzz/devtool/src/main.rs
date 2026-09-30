@@ -15,6 +15,7 @@
 //!                                          shape with no size cap (U/T: log2
 //!                                          advice bytes or `-`; K: 16, 256, or
 //!                                          `p` for production)
+//! jolt-fuzz-dev explain-verifier FILE...  which decoded fields a verifier input changes
 //! jolt-fuzz-dev grid-sweep [MIN] [MAX] [FAMILY]
 //!                                          every catalog row with MIN..=MAX
 //!                                          variables (k16, k256, dense)
@@ -201,6 +202,13 @@ fn main() {
             Some(dir) => jolt_akita_fuzz::targets::verifier::write_bundles(Path::new(dir)),
             None => Err("bundles OUT_DIR".to_string()),
         },
+        Some("explain-verifier") => {
+            for path in &args[1..] {
+                let data = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
+                println!("== {path}\n{}", jolt_akita_fuzz::targets::verifier::explain(&data));
+            }
+            Ok(())
+        }
         Some("planning-case") => planning_case(&args[1..]),
         Some("grid-sweep") => grid_sweep::run(
             arg(1).and_then(|v| v.parse().ok()).unwrap_or(0),
@@ -209,7 +217,7 @@ fn main() {
         ),
         Some("plan-sweep") => sweep::run(arg(1).unwrap_or("all"), arg(2).map(PathBuf::from)),
         _ => Err(
-            "usage: jolt-fuzz-dev list|seeds|smoke|replay|build-guests|planning-case|bundles|plan-sweep|grid-sweep ..."
+            "usage: jolt-fuzz-dev list|seeds|smoke|replay|build-guests|planning-case|explain-verifier|bundles|plan-sweep|grid-sweep ..."
                 .to_string(),
         ),
     };

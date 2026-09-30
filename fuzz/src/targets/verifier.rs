@@ -225,8 +225,8 @@ fn edit(mut bytes: Vec<u8>, donor: &[u8], reader: &mut Reader<'_>) -> Vec<u8> {
     bytes
 }
 
-pub fn run(data: &[u8]) {
-    env::init();
+/// The honest bundle an input edits, the edited region, and the edited bundle.
+fn candidate(data: &[u8]) -> Option<(&'static Bundle, Region, Bundle)> {
     let bundles = honest();
     let mut reader = Reader::new(data);
     let bundle = &bundles[usize::from(reader.u8()) % bundles.len()];
@@ -237,15 +237,80 @@ pub fn run(data: &[u8]) {
         6 => Region::PublicIo,
         _ => Region::Commitment,
     };
-    let Some(original) = bundle.region(region) else {
-        return;
-    };
+    let original = bundle.region(region)?;
     let edited = edit(
         original.to_vec(),
         donor.region(region).unwrap_or(&[]),
         &mut reader,
     );
-    let candidate = bundle.with_region(region, edited);
+    Some((bundle, region, bundle.with_region(region, edited)))
+}
+
+/// What an input changes: the edited region's byte differences and the
+/// decoded fields that differ from the honest bundle, for triage.
+pub fn explain(data: &[u8]) -> String {
+    env::init();
+    let Some((bundle, region, candidate)) = candidate(data) else {
+        return "the input selects an absent region".into();
+    };
+    let original = bundle.region(region).unwrap_or(&[]);
+    let edited = candidate.region(region).unwrap_or(&[]);
+    let changed: Vec<usize> = (0..original.len().max(edited.len()))
+        .filter(|&at| original.get(at) != edited.get(at))
+        .collect();
+    let mut out = format!(
+        "bundle {} region {region:?}: {} -> {} bytes, {} differing positions (first {:?})\n",
+        bundle.name,
+        original.len(),
+        edited.len(),
+        changed.len(),
+        &changed[..changed.len().min(16)]
+    );
+    let accepted = env::on_large_stack(|| candidate.verify());
+    out.push_str(&format!("verifier accepts: {accepted}\n"));
+    fn json<T: serde::de::DeserializeOwned + Serialize>(bytes: &[u8]) -> Option<String> {
+        serde_json::to_string_pretty(&transport::decode::<T>(bytes)?).ok()
+    }
+    let debug = |bytes: &[u8]| -> Option<String> {
+        match region {
+            Region::Preprocessing => json::<AkitaVerifierPreprocessing>(bytes),
+            Region::PublicIo => json::<JoltDevice>(bytes),
+            Region::Proof => json::<Proof>(bytes),
+            Region::Commitment => json::<AkitaCommitment>(bytes),
+        }
+    };
+    match (debug(original), debug(edited)) {
+        (Some(honest), Some(edited)) => {
+            let (honest, edited): (Vec<&str>, Vec<&str>) =
+                (honest.lines().collect(), edited.lines().collect());
+            out.push_str(&format!(
+                "decoded: {} vs {} JSON lines\n",
+                honest.len(),
+                edited.len()
+            ));
+            let mut shown = 0;
+            for at in 0..honest.len().max(edited.len()) {
+                if honest.get(at) != edited.get(at) && shown < 40 {
+                    shown += 1;
+                    out.push_str(&format!(
+                        "  line {at}:\n    honest: {}\n    edited: {}\n",
+                        honest.get(at).unwrap_or(&"<none>"),
+                        edited.get(at).unwrap_or(&"<none>")
+                    ));
+                }
+            }
+        }
+        _ => out.push_str("one side does not decode\n"),
+    }
+    out
+}
+
+pub fn run(data: &[u8]) {
+    env::init();
+    let bundles = honest();
+    let Some((bundle, region, candidate)) = candidate(data) else {
+        return;
+    };
     if !env::on_large_stack(|| candidate.verify()) {
         return;
     }
