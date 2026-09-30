@@ -246,6 +246,15 @@ fn candidate(data: &[u8]) -> Option<(&'static Bundle, Region, Bundle)> {
     Some((bundle, region, bundle.with_region(region, edited)))
 }
 
+fn region_index(region: Region) -> usize {
+    match region {
+        Region::Preprocessing => 0,
+        Region::PublicIo => 1,
+        Region::Proof => 2,
+        Region::Commitment => 3,
+    }
+}
+
 /// What an input changes: the edited region's byte differences and the
 /// decoded fields that differ from the honest bundle, for triage.
 pub fn explain(data: &[u8]) -> String {
@@ -268,6 +277,18 @@ pub fn explain(data: &[u8]) -> String {
     );
     let accepted = env::on_large_stack(|| candidate.verify());
     out.push_str(&format!("verifier accepts: {accepted}\n"));
+    let (honest_a, honest_b, edited_canonical) = (
+        bundle.canonical(),
+        bundle.canonical(),
+        candidate.canonical(),
+    );
+    out.push_str(&format!(
+        "honest re-encoding deterministic: {}; edited re-encodes to honest: {}; honest bytes canonical: {}\n",
+        honest_a == honest_b,
+        edited_canonical == honest_a,
+        honest_a.as_ref().and_then(|canonical| canonical[region_index(region)].as_deref())
+            == bundle.region(region),
+    ));
     fn json<T: serde::de::DeserializeOwned + Serialize>(bytes: &[u8]) -> Option<String> {
         serde_json::to_string_pretty(&transport::decode::<T>(bytes)?).ok()
     }
