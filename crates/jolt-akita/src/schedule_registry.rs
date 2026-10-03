@@ -11,14 +11,14 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
 use akita_config::{policy_of, CommitmentConfig};
+use akita_params::{
+    CommittedGroupBatchProfile, GroupCommitPhaseParams, PolynomialGroupLayout, ScheduleLookupKey,
+    ScheduleRowDigest,
+};
 use akita_pcs::AkitaError;
 use akita_planner::emit::{GroupedGenerationRequest, PrecommittedProducer};
 use akita_planner::find_adapted_schedule;
 use akita_schedules::{ResolvedScheduleRow, ValidatedScheduleCatalog};
-use akita_types::{
-    AkitaScheduleLookupKey, CommittedGroupBatchProfile, GroupCommitPhaseParams,
-    PolynomialGroupLayout, ScheduleRowDigest,
-};
 use serde::{Deserialize, Serialize};
 
 use crate::configs::{
@@ -216,7 +216,22 @@ fn plan_row<Cfg: CommitmentConfig>(
     if base.resolve_key(&key).is_ok() {
         return Ok(None);
     }
-    let main_row = base.resolve_key(&AkitaScheduleLookupKey::single(key.final_group))?;
+    let main_row = base.resolve_key(&ScheduleLookupKey::single(key.final_group))?;
+    let full_width_count = producers
+        .iter()
+        .filter(|producer| {
+            !producer
+                .source_contract()
+                .decomposition()
+                .has_bounded_committed_source()
+        })
+        .count();
+    if full_width_count > 1 || (full_width_count == 1 && producers.len() > 3) {
+        return Err(AkitaError::UnsupportedSchedule(
+            "full-width batches support one field increment and at most two advice groups"
+                .to_owned(),
+        ));
+    }
     let adapted = find_adapted_schedule(
         main_row,
         &request,
@@ -227,17 +242,7 @@ fn plan_row<Cfg: CommitmentConfig>(
     let schedule = match adapted {
         Ok(planned) => planned.schedule,
         Err(AkitaError::UnsupportedSchedule(_))
-            if producers.len() <= 3
-                && producers
-                    .iter()
-                    .filter(|producer| {
-                        !producer
-                            .source_contract()
-                            .decomposition()
-                            .has_bounded_committed_source()
-                    })
-                    .count()
-                    == 1 =>
+            if producers.len() <= 3 && full_width_count == 1 =>
         {
             // FieldRdInc plus at most two advice groups is the only supported
             // full-width batch. Restrict full search to that shape so it cannot
@@ -303,7 +308,7 @@ pub fn dense_group_profile(
     layout: PolynomialGroupLayout,
 ) -> Result<GroupCommitPhaseParams, AkitaError> {
     Ok(dense_catalog
-        .resolve_key(&AkitaScheduleLookupKey::single(layout))?
+        .resolve_key(&ScheduleLookupKey::single(layout))?
         .profiles()
         .final_group)
 }
