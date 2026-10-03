@@ -17,17 +17,17 @@ const TILE: usize = if cfg!(target_arch = "aarch64") { 8 } else { 4 };
 /// One destination ring element as unreduced [`Fp128x8i32`] lanes.
 pub(super) type DigitAccumulator<const D: usize> = [Fp128x8i32; D];
 
-/// Every negacyclic shift of one `A` entry as canonical 16-bit digits.
+/// Every negacyclic shift of one `A` entry as canonical digits in accumulator-width lanes.
 ///
 /// Holds the digits of `[-a_0, …, -a_{D-1}, a_0, …, a_{D-1}]`, so coefficient
 /// `j` of `a · X^k` is entry `D + j - k` for every `k < D`. The digits are the
 /// non-negative [`Fp128x8i32`] lanes of each canonical value, so a shift reads
-/// half the bytes of a wide ring element and adds a value below `2^16` to
+/// accumulator-width lanes directly and adds a value below `2^16` to
 /// each destination lane. At most `MAX_WIDE_ACCUMULATIONS` shifts per
 /// destination between flushes keep every lane inside `reduce_wide`'s `i32`
 /// range.
 pub(super) struct DigitWindows<const D: usize> {
-    digits: Vec<[u16; 8]>,
+    digits: Vec<[i32; 8]>,
 }
 
 impl<const D: usize> DigitWindows<D> {
@@ -42,8 +42,8 @@ impl<const D: usize> DigitWindows<D> {
     pub(super) fn load(&mut self, src: &CyclotomicRing<AkitaField, D>) {
         let (negative, positive) = self.digits.split_at_mut(D);
         for ((negative, positive), &value) in negative.iter_mut().zip(positive).zip(&src.coeffs) {
-            *negative = canonical_digits(-value);
-            *positive = canonical_digits(value);
+            *negative = Fp128x8i32::from(-value).0;
+            *positive = Fp128x8i32::from(value).0;
         }
     }
 
@@ -55,25 +55,19 @@ impl<const D: usize> DigitWindows<D> {
         }
         for (tile, out) in dst.chunks_exact_mut(TILE).enumerate() {
             let base = D + tile * TILE;
-            let mut sums = [[0u32; 8]; TILE];
+            let mut sums: [[i32; 8]; TILE] = std::array::from_fn(|index| out[index].0);
             for &shift in shifts {
                 for (sum, digits) in sums.iter_mut().zip(&self.digits[base - shift..][..TILE]) {
                     for (sum, &digit) in sum.iter_mut().zip(digits) {
-                        *sum += u32::from(digit);
+                        *sum += digit;
                     }
                 }
             }
             for (out, sum) in out.iter_mut().zip(sums) {
-                for (lane, sum) in out.0.iter_mut().zip(sum) {
-                    *lane += sum as i32;
-                }
+                out.0 = sum;
             }
         }
     }
-}
-
-fn canonical_digits(value: AkitaField) -> [u16; 8] {
-    Fp128x8i32::from(value).0.map(|lane| lane as u16)
 }
 
 /// Adds every accumulator into its reduced ring element and clears it.
