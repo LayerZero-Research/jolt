@@ -36,7 +36,7 @@ resolve the exact admitted row and never choose a mode dynamically.
 Each K=16 and K=256 family has W2R2, W4R2, and W8R2 multi-chunk companion
 catalogs. The selected profile splits the root and first recursive fold into
 two, four, or eight chunks, while later folds remain single-chunk; their
-smallest admitted physical arity is 16 variables. The original one-hot
+smallest admitted column arity is 16 variables. The original one-hot
 catalogs and the dense advice and committed-program catalog remain
 single-chunk. Existing four-file directories continue to support `Single`;
 selecting a profile whose companion catalog is absent fails during setup.
@@ -66,9 +66,8 @@ only bounded dense objects fail if that fixed geometry is infeasible.
 A full-width field increment can require different trace fold geometry. If
 guided planning returns `UnsupportedSchedule` for the supported field batch—
 exactly one full-width field increment and at most two bounded advice groups—
-preprocessing runs the full planner under the same audited policy. Larger
-batches and batches with multiple full-width objects retain the guided-planning
-rejection, including its opening-assignment budget. Every auxiliary commitment's
+preprocessing runs the full planner under the same audited policy. If guided planning rejects a larger batch or one with multiple full-width
+objects, that rejection propagates; those shapes never invoke full search. Every auxiliary commitment's
 profile stays fixed, and the resulting grouped row passes the usual schedule
 audit before entering the setup-owned catalog. Other errors propagate. The
 checked-in base catalogs are unchanged; proving and verification use the
@@ -83,3 +82,12 @@ cargo run --release -p jolt-akita --bin gen_jolt_schedules -- crates/jolt-akita/
 Pass `k16`, `k256`, `w2r2`, `w4r2`, `multi-chunk`, `dense-bounded`, `dense-full`, or `dense` as a final
 argument to narrow regeneration to matching families. `k16-single` and
 `k256-single` select only the corresponding standard single-chunk catalog.
+
+Trace groups use native columns with arity `log_T + log_K`, without selector
+variables. Default trace keys cover K=16 arities 16–34 with 51–64 columns and
+K=256 arities 33–38 with 27–37 columns. The bounds follow the 32-bit bytecode
+PCs, 61-bit remapped RAM word addresses, and 64-column row mask. Adapter,
+benchmark, and forced-K fixtures add only the explicit keys in
+`one_hot_keys`; multi-chunk catalogs retain just their 16-variable singleton
+roundtrip fixture. Other explicit configurations require a catalog containing
+that exact shape. Regenerate catalogs after updating Akita.

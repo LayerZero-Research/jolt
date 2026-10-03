@@ -26,7 +26,6 @@ use crate::configs::{
     JoltOneHotK16MultiChunk, JoltOneHotK16W2R2, JoltOneHotK16W4R2, JoltOneHotK256,
     JoltOneHotK256MultiChunk, JoltOneHotK256W2R2, JoltOneHotK256W4R2,
 };
-use crate::schedules::emit::{K16_NUM_VARS, K256_NUM_VARS};
 use crate::{AKITA_ONE_HOT_K16, AKITA_ONE_HOT_K256};
 
 /// Upper bound on rows planned by one preprocessing request.
@@ -65,14 +64,14 @@ fn producer<Cfg: CommitmentConfig>(
 }
 
 /// Public inputs needed to construct this setup's grouped schedules.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GroupedScheduleParams {
     untrusted_physical_arity: Option<usize>,
     trusted_physical_arity: Option<usize>,
     #[serde(default)]
     mandatory_dense_layouts: Vec<DenseGroupLayout>,
-    final_arity: usize,
+    final_group: PolynomialGroupLayout,
 }
 
 impl GroupedScheduleParams {
@@ -80,13 +79,13 @@ impl GroupedScheduleParams {
         untrusted_physical_num_vars: Option<usize>,
         trusted_physical_num_vars: Option<usize>,
         mandatory_dense_layouts: Vec<DenseGroupLayout>,
-        final_num_vars: usize,
+        final_group: PolynomialGroupLayout,
     ) -> Self {
         Self {
             untrusted_physical_arity: untrusted_physical_num_vars,
             trusted_physical_arity: trusted_physical_num_vars,
             mandatory_dense_layouts,
-            final_arity: final_num_vars,
+            final_group,
         }
     }
 
@@ -99,8 +98,8 @@ impl GroupedScheduleParams {
             })
     }
 
-    pub(crate) fn final_num_vars(&self) -> usize {
-        self.final_arity
+    pub(crate) fn final_group(&self) -> PolynomialGroupLayout {
+        self.final_group
     }
 
     pub(crate) fn extend_catalog(
@@ -205,13 +204,10 @@ pub fn extend_catalog<Cfg: CommitmentConfig>(
 
 fn plan_row<Cfg: CommitmentConfig>(
     base: &ValidatedScheduleCatalog,
-    final_num_vars: usize,
+    final_group: PolynomialGroupLayout,
     producers: &[PrecommittedProducer],
 ) -> Result<Option<ResolvedScheduleRow>, AkitaError> {
-    let request = GroupedGenerationRequest::new(
-        PolynomialGroupLayout::new(final_num_vars, 1),
-        producers.to_vec(),
-    );
+    let request = GroupedGenerationRequest::new(final_group, producers.to_vec());
     let key = request.key();
     if base.resolve_key(&key).is_ok() {
         return Ok(None);
@@ -244,8 +240,8 @@ fn plan_row<Cfg: CommitmentConfig>(
         Err(AkitaError::UnsupportedSchedule(_))
             if producers.len() <= 3 && full_width_count == 1 =>
         {
-            // FieldRdInc plus at most two advice groups is the only supported
-            // full-width batch. Restrict full search to that shape so it cannot
+            // Restrict full search to FieldRdInc plus at most two advice
+            // groups so it cannot
             // bypass the adapted planner's opening-assignment budget for larger
             // batches. Every prefix commitment's descriptor remains fixed.
             crate::planning::plan_schedule::<Cfg>(&key, &request.source_contracts())?
@@ -265,7 +261,7 @@ fn plan_row<Cfg: CommitmentConfig>(
 fn provision_producers<Cfg: CommitmentConfig>(
     base: &ValidatedScheduleCatalog,
     group_combinations: &[Vec<PrecommittedProducer>],
-    final_num_vars: usize,
+    final_group: PolynomialGroupLayout,
 ) -> Result<RegisteredRows, AkitaError> {
     akita_config::validate_config_policy::<Cfg>()?;
     base.validate_binding(
@@ -290,7 +286,7 @@ fn provision_producers<Cfg: CommitmentConfig>(
         group_combinations,
         workers,
         |producers| {
-            plan_row::<Cfg>(base, final_num_vars, producers).map_err(|error| error.to_string())
+            plan_row::<Cfg>(base, final_group, producers).map_err(|error| error.to_string())
         },
     )
     .map_err(AkitaError::InvalidSetup)?;
@@ -361,7 +357,7 @@ fn provision_groups_for_config<Cfg: CommitmentConfig>(
     params: &GroupedScheduleParams,
     one_hot_k: usize,
 ) -> Result<RegisteredRows, AkitaError> {
-    let final_num_vars = params.final_arity;
+    let final_group = params.final_group;
     akita_config::validate_config_policy::<JoltDenseBounded>()?;
     dense_catalog.validate_binding(
         JoltDenseBounded::schedule_family_name(),
@@ -403,21 +399,12 @@ fn provision_groups_for_config<Cfg: CommitmentConfig>(
             combinations.push(mandatory);
         }
     }
-    let (min, max) = match one_hot_k {
-        AKITA_ONE_HOT_K256 => K256_NUM_VARS,
-        AKITA_ONE_HOT_K16 => K16_NUM_VARS,
-        other => {
-            return Err(AkitaError::InvalidSetup(format!(
-                "unsupported one-hot K {other} for grouped schedule provisioning"
-            )))
-        }
-    };
-    if !(min..=max).contains(&final_num_vars) {
-        return Err(AkitaError::InvalidSetup(format!(
-            "one-hot K={one_hot_k} final arity {final_num_vars} is outside the supported range {min}..={max}"
-        )));
-    }
-    provision_producers::<Cfg>(one_hot_catalog, &combinations, final_num_vars)
+    let _ = one_hot_catalog
+        .resolve_key(&ScheduleLookupKey::single(final_group))
+        .map_err(|error| AkitaError::InvalidSetup(format!(
+            "one-hot K={one_hot_k} final shape {final_group:?} is outside the admitted catalog: {error}"
+        )))?;
+    provision_producers::<Cfg>(one_hot_catalog, &combinations, final_group)
 }
 
 /// Adapt grouped rows for the standard single-chunk one-hot family.
