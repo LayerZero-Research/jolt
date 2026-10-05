@@ -1222,8 +1222,8 @@ fn backend_keeps_padding_rows_before_the_last_cycle() {
             .unwrap();
     let preprocessing = preprocessing_with_bytecode(bytecode);
     let program = Arc::new(JoltProgram::default());
-    let cycle = checked_row(instruction_row, RegisterState::default(), RamAccess::NoOp);
-    let rows = vec![cycle, TraceRow::default(), cycle, TraceRow::default()];
+    let cycle = || checked_row(instruction_row, RegisterState::default(), RamAccess::NoOp);
+    let rows = vec![cycle(), TraceRow::default(), cycle(), TraceRow::default()];
     let inputs = JoltVmWitnessInputs::new(&program, &preprocessing, trace_output_with_rows(rows));
     let backend = TraceBackend::new(config().with_log_t(2), inputs);
 
