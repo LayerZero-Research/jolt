@@ -7,11 +7,13 @@ use std::ops::Range;
 
 use jolt_field::{Accumulator, JoltField};
 use jolt_poly::{
-    BindingOrder, EqPolynomial, GruenSplitEqPolynomial, LtPolynomial, Polynomial, UnivariatePoly,
+    BindingOrder, EqPolynomial, GruenSplitEqPolynomial, LtPolynomial, Polynomial, TensorEqTable,
+    UnivariatePoly,
 };
 use jolt_sumcheck::SumcheckError;
 #[cfg(feature = "parallel")]
 use jolt_utils::par_collect_windows;
+use jolt_utils::unsafe_allocate_zero_vec;
 use jolt_verifier::stages::relations::{
     ConcreteSumcheck, ConcreteSumcheckChallenges, DerivedIdOf, SumcheckInputPoints,
     SumcheckOutputPoints,
@@ -280,6 +282,44 @@ pub(crate) fn scaled_eq_table<F: JoltField>(point: &[F], scale: F) -> Vec<F> {
 /// `eq(point, ·)` evaluations, big-endian.
 pub(crate) fn eq_table<F: JoltField>(point: &[F]) -> Vec<F> {
     EqPolynomial::<F>::evals(point, None)
+}
+
+/// `Σ_k weight_k · eq(point_k, ·)` over one big-endian `num_vars` domain.
+///
+/// Each term contributes through its ~√T split tables, so no full-size eq
+/// table is built and the output is written in a single parallel pass.
+pub(crate) fn weighted_eq_sum<'a, F: JoltField>(
+    num_vars: usize,
+    terms: impl IntoIterator<Item = (&'a [F], F)>,
+) -> Vec<F> {
+    let tables = terms
+        .into_iter()
+        .map(|(point, weight)| {
+            debug_assert_eq!(point.len(), num_vars);
+            (TensorEqTable::new(point), weight)
+        })
+        .collect::<Vec<_>>();
+    let mut sum = unsafe_allocate_zero_vec(1 << num_vars);
+    let Some((first, _)) = tables.first() else {
+        return sum;
+    };
+    let accumulate_row = |(x_out, row): (usize, &mut [F])| {
+        for (table, weight) in &tables {
+            let scale = *weight * table.e_out()[x_out];
+            for (value, e_in) in row.iter_mut().zip(table.e_in()) {
+                *value += scale * *e_in;
+            }
+        }
+    };
+    #[cfg(feature = "parallel")]
+    sum.par_chunks_mut(first.e_in().len())
+        .enumerate()
+        .for_each(accumulate_row);
+    #[cfg(not(feature = "parallel"))]
+    sum.chunks_mut(first.e_in().len())
+        .enumerate()
+        .for_each(accumulate_row);
+    sum
 }
 
 /// The `(lo, hi)` sumcheck pair of a low-to-high-bound table at group `y`:

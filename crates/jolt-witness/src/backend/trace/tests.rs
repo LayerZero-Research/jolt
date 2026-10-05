@@ -1214,6 +1214,25 @@ fn backend_drops_only_canonical_trailing_padding() {
     );
 }
 
+#[test]
+fn backend_keeps_padding_rows_before_the_last_cycle() {
+    let instruction_row = instruction(RAM_START_ADDRESS as usize);
+    let bytecode =
+        BytecodePreprocessing::preprocess(vec![instruction_row], RAM_START_ADDRESS, RV64IMAC_JOLT)
+            .unwrap();
+    let preprocessing = preprocessing_with_bytecode(bytecode);
+    let program = Arc::new(JoltProgram::default());
+    let cycle = || checked_row(instruction_row, RegisterState::default(), RamAccess::NoOp);
+    let rows = vec![cycle(), TraceRow::default(), cycle(), TraceRow::default()];
+    let inputs = JoltVmWitnessInputs::new(&program, &preprocessing, trace_output_with_rows(rows));
+    let backend = TraceBackend::new(config().with_log_t(2), inputs);
+
+    let compact = backend.trace.trace.as_slice();
+    assert_eq!(compact.len(), 3);
+    assert_eq!(compact[1], JoltTraceRow::default());
+    assert_eq!(compact[2], compact[0]);
+}
+
 /// The dense-grid capacity formula: in-range shapes pass through, the
 /// profiling-scale shape that used to abort the process (`ram_K = 4096`,
 /// `log_T = 22`, 32-byte field: a 2^39-byte request) is refused with an
