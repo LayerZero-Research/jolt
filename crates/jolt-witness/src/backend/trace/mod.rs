@@ -16,7 +16,7 @@ use jolt_riscv::{
     StoreState,
 };
 #[cfg(feature = "parallel")]
-use rayon::prelude::*;
+use jolt_utils::par_collect_windows;
 use std::sync::Arc;
 
 use crate::backend::ProgramSource;
@@ -199,15 +199,12 @@ impl<T: TraceSource> TraceBackend<T> {
                 ),
             });
         }
-        let compact = |row| Self::compact_trace_row(row, &inputs.preprocessing);
+        let compact =
+            |index: usize| Self::compact_trace_row(&physical[index], &inputs.preprocessing);
         #[cfg(feature = "parallel")]
-        let mut trace_rows = physical
-            .par_iter()
-            .map(compact)
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut trace_rows = par_collect_windows(physical.len(), compact)?;
         #[cfg(not(feature = "parallel"))]
-        let mut trace_rows = physical
-            .iter()
+        let mut trace_rows = (0..physical.len())
             .map(compact)
             .collect::<Result<Vec<_>, _>>()?;
         // Trailing padding is implied by the cycle domain; rows before the last
