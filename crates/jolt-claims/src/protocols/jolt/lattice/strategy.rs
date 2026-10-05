@@ -7,11 +7,14 @@ use jolt_field::Field;
 use jolt_openings::OpeningsError;
 
 use super::super::JoltCommittedPolynomial;
-use super::geometry::FUSED_INC_BITS;
+use super::geometry::{LatticeGeometryError, FUSED_INC_BITS};
 use super::packing::{one_hot_trace_columns, OneHotTraceShape};
 
 /// `OneHotTrace` is committed as one native commitment group.
 pub const ONE_HOT_TRACE_LAYOUT: OneHotTraceLayout = OneHotTraceLayout;
+
+/// Capacity of the per-row mask distinguishing a selected zero from no selection.
+pub const MAX_ONE_HOT_TRACE_COLUMNS: usize = u64::BITS as usize;
 
 /// The one protocol layout for the per-proof `OneHotTrace` commitment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +51,15 @@ impl OneHotTraceLayout {
     pub fn plan(&self, shape: &OneHotTraceShape) -> Result<OneHotTraceLayoutPlan, OpeningsError> {
         let columns = one_hot_trace_columns(shape)
             .map_err(|error| OpeningsError::InvalidBatch(error.to_string()))?;
+        if columns.len() > MAX_ONE_HOT_TRACE_COLUMNS {
+            return Err(OpeningsError::InvalidBatch(
+                LatticeGeometryError::TooManyOneHotTraceColumns {
+                    actual: columns.len(),
+                    capacity: MAX_ONE_HOT_TRACE_COLUMNS,
+                }
+                .to_string(),
+            ));
+        }
         let instruction_end = shape.ra_layout.instruction();
         let balanced_inc_end = instruction_end + FUSED_INC_BITS / shape.log_k_chunk;
         let balanced_inc_carry = balanced_inc_end;
@@ -237,6 +249,30 @@ mod tests {
         assert_ne!(
             digest,
             ONE_HOT_TRACE_LAYOUT.layout_digest(&shape(6)).unwrap()
+        );
+    }
+
+    #[test]
+    fn native_layout_enforces_the_row_mask_capacity() {
+        let mut shape = OneHotTraceShape {
+            ra_layout: JoltRaPolynomialLayout::new(32, 7, 8).unwrap(),
+            log_t: 12,
+            log_k_chunk: 4,
+        };
+        let plan = ONE_HOT_TRACE_LAYOUT.plan(&shape).unwrap();
+        assert_eq!(plan.ids().len(), 64);
+        assert_eq!(plan.ranges().ram.end, 64);
+
+        shape.ra_layout = JoltRaPolynomialLayout::new(32, 8, 8).unwrap();
+        assert_eq!(
+            ONE_HOT_TRACE_LAYOUT.plan(&shape),
+            Err(OpeningsError::InvalidBatch(
+                LatticeGeometryError::TooManyOneHotTraceColumns {
+                    actual: 65,
+                    capacity: 64,
+                }
+                .to_string(),
+            ))
         );
     }
 

@@ -29,8 +29,9 @@ The one-hot artifacts are hybrid catalogs. A logical trace shorter than
 `2^21` uses a direct schedule. A trace of `2^21` cycles or longer uses a
 setup-offloaded schedule. Akita uses K=16 committed chunks at every trace
 length, with catalog coverage through `2^30`. Virtual lookup chunks are 16 bits
-below `2^25` and 32 bits at or above it. The K=256 catalog remains available
-for explicitly configured layouts. This is an offline catalog policy: proving and verification simply
+below `2^25` and 32 bits at or above it. The K=256 catalogs retain only the
+explicit test and benchmark keys; they do not provide a general trace range.
+This is an offline catalog policy: proving and verification simply
 resolve the exact admitted row and never choose a mode dynamically.
 
 Each K=16 and K=256 family has W2R2, W4R2, and W8R2 multi-chunk companion
@@ -79,15 +80,27 @@ Regenerate all base catalogs from the planner with:
 cargo run --release -p jolt-akita --bin gen_jolt_schedules -- crates/jolt-akita/schedules
 ```
 
-Pass `k16`, `k256`, `w2r2`, `w4r2`, `multi-chunk`, `dense-bounded`, `dense-full`, or `dense` as a final
-argument to narrow regeneration to matching families. `k16-single` and
+Pass `k16`, `k256`, `w2r2`, `w4r2`, `multi-chunk`, `dense-bounded`, `dense-full`, or `dense`
+as a selector to narrow regeneration to matching families. `k16-single` and
 `k256-single` select only the corresponding standard single-chunk catalog.
 
+Check complete artifact freshness without overwriting the catalogs:
+
+```sh
+cargo run --release -p jolt-akita --bin gen_jolt_schedules -- crates/jolt-akita/schedules --check
+```
+
+This replans every selected row with the pinned Akita revision, renders canonical
+artifacts in a temporary directory, and fails on any byte difference or missing
+file. Ordinary catalog tests check admitted keys and coverage of production
+trace geometry; key agreement alone does not establish schedule freshness.
+
 Trace groups use native columns with arity `log_T + log_K`, without selector
-variables. Default trace keys cover K=16 arities 16–34 with 51–64 columns and
-K=256 arities 33–38 with 27–37 columns. The bounds follow the 32-bit bytecode
-PCs, 61-bit remapped RAM word addresses, and 64-column row mask. Adapter,
-benchmark, and forced-K fixtures add only the explicit keys in
-`one_hot_keys`; multi-chunk catalogs retain just their 16-variable singleton
-roundtrip fixture. Other explicit configurations require a catalog containing
-that exact shape. Regenerate catalogs after updating Akita.
+variables. Production trace keys cover K=16 arities 16–34 with 51–64 columns.
+The bounds follow the 32-bit bytecode PCs, 61-bit remapped RAM word addresses,
+and 64-column row mask. The K=256 single-chunk keys `(num_vars, num_polys)` are
+`(14,1)`, `(15,1)`, `(16,1)`, `(20,1)`, `(20,29)`, `(25,1)`,
+`(28,27)`, `(29,27)`, and `(34,27)`, retained for adapter, benchmark, cutover,
+advice, and forced-K tests. Each K=256 multi-chunk catalog contains only the
+`(16,1)` roundtrip fixture. K=16 fixtures also remain explicit in `one_hot_keys`.
+Other explicit configurations require a catalog containing that exact shape. Regenerate catalogs after updating Akita.

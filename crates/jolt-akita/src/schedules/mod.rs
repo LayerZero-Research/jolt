@@ -11,6 +11,7 @@
 
 /// Emit-spec construction shared by the generator and drift tests.
 pub mod emit {
+    use std::collections::BTreeSet;
     use std::path::PathBuf;
 
     use akita_config::{policy_of, CommitmentConfig};
@@ -20,6 +21,9 @@ pub mod emit {
     use akita_pcs::AkitaError;
     use akita_planner::emit::GroupedGenerationRequest;
     use akita_planner::EmitSpec;
+    use jolt_claims::protocols::jolt::lattice::strategy::MAX_ONE_HOT_TRACE_COLUMNS;
+    use jolt_claims::protocols::jolt::lattice::{one_hot_trace_columns, OneHotTraceShape};
+    use jolt_claims::protocols::jolt::{JoltFormulaDimensions, JoltOneHotDimensions};
 
     use crate::configs::{
         AkitaOneHotChunkProfile, JoltDenseBounded, JoltDenseFull, JoltOneHotK16,
@@ -32,13 +36,12 @@ pub mod emit {
     use crate::planning::plan_schedule;
     use crate::{AKITA_ONE_HOT_K16, AKITA_ONE_HOT_K256};
 
-    /// Native trace counts: 192/log_K + carry + bytecode and RAM chunks.
-    /// Bytecode PCs fit u32; remapped u64 addresses have at most 61 word bits.
-    /// K=16 is additionally bounded by the 64-column row mask.
-    pub const K16_NUM_POLYS: &[usize] = &[51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64];
-    pub const K256_NUM_POLYS: &[usize] = &[27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37];
-    pub const K16_NUM_VARS: (usize, usize) = (16, 34);
-    pub const K256_NUM_VARS: (usize, usize) = (33, 38);
+    /// Admitted production trace exponents for K=16.
+    pub const K16_TRACE_LOG_T: (usize, usize) = (12, 30);
+    pub const K16_NUM_VARS: (usize, usize) = (
+        K16_TRACE_LOG_T.0 + K16_COLUMN_VARIABLES,
+        K16_TRACE_LOG_T.1 + K16_COLUMN_VARIABLES,
+    );
     /// Bounded-dense advice and committed-program byte objects.
     pub const DENSE_NUM_VARS: (usize, usize) = (14, 34);
 
@@ -152,36 +155,62 @@ pub mod emit {
         one_hot_k: usize,
         profile: AkitaOneHotChunkProfile,
     ) -> Result<Vec<PolynomialGroupLayout>, AkitaError> {
-        let (widths, arities, fixtures): (_, _, &[(usize, usize)]) = match one_hot_k {
-            AKITA_ONE_HOT_K16 => (
-                K16_NUM_POLYS,
-                K16_NUM_VARS,
-                &[(12, 1), (12, 2), (16, 1), (25, 1)],
-            ),
-            AKITA_ONE_HOT_K256 => (
-                K256_NUM_POLYS,
-                K256_NUM_VARS,
+        if one_hot_k == AKITA_ONE_HOT_K256 {
+            // K=256 is exercised only by explicit adapter, benchmark, and override fixtures.
+            let fixtures: &[(usize, usize)] = if profile == AkitaOneHotChunkProfile::Single {
                 &[
-                    (13, 27),
                     (14, 1),
                     (15, 1),
                     (16, 1),
                     (20, 1),
+                    (20, 29),
                     (25, 1),
                     (28, 27),
                     (29, 27),
-                    (20, 29),
-                ],
-            ),
-            other => {
-                return Err(AkitaError::InvalidSetup(format!(
-                    "unsupported one-hot K={other}"
-                )))
+                    (34, 27),
+                ]
+            } else {
+                &[(16, 1)]
+            };
+            return Ok(fixtures
+                .iter()
+                .map(|&(vars, polys)| PolynomialGroupLayout::new(vars, polys))
+                .collect());
+        }
+        if one_hot_k != AKITA_ONE_HOT_K16 {
+            return Err(AkitaError::InvalidSetup(format!(
+                "unsupported one-hot K={one_hot_k}"
+            )));
+        }
+        let column_variables = K16_COLUMN_VARIABLES;
+        // RV64 lookup keys have two 64-bit operands. Bytecode PCs fit u32,
+        // and remapped RAM addresses are u64 byte addresses divided by eight.
+        let mut widths = BTreeSet::new();
+        for bytecode_bits in 1..=u32::BITS {
+            for ram_bits in 1..=u64::BITS - 3 {
+                let dimensions = JoltFormulaDimensions::try_from(JoltOneHotDimensions {
+                    log_t: 0,
+                    instruction_address_bits: 128,
+                    bytecode_k: 1usize << bytecode_bits,
+                    ram_k: 1usize << ram_bits,
+                    committed_chunk_bits: column_variables,
+                    lookup_virtual_chunk_bits: 32,
+                })
+                .map_err(|error| AkitaError::InvalidSetup(error.to_string()))?;
+                let columns = one_hot_trace_columns(&OneHotTraceShape {
+                    ra_layout: dimensions.ra_layout,
+                    log_t: 0,
+                    log_k_chunk: column_variables,
+                })
+                .map_err(|error| AkitaError::InvalidSetup(error.to_string()))?;
+                if columns.len() <= MAX_ONE_HOT_TRACE_COLUMNS {
+                    let _ = widths.insert(columns.len());
+                }
             }
-        };
-        let mut admitted = keys(widths, arities);
-        let fixtures = if profile == AkitaOneHotChunkProfile::Single {
-            fixtures
+        }
+        let mut admitted = keys(&widths.into_iter().collect::<Vec<_>>(), K16_NUM_VARS);
+        let fixtures: &[(usize, usize)] = if profile == AkitaOneHotChunkProfile::Single {
+            &[(12, 1), (12, 2), (16, 1), (25, 1)]
         } else {
             &[(16, 1)]
         };

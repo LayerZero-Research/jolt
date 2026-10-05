@@ -33,12 +33,12 @@ where
     pub commitment: PCS::Output,
     pub hint: PCS::OpeningHint,
     pub untrusted_advice: Option<AdviceObject<PCS>>,
-    /// The field increment polynomial, committed on every packed field-inline proof.
+    /// The field increment polynomial, committed on every Akita field-inline proof.
     #[cfg(feature = "field-inline")]
     pub field_inc: FieldIncObject<PCS>,
 }
 
-/// Validate inputs, commit the packed objects, and seed the transcript.
+/// Validate inputs, commit the native trace group and auxiliary objects, and seed the transcript.
 #[tracing::instrument(skip_all)]
 pub fn prove_stage0<F, PCS, VC, T, W>(
     preprocessing: &JoltProverPreprocessing<PCS, VC>,
@@ -144,7 +144,7 @@ where
         })?;
     if preprocessing.pcs_setup.default_layout_digest() != canonical_digest {
         return Err(ProverError::Unsupported {
-            reason: "the packed setup's layout digest is not the canonical OneHotTrace digest",
+            reason: "the Akita setup's layout digest is not the canonical OneHotTrace digest",
         });
     }
     let assembled = assemble_one_hot_trace_rows(
@@ -208,7 +208,7 @@ where
         || preprocessing.pcs_setup.one_hot_k() != 1usize << log_k_chunk
     {
         return Err(ProverError::Unsupported {
-            reason: "the packed setup's dimensions disagree with the canonical OneHotTrace shape",
+            reason: "the Akita setup's dimensions disagree with the canonical OneHotTrace shape",
         });
     }
     let (commitment, hint) =

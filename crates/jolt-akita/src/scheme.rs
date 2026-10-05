@@ -58,7 +58,7 @@ fn commit_one_hot_source(
     .map(split_commit_output)
 }
 
-/// Prover seam for committing the packed trace directly from selected one-hot rows.
+/// Prover seam for committing the native trace columns directly from selected one-hot rows.
 pub trait TraceOneHotCommitment: CommitmentScheme {
     fn commit_trace_one_hot(
         setup: &Self::ProverSetup,

@@ -6,6 +6,7 @@
 //! Coverage and setup-sizing guards for Jolt's external catalogs.
 
 use jolt_akita::schedule_registry::GroupedScheduleParams;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use akita_config::{CommitmentConfig, SetupRequirements, TrustedScheduleCatalog};
@@ -30,6 +31,11 @@ use jolt_akita::{
     AkitaOneHotChunkProfile, AkitaScheduleArtifacts, AkitaScheme, AkitaSetupParams,
     AKITA_ONE_HOT_K16, AKITA_ONE_HOT_K256,
 };
+use jolt_claims::protocols::jolt::lattice::strategy::MAX_ONE_HOT_TRACE_COLUMNS;
+use jolt_claims::protocols::jolt::lattice::{
+    one_hot_trace_columns, OneHotTraceShape, ONE_HOT_TRACE_LAYOUT,
+};
+use jolt_claims::protocols::jolt::{JoltFormulaDimensions, JoltOneHotDimensions};
 use jolt_openings::{CommitmentScheme, OpeningsError};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -95,7 +101,7 @@ fn four_file_directory_supports_single_profile() {
 }
 
 #[test]
-fn catalogs_cover_every_reachable_one_hot_trace_shape() {
+fn catalogs_cover_every_emitted_one_hot_key() {
     for one_hot_k in [AKITA_ONE_HOT_K16, AKITA_ONE_HOT_K256] {
         let catalog = one_hot_catalog(one_hot_k, AkitaOneHotChunkProfile::Single);
         let grid = one_hot_keys(one_hot_k, AkitaOneHotChunkProfile::Single).expect("one-hot keys");
@@ -114,6 +120,68 @@ fn catalogs_cover_every_reachable_one_hot_trace_shape() {
             }));
         }
         assert_eq!(catalog.len(), grid.len());
+    }
+}
+
+#[test]
+fn k16_catalogs_cover_production_trace_geometry() {
+    let mut expected = BTreeSet::new();
+    for bytecode_bits in 1..=32 {
+        for ram_bits in 1..=61 {
+            let dimensions = JoltFormulaDimensions::try_from(JoltOneHotDimensions {
+                log_t: 0,
+                instruction_address_bits: 128,
+                bytecode_k: 1usize << bytecode_bits,
+                ram_k: 1usize << ram_bits,
+                committed_chunk_bits: K16_COLUMN_VARIABLES,
+                lookup_virtual_chunk_bits: 32,
+            })
+            .expect("RV64 address dimensions");
+            let mut shape = OneHotTraceShape {
+                ra_layout: dimensions.ra_layout,
+                log_t: 0,
+                log_k_chunk: K16_COLUMN_VARIABLES,
+            };
+            if one_hot_trace_columns(&shape).expect("trace columns").len()
+                > MAX_ONE_HOT_TRACE_COLUMNS
+            {
+                continue;
+            }
+            for log_t in 12..=30 {
+                shape.log_t = log_t;
+                let plan = ONE_HOT_TRACE_LAYOUT.plan(&shape).expect("trace layout");
+                let _ = expected.insert((plan.num_vars(), plan.ids().len()));
+            }
+        }
+    }
+    for profile in [
+        AkitaOneHotChunkProfile::Single,
+        AkitaOneHotChunkProfile::Two,
+        AkitaOneHotChunkProfile::Four,
+        AkitaOneHotChunkProfile::Eight,
+    ] {
+        let catalog = one_hot_catalog(AKITA_ONE_HOT_K16, profile);
+        for &(num_vars, num_polys) in &expected {
+            let key = PolynomialGroupLayout::new(num_vars, num_polys);
+            let _ = catalog
+                .resolve_key(&ScheduleLookupKey::single(key))
+                .expect("production trace geometry must resolve in every profile");
+        }
+    }
+}
+
+#[test]
+fn k256_catalogs_reject_unprovisioned_trace_shapes() {
+    let unused_trace = ScheduleLookupKey::single(PolynomialGroupLayout::new(33, 28));
+    for profile in [
+        AkitaOneHotChunkProfile::Single,
+        AkitaOneHotChunkProfile::Two,
+        AkitaOneHotChunkProfile::Four,
+        AkitaOneHotChunkProfile::Eight,
+    ] {
+        assert!(one_hot_catalog(AKITA_ONE_HOT_K256, profile)
+            .resolve_key(&unused_trace)
+            .is_err());
     }
 }
 
@@ -422,12 +490,10 @@ fn grouped_provisioning_rejects_unadmitted_final_shape() {
     assert!(error.to_string().contains("outside the admitted catalog"));
 }
 
-/// The emit specs are the single source of truth for what the generator
-/// writes; each checked-in one-hot catalog must be exactly its family's grid —
-/// the forward inclusion is checked above, so a length match plus a
-/// reverse-inclusion sweep rules out stale or duplicated entries.
+/// Checks key membership only. `gen_jolt_schedules --check` replans and
+/// compares complete artifact contents against the pinned backend.
 #[test]
-fn emit_specs_and_checked_in_catalogs_agree_exactly() {
+fn catalogs_have_exact_emitted_keys() {
     let specs = family_specs(PathBuf::new()).expect("emit specs");
     let cases = [
         (
@@ -522,7 +588,7 @@ mod field_inc {
         dense_group_profile, extend_catalog, provision_groups_for_k, FIXTURE_K16_FINAL_NUM_VARS,
         FIXTURE_TRUSTED_ADVICE_GROUP,
     };
-    use jolt_akita::schedules::emit::{K16_NUM_VARS, K256_NUM_VARS};
+    use jolt_akita::schedules::emit::K16_NUM_VARS;
     use jolt_akita::{DenseGroupLayout, AKITA_ONE_HOT_K16, AKITA_ONE_HOT_K256};
     use jolt_claims::protocols::field_inline::lattice::FieldIncLayout;
 
@@ -532,26 +598,18 @@ mod field_inc {
         one_hot_k.ilog2() as usize
     }
 
-    /// The prover pads Akita traces to at least 2^12 cycles.
-    const PROVER_MIN_LOG_T: usize = 12;
-
-    fn field_inline_rows_plan_and_resolve_at_every_arity<Cfg: CommitmentConfig>(
+    fn field_inline_rows_plan_and_resolve<Cfg: CommitmentConfig>(
         one_hot_k: usize,
-        (declared_min, ceiling): (usize, usize),
+        final_groups: impl IntoIterator<Item = PolynomialGroupLayout>,
     ) {
         let dense = dense_catalog();
         let full_dense = full_dense_catalog();
         let base = one_hot_catalog(one_hot_k, AkitaOneHotChunkProfile::Single);
-        let num_polys = if one_hot_k == AKITA_ONE_HOT_K16 {
-            51
-        } else {
-            27
-        };
         let overhead = trace_arity_overhead(one_hot_k);
-        let reachable_min = (overhead + PROVER_MIN_LOG_T).max(declared_min);
-        for final_num_vars in reachable_min..=ceiling {
+        for final_group in final_groups {
+            let final_num_vars = final_group.num_vars();
             let layout = FieldIncLayout::new(final_num_vars - overhead);
-            let rows = provision_groups_for_k(&dense, &full_dense, &base, &GroupedScheduleParams::new(None, None, vec![DenseGroupLayout::FullWidth { num_vars: layout.num_vars() }], PolynomialGroupLayout::new(final_num_vars, num_polys)), one_hot_k)
+            let rows = provision_groups_for_k(&dense, &full_dense, &base, &GroupedScheduleParams::new(None, None, vec![DenseGroupLayout::FullWidth { num_vars: layout.num_vars() }], final_group), one_hot_k)
             .unwrap_or_else(|error| {
                 panic!(
                     "K={one_hot_k} final arity {final_num_vars}: field-inline provisioning failed: {error}"
@@ -563,7 +621,7 @@ mod field_inc {
                 "K={one_hot_k} final arity {final_num_vars} must plan its field-inline row"
             );
             let key = ScheduleLookupKey {
-                final_group: PolynomialGroupLayout::new(final_num_vars, num_polys),
+                final_group,
                 precommitteds: vec![dense_group_profile(
                     &full_dense,
                     PolynomialGroupLayout::new(layout.num_vars(), 1),
@@ -583,17 +641,19 @@ mod field_inc {
 
     #[test]
     fn field_inline_rows_plan_and_resolve_at_every_k16_arity() {
-        field_inline_rows_plan_and_resolve_at_every_arity::<JoltOneHotK16>(
+        field_inline_rows_plan_and_resolve::<JoltOneHotK16>(
             AKITA_ONE_HOT_K16,
-            K16_NUM_VARS,
+            (K16_NUM_VARS.0..=K16_NUM_VARS.1)
+                .map(|num_vars| PolynomialGroupLayout::new(num_vars, 51)),
         );
     }
 
     #[test]
-    fn field_inline_rows_plan_and_resolve_at_every_k256_arity() {
-        field_inline_rows_plan_and_resolve_at_every_arity::<JoltOneHotK256>(
+    fn field_inline_rows_plan_and_resolve_for_k256_trace_fixtures() {
+        field_inline_rows_plan_and_resolve::<JoltOneHotK256>(
             AKITA_ONE_HOT_K256,
-            K256_NUM_VARS,
+            [(20, 29), (28, 27), (29, 27), (34, 27)]
+                .map(|(num_vars, num_polys)| PolynomialGroupLayout::new(num_vars, num_polys)),
         );
     }
 
