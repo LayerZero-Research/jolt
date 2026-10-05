@@ -9,8 +9,8 @@ use super::digit_windows::{flush_digit_accumulators, DigitWindows};
 use super::source::TraceOneHotColumn;
 use super::traversal::{
     flush_deferred_rank, flush_wide, row_is_committed, trace_block_task_schedule,
-    validate_block_geometry, visit_segment_ring_range, visit_segment_ring_row_range,
-    DeferredFp128Ring, TraceBlockTaskSchedule,
+    validate_block_geometry, visit_segment_ring_range, DeferredFp128Ring, TraceBlockTaskSchedule,
+    TraceRingRows,
 };
 use super::{K256_ROW_BATCH, MAX_WIDE_ACCUMULATIONS, NO_SELECTED_ROW};
 use crate::AkitaField;
@@ -60,10 +60,15 @@ pub(super) fn commit_columns<const D: usize>(
             blocks_per_column * plan.num_positions_per_block,
             segment_rings
         );
+        let group_len = if source.one_hot_k < D {
+            8.min(blocks_per_column)
+        } else {
+            1
+        };
         let schedule = trace_block_task_schedule::<D>(
             source.one_hot_k,
             plan.num_positions_per_block,
-            blocks_per_column,
+            blocks_per_column.div_ceil(group_len),
         );
         let num_columns = source.rows.num_columns();
         let _accumulate_span = tracing::info_span!(
@@ -71,13 +76,14 @@ pub(super) fn commit_columns<const D: usize>(
             num_blocks,
             blocks_per_column,
             task_parts = schedule.parts,
-            tasks = blocks_per_column * schedule.parts,
+            blocks_per_task = group_len,
+            tasks = blocks_per_column.div_ceil(group_len) * schedule.parts,
             active_columns = num_columns,
             rows_per_ring = D / source.one_hot_k,
         )
         .entered();
         let partials = if source.one_hot_k < D {
-            source.commit_shared_tiles(&a_rows, plan, blocks_per_column, &schedule)?
+            source.commit_block_groups(&a_rows, plan, blocks_per_column, group_len, &schedule)?
         } else {
             (0..blocks_per_column * schedule.parts)
                 .into_par_iter()
@@ -271,100 +277,98 @@ pub(super) fn commit_columns<const D: usize>(
 }
 
 impl TraceOneHotColumn {
-    fn commit_shared_tiles<const D: usize>(
+    fn commit_block_groups<const D: usize>(
         &self,
         a_rows: &[&[CyclotomicRing<AkitaField, D>]],
         plan: CommitInnerPlan,
         blocks_per_column: usize,
+        group_len: usize,
         schedule: &TraceBlockTaskSchedule,
     ) -> Result<Vec<Vec<CyclotomicRing<AkitaField, D>>>, AkitaError> {
         let num_columns = self.rows.num_columns();
         let rows_per_ring = D / self.one_hot_k;
-        // Bound all simultaneously prepared parts and ranks to 8 MiB.
-        let tile_len =
-            (8 * 1024 * 1024 / schedule.parts / plan.n_a / (2 * D * size_of::<[i32; 8]>())).max(1);
-        let mut partials = (0..blocks_per_column * schedule.parts)
-            .map(|_| {
-                (
-                    vec![[Fp128x8i32([0; 8]); D]; num_columns * plan.n_a],
-                    vec![CyclotomicRing::zero(); num_columns * plan.n_a],
-                    0usize,
-                )
-            })
-            .collect::<Vec<_>>();
-        let part_len = (0..schedule.parts)
-            .map(|part| {
-                let (start, end) = schedule.part_range(part);
-                end - start
-            })
-            .max()
-            .unwrap_or(0);
-        for offset in (0..part_len).step_by(tile_len) {
-            let tiles = (0..schedule.parts)
-                .into_par_iter()
-                .map(|part| {
-                    let (start, end) = schedule.part_range(part);
-                    let start = (start + offset).min(end);
-                    let end = (start + tile_len).min(end);
-                    let windows = (start..end)
-                        .flat_map(|position| {
-                            a_rows.iter().map(move |row| {
-                                let mut windows = DigitWindows::<D>::new();
-                                windows.load(&row[position * plan.num_digits_inner]);
-                                windows
-                            })
-                        })
-                        .collect::<Vec<_>>();
-                    (start, windows)
-                })
-                .collect::<Vec<_>>();
-            partials.par_iter_mut().enumerate().try_for_each(
-                |(task, (accumulators, reduced, budget))| {
-                    let trace_block = task / schedule.parts;
-                    let part = task % schedule.parts;
-                    let (start, windows) = &tiles[part];
-                    let block_start = trace_block * plan.num_positions_per_block;
-                    let mut shifts = vec![0usize; rows_per_ring];
-                    visit_segment_ring_row_range::<D>(
-                        self,
-                        block_start + start,
-                        block_start + start + windows.len() / plan.n_a,
-                        |ring, selected_rows, committed_zero_masks| {
-                            if *budget + rows_per_ring > MAX_WIDE_ACCUMULATIONS {
-                                flush_digit_accumulators(accumulators, reduced);
-                                *budget = 0;
-                            }
-                            let position = ring - block_start - start;
-                            for column in 0..num_columns {
-                                let mut len = 0;
-                                for (row_offset, (row_indices, &mask)) in selected_rows
-                                    .chunks_exact(num_columns)
-                                    .zip(committed_zero_masks)
-                                    .enumerate()
-                                {
-                                    let hot = row_indices[column];
-                                    shifts[len] = row_offset * self.one_hot_k + usize::from(hot);
-                                    len += usize::from(row_is_committed(hot, mask, column));
-                                }
-                                for a in 0..plan.n_a {
-                                    windows[position * plan.n_a + a].accumulate(
-                                        &mut accumulators[column * plan.n_a + a],
-                                        &shifts[..len],
-                                    );
-                                }
-                            }
-                            *budget += rows_per_ring;
-                        },
-                    )
-                },
-            )?;
-        }
-        Ok(partials
+        let pair_shifts = DigitWindows::<D>::supports_pairs(self.one_hot_k);
+        let groups = blocks_per_column.div_ceil(group_len);
+        let grouped = (0..groups * schedule.parts)
             .into_par_iter()
-            .map(|(mut accumulators, mut reduced, _)| {
+            .map(|task| {
+                let group = task / schedule.parts;
+                let part = task % schedule.parts;
+                let first_block = group * group_len;
+                let blocks = (blocks_per_column - first_block).min(group_len);
+                let width = num_columns * plan.n_a;
+                let mut accumulators = vec![[Fp128x8i32([0; 8]); D]; blocks * width];
+                let mut reduced = vec![CyclotomicRing::zero(); blocks * width];
+                let mut budget = 0usize;
+                let mut windows = (0..plan.n_a)
+                    .map(|_| DigitWindows::<D>::new())
+                    .collect::<Vec<_>>();
+                let mut shifts = (0..blocks * num_columns)
+                    .map(|_| Vec::with_capacity(rows_per_ring))
+                    .collect::<Vec<_>>();
+                let mut trace_rows = TraceRingRows::<D>::new(self)?;
+                let (start, end) = schedule.part_range(part);
+                for position in start..end {
+                    for (block, columns) in shifts.chunks_exact_mut(num_columns).enumerate() {
+                        let ring = (first_block + block) * plan.num_positions_per_block + position;
+                        let (selected_rows, committed_zero_masks) = trace_rows.fill_ring(ring)?;
+                        for (column, shifts) in columns.iter_mut().enumerate() {
+                            shifts.clear();
+                            for (row_offset, (row_indices, &mask)) in selected_rows
+                                .chunks_exact(num_columns)
+                                .zip(committed_zero_masks)
+                                .enumerate()
+                            {
+                                let hot = row_indices[column];
+                                if row_is_committed(hot, mask, column) {
+                                    shifts.push(row_offset * self.one_hot_k + usize::from(hot));
+                                }
+                            }
+                        }
+                    }
+                    if shifts.iter().all(Vec::is_empty) {
+                        continue;
+                    }
+                    if budget + rows_per_ring > MAX_WIDE_ACCUMULATIONS {
+                        flush_digit_accumulators(&mut accumulators, &mut reduced);
+                        budget = 0;
+                    }
+                    for (windows, row) in windows.iter_mut().zip(a_rows) {
+                        if pair_shifts {
+                            windows.load_paired(&row[position * plan.num_digits_inner]);
+                        } else {
+                            windows.load(&row[position * plan.num_digits_inner]);
+                        }
+                    }
+                    let mut terms = 0;
+                    for (block, columns) in shifts.chunks_exact(num_columns).enumerate() {
+                        for (column, shifts) in columns.iter().enumerate() {
+                            for (a, windows) in windows.iter().enumerate() {
+                                let dst = &mut accumulators[block * width + column * plan.n_a + a];
+                                let count = if pair_shifts {
+                                    windows.accumulate_paired(dst, shifts)
+                                } else {
+                                    windows.accumulate(dst, shifts);
+                                    shifts.len()
+                                };
+                                terms = terms.max(count);
+                            }
+                        }
+                    }
+                    budget += terms;
+                }
                 flush_digit_accumulators(&mut accumulators, &mut reduced);
-                reduced
+                Ok::<_, AkitaError>(reduced)
             })
-            .collect::<Vec<_>>())
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut partials = vec![Vec::new(); blocks_per_column * schedule.parts];
+        for (task, rows) in grouped.into_iter().enumerate() {
+            let first_block = task / schedule.parts * group_len;
+            let part = task % schedule.parts;
+            for (block, rows) in rows.chunks_exact(num_columns * plan.n_a).enumerate() {
+                partials[(first_block + block) * schedule.parts + part] = rows.to_vec();
+            }
+        }
+        Ok(partials)
     }
 }

@@ -941,12 +941,47 @@ fn assert_shared_commit<const D: usize>(k: usize, rows: usize, positions: usize,
 }
 
 #[test]
-fn shared_commit_tiles_and_budget_match_materialized_onehot() {
-    // D512/K16 flushes exactly at 1024 rings, across eight shared tiles
-    // with two ranks. Three workers split 2048 positions unequally.
-    assert_shared_commit::<512>(16, 262_144, 2048, 2);
+fn shared_commit_block_groups_and_budget_match_materialized_onehot() {
+    // Two grouped blocks reach the reduction budget with one worker;
+    // three workers split the position range unequally.
+    assert_shared_commit::<512>(16, 524_288, 8192, 2);
     assert_shared_commit::<512>(256, 4096, 512, 2);
     assert_shared_commit::<512>(16, 64, 8, 2);
+}
+
+#[test]
+fn paired_digit_windows_match_ring_products_at_budget() {
+    const D: usize = 512;
+    let source = digit_window_source::<D>();
+    let mut windows = DigitWindows::<D>::new();
+    windows.load_paired(&source);
+    let cases = [
+        vec![],
+        vec![0],
+        vec![D - 1],
+        vec![0, 1],
+        vec![D - 32, D - 1],
+        vec![0, 31, 63, 64, D - 2, D - 1],
+        (0..32).map(|row| row * 16 + (row * 13 + 5) % 16).collect(),
+    ];
+    for shifts in cases {
+        let mut actual = [[Fp128x8i32([0; 8]); D]];
+        let mut expected = CyclotomicRing::zero();
+        let mut product = CyclotomicRing::zero();
+        for &shift in &shifts {
+            source.shift_accumulate_into(&mut product, shift);
+        }
+        let terms = windows.accumulate_paired(&mut actual[0], &shifts);
+        actual[0].fill(Fp128x8i32([0; 8]));
+        let repetitions = MAX_WIDE_ACCUMULATIONS / terms.max(1);
+        for _ in 0..repetitions {
+            let _ = windows.accumulate_paired(&mut actual[0], &shifts);
+            expected += product;
+        }
+        let mut reduced = [CyclotomicRing::zero()];
+        flush_digit_accumulators(&mut actual, &mut reduced);
+        assert_eq!(reduced[0], expected);
+    }
 }
 
 #[test]
