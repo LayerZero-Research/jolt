@@ -16,9 +16,8 @@ use akita_params::{
 };
 use akita_schedules::{ResolvedScheduleRow, ValidatedScheduleCatalog};
 use jolt_akita::configs::{
-    JoltDenseBounded, JoltDenseFull, JoltOneHotK16, JoltOneHotK16MultiChunk, JoltOneHotK16W2R2,
-    JoltOneHotK16W4R2, JoltOneHotK256, JoltOneHotK256MultiChunk, JoltOneHotK256W2R2,
-    JoltOneHotK256W4R2,
+    JoltDenseBounded, JoltDenseFull, JoltOneHotK16, JoltOneHotK16W2R2, JoltOneHotK16W4R2,
+    JoltOneHotK16W8R2, JoltOneHotK256, JoltOneHotK256W2R2, JoltOneHotK256W4R2, JoltOneHotK256W8R2,
 };
 use jolt_akita::schedule_registry::{
     dense_group_profile, FIXTURE_K16_FINAL_NUM_VARS, FIXTURE_TRUSTED_ADVICE_GROUP,
@@ -203,8 +202,8 @@ fn multi_chunk_catalogs_cover_every_supported_profile() {
         (
             AkitaOneHotChunkProfile::Eight,
             ChunkedWitnessCfg::d64_production(),
-            JoltOneHotK16MultiChunk::schedule_family_name(),
-            JoltOneHotK256MultiChunk::schedule_family_name(),
+            JoltOneHotK16W8R2::schedule_family_name(),
+            JoltOneHotK256W8R2::schedule_family_name(),
         ),
     ] {
         for (one_hot_k, family_name) in [
@@ -521,11 +520,11 @@ fn catalogs_have_exact_emitted_keys() {
             one_hot_catalog(AKITA_ONE_HOT_K256, AkitaOneHotChunkProfile::Four),
         ),
         (
-            "jolt-fp128-onehot-k16-multi-chunk",
+            "jolt-fp128-onehot-k16-w8r2",
             one_hot_catalog(AKITA_ONE_HOT_K16, AkitaOneHotChunkProfile::Eight),
         ),
         (
-            "jolt-fp128-onehot-k256-multi-chunk",
+            "jolt-fp128-onehot-k256-w8r2",
             one_hot_catalog(AKITA_ONE_HOT_K256, AkitaOneHotChunkProfile::Eight),
         ),
         ("jolt-fp128-dense-bounded", dense_catalog()),

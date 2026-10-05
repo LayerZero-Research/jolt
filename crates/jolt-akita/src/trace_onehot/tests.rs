@@ -540,10 +540,8 @@ fn blockwise_opening_kernels_match_materialized_onehot() {
     assert_opening_kernels_match_materialized::<64>(16, 32, 4, Some(1));
 }
 
-#[test]
-fn batch_decompose_rejects_zero_positions_per_block() {
-    const D: usize = 64;
-    let columns = TraceOneHotColumn::new(
+fn batch_decompose_test_source<const D: usize>() -> Vec<TraceOneHotColumn> {
+    TraceOneHotColumn::new(
         16,
         D,
         Arc::new(TestRows {
@@ -553,10 +551,16 @@ fn batch_decompose_rejects_zero_positions_per_block() {
             committed_zero_column: None,
         }),
     )
-    .unwrap();
-    let sources = columns.iter().collect::<Vec<_>>();
+    .unwrap()
+}
+
+fn batch_decompose_error<const D: usize>(
+    source: &[TraceOneHotColumn],
+    plan: DecomposeFoldBatchPlan<'_>,
+) -> Option<AkitaError> {
+    let sources = source.iter().collect::<Vec<_>>();
     let backend = test_backend();
-    let result = <TestBackend as OpeningBatchKernel<
+    <TestBackend as OpeningBatchKernel<
         TraceOneHotColumnBatchView<'_, D>,
         AkitaField,
         D,
@@ -564,22 +568,141 @@ fn batch_decompose_rejects_zero_positions_per_block() {
         &backend,
         None,
         <TraceOneHotColumn as RootOpeningSource<AkitaField, D>>::opening_batch(&sources).unwrap(),
+        plan,
+    )
+    .err()
+}
+
+fn sparse_challenges(count: usize) -> Vec<SparseChallenge> {
+    vec![
+        SparseChallenge {
+            positions: vec![0].into(),
+            coeffs: vec![1].into(),
+        };
+        count
+    ]
+}
+
+#[test]
+fn batch_decompose_rejects_zero_positions_per_block() {
+    const D: usize = 64;
+    let source = batch_decompose_test_source::<D>();
+    let error = batch_decompose_error::<D>(
+        &source,
         DecomposeFoldBatchPlan::Sparse {
             challenges: &[],
             num_positions_per_block: 0,
             num_digits: 2,
             log_basis: 3,
         },
-    );
-    assert!(matches!(result, Err(AkitaError::InvalidInput(_))));
+    )
+    .unwrap();
+    assert!(matches!(error, AkitaError::InvalidInput(_)));
+}
+
+#[test]
+fn batch_decompose_rejects_malformed_challenge_count() {
+    const D: usize = 64;
+    const POSITIONS_PER_BLOCK: usize = 2;
+    let source = batch_decompose_test_source::<D>();
+    let num_blocks = RootPolyShape::<AkitaField, D>::num_live_ring_elems(&source[0])
+        .div_ceil(POSITIONS_PER_BLOCK);
+    let challenges = Challenges::from_sparse(
+        sparse_challenges(2 * num_blocks * source.len()),
+        num_blocks,
+        2 * source.len(),
+    )
+    .unwrap();
+    let chunk_ranges = akita_params::dyadic_block_ranges(num_blocks, 2).unwrap();
+    let error = batch_decompose_error::<D>(
+        &source,
+        DecomposeFoldBatchPlan::SparseChunked {
+            challenges: &challenges,
+            chunk_ranges: &chunk_ranges,
+            num_positions_per_block: POSITIONS_PER_BLOCK,
+            num_digits: 2,
+            log_basis: 3,
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        error,
+        AkitaError::InvalidSize { expected, actual }
+            if expected == num_blocks * source.len() && actual == 2 * num_blocks * source.len()
+    ));
+}
+
+#[test]
+fn batch_decompose_rejects_nonuniform_live_block_geometry() {
+    const D: usize = 64;
+    const POSITIONS_PER_BLOCK: usize = 2;
+    let source = batch_decompose_test_source::<D>();
+    let num_blocks = RootPolyShape::<AkitaField, D>::num_live_ring_elems(&source[0])
+        .div_ceil(POSITIONS_PER_BLOCK);
+    let declared_num_blocks = num_blocks + 1;
+    let challenges = Challenges::from_sparse(
+        sparse_challenges(declared_num_blocks * source.len()),
+        declared_num_blocks,
+        source.len(),
+    )
+    .unwrap();
+    let chunk_ranges = akita_params::dyadic_block_ranges(num_blocks, 2).unwrap();
+    let error = batch_decompose_error::<D>(
+        &source,
+        DecomposeFoldBatchPlan::SparseChunked {
+            challenges: &challenges,
+            chunk_ranges: &chunk_ranges,
+            num_positions_per_block: POSITIONS_PER_BLOCK,
+            num_digits: 2,
+            log_basis: 3,
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        error,
+        AkitaError::InvalidInput(message)
+            if message == "batched decompose_fold sources have different live-block extents"
+    ));
+}
+
+#[test]
+fn batch_decompose_rejects_noncanonical_chunk_ranges() {
+    const D: usize = 64;
+    const POSITIONS_PER_BLOCK: usize = 2;
+    let source = batch_decompose_test_source::<D>();
+    let num_blocks = RootPolyShape::<AkitaField, D>::num_live_ring_elems(&source[0])
+        .div_ceil(POSITIONS_PER_BLOCK);
+    let challenges = Challenges::from_sparse(
+        sparse_challenges(num_blocks * source.len()),
+        num_blocks,
+        source.len(),
+    )
+    .unwrap();
+    let chunk_ranges = [0..num_blocks, 0..0];
+    let error = batch_decompose_error::<D>(
+        &source,
+        DecomposeFoldBatchPlan::SparseChunked {
+            challenges: &challenges,
+            chunk_ranges: &chunk_ranges,
+            num_positions_per_block: POSITIONS_PER_BLOCK,
+            num_digits: 2,
+            log_basis: 3,
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        error,
+        AkitaError::InvalidInput(message) if message == "noncanonical fold chunk ranges"
+    ));
 }
 
 #[test]
 fn small_k256_blocks_commit_like_materialized_onehot() {
     const D: usize = 64;
     const K: usize = 256;
-    const ROWS: usize = 32;
-    const COLUMNS: usize = 27;
+    // The native commitment comparison uses the admitted (20, 29) fixture.
+    const ROWS: usize = 1 << 12;
+    const COLUMNS: usize = 29;
     const POSITIONS_PER_BLOCK: usize = 2;
     let columns = TraceOneHotColumn::new(
         K,

@@ -25,14 +25,8 @@ pub mod emit {
     use jolt_claims::protocols::jolt::lattice::{one_hot_trace_columns, OneHotTraceShape};
     use jolt_claims::protocols::jolt::{JoltFormulaDimensions, JoltOneHotDimensions};
 
-    use crate::configs::{
-        AkitaOneHotChunkProfile, JoltDenseBounded, JoltDenseFull, JoltOneHotK16,
-        JoltOneHotK16Direct, JoltOneHotK16MultiChunk, JoltOneHotK16MultiChunkDirect,
-        JoltOneHotK16W2R2, JoltOneHotK16W2R2Direct, JoltOneHotK16W4R2, JoltOneHotK16W4R2Direct,
-        JoltOneHotK256, JoltOneHotK256Direct, JoltOneHotK256MultiChunk,
-        JoltOneHotK256MultiChunkDirect, JoltOneHotK256W2R2, JoltOneHotK256W2R2Direct,
-        JoltOneHotK256W4R2, JoltOneHotK256W4R2Direct,
-    };
+    use crate::configs::{AkitaOneHotChunkProfile, JoltDenseBounded, JoltDenseFull};
+    use crate::one_hot_family::{with_one_hot_family, OneHotFamily};
     use crate::planning::plan_schedule;
     use crate::{AKITA_ONE_HOT_K16, AKITA_ONE_HOT_K256};
 
@@ -57,71 +51,23 @@ pub mod emit {
         plan_schedule::<Cfg>(&ScheduleLookupKey::single(key), &[])
     }
 
-    fn regen_one_hot_k16(key: PolynomialGroupLayout) -> Result<FoldSchedule, AkitaError> {
-        if key.num_vars() >= RECURSIVE_TRACE_LOG_T_CUTOVER + K16_COLUMN_VARIABLES {
-            regen::<JoltOneHotK16>(key)
-        } else {
-            regen::<JoltOneHotK16Direct>(key)
-        }
-    }
-
-    fn regen_one_hot_k256(key: PolynomialGroupLayout) -> Result<FoldSchedule, AkitaError> {
-        if key.num_vars() >= RECURSIVE_TRACE_LOG_T_CUTOVER + K256_COLUMN_VARIABLES {
-            regen::<JoltOneHotK256>(key)
-        } else {
-            regen::<JoltOneHotK256Direct>(key)
-        }
-    }
-
-    fn regen_one_hot_k16_w2r2(key: PolynomialGroupLayout) -> Result<FoldSchedule, AkitaError> {
-        if key.num_vars() >= RECURSIVE_TRACE_LOG_T_CUTOVER + K16_COLUMN_VARIABLES {
-            regen::<JoltOneHotK16W2R2>(key)
-        } else {
-            regen::<JoltOneHotK16W2R2Direct>(key)
-        }
-    }
-
-    fn regen_one_hot_k256_w2r2(key: PolynomialGroupLayout) -> Result<FoldSchedule, AkitaError> {
-        if key.num_vars() >= RECURSIVE_TRACE_LOG_T_CUTOVER + K256_COLUMN_VARIABLES {
-            regen::<JoltOneHotK256W2R2>(key)
-        } else {
-            regen::<JoltOneHotK256W2R2Direct>(key)
-        }
-    }
-
-    fn regen_one_hot_k16_w4r2(key: PolynomialGroupLayout) -> Result<FoldSchedule, AkitaError> {
-        if key.num_vars() >= RECURSIVE_TRACE_LOG_T_CUTOVER + K16_COLUMN_VARIABLES {
-            regen::<JoltOneHotK16W4R2>(key)
-        } else {
-            regen::<JoltOneHotK16W4R2Direct>(key)
-        }
-    }
-
-    fn regen_one_hot_k256_w4r2(key: PolynomialGroupLayout) -> Result<FoldSchedule, AkitaError> {
-        if key.num_vars() >= RECURSIVE_TRACE_LOG_T_CUTOVER + K256_COLUMN_VARIABLES {
-            regen::<JoltOneHotK256W4R2>(key)
-        } else {
-            regen::<JoltOneHotK256W4R2Direct>(key)
-        }
-    }
-
-    fn regen_one_hot_k16_multi_chunk(
+    fn regen_one_hot_k16<Cfg: CommitmentConfig, DirectCfg: CommitmentConfig>(
         key: PolynomialGroupLayout,
     ) -> Result<FoldSchedule, AkitaError> {
         if key.num_vars() >= RECURSIVE_TRACE_LOG_T_CUTOVER + K16_COLUMN_VARIABLES {
-            regen::<JoltOneHotK16MultiChunk>(key)
+            regen::<Cfg>(key)
         } else {
-            regen::<JoltOneHotK16MultiChunkDirect>(key)
+            regen::<DirectCfg>(key)
         }
     }
 
-    fn regen_one_hot_k256_multi_chunk(
+    fn regen_one_hot_k256<Cfg: CommitmentConfig, DirectCfg: CommitmentConfig>(
         key: PolynomialGroupLayout,
     ) -> Result<FoldSchedule, AkitaError> {
         if key.num_vars() >= RECURSIVE_TRACE_LOG_T_CUTOVER + K256_COLUMN_VARIABLES {
-            regen::<JoltOneHotK256MultiChunk>(key)
+            regen::<Cfg>(key)
         } else {
-            regen::<JoltOneHotK256MultiChunkDirect>(key)
+            regen::<DirectCfg>(key)
         }
     }
 
@@ -247,55 +193,24 @@ pub mod emit {
     /// Instance-specific grouped advice/program rows are planned during setup
     /// and folded into the exact catalog serialized with that verifier setup.
     pub fn family_specs(output_dir: PathBuf) -> Result<Vec<EmitSpec>, AkitaError> {
-        Ok(vec![
-            spec::<JoltOneHotK16>(
-                JoltOneHotK16::schedule_family_name(),
-                one_hot_keys(AKITA_ONE_HOT_K16, AkitaOneHotChunkProfile::Single)?,
-                regen_one_hot_k16,
-                output_dir.clone(),
-            )?,
-            spec::<JoltOneHotK256>(
-                JoltOneHotK256::schedule_family_name(),
-                one_hot_keys(AKITA_ONE_HOT_K256, AkitaOneHotChunkProfile::Single)?,
-                regen_one_hot_k256,
-                output_dir.clone(),
-            )?,
-            spec::<JoltOneHotK16W2R2>(
-                JoltOneHotK16W2R2::schedule_family_name(),
-                one_hot_keys(AKITA_ONE_HOT_K16, AkitaOneHotChunkProfile::Two)?,
-                regen_one_hot_k16_w2r2,
-                output_dir.clone(),
-            )?,
-            spec::<JoltOneHotK256W2R2>(
-                JoltOneHotK256W2R2::schedule_family_name(),
-                one_hot_keys(AKITA_ONE_HOT_K256, AkitaOneHotChunkProfile::Two)?,
-                regen_one_hot_k256_w2r2,
-                output_dir.clone(),
-            )?,
-            spec::<JoltOneHotK16W4R2>(
-                JoltOneHotK16W4R2::schedule_family_name(),
-                one_hot_keys(AKITA_ONE_HOT_K16, AkitaOneHotChunkProfile::Four)?,
-                regen_one_hot_k16_w4r2,
-                output_dir.clone(),
-            )?,
-            spec::<JoltOneHotK256W4R2>(
-                JoltOneHotK256W4R2::schedule_family_name(),
-                one_hot_keys(AKITA_ONE_HOT_K256, AkitaOneHotChunkProfile::Four)?,
-                regen_one_hot_k256_w4r2,
-                output_dir.clone(),
-            )?,
-            spec::<JoltOneHotK16MultiChunk>(
-                JoltOneHotK16MultiChunk::schedule_family_name(),
-                one_hot_keys(AKITA_ONE_HOT_K16, AkitaOneHotChunkProfile::Eight)?,
-                regen_one_hot_k16_multi_chunk,
-                output_dir.clone(),
-            )?,
-            spec::<JoltOneHotK256MultiChunk>(
-                JoltOneHotK256MultiChunk::schedule_family_name(),
-                one_hot_keys(AKITA_ONE_HOT_K256, AkitaOneHotChunkProfile::Eight)?,
-                regen_one_hot_k256_multi_chunk,
-                output_dir.clone(),
-            )?,
+        let mut specs = Vec::with_capacity(OneHotFamily::ALL.len() + 2);
+        for family in OneHotFamily::ALL.iter().copied() {
+            specs.push(with_one_hot_family!(family, |Cfg, DirectCfg| {
+                let regen: fn(PolynomialGroupLayout) -> Result<FoldSchedule, AkitaError> =
+                    if family.k() == AKITA_ONE_HOT_K16 {
+                        regen_one_hot_k16::<Cfg, DirectCfg>
+                    } else {
+                        regen_one_hot_k256::<Cfg, DirectCfg>
+                    };
+                spec::<Cfg>(
+                    family.family_name(),
+                    one_hot_keys(family.k(), family.profile())?,
+                    regen,
+                    output_dir.clone(),
+                )
+            })?);
+        }
+        specs.extend([
             spec::<JoltDenseBounded>(
                 JoltDenseBounded::schedule_family_name(),
                 keys(&[1, 2], DENSE_NUM_VARS),
@@ -308,6 +223,7 @@ pub mod emit {
                 regen::<JoltDenseFull>,
                 output_dir,
             )?,
-        ])
+        ]);
+        Ok(specs)
     }
 }
