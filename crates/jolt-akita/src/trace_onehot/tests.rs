@@ -19,6 +19,7 @@ use akita_pcs::AkitaError;
 use akita_pcs::{AkitaProverSetup, CpuBackend, OneHotPoly};
 use akita_types::PreparedSubringCoefficientPackingPoint;
 use jolt_field::{Fp128x8i32, One, Ring};
+use rayon::ThreadPoolBuilder;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::commit::commit_columns;
@@ -976,4 +977,151 @@ fn coefficient_packing_rejects_invalid_selector() {
     )
     .expect_err("selector outside K must reject");
     assert!(error.to_string().contains("outside K=16"));
+}
+
+fn assert_shared_commit<const D: usize>(k: usize, rows: usize, positions: usize, n_a: usize) {
+    let fills = Arc::new(AtomicUsize::new(0));
+    let columns = TraceOneHotColumn::new(
+        k,
+        D,
+        Arc::new(CountingRows {
+            inner: TestRows {
+                rows,
+                columns: 3,
+                k,
+                committed_zero_column: Some(0),
+            },
+            fills: Arc::clone(&fills),
+        }),
+    )
+    .unwrap();
+    let source = &columns[0];
+    let blocks = RootPolyShape::<AkitaField, D>::num_ring_elems(source).div_ceil(positions);
+    let setup = AkitaProverSetup::<AkitaField>::generate_with_capacity(
+        1,
+        1,
+        SetupMatrixCapacity {
+            num_field_elements: n_a * D * positions,
+        },
+    )
+    .unwrap();
+    let plan = CommitInnerPlan {
+        ring_dimension: D,
+        num_live_blocks: blocks,
+        n_a,
+        num_positions_per_block: positions,
+        num_digits_inner: 1,
+        log_basis_inner: 1,
+    };
+    let a_view = setup
+        .expanded
+        .shared_matrix()
+        .ring_view::<D>(n_a, positions)
+        .unwrap();
+    let a_rows = a_view.rows().collect::<Vec<_>>();
+    let expected = (0..3)
+        .map(|column| {
+            let poly = OneHotPoly::<AkitaField, u8>::new(
+                k,
+                (0..rows)
+                    .map(|row| {
+                        let hot = ((row * (2 * column + 1) + column) % k) as u8;
+                        (hot != 0 || column == 0).then_some(hot)
+                    })
+                    .collect(),
+            )
+            .unwrap();
+            let coefficients = poly.source_coefficients().unwrap();
+            let mut expected = vec![CyclotomicRing::<AkitaField, D>::zero(); blocks * n_a];
+            for (ring, coefficients) in coefficients.chunks_exact(D).enumerate() {
+                for (a, a_row) in a_rows.iter().enumerate() {
+                    let mut sum = AkitaWideRing::<D>::zero();
+                    let entry = AkitaWideRing::<D>::from_ring(&a_row[ring % positions]);
+                    for (shift, coefficient) in coefficients.iter().enumerate() {
+                        if *coefficient == AkitaField::one() {
+                            entry.shift_accumulate_into(&mut sum, shift);
+                        }
+                    }
+                    expected[ring / positions * n_a + a] += sum.reduce::<AkitaField>();
+                }
+            }
+            expected
+        })
+        .collect::<Vec<_>>();
+    for workers in [1, 3, 32] {
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build()
+            .unwrap();
+        let actual = pool
+            .install(|| commit_columns::<D>(&setup.expanded, source, plan))
+            .unwrap();
+        assert_eq!(fills.swap(0, Ordering::Relaxed), rows);
+        for (actual, expected) in actual.iter().zip(&expected) {
+            assert_eq!(actual.as_ring_slice::<D>().unwrap(), expected);
+        }
+    }
+}
+
+#[test]
+fn shared_commit_block_groups_and_budget_match_materialized_onehot() {
+    // Two grouped blocks reach the reduction budget with one worker;
+    // three workers split the position range unequally.
+    assert_shared_commit::<512>(16, 524_288, 8192, 2);
+    assert_shared_commit::<512>(256, 4096, 512, 2);
+    assert_shared_commit::<512>(16, 64, 8, 2);
+}
+
+#[test]
+fn paired_digit_windows_match_ring_products_at_budget() {
+    const D: usize = 512;
+    let source = digit_window_source::<D>();
+    let mut windows = DigitWindows::<D>::new();
+    windows.load_paired(&source);
+    let cases = [
+        vec![],
+        vec![0],
+        vec![D - 1],
+        vec![0, 1],
+        vec![D - 32, D - 1],
+        vec![0, 31, 63, 64, D - 2, D - 1],
+        (0..32).map(|row| row * 16 + (row * 13 + 5) % 16).collect(),
+    ];
+    for shifts in cases {
+        let mut actual = [[Fp128x8i32([0; 8]); D]];
+        let mut expected = CyclotomicRing::zero();
+        let mut product = CyclotomicRing::zero();
+        for &shift in &shifts {
+            source.shift_accumulate_into(&mut product, shift);
+        }
+        let terms = windows.accumulate_paired(&mut actual[0], &shifts);
+        actual[0].fill(Fp128x8i32([0; 8]));
+        let repetitions = MAX_WIDE_ACCUMULATIONS / terms.max(1);
+        for _ in 0..repetitions {
+            let _ = windows.accumulate_paired(&mut actual[0], &shifts);
+            expected += product;
+        }
+        let mut reduced = [CyclotomicRing::zero()];
+        flush_digit_accumulators(&mut actual, &mut reduced);
+        assert_eq!(reduced[0], expected);
+    }
+}
+
+#[test]
+fn digit_windows_preserve_boundary_shifts() {
+    const D: usize = 512;
+    let source = digit_window_source::<D>();
+    let mut windows = DigitWindows::<D>::new();
+    windows.load(&source);
+    for shifts in [vec![], vec![0], vec![D - 1], vec![0, D - 1]] {
+        let mut actual = [[Fp128x8i32([0; 8]); D]];
+        windows.accumulate(&mut actual[0], &shifts);
+        let mut reduced = [CyclotomicRing::zero()];
+        flush_digit_accumulators(&mut actual, &mut reduced);
+        let mut expected = CyclotomicRing::zero();
+        for shift in shifts {
+            source.shift_accumulate_into(&mut expected, shift);
+        }
+        assert_eq!(reduced[0], expected);
+    }
 }

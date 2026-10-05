@@ -193,43 +193,72 @@ pub(super) fn visit_segment_ring_row_range<const D: usize>(
             "trace one-hot ring range {ring_start}..{ring_end} exceeds segment size {segment_rings}"
         )));
     }
-    let rows_per_ring = D / source.one_hot_k;
-    let num_columns = source.rows.num_columns();
-    if !source.rows.num_rows().is_multiple_of(rows_per_ring) {
-        return Err(AkitaError::InvalidInput(format!(
-            "trace one-hot row count {} is not aligned to {rows_per_ring} rows per D={D} ring",
-            source.rows.num_rows()
-        )));
-    }
-    let row_index_count = num_columns.checked_mul(rows_per_ring).ok_or_else(|| {
-        AkitaError::InvalidInput("trace one-hot row-index buffer size overflow".to_string())
-    })?;
-    let mut selected_rows = vec![NO_SELECTED_ROW; row_index_count];
-    let mut committed_zero_masks = vec![0u64; rows_per_ring];
+    let mut rows = TraceRingRows::<D>::new(source)?;
     for ring in ring_start..ring_end {
-        let row_start = ring * rows_per_ring;
-        let populated_rows = source
+        let (selected_rows, committed_zero_masks) = rows.fill_ring(ring)?;
+        visit(ring, selected_rows, committed_zero_masks);
+    }
+    Ok(())
+}
+
+/// Reuses the row buffers while visiting nonadjacent blocks at the same A position.
+pub(super) struct TraceRingRows<'a, const D: usize> {
+    source: &'a TraceOneHotColumn,
+    selected_rows: Vec<u8>,
+    committed_zero_masks: Vec<u64>,
+}
+
+impl<'a, const D: usize> TraceRingRows<'a, D> {
+    pub(super) fn new(source: &'a TraceOneHotColumn) -> Result<Self, AkitaError> {
+        validate_dimension::<D>(source.one_hot_k)?;
+        if source.one_hot_k >= D {
+            return Err(AkitaError::InvalidInput(
+                "trace row buffers require K < D".into(),
+            ));
+        }
+        let rows_per_ring = D / source.one_hot_k;
+        if !source.rows.num_rows().is_multiple_of(rows_per_ring) {
+            return Err(AkitaError::InvalidInput(format!(
+                "trace one-hot row count {} is not aligned to {rows_per_ring} rows per D={D} ring",
+                source.rows.num_rows()
+            )));
+        }
+        let row_index_count = source
             .rows
-            .num_rows()
-            .saturating_sub(row_start)
-            .min(rows_per_ring);
-        let populated_indices = &mut selected_rows[..populated_rows * num_columns];
-        let populated_masks = &mut committed_zero_masks[..populated_rows];
-        source.rows.fill_rows(row_start, populated_indices);
-        source
+            .num_columns()
+            .checked_mul(rows_per_ring)
+            .ok_or_else(|| {
+                AkitaError::InvalidInput("trace one-hot row-index buffer size overflow".into())
+            })?;
+        Ok(Self {
+            source,
+            selected_rows: vec![NO_SELECTED_ROW; row_index_count],
+            committed_zero_masks: vec![0; rows_per_ring],
+        })
+    }
+
+    pub(super) fn fill_ring(&mut self, ring: usize) -> Result<(&[u8], &[u64]), AkitaError> {
+        let rows_per_ring = D / self.source.one_hot_k;
+        let row_start = ring
+            .checked_mul(rows_per_ring)
+            .filter(|&row| row < self.source.num_rows)
+            .ok_or_else(|| AkitaError::InvalidInput("trace ring exceeds row extent".into()))?;
+        self.source
             .rows
-            .fill_committed_digit_zero_masks(row_start, populated_masks);
-        for &hot in populated_indices.iter() {
-            if hot != NO_SELECTED_ROW && usize::from(hot) >= source.one_hot_k {
+            .fill_rows(row_start, &mut self.selected_rows);
+        self.source
+            .rows
+            .fill_committed_digit_zero_masks(row_start, &mut self.committed_zero_masks);
+        for &hot in &self.selected_rows {
+            if usize::from(hot) >= self.source.one_hot_k {
                 return Err(AkitaError::InvalidInput(format!(
                     "trace one-hot row {hot} is outside K={}",
-                    source.one_hot_k
+                    self.source.one_hot_k
                 )));
             }
         }
-        visit(ring, populated_indices, populated_masks);
+        Ok((&self.selected_rows, &self.committed_zero_masks))
     }
-    Ok(())
 }
 
 pub(super) fn coefficient_packing_partials_columns<E, const D: usize>(
