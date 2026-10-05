@@ -57,7 +57,6 @@ use jolt_field::JoltField;
 use jolt_poly::BindingOrder;
 use jolt_poly::{IdentityPolynomial, MultilinearEvaluation, Polynomial, UnivariatePoly};
 use jolt_sumcheck::{ProveRounds, SumcheckError};
-use jolt_utils::unsafe_allocate_zero_vec;
 use jolt_verifier::stages::relations::{
     ConcreteSumcheck, SumcheckInputClaims, SumcheckOutputClaims,
 };
@@ -74,7 +73,7 @@ use super::instruction_read_raf::InstructionCycleRow;
 use super::lazy_ra::{ChunkIndexSource, LazyFoldedRa};
 use super::support::{
     bind_all, eq_table, gamma_powers, pair, par_sum_pair_groups, par_sum_pair_groups_reusing,
-    round_poly_from_skipped_evals, scaled_eq_table, RoundProgress,
+    round_poly_from_skipped_evals, weighted_eq_sum, RoundProgress,
 };
 use crate::{
     KernelError, PrepareKernel, ProofSession, ProverInputs, SumcheckKernel, SumcheckKernelError,
@@ -939,77 +938,49 @@ impl<F: JoltField> PrepareKernel<F, BytecodeReadRafCycle<F>> for OptimizedByteco
             }
         }
 
-        let mut combined = unsafe_allocate_zero_vec(cycles);
-        for (point, weight) in stage_cycle_points[..base_stages].iter().zip(stage_weights) {
-            let scaled = scaled_eq_table(point, weight);
-            #[cfg(feature = "parallel")]
-            combined
-                .par_iter_mut()
-                .zip(scaled.par_iter())
-                .for_each(|(acc, term)| *acc += *term);
-            #[cfg(not(feature = "parallel"))]
-            combined
-                .iter_mut()
-                .zip(scaled.iter())
-                .for_each(|(acc, term)| *acc += *term);
-        }
+        let base_terms = stage_cycle_points[..base_stages]
+            .iter()
+            .map(Vec::as_slice)
+            .zip(stage_weights);
         // The field-inline stage-4/5 legs ride their own cycle sub-points at γ³/γ⁴. A
         // trace without field-inline activity folds both weights to zero (its
-        // field-register operands are all absent), so the two dense eq tables are skipped
-        // exactly.
+        // field-register operands are all absent), so both terms are skipped exactly.
         #[cfg(feature = "field-inline")]
-        for (point, weight) in [
-            (
-                field_read_write_cycle.as_slice(),
-                gamma_powers[3] * field_folds[3],
-            ),
-            (
-                field_val_evaluation_cycle.as_slice(),
-                gamma_powers[4] * field_folds[4],
-            ),
-        ] {
-            if weight.is_zero() {
-                continue;
-            }
-            let scaled = scaled_eq_table(point, weight);
-            #[cfg(feature = "parallel")]
-            combined
-                .par_iter_mut()
-                .zip(scaled.par_iter())
-                .for_each(|(acc, term)| *acc += *term);
-            #[cfg(not(feature = "parallel"))]
-            combined
-                .iter_mut()
-                .zip(scaled.iter())
-                .for_each(|(acc, term)| *acc += *term);
-        }
+        let terms = base_terms.chain(
+            [
+                (
+                    field_read_write_cycle.as_slice(),
+                    gamma_powers[3] * field_folds[3],
+                ),
+                (
+                    field_val_evaluation_cycle.as_slice(),
+                    gamma_powers[4] * field_folds[4],
+                ),
+            ]
+            .into_iter()
+            .filter(|(_, weight)| !weight.is_zero()),
+        );
+        #[cfg(not(feature = "field-inline"))]
+        let terms = base_terms;
+        let mut combined = weighted_eq_sum(dimensions.log_t(), terms);
         let entry_scalar = eq_address[relation.entry_bytecode_index()];
         combined[0] += gamma_powers[num_stages + 2] * entry_scalar;
 
         #[cfg(feature = "akita")]
         let fused_combined = {
             let store = stage_values[base_stages];
-            let mut combined = unsafe_allocate_zero_vec(cycles);
-            for stage in base_stages..num_stages {
+            let terms = (base_stages..num_stages).map(|stage| {
                 let value = if stage < base_stages + 2 {
                     store
                 } else {
                     F::one() - store
                 };
-                let scaled =
-                    scaled_eq_table(&stage_cycle_points[stage], gamma_powers[stage] * value);
-                #[cfg(feature = "parallel")]
-                combined
-                    .par_iter_mut()
-                    .zip(scaled.par_iter())
-                    .for_each(|(acc, term)| *acc += *term);
-                #[cfg(not(feature = "parallel"))]
-                combined
-                    .iter_mut()
-                    .zip(scaled.iter())
-                    .for_each(|(acc, term)| *acc += *term);
-            }
-            Polynomial::new(combined)
+                (
+                    stage_cycle_points[stage].as_slice(),
+                    gamma_powers[stage] * value,
+                )
+            });
+            Polynomial::new(weighted_eq_sum(dimensions.log_t(), terms))
         };
 
         let output_openings = bytecode::read_raf_output_openings(dimensions).bytecode_ra;
