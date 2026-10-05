@@ -15,6 +15,8 @@ use jolt_riscv::{
     CapturedState, CircuitFlags, Flags, JoltInstruction, JoltTraceRow, LoadState, NonMemoryState,
     StoreState,
 };
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
 use std::sync::Arc;
 
 use crate::backend::ProgramSource;
@@ -197,18 +199,24 @@ impl<T: TraceSource> TraceBackend<T> {
                 ),
             });
         }
-        let mut trace_rows = Vec::new();
-        let mut trailing_padding = 0;
-        for row in physical {
-            let compact = Self::compact_trace_row(row, &inputs.preprocessing)?;
-            if compact == JoltTraceRow::default() {
-                trailing_padding += 1;
-            } else {
-                trace_rows.resize(trace_rows.len() + trailing_padding, JoltTraceRow::default());
-                trailing_padding = 0;
-                trace_rows.push(compact);
-            }
-        }
+        let compact = |row| Self::compact_trace_row(row, &inputs.preprocessing);
+        #[cfg(feature = "parallel")]
+        let mut trace_rows = physical
+            .par_iter()
+            .map(compact)
+            .collect::<Result<Vec<_>, _>>()?;
+        #[cfg(not(feature = "parallel"))]
+        let mut trace_rows = physical
+            .iter()
+            .map(compact)
+            .collect::<Result<Vec<_>, _>>()?;
+        // Trailing padding is implied by the cycle domain; rows before the last
+        // real cycle are kept even when they compact to the default row.
+        let len = trace_rows
+            .iter()
+            .rposition(|row| *row != JoltTraceRow::default())
+            .map_or(0, |last| last + 1);
+        trace_rows.truncate(len);
         // The field-inline view replays the raw rows (payloads, register file, bridge
         // facts); share the source's allocation when it offers one, copying only for
         // sources that cannot.
