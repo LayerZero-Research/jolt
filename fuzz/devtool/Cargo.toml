@@ -15,3 +15,6 @@ path = "src/main.rs"
 jolt-akita = { path = "../../crates/jolt-akita" }
 jolt-akita-fuzz = { path = ".." }
 rayon = "1.12"
+akita-config = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "d98400c555a7fc779bb4e29c35fbd4adad3232d1", default-features = false }
+akita-params = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "d98400c555a7fc779bb4e29c35fbd4adad3232d1", default-features = false }
+akita-planner = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "d98400c555a7fc779bb4e29c35fbd4adad3232d1", default-features = false }

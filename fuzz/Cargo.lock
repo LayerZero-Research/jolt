@@ -1374,6 +1374,9 @@ dependencies = [
 name = "jolt-fuzz-dev"
 version = "0.0.0"
 dependencies = [
+ "akita-config",
+ "akita-params",
+ "akita-planner",
  "jolt-akita",
  "jolt-akita-fuzz",
  "rayon",

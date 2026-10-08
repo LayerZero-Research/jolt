@@ -22,6 +22,7 @@
 //! ```
 
 mod grid_sweep;
+mod probe;
 mod sweep;
 
 use jolt_akita_fuzz::env::MAX_CASE_COEFFS_ENV;
@@ -257,6 +258,7 @@ fn main() {
         },
         Some("explain-verifier") => explain_verifier(&args[1..]),
         Some("describe-planning") => describe_planning(&args[1..]),
+        Some("probe-planner") => probe::run(arg(1).unwrap_or_default(), arg(2) == Some("full")),
         Some("planning-case") => planning_case(&args[1..]),
         Some("grid-sweep") => grid_sweep::run(
             arg(1).and_then(|v| v.parse().ok()).unwrap_or(0),
