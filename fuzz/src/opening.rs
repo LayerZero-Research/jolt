@@ -5,7 +5,7 @@
 //! native `OneHotTrace` column group, proved in one heterogeneous batch. The
 //! driver goes through the same public seams production uses
 //! (`AkitaScheme::setup` with the grouped request, `transparent_object_setup`
-//! + `commit`, `commit_trace_one_hot`, `prove_batch`, `verify_batch`) and
+//! and `commit`, `commit_trace_one_hot`, `prove_batch`, `verify_batch`) and
 //! transports the verifier setup and proof through serde before verifying, as
 //! a deployed verifier receives them.
 //!

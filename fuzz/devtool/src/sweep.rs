@@ -182,7 +182,7 @@ fn evaluate(shapes: Vec<Shape>, plan: bool) -> Vec<Outcome> {
             if plan {
                 let mut done = done.lock().unwrap();
                 *done += 1;
-                if *done % 500 == 0 {
+                if done.is_multiple_of(500) {
                     eprintln!("  {done}/{total}");
                 }
             }

@@ -415,6 +415,7 @@ pub fn write_bundles(out: &Path) -> Result<(), String> {
         "muldiv-default",
         "muldiv-committed2",
         "muldiv-k256-address-first",
+        "muldiv-four-chunks",
         "advice-consumer-default",
         "interp-default",
         "interp-advice-large-default",
@@ -426,7 +427,7 @@ pub fn write_bundles(out: &Path) -> Result<(), String> {
         let (guest, options, args) = program::decode(&bytes);
         let proved = env::on_large_stack(|| program::prove(guest, &args, &options))
             .map_err(|failure| format!("{name}: {failure}"))?
-            .ok_or_else(|| format!("{name}: over the trace budget"))?;
+            .ok_or_else(|| format!("{name}: skipped (trace budget or unlisted K=256 group)"))?;
         let bundle = Bundle::new(
             &name,
             &proved.preprocessing.verifier,
