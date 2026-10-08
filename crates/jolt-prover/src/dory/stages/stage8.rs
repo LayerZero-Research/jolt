@@ -264,7 +264,7 @@ where
                 })
         })
         .collect::<Result<_, _>>()?;
-    drop(hint_by_id);
+    jolt_kernels::mem::drop_in_background_thread(hint_by_id);
 
     // Match the protocol's FieldRdInc splice with its backend-owned polynomial
     // and stage-0 hint at the same batch position.
