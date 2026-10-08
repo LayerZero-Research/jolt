@@ -21,12 +21,16 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Instant;
 
 use jolt_akita::AkitaChunkProfile;
-use jolt_akita_fuzz::shape::{self, Chunking, CommittedProgram, Shape, PROFILES};
+use jolt_akita_fuzz::shape::{
+    self, Chunking, CommittedProgram, Failure, Shape, MAX_LOG_CHUNKS, MAX_LOG_T, MIN_LOG_T,
+    PROFILES,
+};
 use rayon::prelude::*;
 
 const CHUNKINGS: [Chunking; 2] = [Chunking::Production, Chunking::ForcedK256];
@@ -39,8 +43,8 @@ fn families() -> impl Iterator<Item = (Chunking, AkitaChunkProfile)> {
 }
 
 /// One past the documented end, so the sweep also shows the rejection.
-fn log_ts() -> std::ops::RangeInclusive<usize> {
-    shape::MIN_LOG_T..=shape::MAX_LOG_T + 1
+fn log_ts() -> RangeInclusive<usize> {
+    MIN_LOG_T..=MAX_LOG_T + 1
 }
 
 fn base(chunking: Chunking, profile: AkitaChunkProfile, log_t: usize) -> Shape {
@@ -114,7 +118,7 @@ fn program_shapes() -> Vec<Shape> {
     for (chunking, profile) in families() {
         for log_t in log_ts() {
             for log_bytecode_len in log_bytecode_lens {
-                for log_chunks in 0..=shape::MAX_LOG_CHUNKS.min(log_bytecode_len) {
+                for log_chunks in 0..=MAX_LOG_CHUNKS.min(log_bytecode_len) {
                     for &image_words in &image_words {
                         for &(untrusted, trusted) in &advice {
                             shapes.push(Shape {
@@ -139,7 +143,7 @@ fn program_shapes() -> Vec<Shape> {
 struct Outcome {
     shape: Shape,
     in_contract: bool,
-    result: Result<usize, shape::Failure>,
+    result: Result<usize, Failure>,
     seconds: f64,
 }
 

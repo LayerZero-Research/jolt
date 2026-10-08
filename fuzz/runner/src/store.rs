@@ -3,17 +3,19 @@
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::env::consts::{ARCH, OS};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, Write};
+use std::io::{Read, Result as IoResult, Seek, Write};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
 }
 
-pub fn write_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
+pub fn write_json<T: Serialize>(path: &Path, value: &T) -> IoResult<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -63,8 +65,8 @@ pub fn machine_identity() -> Value {
     json!({
         "hostname": hostname(),
         "machine_id": machine_id,
-        "os": std::env::consts::OS,
-        "arch": std::env::consts::ARCH,
+        "os": OS,
+        "arch": ARCH,
         "cpu_model": cpu_model,
     })
 }
@@ -105,7 +107,7 @@ impl Store {
         }
     }
 
-    pub fn ensure(&self) -> std::io::Result<()> {
+    pub fn ensure(&self) -> IoResult<()> {
         for dir in [
             &self.corpus,
             &self.findings,
@@ -226,7 +228,7 @@ pub struct RotatingLog {
 }
 
 impl RotatingLog {
-    pub fn open(path: &Path, max_bytes: u64) -> std::io::Result<Self> {
+    pub fn open(path: &Path, max_bytes: u64) -> IoResult<Self> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }

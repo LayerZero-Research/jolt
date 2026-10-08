@@ -25,6 +25,7 @@ use common::jolt_device::JoltDevice;
 use jolt_akita::{AkitaCommitment, AkitaField, AkitaScheme};
 use jolt_prover::akita::preprocessing::{AkitaTranscript, AkitaVc, AkitaVerifierPreprocessing};
 use jolt_verifier::proof::JoltProof;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::input::Reader;
@@ -312,7 +313,7 @@ pub fn explain(data: &[u8]) -> String {
         honest_a.as_ref().and_then(|canonical| canonical[region_index(region)].as_deref())
             == bundle.region(region),
     ));
-    fn json<T: serde::de::DeserializeOwned + Serialize>(bytes: &[u8]) -> Option<String> {
+    fn json<T: DeserializeOwned + Serialize>(bytes: &[u8]) -> Option<String> {
         serde_json::to_string_pretty(&transport::decode::<T>(bytes)?).ok()
     }
     let debug = |bytes: &[u8]| -> Option<String> {

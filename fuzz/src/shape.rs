@@ -12,7 +12,7 @@
 //! grouped_setup_params`, which is crate-private. The `program` target
 //! exercises that private path itself on real guests.
 
-use std::fmt;
+use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::sync::Arc;
 
 use akita_params::PolynomialGroupLayout;
@@ -84,8 +84,8 @@ pub struct Shape {
     pub program: Option<CommittedProgram>,
 }
 
-impl fmt::Display for Shape {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for Shape {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         write!(
             f,
             "log_T={} K=2^{} profile={:?} bytecode=2^{} ram_K=2^{}",
@@ -205,8 +205,8 @@ pub struct Failure {
     pub message: String,
 }
 
-impl fmt::Display for Failure {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for Failure {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         write!(f, "{:?}: {}", self.stage, self.message)
     }
 }

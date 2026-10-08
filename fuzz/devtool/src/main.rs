@@ -24,13 +24,14 @@
 mod grid_sweep;
 mod sweep;
 
+use jolt_akita_fuzz::env::MAX_CASE_COEFFS_ENV;
 use jolt_akita_fuzz::input::SplitMix64;
-use jolt_akita_fuzz::targets;
+use jolt_akita_fuzz::targets::{self, ALL};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 fn list() {
-    for (name, _) in targets::ALL {
+    for (name, _) in ALL {
         println!("{name}");
     }
 }
@@ -87,7 +88,7 @@ fn replay(name: &str, inputs: &[PathBuf]) -> Result<(), String> {
 /// Per target: an all-zero input, an all-`0xff` input, 32 pseudo-random ones,
 /// and whatever structured seeds the target itself provides.
 fn seeds(out: &Path) -> Result<(), String> {
-    for (name, _) in targets::ALL {
+    for (name, _) in ALL {
         let dir = out.join(name);
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let write = |file: &str, bytes: &[u8]| {
@@ -112,10 +113,7 @@ fn seeds(out: &Path) -> Result<(), String> {
 fn explain_verifier(paths: &[String]) -> Result<(), String> {
     for path in paths {
         let data = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
-        println!(
-            "== {path}\n{}",
-            jolt_akita_fuzz::targets::verifier::explain(&data)
-        );
+        println!("== {path}\n{}", targets::verifier::explain(&data));
     }
     Ok(())
 }
@@ -164,10 +162,7 @@ fn planning_case(args: &[String]) -> Result<(), String> {
             _ => None,
         },
     };
-    std::env::set_var(
-        jolt_akita_fuzz::env::MAX_CASE_COEFFS_ENV,
-        u128::MAX.to_string(),
-    );
+    std::env::set_var(MAX_CASE_COEFFS_ENV, u128::MAX.to_string());
     jolt_akita_fuzz::env::init();
     eprintln!("{shape} (in contract: {})", shape.in_contract());
     let started = Instant::now();
@@ -215,7 +210,7 @@ fn main() {
             None => Err("build-guests OUT_DIR".to_string()),
         },
         Some("bundles") => match arg(1) {
-            Some(dir) => jolt_akita_fuzz::targets::verifier::write_bundles(Path::new(dir)),
+            Some(dir) => targets::verifier::write_bundles(Path::new(dir)),
             None => Err("bundles OUT_DIR".to_string()),
         },
         Some("explain-verifier") => explain_verifier(&args[1..]),

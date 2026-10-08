@@ -7,11 +7,13 @@
 //! AddressSanitizer, SanitizerCoverage, debug assertions, overflow checks)
 //! and copies the results with everything the campaign needs offline.
 
+use crate::libfuzzer::BINARY;
 use crate::registry;
 use crate::store::{now, write_json};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -125,7 +127,7 @@ pub fn run(options: Prepare) -> Result<(), String> {
             &options.sanitizer,
             "--target",
             &triple,
-            crate::libfuzzer::BINARY,
+            BINARY,
         ])
         .current_dir(&fuzz);
     if options.sequential {
@@ -156,7 +158,7 @@ pub fn run(options: Prepare) -> Result<(), String> {
         std::fs::create_dir_all(dist.join(sub)).map_err(|e| e.to_string())?;
     }
     let built = fuzz.join("target").join(&triple).join("release");
-    let binary = crate::libfuzzer::BINARY;
+    let binary = BINARY;
     std::fs::copy(built.join(binary), dist.join("bin").join(binary))
         .map_err(|e| format!("copy instrumented {binary}: {e} (was `cargo fuzz build` run?)"))?;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -186,7 +188,7 @@ pub fn run(options: Prepare) -> Result<(), String> {
     // Seeds use the packaged artifacts so their case selectors match the
     // catalogs the campaign will load.
     // Guests are built with the `jolt` CLI; bundles are honest proofs of them.
-    let run_dev = |args: &[&std::ffi::OsStr], what: &str| -> Result<(), String> {
+    let run_dev = |args: &[&OsStr], what: &str| -> Result<(), String> {
         let status = Command::new(&dev)
             .args(args)
             .env("JOLT_FUZZ_ARTIFACTS", dist.join("artifacts/schedules"))

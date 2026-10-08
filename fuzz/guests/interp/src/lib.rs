@@ -19,6 +19,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::hint::black_box;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use jolt::{TrustedAdvice, UntrustedAdvice};
 
 /// One register-register RISC-V instruction on 64-bit operands.
 #[cfg(target_arch = "riscv64")]
@@ -185,7 +186,11 @@ impl Machine<'_> {
             }
             7 => {
                 let (dst, index, trusted) = (self.reg(), self.reg(), self.byte() % 2 == 0);
-                let source = if trusted { self.trusted } else { self.untrusted };
+                let source = if trusted {
+                    self.trusted
+                } else {
+                    self.untrusted
+                };
                 self.regs[dst] = Self::advice(source, self.regs[index]);
             }
             8 => self.atomic(),
@@ -257,7 +262,12 @@ impl Machine<'_> {
                     4 => cell.fetch_xor(value, Ordering::SeqCst),
                     5 => cell.fetch_max(value, Ordering::SeqCst),
                     6 => cell.fetch_min(value, Ordering::SeqCst),
-                    _ => match cell.compare_exchange(value, !value, Ordering::SeqCst, Ordering::SeqCst) {
+                    _ => match cell.compare_exchange(
+                        value,
+                        !value,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    ) {
                         Ok(previous) | Err(previous) => previous,
                     },
                 }
@@ -272,7 +282,12 @@ impl Machine<'_> {
                     4 => cell.fetch_xor(value, Ordering::SeqCst),
                     5 => cell.fetch_max(value, Ordering::SeqCst),
                     6 => cell.fetch_min(value, Ordering::SeqCst),
-                    _ => match cell.compare_exchange(value, !value, Ordering::SeqCst, Ordering::SeqCst) {
+                    _ => match cell.compare_exchange(
+                        value,
+                        !value,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    ) {
                         Ok(previous) | Err(previous) => previous,
                     },
                 })
@@ -309,15 +324,18 @@ pub fn run(program: &[u8], trusted: &[u8], untrusted: &[u8], max_heap_words: usi
         machine.budget -= 1;
         machine.step();
     }
-    machine.regs.iter().fold(machine.digest, |acc, reg| acc.rotate_left(9) ^ reg)
+    machine
+        .regs
+        .iter()
+        .fold(machine.digest, |acc, reg| acc.rotate_left(9) ^ reg)
 }
 
 /// Default layout: 4 KiB input and advice, 1 MiB heap.
 #[jolt::provable(heap_size = 1048576, stack_size = 65536, max_input_size = 4096)]
 fn interp(
     program: Vec<u8>,
-    trusted: jolt::TrustedAdvice<Vec<u8>>,
-    untrusted: jolt::UntrustedAdvice<Vec<u8>>,
+    trusted: TrustedAdvice<Vec<u8>>,
+    untrusted: UntrustedAdvice<Vec<u8>>,
 ) -> u64 {
     run(&program, &trusted, &untrusted, 1 << 16)
 }
@@ -339,8 +357,8 @@ fn interp_plain(program: Vec<u8>) -> u64 {
 )]
 fn interp_advice_large(
     program: Vec<u8>,
-    trusted: jolt::TrustedAdvice<Vec<u8>>,
-    untrusted: jolt::UntrustedAdvice<Vec<u8>>,
+    trusted: TrustedAdvice<Vec<u8>>,
+    untrusted: UntrustedAdvice<Vec<u8>>,
 ) -> u64 {
     run(&program, &trusted, &untrusted, 1 << 16)
 }

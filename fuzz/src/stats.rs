@@ -5,6 +5,7 @@
 //! small fixed set, so memory stays bounded.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -68,7 +69,7 @@ fn flush(state: &State) {
         json.push_str(&format!("\"{name}\":{:.3}", *nanos as f64 / 1e9));
     }
     json.push_str("}}\n");
-    let path = std::path::PathBuf::from(path);
+    let path = PathBuf::from(path);
     let tmp = path.with_extension("tmp");
     if std::fs::write(&tmp, json).is_ok() {
         let _ = std::fs::rename(&tmp, &path);

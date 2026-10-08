@@ -1,7 +1,9 @@
 //! Process environment shared by every harness.
 
+use rayon::ThreadPoolBuilder;
 use std::path::PathBuf;
 use std::sync::Once;
+use std::thread::Builder;
 
 pub const THREADS_ENV: &str = "JOLT_FUZZ_THREADS";
 pub const ARTIFACTS_ENV: &str = "JOLT_FUZZ_ARTIFACTS";
@@ -19,7 +21,7 @@ static INIT: Once = Once::new();
 pub fn init() {
     INIT.call_once(|| {
         let threads = internal_threads();
-        rayon::ThreadPoolBuilder::new()
+        ThreadPoolBuilder::new()
             .num_threads(threads)
             .stack_size(STACK_SIZE)
             .thread_name(|index| format!("jolt-fuzz-rayon-{index}"))
@@ -51,7 +53,7 @@ pub fn artifacts_dir() -> PathBuf {
 /// findings keep their original backtrace.
 pub fn on_large_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
     std::thread::scope(|scope| {
-        std::thread::Builder::new()
+        Builder::new()
             .stack_size(STACK_SIZE)
             .spawn_scoped(scope, f)
             .expect("spawn harness thread")

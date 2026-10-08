@@ -4,6 +4,7 @@ use crate::libfuzzer::sha1_hex;
 use crate::store::{now, read_json, write_json};
 use serde_json::{json, Value};
 use std::fs;
+use std::io::Result as IoResult;
 use std::path::{Path, PathBuf};
 
 const MAX_SAMPLES: usize = 5;
@@ -20,7 +21,7 @@ pub struct Occurrence<'a> {
 }
 
 /// Store one occurrence; returns `(meta, is_new_signature)`.
-pub fn record(findings: &Path, occurrence: Occurrence<'_>) -> std::io::Result<(Value, bool)> {
+pub fn record(findings: &Path, occurrence: Occurrence<'_>) -> IoResult<(Value, bool)> {
     let directory = findings.join(occurrence.id);
     fs::create_dir_all(&directory)?;
     let meta_path = directory.join("meta.json");

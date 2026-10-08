@@ -10,6 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
+use jolt_host::Program;
 use serde::Serialize;
 
 use crate::input::Reader;
@@ -329,8 +330,8 @@ impl Guest {
 
     /// The host-side program description, bound to its prebuilt ELF when one
     /// is given (otherwise `build` compiles it with the `jolt` CLI).
-    pub fn program(&self, elf: Option<PathBuf>) -> jolt_host::Program {
-        let mut program = jolt_host::Program::new(self.package);
+    pub fn program(&self, elf: Option<PathBuf>) -> Program {
+        let mut program = Program::new(self.package);
         if let Some(func) = self.func {
             program.set_func(func);
         }

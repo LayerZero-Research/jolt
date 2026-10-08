@@ -14,8 +14,13 @@ mod runner;
 mod store;
 
 use clap::{Parser, Subcommand};
+use prepare::Prepare;
+use registry::Lane;
+use runner::{Options, Runner};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use store::Store;
 
 #[derive(Parser)]
 #[command(name = "jolt-fuzz", about = "Standalone Jolt + Akita fuzzing campaign")]
@@ -141,7 +146,7 @@ fn registry_path(dist: &Path) -> PathBuf {
     }
 }
 
-fn lanes(dist: &Path) -> Result<Vec<registry::Lane>, String> {
+fn lanes(dist: &Path) -> Result<Vec<Lane>, String> {
     registry::load(&registry_path(dist))
 }
 
@@ -190,10 +195,9 @@ fn execute(dist: &Path, command: Cmd) -> Result<u8, String> {
                     problems.join("\n  ")
                 ));
             }
-            let build: serde_json::Value =
-                store::read_json(&dist.join("BUILD-INFO.json")).unwrap_or_default();
+            let build: Value = store::read_json(&dist.join("BUILD-INFO.json")).unwrap_or_default();
             let build_id = build["build_id"].as_str().unwrap_or("unknown").to_string();
-            let mut store = store::Store::new(&output);
+            let mut store = Store::new(&output);
             store.lock()?;
             store.ensure().map_err(|e| e.to_string())?;
             let campaign = store.campaign(&build_id, adopt)?;
@@ -203,7 +207,7 @@ fn execute(dist: &Path, command: Cmd) -> Result<u8, String> {
                 None
             };
             let budget = resources::budget(cpus, memory_mb, reserve_cpus, hard);
-            let options = runner::Options {
+            let options = Options {
                 slice_s: slice_minutes.max(1) * 60,
                 duration_s: duration_hours.map(|hours| (hours * 3600.0) as u64),
                 skip_baseline,
@@ -211,7 +215,7 @@ fn execute(dist: &Path, command: Cmd) -> Result<u8, String> {
                 hard_memory_headroom_mb: 1024,
                 extra_args: libfuzzer_args,
             };
-            runner::Runner::new(
+            Runner::new(
                 dist.to_path_buf(),
                 store,
                 lanes,
@@ -220,19 +224,19 @@ fn execute(dist: &Path, command: Cmd) -> Result<u8, String> {
                 campaign,
                 build_id,
             )
-            .and_then(runner::Runner::run)
+            .and_then(Runner::run)
             .map_err(|e| e.to_string())?;
             Ok(0)
         }
         Cmd::Status { output, json } => {
-            Ok(commands::status(&store::Store::new(&output), &lanes(dist)?, json) as u8)
+            Ok(commands::status(&Store::new(&output), &lanes(dist)?, json) as u8)
         }
         Cmd::Export {
             output,
             to,
             with_logs,
         } => {
-            let path = commands::export(&store::Store::new(&output), to.as_deref(), with_logs)?;
+            let path = commands::export(&Store::new(&output), to.as_deref(), with_logs)?;
             println!("{}", path.display());
             Ok(0)
         }
@@ -241,33 +245,24 @@ fn execute(dist: &Path, command: Cmd) -> Result<u8, String> {
             spec,
             inputs,
         } => {
-            let code = commands::reproduce(
-                dist,
-                &store::Store::new(&output),
-                &lanes(dist)?,
-                &spec,
-                &inputs,
-            )?;
+            let code =
+                commands::reproduce(dist, &Store::new(&output), &lanes(dist)?, &spec, &inputs)?;
             Ok(u8::try_from(code).unwrap_or(1))
         }
         Cmd::Minimize {
             output,
             finding,
             seconds,
-        } => Ok(commands::minimize(
-            dist,
-            &store::Store::new(&output),
-            &lanes(dist)?,
-            &finding,
-            seconds,
-        )? as u8),
+        } => Ok(
+            commands::minimize(dist, &Store::new(&output), &lanes(dist)?, &finding, seconds)? as u8,
+        ),
         Cmd::Prepare {
             out,
             sanitizer,
             sequential,
             skip_build,
         } => {
-            prepare::run(prepare::Prepare {
+            prepare::run(Prepare {
                 dist: out,
                 sanitizer,
                 sequential,

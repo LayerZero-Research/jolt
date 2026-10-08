@@ -1,14 +1,18 @@
 //! Commands that work while a campaign runs, plus triage helpers.
 
 use crate::findings;
-use crate::libfuzzer;
+use crate::libfuzzer::{self, Limits, BINARY};
 use crate::registry::Lane;
 use crate::runner::{symbolizer, State};
 use crate::store::{directory_bytes, now, read_json, Store};
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tar::Builder;
 
 fn duration(seconds: f64) -> String {
     let seconds = seconds as u64;
@@ -172,12 +176,8 @@ pub fn export(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let file =
-        std::fs::File::create(&path).map_err(|e| format!("create {}: {e}", path.display()))?;
-    let mut archive = tar::Builder::new(flate2::write::GzEncoder::new(
-        file,
-        flate2::Compression::default(),
-    ));
+    let file = File::create(&path).map_err(|e| format!("create {}: {e}", path.display()))?;
+    let mut archive = Builder::new(GzEncoder::new(file, Compression::default()));
     archive.follow_symlinks(false);
     let prefix = format!("{host}-{id}");
     let mut members = vec![
@@ -279,8 +279,8 @@ pub fn reproduce(
     let scratch = store.tmp.join(format!("reproduce-{}", std::process::id()));
     std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
     let mut args = libfuzzer::base_args(
-        &dist.join("bin").join(libfuzzer::BINARY),
-        libfuzzer::Limits {
+        &dist.join("bin").join(BINARY),
+        Limits {
             lane,
             timeout_s: lane.timeout_s * 2,
         },
@@ -312,8 +312,8 @@ pub fn minimize(
     std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
     let output = directory.join(format!("minimized-{}.input", now()));
     let mut args = libfuzzer::base_args(
-        &dist.join("bin").join(libfuzzer::BINARY),
-        libfuzzer::Limits {
+        &dist.join("bin").join(BINARY),
+        Limits {
             lane,
             timeout_s: lane.timeout_s,
         },
@@ -378,11 +378,8 @@ pub fn validate_dist(dist: &Path, lanes: &[Lane]) -> Vec<String> {
         }
         Err(_) => problems.push("MANIFEST.sha256 is missing".into()),
     }
-    if !dist.join("bin").join(libfuzzer::BINARY).is_file() {
-        problems.push(format!(
-            "missing instrumented binary bin/{}",
-            libfuzzer::BINARY
-        ));
+    if !dist.join("bin").join(BINARY).is_file() {
+        problems.push(format!("missing instrumented binary bin/{}", BINARY));
     }
     for target in crate::registry::targets(lanes) {
         if !dist.join("seeds").join(&target).is_dir() {

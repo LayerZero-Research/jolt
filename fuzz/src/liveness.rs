@@ -34,10 +34,14 @@
 //! closer to its limit are kept and mutated further.
 
 use crate::stats;
-use std::fmt;
-use std::sync::{Mutex, Once};
+use std::collections::BTreeMap;
+use std::f64::consts::PI;
+use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
+use std::sync::{Mutex, Once, PoisonError};
 use tracing::field::{Field, Visit};
+use tracing::level_filters::LevelFilter;
 use tracing::span::{Attributes, Id, Record};
+use tracing::subscriber::Interest;
 use tracing::{Event, Metadata, Subscriber};
 
 /// Target of the diagnostics-only reports (`response-model-diagnostics`).
@@ -137,7 +141,7 @@ fn joint_quantile(n: f64) -> f64 {
 fn upper_tail(x: f64) -> f64 {
     const STEPS: usize = 2048;
     let h = 12.0 / STEPS as f64;
-    let density = |t: f64| (-0.5 * t * t).exp() / (2.0 * std::f64::consts::PI).sqrt();
+    let density = |t: f64| (-0.5 * t * t).exp() / (2.0 * PI).sqrt();
     let mut sum = density(x) + density(x + 12.0);
     for step in 1..STEPS {
         let weight = if step % 2 == 1 { 4.0 } else { 2.0 };
@@ -146,8 +150,8 @@ fn upper_tail(x: f64) -> f64 {
     sum * h / 3.0
 }
 
-impl fmt::Display for Sample {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for Sample {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         write!(f, "{}", self.message)?;
         for (name, value) in &self.fields {
             write!(f, " {name}={value}")?;
@@ -218,7 +222,7 @@ impl Visit for Visitor<'_> {
             _ => {}
         }
     }
-    fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+    fn record_debug(&mut self, field: &Field, value: &dyn Debug) {
         let text = format!("{value:?}");
         if field.name() == "message" {
             self.0.message = text;
@@ -241,21 +245,18 @@ fn wanted(metadata: &Metadata<'_>) -> bool {
 }
 
 impl Subscriber for Collector {
-    fn register_callsite(
-        &self,
-        metadata: &'static Metadata<'static>,
-    ) -> tracing::subscriber::Interest {
+    fn register_callsite(&self, metadata: &'static Metadata<'static>) -> Interest {
         if wanted(metadata) {
-            tracing::subscriber::Interest::always()
+            Interest::always()
         } else {
-            tracing::subscriber::Interest::never()
+            Interest::never()
         }
     }
     fn enabled(&self, metadata: &Metadata<'_>) -> bool {
         wanted(metadata)
     }
-    fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
-        Some(tracing::level_filters::LevelFilter::INFO)
+    fn max_level_hint(&self) -> Option<LevelFilter> {
+        Some(LevelFilter::INFO)
     }
     fn new_span(&self, _: &Attributes<'_>) -> Id {
         Id::from_u64(1)
@@ -313,10 +314,7 @@ pub fn guide_ratio(ratio: f64) {
 }
 
 /// Run one proof, capture its fold reports, and check their margins.
-pub fn observe<T, E: fmt::Debug>(
-    context: &str,
-    prove: impl FnOnce() -> Result<T, E>,
-) -> Result<T, E> {
+pub fn observe<T, E: Debug>(context: &str, prove: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
     install();
     set_capture(Some(Vec::new()));
     let result = prove();
@@ -333,9 +331,7 @@ pub fn observe<T, E: fmt::Debug>(
 }
 
 fn set_capture(next: Option<Vec<Sample>>) -> Option<Vec<Sample>> {
-    let mut capture = CAPTURE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut capture = CAPTURE.lock().unwrap_or_else(PoisonError::into_inner);
     std::mem::replace(&mut *capture, next)
 }
 
@@ -353,7 +349,7 @@ fn check(context: &str, samples: &[Sample]) {
     let mut peak = Peak::default();
     // Per-probe reports of multi-group grinds, keyed by (level, nonce):
     // the smallest group margin measures how close every group is at once.
-    let mut joint: std::collections::BTreeMap<(u128, u128), (usize, f64)> = Default::default();
+    let mut joint: BTreeMap<(u128, u128), (usize, f64)> = Default::default();
     for (index, sample) in samples.iter().enumerate() {
         if log {
             eprintln!("liveness: {context}: {sample}");

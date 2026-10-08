@@ -5,15 +5,17 @@
 //! `-fork`/`-jobs` modes are never used, so worker count and Akita's internal
 //! Rayon threads are the only two concurrency settings, accounted together.
 
-use crate::findings;
-use crate::libfuzzer::{self, Status};
+use crate::findings::{self, Occurrence};
+use crate::libfuzzer::{self, Limits, Status, BINARY};
 use crate::registry::Lane;
 use crate::resources::Budget;
 use crate::store::{count_files, now, read_json, write_json, RotatingLog, Store};
+use libc::{SIGINT, SIGKILL, SIGTERM};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::io::{BufRead, BufReader};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::io::{BufRead, BufReader, Result as IoResult};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -38,8 +40,8 @@ extern "C" fn on_signal(_: libc::c_int) {
 fn install_signals() {
     // SAFETY: the handler only touches an atomic.
     unsafe {
-        libc::signal(libc::SIGINT, on_signal as *const () as usize);
-        libc::signal(libc::SIGTERM, on_signal as *const () as usize);
+        libc::signal(SIGINT, on_signal as *const () as usize);
+        libc::signal(SIGTERM, on_signal as *const () as usize);
     }
 }
 
@@ -159,7 +161,7 @@ pub struct Runner {
     last_corpus_count: Instant,
     /// Lanes whose startup baseline has not finished in this session.
     baseline_pending: VecDeque<Lane>,
-    baseline_running: std::collections::HashSet<String>,
+    baseline_running: HashSet<String>,
 }
 
 fn which(name: &str) -> Option<PathBuf> {
@@ -200,7 +202,7 @@ impl Runner {
         options: Options,
         campaign: Value,
         build_id: String,
-    ) -> std::io::Result<Self> {
+    ) -> IoResult<Self> {
         let mut state: State = read_json(&store.state_path).unwrap_or_default();
         state
             .sessions
@@ -233,7 +235,7 @@ impl Runner {
             last_state: Instant::now() - STATE_INTERVAL,
             last_corpus_count: Instant::now() - CORPUS_COUNT_INTERVAL,
             baseline_pending: VecDeque::new(),
-            baseline_running: std::collections::HashSet::new(),
+            baseline_running: HashSet::new(),
         })
     }
 
@@ -331,7 +333,7 @@ impl Runner {
     }
 
     /// Copy shipped seeds into the writable corpus, skipping quarantined ones.
-    fn seed_corpus(&self, lane: &Lane) -> std::io::Result<()> {
+    fn seed_corpus(&self, lane: &Lane) -> IoResult<()> {
         let seeds = self.dist.join("seeds").join(&lane.target);
         let corpus = self.store.corpus.join(&lane.target);
         let quarantine = self.store.quarantine.join(&lane.target);
@@ -356,7 +358,7 @@ impl Runner {
         Ok(())
     }
 
-    fn spawn(&mut self, lane: &Lane, purpose: Purpose, inputs: &[PathBuf]) -> std::io::Result<u64> {
+    fn spawn(&mut self, lane: &Lane, purpose: Purpose, inputs: &[PathBuf]) -> IoResult<u64> {
         self.sequence += 1;
         let id = self.sequence;
         let job_name = format!("{}-{}-{id}", now(), std::process::id());
@@ -373,7 +375,7 @@ impl Runner {
             .join(lane.name())
             .join(format!("{job_name}.json"));
         std::fs::create_dir_all(stats_file.parent().expect("parent"))?;
-        let binary = self.dist.join("bin").join(libfuzzer::BINARY);
+        let binary = self.dist.join("bin").join(BINARY);
         let corpus = self.store.corpus.join(&lane.target);
         let merge_snapshot = if purpose == Purpose::Merge {
             corpus_names(&corpus)
@@ -415,7 +417,7 @@ impl Runner {
                 }
                 let mut args = libfuzzer::base_args(
                     &binary,
-                    libfuzzer::Limits {
+                    Limits {
                         lane,
                         timeout_s: lane.timeout_s,
                     },
@@ -432,7 +434,7 @@ impl Runner {
             Purpose::Replay => {
                 let mut args = libfuzzer::base_args(
                     &binary,
-                    libfuzzer::Limits {
+                    Limits {
                         lane,
                         timeout_s: lane.timeout_s * 2,
                     },
@@ -635,14 +637,14 @@ impl Runner {
                     let now = Instant::now();
                     if job.terminated_at.is_none() && now > job.deadline {
                         let name = job.lane.name();
-                        Self::signal(job, libc::SIGTERM);
+                        Self::signal(job, SIGTERM);
                         job.terminated_at = Some(now);
                         job.watchdog_stopped = true;
                         self.event(&format!(
                             "watchdog: {name} exceeded its wall-clock deadline; terminating"
                         ));
                     } else if job.terminated_at.is_some_and(|at| now - at > KILL_GRACE) {
-                        Self::signal(job, libc::SIGKILL);
+                        Self::signal(job, SIGKILL);
                     }
                 }
             }
@@ -801,7 +803,7 @@ impl Runner {
         });
         let recorded = findings::record(
             &self.store.findings,
-            findings::Occurrence {
+            Occurrence {
                 id: &id,
                 signature: &text,
                 kind,
@@ -875,7 +877,7 @@ impl Runner {
             ));
             return;
         }
-        let kept: std::collections::HashSet<String> = corpus_names(&job.artifacts.join("merged"))
+        let kept: HashSet<String> = corpus_names(&job.artifacts.join("merged"))
             .into_iter()
             .collect();
         let corpus = self.store.corpus.join(&target);
@@ -990,13 +992,13 @@ impl Runner {
     /// last compaction (and has at least 200 inputs), one merge per target.
     fn schedule_compactions(&mut self) {
         let time = now();
-        let merging: std::collections::HashSet<String> = self
+        let merging: HashSet<String> = self
             .jobs
             .values()
             .filter(|job| job.purpose == Purpose::Merge)
             .map(|job| job.lane.target.clone())
             .collect();
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = HashSet::new();
         for lane in self.lanes.clone() {
             if self.stopping || !seen.insert(lane.target.clone()) || merging.contains(&lane.target)
             {
@@ -1090,11 +1092,11 @@ impl Runner {
         ));
         // Slowest (end-to-end) lanes first so they overlap cheaper lanes' fuzzing.
         let mut lanes = self.lanes.clone();
-        lanes.sort_by_key(|lane| std::cmp::Reverse(lane.timeout_s));
+        lanes.sort_by_key(|lane| Reverse(lane.timeout_s));
         self.baseline_pending = lanes.into();
     }
 
-    pub fn run(mut self) -> std::io::Result<()> {
+    pub fn run(mut self) -> IoResult<()> {
         install_signals();
         for note in self.budget.notes.clone() {
             self.event(&note);
@@ -1132,7 +1134,7 @@ impl Runner {
 
     fn shutdown(&mut self) {
         for job in self.jobs.values_mut() {
-            Self::signal(job, libc::SIGINT);
+            Self::signal(job, SIGINT);
             job.terminated_at = Some(Instant::now());
         }
         let deadline = Instant::now() + KILL_GRACE;
@@ -1144,7 +1146,7 @@ impl Runner {
             self.reap();
         }
         for job in self.jobs.values() {
-            Self::signal(job, libc::SIGKILL);
+            Self::signal(job, SIGKILL);
         }
         while !self.jobs.is_empty() {
             self.pump(Duration::from_millis(200));
