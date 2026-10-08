@@ -125,9 +125,9 @@ impl Bundle {
     }
 
     /// Re-encoding of every region after removing the representation choices
-    /// the verifier does not bind (FINDINGS J-7): trailing zero bytes of the
-    /// public inputs and outputs, which are compared as zero-padded memory,
-    /// and a present-or-absent unit `vc_setup` (the Akita build has no vector
+    /// the verifier does not bind: trailing zero bytes of the public inputs
+    /// and outputs, which are compared as zero-padded memory, and a
+    /// present-or-absent unit `vc_setup` (the Akita build has no vector
     /// commitment). Two bundles with equal semantic forms state the same claim.
     fn semantic(&self) -> Option<[Option<Vec<u8>>; 4]> {
         let mut preprocessing =
