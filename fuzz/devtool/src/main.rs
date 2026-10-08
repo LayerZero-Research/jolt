@@ -110,6 +110,48 @@ fn seeds(out: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The production shape a `planning` input decodes to, and the grouped
+/// request it induces, timing grouped-row provisioning alone.
+fn describe_planning(paths: &[String]) -> Result<(), String> {
+    use jolt_akita_fuzz::input::Reader;
+    use jolt_akita_fuzz::shape::{self, Shape};
+    jolt_akita_fuzz::env::init();
+    for path in paths {
+        let data = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
+        let shape = Shape::decode(&mut Reader::new(&data));
+        println!("== {path}\n{shape} (in contract: {})", shape.in_contract());
+        match shape.setup_request() {
+            Err(failure) => println!("  setup request: {failure}"),
+            Ok(request) => {
+                println!(
+                    "  final group: {} vars x {} polys, K={}, profile {:?}",
+                    request.setup_shape.num_vars,
+                    request.setup_shape.num_polys,
+                    request.one_hot_k,
+                    request.profile
+                );
+                println!(
+                    "  untrusted {:?}, trusted {:?}, program {:?}",
+                    request.untrusted.as_ref().map(shape::arity),
+                    request.trusted.as_ref().map(shape::arity),
+                    request.program.iter().map(shape::arity).collect::<Vec<_>>()
+                );
+                let started = Instant::now();
+                let planned = shape::plan(&request);
+                println!(
+                    "  planning: {} in {:.1}s",
+                    match planned {
+                        Ok(rows) => format!("ok, {rows} rows provisioned"),
+                        Err(failure) => failure.to_string(),
+                    },
+                    started.elapsed().as_secs_f64()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn explain_verifier(paths: &[String]) -> Result<(), String> {
     for path in paths {
         let data = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
@@ -214,6 +256,7 @@ fn main() {
             None => Err("bundles OUT_DIR".to_string()),
         },
         Some("explain-verifier") => explain_verifier(&args[1..]),
+        Some("describe-planning") => describe_planning(&args[1..]),
         Some("planning-case") => planning_case(&args[1..]),
         Some("grid-sweep") => grid_sweep::run(
             arg(1).and_then(|v| v.parse().ok()).unwrap_or(0),
@@ -222,7 +265,7 @@ fn main() {
         ),
         Some("plan-sweep") => sweep::run(arg(1).unwrap_or("all"), arg(2).map(PathBuf::from)),
         _ => Err(
-            "usage: jolt-fuzz-dev list|seeds|smoke|replay|build-guests|planning-case|explain-verifier|bundles|plan-sweep|grid-sweep ..."
+            "usage: jolt-fuzz-dev list|seeds|smoke|replay|build-guests|planning-case|describe-planning|explain-verifier|bundles|plan-sweep|grid-sweep ..."
                 .to_string(),
         ),
     };

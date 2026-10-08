@@ -124,7 +124,8 @@ pub struct SetupRequest {
     pub program: Vec<PrefixPackedObjectPlan>,
 }
 
-fn arity(plan: &PrefixPackedObjectPlan) -> usize {
+/// An auxiliary object's packed physical arity.
+pub fn arity(plan: &PrefixPackedObjectPlan) -> usize {
     plan.packing().packed_num_vars()
 }
 
