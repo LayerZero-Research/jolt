@@ -12,5 +12,6 @@ name = "jolt-fuzz-dev"
 path = "src/main.rs"
 
 [dependencies]
+jolt-akita = { path = "../../crates/jolt-akita" }
 jolt-akita-fuzz = { path = ".." }
 rayon = "1.12"

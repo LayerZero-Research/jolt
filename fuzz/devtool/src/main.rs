@@ -122,10 +122,11 @@ fn explain_verifier(paths: &[String]) -> Result<(), String> {
 
 fn planning_case(args: &[String]) -> Result<(), String> {
     use jolt_akita_fuzz::opening::{Fill, Witness};
-    use jolt_akita_fuzz::shape::{Chunking, CommittedProgram, Shape};
+    use jolt_akita_fuzz::shape::{Chunking, CommittedProgram, Shape, PROFILES};
+    const USAGE: &str = "planning-case LOG_T K PROFILE LOG_BYTECODE LOG_RAM_K U T [CHUNKS IMAGE]";
     let number = |index: usize| -> Result<usize, String> {
         args.get(index)
-            .ok_or("planning-case LOG_T K LOG_BYTECODE LOG_RAM_K U T [CHUNKS IMAGE]")?
+            .ok_or(USAGE)?
             .parse()
             .map_err(|e| format!("argument {index}: {e}"))
     };
@@ -139,18 +140,23 @@ fn planning_case(args: &[String]) -> Result<(), String> {
         }
     };
     let chunking = match args.get(1).map(String::as_str) {
-        Some("16") => Chunking::Forced { log_k_chunk: 4 },
-        Some("256") => Chunking::Forced { log_k_chunk: 8 },
+        Some("256") => Chunking::ForcedK256,
         _ => Chunking::Production,
     };
+    let profile_name = args.get(2).ok_or(USAGE)?;
+    let profile = PROFILES
+        .into_iter()
+        .find(|profile| format!("{profile:?}").eq_ignore_ascii_case(profile_name))
+        .ok_or_else(|| format!("PROFILE {profile_name}: expected single|two|four|eight"))?;
     let shape = Shape {
         log_t: number(0)?,
         chunking,
-        log_bytecode_len: number(2)?,
-        log_ram_k: number(3)?,
-        untrusted_advice_bytes: advice(4)?,
-        trusted_advice_bytes: advice(5)?,
-        program: match (args.get(6), args.get(7)) {
+        profile,
+        log_bytecode_len: number(3)?,
+        log_ram_k: number(4)?,
+        untrusted_advice_bytes: advice(5)?,
+        trusted_advice_bytes: advice(6)?,
+        program: match (args.get(7), args.get(8)) {
             (Some(chunks), Some(image)) => Some(CommittedProgram {
                 log_chunks: chunks.parse().map_err(|e| format!("CHUNKS: {e}"))?,
                 image_words: image.parse().map_err(|e| format!("IMAGE: {e}"))?,
@@ -169,7 +175,6 @@ fn planning_case(args: &[String]) -> Result<(), String> {
         seed: 1,
         dense: Fill::Random,
         trace: Fill::Random,
-        columns: 63,
         zero_committed_columns: 1,
         point: Fill::Random,
     };

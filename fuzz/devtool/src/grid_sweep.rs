@@ -2,9 +2,9 @@
 //! the `grid` target in release mode, including the setup-offloaded rows too
 //! large for an instrumented iteration.
 //!
-//! Each row runs with zero entries committed at row zero, the identically zero
-//! polynomial, an all-maximal, and a random witness at the largest selector
-//! capacity, printing its fold-grind peaks. A failing row is
+//! Each row runs with zero entries committed in every row, the identically
+//! zero polynomial, an all-maximal, and a random witness, printing its
+//! fold-grind peaks. A failing row is
 //! reported and the sweep continues; the exit status is nonzero if any failed.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -23,7 +23,7 @@ pub fn run(min_log2: usize, max_log2: usize, family: Option<&str>) -> Result<(),
         .filter(|row| family.is_none_or(|name| row.family.name() == name))
         .collect();
     println!(
-        "{:<22} {:>6} {:>8} {:>8} {:>8} {:>6}  status",
+        "{:<32} {:>6} {:>8} {:>8} {:>8} {:>6}  status",
         "row", "folds", "l2", "linf", "attempts", "mean"
     );
     let mut failed = 0usize;
@@ -44,18 +44,17 @@ pub fn run(min_log2: usize, max_log2: usize, family: Option<&str>) -> Result<(),
                 seed: 0x5eed + index as u64,
                 dense: fill,
                 trace: fill,
-                columns: 63,
                 zero_committed_columns: mask,
                 point: fill,
             };
             let digest = [row.num_vars as u8; 32];
-            if catch_unwind(AssertUnwindSafe(|| grid::check(*row, 6, digest, &witness))).is_err() {
+            if catch_unwind(AssertUnwindSafe(|| grid::check(*row, digest, &witness))).is_err() {
                 failures.push(label);
             }
         }
         let peak = liveness::take_peak();
         println!(
-            "{:<22} {:>6} {:>8.4} {:>8.4} {:>8} {:>6.2}  {} ({:.1}s)",
+            "{:<32} {:>6} {:>8.4} {:>8.4} {:>8} {:>6.2}  {} ({:.1}s)",
             row.label(),
             peak.folds,
             peak.max_margin,

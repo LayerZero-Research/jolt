@@ -23,7 +23,7 @@ pub fn check(shape: &Shape, witness: &Witness) {
     let artifacts = artifacts::shared();
     let in_contract = shape.in_contract();
     let result = shape.setup_request().and_then(|request| {
-        stats::time("plan", || shape::plan(&artifacts, &request))?;
+        stats::time("plan", || shape::plan(&request))?;
         stats::count("planned");
         if request.total_coefficients() <= env::max_case_coefficients() {
             env::on_large_stack(|| {
@@ -46,47 +46,82 @@ pub fn check(shape: &Shape, witness: &Witness) {
 
 /// The smallest production shape of every structural case: no advice, each
 /// advice kind at the default 4096 bytes, both, and a committed program with
-/// one and two chunks (the fixture layouts), at K=16 and forced K=256.
+/// one and two chunks (the fixture layouts); both advice kinds under every
+/// multi-chunk profile; and the K=256 override at a listed trace group.
 pub fn seeds() -> Vec<(String, Vec<u8>)> {
     use crate::opening::Fill;
-    use crate::shape::{Chunking, CommittedProgram};
+    use crate::shape::{Chunking, CommittedProgram, MIN_LOG_T};
+    use jolt_akita::AkitaChunkProfile;
     let witness = Witness {
         seed: 7,
         dense: Fill::Random,
         trace: Fill::Random,
-        columns: 63,
         zero_committed_columns: 0,
         point: Fill::Random,
     };
-    let mut seeds = Vec::new();
-    for (chunk_name, chunking) in [
-        ("k16", Chunking::Production),
-        ("k256", Chunking::Forced { log_k_chunk: 8 }),
+    let base = Shape {
+        log_t: MIN_LOG_T,
+        chunking: Chunking::Production,
+        profile: AkitaChunkProfile::Single,
+        log_bytecode_len: 10,
+        log_ram_k: 20,
+        untrusted_advice_bytes: None,
+        trusted_advice_bytes: None,
+        program: None,
+    };
+    let mut shapes = Vec::new();
+    for (case, untrusted, trusted, program) in [
+        ("plain", None, None, None),
+        ("untrusted", Some(4096), None, None),
+        ("trusted", None, Some(4096), None),
+        ("both", Some(4096), Some(4096), None),
+        ("committed1", None, None, Some(0)),
+        ("committed2-both", Some(4096), Some(4096), Some(1)),
     ] {
-        for (case, untrusted, trusted, program) in [
-            ("plain", None, None, None),
-            ("untrusted", Some(4096), None, None),
-            ("trusted", None, Some(4096), None),
-            ("both", Some(4096), Some(4096), None),
-            ("committed1", None, None, Some(0)),
-            ("committed2-both", Some(4096), Some(4096), Some(1)),
-        ] {
-            let shape = Shape {
-                log_t: crate::shape::MIN_LOG_T,
-                chunking,
-                log_bytecode_len: 10,
-                log_ram_k: 20,
+        shapes.push((
+            format!("k16-{case}"),
+            Shape {
                 untrusted_advice_bytes: untrusted,
                 trusted_advice_bytes: trusted,
                 program: program.map(|log_chunks| CommittedProgram {
                     log_chunks,
                     image_words: 300,
                 }),
-            };
+                ..base
+            },
+        ));
+    }
+    for profile in [
+        AkitaChunkProfile::Two,
+        AkitaChunkProfile::Four,
+        AkitaChunkProfile::Eight,
+    ] {
+        shapes.push((
+            format!("k16-{profile:?}-both").to_lowercase(),
+            Shape {
+                profile,
+                untrusted_advice_bytes: Some(4096),
+                trusted_advice_bytes: Some(4096),
+                ..base
+            },
+        ));
+    }
+    // log_T 12 at K=256 with two bytecode and two RAM chunks: the listed
+    // 20-variable, 29-column trace group.
+    shapes.push((
+        "k256-plain".to_string(),
+        Shape {
+            chunking: Chunking::ForcedK256,
+            log_ram_k: 16,
+            ..base
+        },
+    ));
+    shapes
+        .into_iter()
+        .map(|(name, shape)| {
             let mut bytes = shape.encode();
             bytes.extend(witness.encode());
-            seeds.push((format!("{chunk_name}-{case}"), bytes));
-        }
-    }
-    seeds
+            (name, bytes)
+        })
+        .collect()
 }

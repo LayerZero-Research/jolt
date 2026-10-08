@@ -20,11 +20,10 @@ path = "src/lib.rs"
 # Pinned exactly as the root workspace pins them (Cargo.toml `akita-*`), so the
 # fuzzed Akita is the one Jolt ships. `response-model-diagnostics` adds the
 # fold-response reports the liveness oracle reads; it changes no proof bytes.
-akita-config = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "252abb895046cc1d5b9955a26a2ad2318148ac26", default-features = false }
-akita-pcs = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "252abb895046cc1d5b9955a26a2ad2318148ac26", default-features = false, features = ["parallel", "transcript-blake2b", "response-model-diagnostics"] }
-akita-prover = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "252abb895046cc1d5b9955a26a2ad2318148ac26", default-features = false, features = ["parallel", "response-model-diagnostics"] }
-akita-schedules = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "252abb895046cc1d5b9955a26a2ad2318148ac26", default-features = false }
-akita-types = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "252abb895046cc1d5b9955a26a2ad2318148ac26", default-features = false }
+akita-params = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "d98400c555a7fc779bb4e29c35fbd4adad3232d1", default-features = false }
+akita-pcs = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "d98400c555a7fc779bb4e29c35fbd4adad3232d1", default-features = false, features = ["parallel", "transcript-blake2b", "response-model-diagnostics"] }
+akita-prover = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "d98400c555a7fc779bb4e29c35fbd4adad3232d1", default-features = false, features = ["parallel", "response-model-diagnostics"] }
+akita-schedules = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "d98400c555a7fc779bb4e29c35fbd4adad3232d1", default-features = false }
 bincode = { version = "2", features = ["serde"] }
 common = { path = "../common", default-features = false, features = ["std"] }
 jolt-akita = { path = "../crates/jolt-akita" }

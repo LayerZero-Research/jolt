@@ -5,11 +5,14 @@
 //! Cartesian product:
 //!
 //! - `geometry`: every `(chunking, log_T, bytecode length, ram_K)` through
-//!   Jolt's trace geometry (`one_hot_trace_setup_shape`);
-//! - `advice`: every `(chunking, log_T)` with every untrusted and trusted
-//!   advice capacity (absent or `2^3..=2^40` bytes) through grouped planning;
-//! - `program`: every `(chunking, log_T)` with every committed-program chunk
-//!   count and chunk/image arity edge, alone and with both advice kinds.
+//!   Jolt's trace geometry (`one_hot_trace_setup_shape`); the chunk profile
+//!   does not enter it;
+//! - `advice`: every `(chunking, profile, log_T)` with every untrusted and
+//!   trusted advice capacity (absent or `2^3..=2^38` bytes) through grouped
+//!   planning;
+//! - `program`: every `(chunking, profile, log_T)` with every
+//!   committed-program chunk count and chunk/image arity edge, alone and with
+//!   both advice kinds.
 //!
 //! Planning only; proving is the `planning` target's job. Every result is
 //! written to the CSV, and failures are summarized by stage and message
@@ -22,29 +25,29 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Instant;
 
-use jolt_akita_fuzz::artifacts;
-use jolt_akita_fuzz::shape::{self, Chunking, CommittedProgram, Shape};
+use jolt_akita::AkitaChunkProfile;
+use jolt_akita_fuzz::shape::{self, Chunking, CommittedProgram, Shape, PROFILES};
 use rayon::prelude::*;
 
-const CHUNKINGS: [Chunking; 3] = [
-    Chunking::Production,
-    Chunking::Forced { log_k_chunk: 4 },
-    Chunking::Forced { log_k_chunk: 8 },
-];
+const CHUNKINGS: [Chunking; 2] = [Chunking::Production, Chunking::ForcedK256];
 
-fn log_ts(chunking: Chunking) -> std::ops::RangeInclusive<usize> {
-    // One past each documented end, so the sweep also shows the rejection.
-    let max = match chunking {
-        Chunking::Forced { log_k_chunk: 4 } => shape::MAX_LOG_T_K16 + 1,
-        _ => shape::MAX_LOG_T_K256 + 1,
-    };
-    shape::MIN_LOG_T..=max
+/// Every `(chunking, profile)` trace family.
+fn families() -> impl Iterator<Item = (Chunking, AkitaChunkProfile)> {
+    CHUNKINGS
+        .into_iter()
+        .flat_map(|chunking| PROFILES.into_iter().map(move |profile| (chunking, profile)))
 }
 
-fn base(chunking: Chunking, log_t: usize) -> Shape {
+/// One past the documented end, so the sweep also shows the rejection.
+fn log_ts() -> std::ops::RangeInclusive<usize> {
+    shape::MIN_LOG_T..=shape::MAX_LOG_T + 1
+}
+
+fn base(chunking: Chunking, profile: AkitaChunkProfile, log_t: usize) -> Shape {
     Shape {
         log_t,
         chunking,
+        profile,
         log_bytecode_len: 16,
         log_ram_k: 22,
         untrusted_advice_bytes: None,
@@ -56,13 +59,13 @@ fn base(chunking: Chunking, log_t: usize) -> Shape {
 fn geometry_shapes() -> Vec<Shape> {
     let mut shapes = Vec::new();
     for chunking in CHUNKINGS {
-        for log_t in log_ts(chunking) {
-            for log_bytecode_len in 0..=26 {
-                for log_ram_k in 1..=40 {
+        for log_t in log_ts() {
+            for log_bytecode_len in 0..=32 {
+                for log_ram_k in 1..=61 {
                     shapes.push(Shape {
                         log_bytecode_len,
                         log_ram_k,
-                        ..base(chunking, log_t)
+                        ..base(chunking, AkitaChunkProfile::Single, log_t)
                     });
                 }
             }
@@ -82,8 +85,8 @@ fn advice_capacities() -> Vec<Option<u64>> {
 fn advice_shapes() -> Vec<Shape> {
     let capacities = advice_capacities();
     let mut shapes = Vec::new();
-    for chunking in CHUNKINGS {
-        for log_t in log_ts(chunking) {
+    for (chunking, profile) in families() {
+        for log_t in log_ts() {
             for &untrusted in &capacities {
                 for &trusted in &capacities {
                     if untrusted.is_none() && trusted.is_none() {
@@ -92,7 +95,7 @@ fn advice_shapes() -> Vec<Shape> {
                     shapes.push(Shape {
                         untrusted_advice_bytes: untrusted,
                         trusted_advice_bytes: trusted,
-                        ..base(chunking, log_t)
+                        ..base(chunking, profile, log_t)
                     });
                 }
             }
@@ -108,8 +111,8 @@ fn program_shapes() -> Vec<Shape> {
     let log_bytecode_lens = [4usize, 8, 12, 16, 20, 24, 26];
     let image_words = [1usize, 1 << 13, (1 << 13) + 1, 1 << 20, 1 << 26, 1 << 34];
     let mut shapes = Vec::new();
-    for chunking in CHUNKINGS {
-        for log_t in log_ts(chunking) {
+    for (chunking, profile) in families() {
+        for log_t in log_ts() {
             for log_bytecode_len in log_bytecode_lens {
                 for log_chunks in 0..=shape::MAX_LOG_CHUNKS.min(log_bytecode_len) {
                     for &image_words in &image_words {
@@ -122,7 +125,7 @@ fn program_shapes() -> Vec<Shape> {
                                     log_chunks,
                                     image_words,
                                 }),
-                                ..base(chunking, log_t)
+                                ..base(chunking, profile, log_t)
                             });
                         }
                     }
@@ -159,20 +162,22 @@ fn mask(message: &str) -> String {
 }
 
 fn evaluate(shapes: Vec<Shape>, plan: bool) -> Vec<Outcome> {
-    let artifacts = artifacts::shared();
     let done = Mutex::new(0usize);
     let total = shapes.len();
     shapes
         .into_par_iter()
         .map(|shape| {
             let started = Instant::now();
-            let result = shape.setup_request().and_then(|request| {
-                if plan {
-                    shape::plan(&artifacts, &request)
-                } else {
-                    Ok(0)
-                }
-            });
+            let result =
+                shape.setup_request().and_then(
+                    |request| {
+                        if plan {
+                            shape::plan(&request)
+                        } else {
+                            Ok(0)
+                        }
+                    },
+                );
             let seconds = started.elapsed().as_secs_f64();
             if plan {
                 let mut done = done.lock().unwrap();

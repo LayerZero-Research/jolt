@@ -1,51 +1,66 @@
 //! Production preprocessing shapes and the Akita setup request each induces.
 //!
 //! A [`Shape`] is what a Jolt deployment actually chooses: the padded trace
-//! length, the one-hot chunk width, the bytecode and RAM domains, the advice
-//! capacities baked into the guest's memory layout, and whether the program is
-//! committed (and in how many bytecode chunks). Every derived quantity comes
-//! from Jolt's own geometry functions (`one_hot_trace_setup_shape`,
+//! length, the one-hot chunk width, the witness chunk profile, the bytecode
+//! and RAM domains, the advice capacities baked into the guest's memory
+//! layout, and whether the program is committed (and in how many bytecode
+//! chunks). Every derived quantity comes from Jolt's own geometry functions
+//! (`one_hot_trace_setup_shape`, `one_hot_trace_columns`,
 //! `advice_packing_plan`, `committed_program_packing_plan`), so the harness
-//! restates no sizing law; the only mirrored code is the ten-line assembly of
-//! `PrecommittedScheduleParams` in `jolt_prover::akita::preprocessing::
-//! grouped_setup`, which is private. The `program` target exercises that
-//! private path itself on real guests.
+//! restates no sizing law; the only mirrored code is the assembly of
+//! `GroupedScheduleParams` in `jolt_prover::akita::preprocessing::
+//! grouped_setup_params`, which is crate-private. The `program` target
+//! exercises that private path itself on real guests.
 
 use std::fmt;
+use std::sync::Arc;
 
+use akita_params::PolynomialGroupLayout;
 use common::constants::ONEHOT_CHUNK_THRESHOLD_LOG_T;
-use jolt_akita::schedule_registry::provision_precommitted_for_k;
-use jolt_akita::{AkitaScheduleArtifacts, PrecommittedScheduleParams};
+use jolt_akita::schedules::emit::K16_TRACE_LOG_T;
+use jolt_akita::{
+    AkitaChunkProfile, AkitaScheduleArtifacts, AkitaSetupParams, DenseGroupLayout,
+    GroupedScheduleParams, AKITA_ONE_HOT_K256,
+};
 use jolt_claims::protocols::jolt::geometry::claim_reductions::bytecode::committed_lane_vars;
+use jolt_claims::protocols::jolt::lattice::strategy::MAX_ONE_HOT_TRACE_COLUMNS;
 use jolt_claims::protocols::jolt::lattice::{
-    advice_packing_plan, committed_program_packing_plan, OneHotTraceSetupShape,
-    PrefixPackedObjectPlan, ADVICE_MAX_PHYSICAL_VARS, DIRECT_PROGRAM_MAX_PHYSICAL_VARS,
+    advice_packing_plan, committed_program_packing_plan, one_hot_trace_columns,
+    OneHotTraceSetupShape, OneHotTraceShape, PrefixPackedObjectPlan, ADVICE_MAX_PHYSICAL_VARS,
+    DIRECT_PROGRAM_MAX_PHYSICAL_VARS,
 };
 use jolt_claims::protocols::jolt::{
-    JoltAdviceKind, JoltOneHotConfig, JoltReadWriteConfig, TracePolynomialOrder,
+    JoltAdviceKind, JoltOneHotConfig, JoltReadWriteConfig, JoltRelationId, TracePolynomialOrder,
 };
-use jolt_openings::PrecommittedRole;
 use jolt_prover::akita::one_hot_trace_setup_shape;
 use jolt_prover::ProverConfig;
+use jolt_verifier::stages::formula_dimensions_from_parts;
 
+use crate::artifacts;
 use crate::input::Reader;
 
 /// Smallest padded trace under Akita (`MIN_PADDED_TRACE_LENGTH`, 2^12).
 pub const MIN_LOG_T: usize = 12;
-/// Largest trace a one-hot catalog covers: K=16 rows reach `log_T + 10 = 34`,
-/// K=256 rows reach `log_T + 13 = 43` (`schedules::emit::K*_NUM_VARS`).
-pub const MAX_LOG_T_K16: usize = 24;
-pub const MAX_LOG_T_K256: usize = 30;
+/// Largest trace the production K=16 catalogs cover.
+pub const MAX_LOG_T: usize = K16_TRACE_LOG_T.1;
 /// `MAX_COMMITTED_BYTECODE_CHUNK_COUNT`.
 pub const MAX_LOG_CHUNKS: usize = 8;
+
+pub const PROFILES: [AkitaChunkProfile; 4] = [
+    AkitaChunkProfile::Single,
+    AkitaChunkProfile::Two,
+    AkitaChunkProfile::Four,
+    AkitaChunkProfile::Eight,
+];
 
 /// Which one-hot chunk width the trace commits with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Chunking {
-    /// `ProverConfig::derive`'s rule: K=16 below `log_T = 25`, K=256 above.
+    /// `ProverConfig::derive`'s rule under Akita: K=16 at every trace length.
     Production,
-    /// A caller-overridden width (supported: `akita_e2e` forces K=256).
-    Forced { log_k_chunk: u8 },
+    /// The K=256 override (`akita_e2e` forces it), supported only at the
+    /// trace shapes its catalogs list.
+    ForcedK256,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,6 +74,7 @@ pub struct CommittedProgram {
 pub struct Shape {
     pub log_t: usize,
     pub chunking: Chunking,
+    pub profile: AkitaChunkProfile,
     pub log_bytecode_len: usize,
     pub log_ram_k: usize,
     /// Advice capacities in bytes (`MemoryLayout::max_*_advice_size`, a
@@ -72,9 +88,10 @@ impl fmt::Display for Shape {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "log_T={} K=2^{} bytecode=2^{} ram_K=2^{}",
+            "log_T={} K=2^{} profile={:?} bytecode=2^{} ram_K=2^{}",
             self.log_t,
             self.log_k_chunk(),
+            self.profile,
             self.log_bytecode_len,
             self.log_ram_k
         )?;
@@ -101,49 +118,66 @@ pub struct SetupRequest {
     pub setup_shape: OneHotTraceSetupShape,
     pub layout_digest: [u8; 32],
     pub one_hot_k: usize,
+    pub profile: AkitaChunkProfile,
     pub untrusted: Option<PrefixPackedObjectPlan>,
     pub trusted: Option<PrefixPackedObjectPlan>,
     pub program: Vec<PrefixPackedObjectPlan>,
 }
 
+fn arity(plan: &PrefixPackedObjectPlan) -> usize {
+    plan.packing().packed_num_vars()
+}
+
 impl SetupRequest {
-    /// Precommitted objects in canonical opening order (advice, then program).
-    pub fn precommitted(&self) -> impl Iterator<Item = &PrefixPackedObjectPlan> {
+    /// Auxiliary objects in canonical opening order (advice, then program).
+    pub fn auxiliary(&self) -> impl Iterator<Item = &PrefixPackedObjectPlan> {
         self.untrusted
             .iter()
             .chain(self.trusted.iter())
             .chain(self.program.iter())
     }
 
-    pub fn precommitted_count(&self) -> usize {
-        self.precommitted().count()
+    pub fn auxiliary_count(&self) -> usize {
+        self.auxiliary().count()
     }
 
-    pub fn schedule_params(&self) -> Option<PrecommittedScheduleParams> {
-        let arity = |plan: &PrefixPackedObjectPlan| plan.packing().packed_num_vars();
-        (self.precommitted_count() > 0).then(|| {
-            PrecommittedScheduleParams::new(
+    pub fn grouped_params(&self) -> Option<GroupedScheduleParams> {
+        (self.auxiliary_count() > 0).then(|| {
+            GroupedScheduleParams::new(
                 self.untrusted.as_ref().map(arity),
                 self.trusted.as_ref().map(arity),
-                self.setup_shape.num_vars,
+                self.program
+                    .iter()
+                    .map(|plan| DenseGroupLayout::Bounded {
+                        num_vars: arity(plan),
+                    })
+                    .collect(),
+                PolynomialGroupLayout::new(self.setup_shape.num_vars, self.setup_shape.num_polys),
             )
-            .with_direct_program_physical_arities(self.program.iter().map(arity).collect())
         })
     }
 
-    pub fn roles(&self) -> Vec<PrecommittedRole> {
-        self.precommitted()
-            .map(PrefixPackedObjectPlan::precommitted_role)
-            .collect()
+    pub fn setup_params(&self, artifacts: &Arc<AkitaScheduleArtifacts>) -> AkitaSetupParams {
+        let num_polys = self.setup_shape.num_polys;
+        AkitaSetupParams::one_hot_only_grouped(
+            self.setup_shape.num_vars,
+            num_polys,
+            num_polys + self.auxiliary_count(),
+            self.layout_digest,
+            self.one_hot_k,
+            self.grouped_params(),
+            Arc::clone(artifacts),
+        )
+        .with_akita_chunk_profile(self.profile)
     }
 
     /// Total committed coefficients across every group of the opening.
     pub fn total_coefficients(&self) -> u128 {
-        let final_group = 1u128 << self.setup_shape.num_vars;
-        self.precommitted()
-            .map(|plan| 1u128 << plan.packing().packed_num_vars())
+        let trace = (1u128 << self.setup_shape.num_vars) * self.setup_shape.num_polys as u128;
+        self.auxiliary()
+            .map(|plan| 1u128 << arity(plan))
             .sum::<u128>()
-            + final_group
+            + trace
     }
 }
 
@@ -156,7 +190,7 @@ pub enum Stage {
     AdvicePacking,
     /// Committed-program packing (`committed_program_packing_plan`).
     ProgramPacking,
-    /// Grouped-row planning (`provision_precommitted_for_k`).
+    /// Grouped-row planning (`GroupedScheduleParams::extend_catalog`).
     Planning,
     /// `AkitaScheme::setup` or a later commit/prove/verify step.
     Setup,
@@ -184,14 +218,13 @@ fn fail(stage: Stage) -> impl FnOnce(String) -> Failure {
 impl Shape {
     pub fn log_k_chunk(&self) -> u8 {
         match self.chunking {
-            Chunking::Production if self.log_t < ONEHOT_CHUNK_THRESHOLD_LOG_T => 4,
-            Chunking::Production => 8,
-            Chunking::Forced { log_k_chunk } => log_k_chunk,
+            Chunking::Production => 4,
+            Chunking::ForcedK256 => 8,
         }
     }
 
     /// The configuration `ProverConfig::derive` would produce, with the
-    /// one-hot width replaced when forced.
+    /// one-hot width and chunk profile replaced as the shape chooses.
     pub fn prover_config(&self) -> ProverConfig {
         let log_k_chunk = self.log_k_chunk();
         ProverConfig {
@@ -205,30 +238,71 @@ impl Shape {
             },
             one_hot_config: JoltOneHotConfig {
                 log_k_chunk,
-                // 128-bit lookup keys: 16-bit virtual chunks with K=16, 32-bit with K=256.
-                lookups_ra_virtual_log_k_chunk: if log_k_chunk == 4 { 16 } else { 32 },
+                // 128-bit lookup keys: 16-bit virtual chunks below the
+                // threshold, 32-bit above it and under the K=256 override.
+                lookups_ra_virtual_log_k_chunk: if log_k_chunk == 4
+                    && self.log_t < ONEHOT_CHUNK_THRESHOLD_LOG_T
+                {
+                    16
+                } else {
+                    32
+                },
             },
             trace_polynomial_order: TracePolynomialOrder::CycleMajor,
+            akita_chunk_profile: self.profile,
         }
+    }
+
+    /// The trace's native column count, before the 64-column limit is
+    /// applied; `None` when the geometry itself rejects the shape.
+    fn trace_columns(&self) -> Option<usize> {
+        let config = self.prover_config();
+        let dimensions = formula_dimensions_from_parts(
+            config.one_hot_config,
+            self.log_t,
+            1 << self.log_bytecode_len,
+            config.ram_K,
+            JoltRelationId::HammingWeightClaimReduction,
+        )
+        .ok()?;
+        one_hot_trace_columns(&OneHotTraceShape {
+            ra_layout: dimensions.ra_layout,
+            log_t: self.log_t,
+            log_k_chunk: usize::from(self.log_k_chunk()),
+        })
+        .ok()
+        .map(|columns| columns.len())
     }
 
     /// Whether every documented Jolt limit admits this shape. A shape inside
     /// the contract must preprocess, commit, prove, and verify; anything that
     /// stops it is a liveness finding. Limits (each with its source):
     ///
-    /// - `log_T` in `12..=24` for K=16 and `12..=30` for K=256: the Akita
-    ///   minimum padded trace and the one-hot catalog grids;
+    /// - `log_T` in `12..=30` (the Akita minimum padded trace and the K=16
+    ///   catalogs' `K16_TRACE_LOG_T`), in every chunk profile;
+    /// - at most 64 native trace columns (`MAX_ONE_HOT_TRACE_COLUMNS`);
+    /// - under the K=256 override, a trace group the selected profile's K=256
+    ///   catalog lists (it has no general trace range);
     /// - advice capacities a power of two (`MemoryLayout::new` asserts it)
     ///   whose physical arity is at most 34 (`ADVICE_MAX_PHYSICAL_VARS`);
     /// - a committed program with a power-of-two chunk count at most 256
     ///   dividing the bytecode length, and chunk and image arities at most 34
     ///   (`DIRECT_PROGRAM_MAX_PHYSICAL_VARS`, `precommitted_packing_plan`).
+    ///
+    /// A shape whose geometry Jolt rejects for another reason stays in the
+    /// contract, so the rejection surfaces as a finding.
     pub fn in_contract(&self) -> bool {
-        let max_log_t = match self.log_k_chunk() {
-            4 => MAX_LOG_T_K16,
-            8 => MAX_LOG_T_K256,
-            _ => return false,
-        };
+        let columns = self.trace_columns();
+        let trace_ok = (MIN_LOG_T..=MAX_LOG_T).contains(&self.log_t)
+            && columns.is_none_or(|columns| columns <= MAX_ONE_HOT_TRACE_COLUMNS)
+            && match self.chunking {
+                Chunking::Production => true,
+                Chunking::ForcedK256 => columns.is_some_and(|columns| {
+                    artifacts::catalogs(AKITA_ONE_HOT_K256, self.profile)
+                        .one_hot_rows
+                        .contains(&(self.log_t + 8, columns))
+                }),
+            };
         let advice_ok = |bytes: Option<u64>| {
             bytes.is_none_or(|bytes| {
                 bytes.is_power_of_two() && advice_word_vars(bytes) <= ADVICE_MAX_PHYSICAL_VARS
@@ -245,7 +319,7 @@ impl Shape {
                     .checked_next_power_of_two()
                     .is_some_and(|words| words.ilog2() as usize <= 34)
         });
-        (MIN_LOG_T..=max_log_t).contains(&self.log_t)
+        trace_ok
             && advice_ok(self.untrusted_advice_bytes)
             && advice_ok(self.trusted_advice_bytes)
             && program_ok
@@ -284,6 +358,7 @@ impl Shape {
             setup_shape,
             layout_digest,
             one_hot_k,
+            profile: self.profile,
             untrusted,
             trusted,
             program,
@@ -293,13 +368,13 @@ impl Shape {
     /// Decode a shape biased toward the documented edges.
     pub fn decode(reader: &mut Reader<'_>) -> Self {
         let chunking = match reader.u8() % 8 {
-            0 => Chunking::Forced { log_k_chunk: 8 },
-            1 => Chunking::Forced { log_k_chunk: 4 },
+            0 => Chunking::ForcedK256,
             _ => Chunking::Production,
         };
-        let log_t = edge_biased(reader, MIN_LOG_T, MAX_LOG_T_K256, &[12, 20, 21, 24, 25, 30]);
-        let log_bytecode_len = edge_biased(reader, 0, 26, &[4, 8, 16, 20, 24]);
-        let log_ram_k = edge_biased(reader, 1, 40, &[16, 20, 22, 24, 28, 32]);
+        let profile = PROFILES[usize::from(reader.u8()) % PROFILES.len()];
+        let log_t = edge_biased(reader, MIN_LOG_T, MAX_LOG_T + 1, &[12, 16, 20, 21, 25, 30]);
+        let log_bytecode_len = edge_biased(reader, 0, 32, &[4, 8, 16, 20, 24, 32]);
+        let log_ram_k = edge_biased(reader, 1, 61, &[16, 20, 24, 32, 40, 60]);
         let advice = |reader: &mut Reader<'_>| {
             let tag = reader.u8();
             (!tag.is_multiple_of(3)).then(|| {
@@ -320,6 +395,7 @@ impl Shape {
         Self {
             log_t,
             chunking,
+            profile,
             log_bytecode_len,
             log_ram_k,
             untrusted_advice_bytes,
@@ -348,31 +424,30 @@ fn edge_biased(reader: &mut Reader<'_>, min: usize, max: usize, edges: &[usize])
     }
 }
 
-/// Grouped-row planning alone: the part of `AkitaScheme::setup` that depends
-/// on the shape's precommitted objects. Cheap enough to sweep exhaustively.
-pub fn plan(artifacts: &AkitaScheduleArtifacts, request: &SetupRequest) -> Result<usize, Failure> {
-    if request.precommitted_count() == 0 {
+/// Grouped-row provisioning alone: the part of `AkitaScheme::setup` that
+/// depends on the shape's auxiliary objects. Cheap enough to sweep
+/// exhaustively. Returns the number of rows provisioned beyond the base
+/// catalog.
+pub fn plan(request: &SetupRequest) -> Result<usize, Failure> {
+    let Some(params) = request.grouped_params() else {
         return Ok(0);
-    }
-    let dense = artifacts
-        .dense_catalog()
-        .map_err(|error| fail(Stage::Planning)(error.to_string()))?;
-    let one_hot = artifacts
-        .one_hot_catalog(request.one_hot_k)
-        .map_err(|error| fail(Stage::Planning)(error.to_string()))?;
-    let arity = |plan: &PrefixPackedObjectPlan| plan.packing().packed_num_vars();
-    let program: Vec<usize> = request.program.iter().map(arity).collect();
-    provision_precommitted_for_k(
-        &dense,
-        &one_hot,
-        request.untrusted.as_ref().map(arity),
-        request.trusted.as_ref().map(arity),
-        &program,
-        request.one_hot_k,
-        request.setup_shape.num_vars,
-    )
-    .map(|rows| rows.rows().len())
-    .map_err(|error| fail(Stage::Planning)(error.to_string()))
+    };
+    let catalogs = artifacts::catalogs(request.one_hot_k, request.profile);
+    params
+        .extend_catalog(
+            &catalogs.dense,
+            &catalogs.full_dense,
+            &catalogs.one_hot,
+            request.one_hot_k,
+            request.profile,
+        )
+        .map(|extended| {
+            extended
+                .rows()
+                .len()
+                .saturating_sub(catalogs.one_hot.rows().len())
+        })
+        .map_err(|error| fail(Stage::Planning)(error.to_string()))
 }
 
 /// Bytes that make `edge_biased(min, ..)` return `value` (uniform branch).
@@ -384,11 +459,16 @@ fn push_uniform(out: &mut Vec<u8>, min: usize, value: usize) {
 impl Shape {
     /// An input prefix that [`Shape::decode`] maps back to `self`.
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = vec![match self.chunking {
-            Chunking::Forced { log_k_chunk: 8 } => 0,
-            Chunking::Forced { .. } => 1,
-            Chunking::Production => 2,
-        }];
+        let mut out = vec![
+            match self.chunking {
+                Chunking::ForcedK256 => 0,
+                Chunking::Production => 1,
+            },
+            PROFILES
+                .iter()
+                .position(|profile| *profile == self.profile)
+                .expect("every profile is listed") as u8,
+        ];
         push_uniform(&mut out, MIN_LOG_T, self.log_t);
         push_uniform(&mut out, 0, self.log_bytecode_len);
         push_uniform(&mut out, 1, self.log_ram_k);

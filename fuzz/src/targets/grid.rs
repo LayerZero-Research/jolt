@@ -5,11 +5,11 @@
 //! failure (panic, clean error, or verifier rejection) of an honest opening is
 //! a finding. Rows use Jolt's own setups:
 //!
-//! - one-hot, one polynomial: the production `OneHotTrace` group, streamed
-//!   through `commit_trace_one_hot` at an input-chosen selector capacity and
-//!   checked against the materialized one-hot polynomial;
-//! - one-hot, two polynomials, and dense-bounded rows: `AkitaNativeBatching`'s
-//!   same-point batch over one commitment group.
+//! - one-hot rows, in every chunk profile: the production `OneHotTrace`
+//!   group, its columns streamed through `commit_trace_one_hot` and checked
+//!   against the generic one-hot group commitment;
+//! - dense-bounded rows: `AkitaNativeBatching`'s same-point batch over one
+//!   commitment group.
 //!
 //! The lane variant (`JOLT_FUZZ_GRID_FAMILY` = `k16`, `k256`, or `dense`)
 //! fixes the family; without it the input picks. Rows above
@@ -19,27 +19,23 @@
 use std::sync::{Arc, OnceLock};
 
 use jolt_akita::{
-    AkitaField, AkitaNativeBatchPolynomials, AkitaNativeBatching, AkitaScheduleArtifacts,
-    AkitaScheme, AkitaSetupParams, AKITA_ONE_HOT_K16, AKITA_ONE_HOT_K256,
+    AkitaChunkProfile, AkitaField, AkitaNativeBatchPolynomials, AkitaNativeBatching,
+    AkitaScheduleArtifacts, AkitaScheme, AkitaSetupParams, AKITA_ONE_HOT_K16, AKITA_ONE_HOT_K256,
 };
 use jolt_claims::protocols::jolt::lattice::OneHotTraceSetupShape;
 use jolt_field::{CanonicalEncoding, Ring};
-use jolt_openings::{BatchOpeningScheme, CommitmentScheme, EvaluationClaim, VerifierOpeningClaim};
-use jolt_poly::{MultilinearPoly, OneHotPolynomial, Polynomial};
+use jolt_openings::{
+    BatchOpeningScheme, CommitmentScheme, EvaluationClaim, OpeningsError, VerifierOpeningClaim,
+};
+use jolt_poly::{MultilinearPoly, Polynomial};
 use jolt_transcript::{Blake2bTranscript, Transcript};
 
 use crate::input::{Reader, SplitMix64};
-use crate::opening::{self, Witness};
-use crate::shape::{Failure, SetupRequest, Stage};
+use crate::opening::{self, Fill, Witness};
+use crate::shape::{Failure, SetupRequest, Stage, PROFILES};
 use crate::{artifacts, env, liveness, stats, transport};
 
 pub const FAMILY_ENV: &str = "JOLT_FUZZ_GRID_FAMILY";
-
-/// Counter for identically zero committed polynomials the harness replaces
-/// with one nonzero entry: openings of the zero polynomial fail verification
-/// on the pinned Akita revision (FINDINGS J-5, fixed upstream by the proof
-/// stream the Akita bump brings), so they are excluded until that bump.
-pub const KNOWN_ZERO_POLYNOMIAL: &str = "known_zero_polynomial_adjusted";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Family {
@@ -72,11 +68,13 @@ pub const FAMILIES: [Family; 3] = [
     Family::Dense,
 ];
 
-/// One scalar catalog row: the final group layout plus whether its schedule
-/// offloads the setup to a recursive prefix.
+/// One scalar catalog row: the final group layout, the witness chunk profile
+/// of its catalog, and whether its schedule offloads the setup to a recursive
+/// prefix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Row {
     pub family: Family,
+    pub profile: AkitaChunkProfile,
     pub num_vars: usize,
     pub num_polys: usize,
     pub offloaded: bool,
@@ -89,8 +87,9 @@ impl Row {
 
     pub fn label(&self) -> String {
         format!(
-            "{} {}:{}{}",
+            "{} {:?} {}:{}{}",
             self.family.name(),
+            self.profile,
             self.num_vars,
             self.num_polys,
             if self.offloaded { " offloaded" } else { "" }
@@ -98,19 +97,35 @@ impl Row {
     }
 }
 
-/// Every row of the three shipped catalogs, sorted by family and shape.
+/// Every row of the shipped one-hot catalogs (each profile) and the bounded
+/// dense catalog, sorted by family, profile, and shape.
 pub fn rows(artifacts: &AkitaScheduleArtifacts) -> Vec<Row> {
-    let mut rows = Vec::new();
+    let mut catalogs = Vec::new();
     for family in FAMILIES {
-        let catalog = match family {
-            Family::OneHot(k) => artifacts.one_hot_catalog(k),
-            Family::Dense => artifacts.dense_catalog(),
+        match family {
+            Family::OneHot(k) => {
+                for profile in PROFILES {
+                    catalogs.push((
+                        family,
+                        profile,
+                        artifacts.one_hot_catalog_for_profile(k, profile),
+                    ));
+                }
+            }
+            Family::Dense => {
+                catalogs.push((family, AkitaChunkProfile::Single, artifacts.dense_catalog()));
+            }
         }
-        .unwrap_or_else(|error| panic!("load {} catalog: {error}", family.name()));
+    }
+    let mut rows = Vec::new();
+    for (family, profile, catalog) in catalogs {
+        let catalog = catalog
+            .unwrap_or_else(|error| panic!("load {} {profile:?} catalog: {error}", family.name()));
         for row in catalog.rows() {
             let group = row.profiles().final_group.group;
             rows.push(Row {
                 family,
+                profile,
                 num_vars: group.num_vars(),
                 num_polys: group.num_polynomials(),
                 offloaded: row
@@ -121,7 +136,14 @@ pub fn rows(artifacts: &AkitaScheduleArtifacts) -> Vec<Row> {
             });
         }
     }
-    rows.sort_by_key(|row| (row.family.name(), row.num_polys, row.num_vars));
+    rows.sort_by_key(|row| {
+        (
+            row.family.name(),
+            row.profile as u8,
+            row.num_polys,
+            row.num_vars,
+        )
+    });
     rows
 }
 
@@ -153,25 +175,24 @@ pub fn run(data: &[u8]) {
     let Some(&row) = candidates.get(usize::from(selector) % candidates.len().max(1)) else {
         return;
     };
-    let log_capacity = reader.u8();
     let digest = reader.bytes::<32>();
     let witness = Witness::decode(&mut reader);
-    check(row, log_capacity, digest, &witness);
+    check(row, digest, &witness);
 }
 
 /// Prove and verify one honest opening of `row`; panics on any failure.
-pub fn check(row: Row, log_capacity: u8, digest: [u8; 32], witness: &Witness) {
+pub fn check(row: Row, digest: [u8; 32], witness: &Witness) {
     let artifacts = artifacts::shared();
     let context = row.label();
-    let result = env::on_large_stack(|| match (row.family, row.num_polys) {
-        (Family::OneHot(k), 1) => trace_row(&artifacts, row, k, log_capacity, digest, witness),
-        _ => group_row(&artifacts, row, digest, witness),
+    let result = env::on_large_stack(|| match row.family {
+        Family::OneHot(k) => trace_row(&artifacts, row, k, digest, witness),
+        Family::Dense => dense_row(&artifacts, row, digest, witness),
     });
     match result {
         Ok(()) => stats::count("rows_verified"),
-        Err(failure) => panic!(
-            "liveness: catalog row {context} failed at {failure} (log_capacity byte {log_capacity}, witness {witness:?})"
-        ),
+        Err(failure) => {
+            panic!("liveness: catalog row {context} failed at {failure} (witness {witness:?})")
+        }
     }
 }
 
@@ -179,149 +200,68 @@ fn trace_row(
     artifacts: &Arc<AkitaScheduleArtifacts>,
     row: Row,
     one_hot_k: usize,
-    log_capacity: u8,
     digest: [u8; 32],
     witness: &Witness,
 ) -> Result<(), Failure> {
-    let log_k = one_hot_k.trailing_zeros() as usize;
-    // Keep at least 2^10 coefficients per selector segment so every segment
-    // stays ring-aligned; production segments hold `K * T >= 2^16`.
-    let max_log_capacity = row.num_vars.saturating_sub(log_k.max(10)).min(6);
-    let capacity = 1usize << (usize::from(log_capacity) % (max_log_capacity + 1));
     let request = SetupRequest {
         setup_shape: OneHotTraceSetupShape {
             num_vars: row.num_vars,
-            num_polys: 1,
+            num_polys: row.num_polys,
         },
         layout_digest: digest,
         one_hot_k,
+        profile: row.profile,
         untrusted: None,
         trusted: None,
         program: Vec::new(),
     };
-    opening::commit_with_capacity(artifacts, &request, witness, capacity)?
-        .prove_and_verify(&row.label())
+    opening::commit(artifacts, &request, witness)?.prove_and_verify(&row.label())
 }
 
-fn fail(stage: Stage) -> impl Fn(jolt_openings::OpeningsError) -> Failure {
+fn fail(stage: Stage) -> impl Fn(OpeningsError) -> Failure {
     move |error| Failure {
         stage: stage.clone(),
         message: error.to_string(),
     }
 }
 
-fn group_row(
+fn dense_row(
     artifacts: &Arc<AkitaScheduleArtifacts>,
     row: Row,
     digest: [u8; 32],
     witness: &Witness,
 ) -> Result<(), Failure> {
-    let params = match row.family {
-        Family::OneHot(k) => AkitaSetupParams::one_hot_only(
-            row.num_vars,
-            row.num_polys,
-            digest,
-            k,
-            Arc::clone(artifacts),
-        ),
-        Family::Dense => {
-            AkitaSetupParams::dense_only(row.num_vars, row.num_polys, digest, Arc::clone(artifacts))
-        }
-    };
+    let params =
+        AkitaSetupParams::dense_only(row.num_vars, row.num_polys, digest, Arc::clone(artifacts));
     let (prover_setup, verifier_setup) =
         stats::time("setup", || AkitaScheme::setup(params)).map_err(fail(Stage::Setup))?;
     let mut rng = SplitMix64::new(witness.seed);
     let point: Vec<AkitaField> = (0..row.num_vars)
         .map(|_| AkitaField::from_u128_reduced(rng.next_u128()))
         .collect();
-
-    enum Group {
-        OneHot(Vec<OneHotPolynomial>),
-        Dense(Vec<Polynomial<AkitaField>>),
-    }
-    let group = match row.family {
-        Family::OneHot(k) => Group::OneHot(
-            (0..row.num_polys)
-                .map(|_| {
-                    let rows = 1usize << (row.num_vars - k.trailing_zeros() as usize);
-                    // Byte zero is "no entry" unless the zero-row mask (bit 0)
-                    // commits it, as in the packed trace.
-                    let keep_zero = witness.zero_committed_columns & 1 == 1;
-                    let mut indices: Vec<Option<u8>> = (0..rows)
-                        .map(|_| {
-                            let selected = witness.trace.selected(&mut rng, k);
-                            (selected != 0 || keep_zero).then_some(selected)
-                        })
-                        .collect();
-                    if indices.iter().all(Option::is_none) {
-                        indices[0] = Some(0);
-                        stats::count(KNOWN_ZERO_POLYNOMIAL);
-                    }
-                    OneHotPolynomial::new(k, indices)
-                })
-                .collect(),
-        ),
-        Family::Dense => Group::Dense(
-            (0..row.num_polys)
-                .map(|_| {
-                    let mut evaluations: Vec<AkitaField> = (0..1usize << row.num_vars)
-                        .map(|_| AkitaField::from_u64(witness.dense.word(&mut rng)))
-                        .collect();
-                    if evaluations
-                        .iter()
-                        .all(|value| *value == AkitaField::from_u64(0))
-                    {
-                        evaluations[0] = AkitaField::from_u64(1);
-                        stats::count(KNOWN_ZERO_POLYNOMIAL);
-                    }
-                    Polynomial::new(evaluations)
-                })
-                .collect(),
-        ),
-    };
-    let (commitment, hint, evaluations, polynomials): (
-        _,
-        _,
-        Vec<AkitaField>,
-        AkitaNativeBatchPolynomials<'_>,
-    ) = match &group {
-        Group::OneHot(polys) => {
-            let (commitment, hint) = stats::time("commit", || {
-                AkitaScheme::commit_one_hot_group(&prover_setup, digest, polys)
-            })
-            .map_err(fail(Stage::Commit))?;
-            (
-                commitment,
-                hint,
-                polys.iter().map(|poly| poly.evaluate(&point)).collect(),
-                polys
-                    .iter()
-                    .map(|poly| poly as &dyn MultilinearPoly<AkitaField>)
+    let group: Vec<Polynomial<AkitaField>> = (0..row.num_polys)
+        .map(|_| {
+            Polynomial::new(
+                (0..1usize << row.num_vars)
+                    .map(|_| AkitaField::from_u64(witness.dense.word(&mut rng)))
                     .collect(),
             )
-        }
-        Group::Dense(polys) => {
-            let (commitment, hint) = stats::time("commit", || {
-                AkitaScheme::commit_group(&prover_setup, digest, polys)
-            })
-            .map_err(fail(Stage::Commit))?;
-            (
-                commitment,
-                hint,
-                polys.iter().map(|poly| poly.evaluate(&point)).collect(),
-                polys
-                    .iter()
-                    .map(|poly| poly as &dyn MultilinearPoly<AkitaField>)
-                    .collect(),
-            )
-        }
-    };
-    let statement: Vec<_> = evaluations
-        .into_iter()
-        .map(|evaluation| VerifierOpeningClaim {
-            commitment: commitment.clone(),
-            evaluation: EvaluationClaim::new(point.clone(), evaluation),
         })
+        .collect();
+    let (commitment, hint) = stats::time("commit", || {
+        AkitaScheme::commit_group(&prover_setup, digest, &group)
+    })
+    .map_err(fail(Stage::Commit))?;
+    let statement: Vec<_> = group
+        .iter()
+        .map(|polynomial| VerifierOpeningClaim {
+            commitment: commitment.clone(),
+            evaluation: EvaluationClaim::new(point.clone(), polynomial.evaluate(&point)),
+        })
+        .collect();
+    let polynomials: AkitaNativeBatchPolynomials<'_> = group
+        .iter()
+        .map(|polynomial| polynomial as &dyn MultilinearPoly<AkitaField>)
         .collect();
     let label = b"jolt-akita-fuzz/grid";
     let mut prover_transcript = Blake2bTranscript::new(label);
@@ -355,21 +295,20 @@ fn group_row(
     Ok(())
 }
 
-/// One seed per family and polynomial count at its smallest row.
+/// The first rows of every family, with a random witness committing row zero
+/// in the first column.
 pub fn seeds() -> Vec<(String, Vec<u8>)> {
     let witness = Witness {
         seed: 11,
-        dense: opening::Fill::Random,
-        trace: opening::Fill::Random,
-        columns: 63,
+        dense: Fill::Random,
+        trace: Fill::Random,
         zero_committed_columns: 1,
-        point: opening::Fill::Random,
+        point: Fill::Random,
     };
     let mut seeds = Vec::new();
     for (family_index, family) in FAMILIES.iter().enumerate() {
         for index in 0..4u16 {
             let mut bytes = ((family_index as u16) << 8 | index).to_le_bytes().to_vec();
-            bytes.push(6);
             bytes.extend([family_index as u8 + 1; 32]);
             bytes.extend(witness.encode());
             seeds.push((format!("{}-{index}", family.name()), bytes));

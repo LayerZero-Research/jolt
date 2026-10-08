@@ -1,31 +1,29 @@
 //! Honest grouped openings through Jolt's Akita adapter.
 //!
-//! One opening is what Jolt's stage 8 discharges: every precommitted dense
+//! One opening is what Jolt's stage 8 discharges: every auxiliary dense
 //! object (advice words, committed-program chunks and image) followed by the
-//! packed `OneHotTrace` group, proved in one heterogeneous batch. The driver
-//! goes through the same public seams production uses (`AkitaScheme::setup`
-//! with the grouped request, `transparent_object_setup` + `commit`,
-//! `commit_trace_one_hot`, `prove_batch`, `verify_batch`) and transports the
-//! verifier setup and proof through serde before verifying, as a deployed
-//! verifier receives them.
+//! native `OneHotTrace` column group, proved in one heterogeneous batch. The
+//! driver goes through the same public seams production uses
+//! (`AkitaScheme::setup` with the grouped request, `transparent_object_setup`
+//! + `commit`, `commit_trace_one_hot`, `prove_batch`, `verify_batch`) and
+//! transports the verifier setup and proof through serde before verifying, as
+//! a deployed verifier receives them.
 //!
-//! The honest claim for the packed trace comes from an independent
-//! materialization: the same rows as a plain `OneHotPolynomial`, whose
-//! commitment must equal the streamed one and whose evaluation is jolt-poly's
-//! reference `evaluate`.
+//! The honest claims for the trace come from an independent materialization:
+//! each column as a plain `OneHotPolynomial`, evaluated by jolt-poly's
+//! reference `evaluate`. Without auxiliary groups the streamed commitment must
+//! also equal the generic one-hot group commitment of those polynomials.
 
 use std::sync::Arc;
 
 use jolt_akita::{
-    AkitaCommitment, AkitaField, AkitaProverHint, AkitaScheduleArtifacts, AkitaScheme,
-    AkitaSetupParams, AkitaVerifierSetup, TraceOneHotRows,
-};
-use jolt_claims::protocols::jolt::lattice::packing::{
-    ONE_HOT_TRACE_K16_CAPACITY, ONE_HOT_TRACE_K256_CAPACITY,
+    AkitaCommitment, AkitaField, AkitaProverHint, AkitaProverSetup, AkitaScheduleArtifacts,
+    AkitaScheme, AkitaVerifierSetup, TraceOneHotRows,
 };
 use jolt_field::{CanonicalEncoding, Ring};
 use jolt_openings::{
-    CommitmentScheme, GroupOpeningClaim, PrecommittedClaim, TransparentObjectSetup,
+    CommitmentScheme, GroupOpeningClaim, OpeningsError, TaggedGroupOpeningClaim,
+    TransparentObjectSetup,
 };
 use jolt_poly::{MultilinearPoly, OneHotPolynomial, Polynomial};
 use jolt_transcript::{Blake2bTranscript, Transcript};
@@ -35,20 +33,21 @@ use crate::liveness;
 use crate::shape::{Failure, SetupRequest, Stage};
 use crate::stats;
 
-fn fail(stage: Stage) -> impl Fn(jolt_openings::OpeningsError) -> Failure {
+fn fail(stage: Stage) -> impl Fn(OpeningsError) -> Failure {
     move |error| Failure {
         stage: stage.clone(),
         message: error.to_string(),
     }
 }
 
-/// Row-major packed-trace source: `selected[row * columns + column]`, with
-/// byte zero meaning "no entry" unless the column commits row zero.
+/// Row-major trace source: `selected[row * columns + column]`, with byte
+/// zero meaning "no entry" unless the row's zero mask commits it.
 pub struct TraceRows {
     pub num_rows: usize,
     pub num_columns: usize,
     pub selected: Vec<u8>,
-    /// Columns whose zero byte is a committed selection of row zero (RAM).
+    /// Row zero's committed-zero mask; row `r` uses it rotated left by `r`,
+    /// restricted to the real columns.
     pub zero_committed_columns: u64,
 }
 
@@ -63,28 +62,31 @@ impl TraceOneHotRows for TraceRows {
         let start = row * self.num_columns;
         selected_rows.copy_from_slice(&self.selected[start..start + self.num_columns]);
     }
-    fn committed_digit_zero_mask(&self, _row: usize) -> u64 {
-        self.zero_committed_columns
+    fn committed_digit_zero_mask(&self, row: usize) -> u64 {
+        let columns = if self.num_columns == 64 {
+            u64::MAX
+        } else {
+            (1u64 << self.num_columns) - 1
+        };
+        self.zero_committed_columns.rotate_left((row % 64) as u32) & columns
     }
 }
 
 impl TraceRows {
-    /// Column-major one-hot rows of the packed polynomial: column `c` of
-    /// trace row `t` is packed row `c * T + t`; padding columns are empty.
-    pub fn materialize(&self, one_hot_k: usize, column_capacity: usize) -> OneHotPolynomial {
-        let indices = (0..column_capacity)
-            .flat_map(|column| {
-                (0..self.num_rows).map(move |row| {
-                    if column >= self.num_columns {
-                        return None;
-                    }
-                    let selected = self.selected[row * self.num_columns + column];
-                    (selected != 0 || self.zero_committed_columns >> column & 1 == 1)
-                        .then_some(selected)
-                })
+    /// Each column as a one-hot polynomial over the trace rows.
+    pub fn materialize(&self, one_hot_k: usize) -> Vec<OneHotPolynomial> {
+        (0..self.num_columns)
+            .map(|column| {
+                let indices = (0..self.num_rows)
+                    .map(|row| {
+                        let selected = self.selected[row * self.num_columns + column];
+                        (selected != 0 || self.committed_digit_zero_mask(row) >> column & 1 == 1)
+                            .then_some(selected)
+                    })
+                    .collect();
+                OneHotPolynomial::new(one_hot_k, indices)
             })
-            .collect();
-        OneHotPolynomial::new(one_hot_k, indices)
+            .collect()
     }
 }
 
@@ -147,7 +149,6 @@ pub struct Witness {
     pub seed: u64,
     pub dense: Fill,
     pub trace: Fill,
-    pub columns: u8,
     pub zero_committed_columns: u64,
     pub point: Fill,
 }
@@ -158,10 +159,19 @@ impl Witness {
             seed: reader.u64(),
             dense: Fill::decode(reader),
             trace: Fill::decode(reader),
-            columns: reader.u8(),
             zero_committed_columns: reader.u64(),
             point: Fill::decode(reader),
         }
+    }
+
+    /// Bytes that [`Witness::decode`] maps back to `self`.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = self.seed.to_le_bytes().to_vec();
+        out.push(self.dense.tag());
+        out.push(self.trace.tag());
+        out.extend_from_slice(&self.zero_committed_columns.to_le_bytes());
+        out.push(self.point.tag());
+        out
     }
 }
 
@@ -177,10 +187,10 @@ fn point(fill: Fill, rng: &mut SplitMix64, num_vars: usize) -> Vec<AkitaField> {
 
 /// A statement the verifier checks, with the prover's retained hints.
 pub struct Opening {
-    pub prover_setup: jolt_akita::AkitaProverSetup,
+    pub prover_setup: AkitaProverSetup,
     pub verifier_setup: AkitaVerifierSetup,
-    pub precommitted: Vec<(
-        PrecommittedClaim<AkitaField, AkitaCommitment>,
+    pub auxiliary: Vec<(
+        TaggedGroupOpeningClaim<AkitaField, AkitaCommitment>,
         AkitaProverHint,
     )>,
     pub main: GroupOpeningClaim<AkitaField, AkitaCommitment>,
@@ -189,47 +199,23 @@ pub struct Opening {
 
 const TRANSCRIPT_LABEL: &[u8] = b"jolt-akita-fuzz/opening";
 
-/// Setup and commit every group of `request` with honest data, packing the
-/// trace at Jolt's selector capacity for the request's chunk width.
+/// Setup and commit every group of `request` with honest data: one dense
+/// object per auxiliary plan, then the trace's native columns over
+/// `2^(num_vars - log K)` rows.
 pub fn commit(
     artifacts: &Arc<AkitaScheduleArtifacts>,
     request: &SetupRequest,
     witness: &Witness,
 ) -> Result<Opening, Failure> {
-    let capacity = match request.one_hot_k {
-        16 => ONE_HOT_TRACE_K16_CAPACITY,
-        _ => ONE_HOT_TRACE_K256_CAPACITY,
-    };
-    commit_with_capacity(artifacts, request, witness, capacity)
-}
-
-/// [`commit`] with an explicit selector capacity (a power of two with
-/// `log K + log capacity <= final arity`); the trace fills the remaining
-/// variables with rows.
-pub fn commit_with_capacity(
-    artifacts: &Arc<AkitaScheduleArtifacts>,
-    request: &SetupRequest,
-    witness: &Witness,
-    capacity: usize,
-) -> Result<Opening, Failure> {
     let shape = request.setup_shape;
-    let count = request.precommitted_count();
     let (prover_setup, verifier_setup) = stats::time("setup", || {
-        AkitaScheme::setup(AkitaSetupParams::one_hot_only_grouped(
-            shape.num_vars,
-            shape.num_polys,
-            shape.num_polys + count,
-            request.layout_digest,
-            request.one_hot_k,
-            request.schedule_params(),
-            Arc::clone(artifacts),
-        ))
+        AkitaScheme::setup(request.setup_params(artifacts))
     })
     .map_err(fail(Stage::Setup))?;
 
     let mut rng = SplitMix64::new(witness.seed);
-    let mut precommitted = Vec::with_capacity(count);
-    for plan in request.precommitted() {
+    let mut auxiliary = Vec::with_capacity(request.auxiliary_count());
+    for plan in request.auxiliary() {
         let arity = plan.packing().packed_num_vars();
         let (object_setup, _) =
             AkitaScheme::transparent_object_setup(artifacts, arity, plan.layout_digest())
@@ -244,9 +230,9 @@ pub fn commit_with_capacity(
                 .map_err(fail(Stage::Commit))?;
         let at = point(witness.point, &mut rng, arity);
         let evaluation = polynomial.evaluate(&at);
-        precommitted.push((
-            PrecommittedClaim::new(
-                plan.precommitted_role(),
+        auxiliary.push((
+            TaggedGroupOpeningClaim::new(
+                plan.group_role(),
                 GroupOpeningClaim::new(commitment, at, vec![evaluation]),
             ),
             hint,
@@ -254,86 +240,49 @@ pub fn commit_with_capacity(
     }
 
     let log_k = request.one_hot_k.trailing_zeros() as usize;
-    let log_capacity = capacity.trailing_zeros() as usize;
-    let log_rows = shape
-        .num_vars
-        .checked_sub(log_k + log_capacity)
-        .ok_or_else(|| Failure {
-            stage: Stage::Commit,
-            message: format!(
-                "final arity {} below log K {log_k} + log capacity {log_capacity}",
-                shape.num_vars
-            ),
-        })?;
+    let log_rows = shape.num_vars.checked_sub(log_k).ok_or_else(|| Failure {
+        stage: Stage::Commit,
+        message: format!("final arity {} below log K {log_k}", shape.num_vars),
+    })?;
     let num_rows = 1usize << log_rows;
-    let num_columns = 1 + usize::from(witness.columns) % capacity.min(64);
-    if std::env::var_os("JOLT_FUZZ_OPENING_LOG").is_some() {
-        eprintln!(
-            "opening: final {} K={} capacity {capacity} rows {num_rows} columns {num_columns} precommitted {count}",
-            shape.num_vars, request.one_hot_k
-        );
-    }
-    let mut selected = vec![0u8; num_rows * num_columns];
-    for byte in &mut selected {
-        *byte = witness.trace.selected(&mut rng, request.one_hot_k);
-    }
-    let mask = if num_columns == 64 {
-        u64::MAX
-    } else {
-        (1u64 << num_columns) - 1
-    };
-    let mut zero_committed_columns = witness.zero_committed_columns & mask;
-    if zero_committed_columns == 0 && selected.iter().all(|&byte| byte == 0) {
-        // An empty trace is the zero polynomial (FINDINGS J-5).
-        zero_committed_columns = 1;
-        stats::count(crate::targets::grid::KNOWN_ZERO_POLYNOMIAL);
-    }
+    let num_columns = shape.num_polys;
+    let selected = (0..num_rows * num_columns)
+        .map(|_| witness.trace.selected(&mut rng, request.one_hot_k))
+        .collect();
     let rows = Arc::new(TraceRows {
         num_rows,
         num_columns,
         selected,
-        zero_committed_columns,
+        zero_committed_columns: witness.zero_committed_columns,
     });
-    let materialized = rows.materialize(request.one_hot_k, capacity);
-    let hints: Vec<&AkitaProverHint> = precommitted.iter().map(|(_, hint)| hint).collect();
+    let columns = rows.materialize(request.one_hot_k);
+    let hints: Vec<&AkitaProverHint> = auxiliary.iter().map(|(_, hint)| hint).collect();
     let (main_commitment, main_hint) = stats::time("commit", || {
         AkitaScheme::commit_trace_one_hot(
             &prover_setup,
             request.layout_digest,
-            capacity,
             Arc::clone(&rows) as Arc<dyn TraceOneHotRows>,
             &hints,
         )
     })
     .map_err(fail(Stage::Commit))?;
-    let (reference_commitment, _) = stats::time("commit_reference", || {
-        if hints.is_empty() {
-            AkitaScheme::commit_one_hot_group_owned(
-                &prover_setup,
-                request.layout_digest,
-                vec![materialized.clone()],
-            )
-        } else {
-            AkitaScheme::commit_one_hot_group_owned_with_precommitted(
-                &prover_setup,
-                request.layout_digest,
-                vec![materialized.clone()],
-                &hints,
-            )
-        }
-    })
-    .map_err(fail(Stage::Commit))?;
-    assert_eq!(
-        main_commitment, reference_commitment,
-        "streamed OneHotTrace commitment differs from the materialized one-hot polynomial's"
-    );
+    if hints.is_empty() {
+        let (reference_commitment, _) = stats::time("commit_reference", || {
+            AkitaScheme::commit_one_hot_group(&prover_setup, request.layout_digest, &columns)
+        })
+        .map_err(fail(Stage::Commit))?;
+        assert_eq!(
+            main_commitment, reference_commitment,
+            "streamed OneHotTrace commitment differs from the one-hot group commitment of its columns"
+        );
+    }
     let at = point(witness.point, &mut rng, shape.num_vars);
-    let evaluation = materialized.evaluate(&at);
+    let evaluations = columns.iter().map(|column| column.evaluate(&at)).collect();
     Ok(Opening {
         prover_setup,
         verifier_setup,
-        precommitted,
-        main: GroupOpeningClaim::new(main_commitment, at, vec![evaluation]),
+        auxiliary,
+        main: GroupOpeningClaim::new(main_commitment, at, evaluations),
         main_hint,
     })
 }
@@ -344,20 +293,17 @@ impl Opening {
         let Opening {
             prover_setup,
             verifier_setup,
-            precommitted,
+            auxiliary,
             main,
             main_hint,
         } = self;
-        let claims: Vec<_> = precommitted
-            .iter()
-            .map(|(claim, _)| claim.clone())
-            .collect();
+        let claims: Vec<_> = auxiliary.iter().map(|(claim, _)| claim.clone()).collect();
         let mut prover_transcript = Blake2bTranscript::new(TRANSCRIPT_LABEL);
         let proof = stats::time("prove", || {
             liveness::observe(context, || {
                 AkitaScheme::prove_batch(
                     &prover_setup,
-                    precommitted,
+                    auxiliary,
                     main.clone(),
                     main_hint,
                     &mut prover_transcript,
@@ -398,18 +344,5 @@ impl Fill {
             Fill::Random => 2,
             Fill::Sparse => 3,
         }
-    }
-}
-
-impl Witness {
-    /// Bytes that [`Witness::decode`] maps back to `self`.
-    pub fn encode(&self) -> Vec<u8> {
-        let mut out = self.seed.to_le_bytes().to_vec();
-        out.push(self.dense.tag());
-        out.push(self.trace.tag());
-        out.push(self.columns);
-        out.extend_from_slice(&self.zero_committed_columns.to_le_bytes());
-        out.push(self.point.tag());
-        out
     }
 }

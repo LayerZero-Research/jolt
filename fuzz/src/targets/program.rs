@@ -3,11 +3,12 @@
 //!
 //! Input: a guest from [`crate::programs::GUESTS`], its postcard arguments and
 //! advice, and the prover's free choices: full or committed program (and the
-//! chunk count), the padded-trace bound baked into preprocessing, a forced
-//! K=256 one-hot width, address-first read/write binding, and the optimized
-//! or reference backend. Every execution the tracer completes, including a
-//! guest panic, is a statement Jolt must prove within these documented
-//! limits; a failure anywhere after tracing is a finding.
+//! chunk count), the padded-trace bound baked into preprocessing, the Akita
+//! witness chunk profile, a forced K=256 one-hot width (where its catalog
+//! lists the trace group), address-first read/write binding, and the
+//! optimized or reference backend. Every execution the tracer completes,
+//! including a guest panic, is a statement Jolt must prove within these
+//! documented limits; a failure anywhere after tracing is a finding.
 //!
 //! After an accepted proof the target also checks, as secondary soundness
 //! and transport properties, that the proof and verifier preprocessing survive
@@ -17,7 +18,7 @@
 use std::sync::{Arc, OnceLock};
 
 use common::jolt_device::{JoltDevice, MemoryConfig, MemoryLayout};
-use jolt_akita::{AkitaCommitment, AkitaField, AkitaScheme};
+use jolt_akita::{AkitaChunkProfile, AkitaCommitment, AkitaField, AkitaScheme, AKITA_ONE_HOT_K256};
 use jolt_claims::protocols::jolt::JoltOneHotConfig;
 use jolt_host::JoltProgramSource;
 use jolt_program::execution::{OwnedTrace, TraceInputs};
@@ -26,7 +27,7 @@ use jolt_prover::akita::preprocessing::{
     commit_trusted_advice, preprocess_committed_with_advice, preprocess_full_with_advice,
     AkitaProverPreprocessing, AkitaTranscript, AkitaVc,
 };
-use jolt_prover::akita::{self, JoltAkitaBackend};
+use jolt_prover::akita::{self, one_hot_trace_setup_shape, JoltAkitaBackend};
 use jolt_prover::ProverConfig;
 use jolt_verifier::proof::JoltProof;
 use jolt_witness::{JoltVmWitnessConfig, JoltVmWitnessInputs, TraceBackend};
@@ -55,6 +56,7 @@ pub struct Options {
     pub committed: Option<u8>,
     /// Padded-trace bound = padded length << slack (capped at `2^24`).
     pub trace_slack: u8,
+    pub profile: AkitaChunkProfile,
     pub force_k256: bool,
     pub ram_address_first: bool,
     pub registers_address_first: bool,
@@ -65,9 +67,16 @@ impl Options {
     pub fn decode(reader: &mut Reader<'_>) -> Self {
         let flags = reader.u8();
         let committed = reader.u8();
+        let profile = reader.u8();
         Self {
             committed: (flags & 1 != 0).then_some(committed % 4),
             trace_slack: (flags >> 1) % 3,
+            profile: match profile % 8 {
+                0 => AkitaChunkProfile::Two,
+                1 => AkitaChunkProfile::Four,
+                2 => AkitaChunkProfile::Eight,
+                _ => AkitaChunkProfile::Single,
+            },
             force_k256: flags & 0x08 != 0 && reader.u8().is_multiple_of(4),
             ram_address_first: flags & 0x10 != 0,
             registers_address_first: flags & 0x20 != 0,
@@ -90,7 +99,13 @@ impl Options {
             } else {
                 0
             };
-        let mut out = vec![flags, self.committed.unwrap_or(0)];
+        let profile = match self.profile {
+            AkitaChunkProfile::Two => 0,
+            AkitaChunkProfile::Four => 1,
+            AkitaChunkProfile::Eight => 2,
+            AkitaChunkProfile::Single => 3,
+        };
+        let mut out = vec![flags, self.committed.unwrap_or(0), profile];
         if self.force_k256 {
             out.push(0);
         }
@@ -249,6 +264,19 @@ pub fn prove(guest: &Guest, args: &Args, options: &Options) -> Result<Option<Pro
     if options.registers_address_first {
         config.rw_config.registers_rw_phase1_num_rounds = 0;
     }
+    config.akita_chunk_profile = options.profile;
+    if options.force_k256 {
+        let (shape, _, _) =
+            one_hot_trace_setup_shape(&config, program_preprocessing.bytecode.code_size)
+                .map_err(|error| format!("trace setup shape: {error:?}"))?;
+        if !artifacts::catalogs(AKITA_ONE_HOT_K256, options.profile)
+            .one_hot_rows
+            .contains(&(shape.num_vars, shape.num_polys))
+        {
+            stats::count("k256_trace_group_unlisted");
+            return Ok(None);
+        }
+    }
     let has_untrusted = !args.untrusted_advice.is_empty();
     let has_trusted = !args.trusted_advice.is_empty();
     let schedule_artifacts = artifacts::shared();
@@ -389,11 +417,13 @@ fn check_transport_and_binding(guest: &Guest, proved: &Proved) {
     stats::count("binding_rejected");
 }
 
-/// One seed per guest with default options, one committed, one forced K=256.
+/// One seed per guest with default options, one committed, one four-chunk
+/// profile, and one forced K=256.
 pub fn seeds() -> Vec<(String, Vec<u8>)> {
     let base = Options {
         committed: None,
         trace_slack: 0,
+        profile: AkitaChunkProfile::Single,
         force_k256: false,
         ram_address_first: false,
         registers_address_first: false,
@@ -405,6 +435,13 @@ pub fn seeds() -> Vec<(String, Vec<u8>)> {
             "committed2",
             Options {
                 committed: Some(1),
+                ..base
+            },
+        ),
+        (
+            "four-chunks",
+            Options {
+                profile: AkitaChunkProfile::Four,
                 ..base
             },
         ),
@@ -421,11 +458,6 @@ pub fn seeds() -> Vec<(String, Vec<u8>)> {
     let mut seeds = Vec::new();
     for (index, guest) in GUESTS.iter().enumerate() {
         for (name, options) in variants {
-            // A known J-1 reproduction (committed program with large advice
-            // capacities); as a seed it would stop the lane at startup.
-            if guest.key == "interp-advice-large" && options.committed.is_some() {
-                continue;
-            }
             let mut bytes = vec![index as u8];
             bytes.extend(options.encode());
             bytes.extend(std::iter::repeat_n(0x11u8, 64));
