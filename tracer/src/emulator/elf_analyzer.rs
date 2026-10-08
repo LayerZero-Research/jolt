@@ -8,7 +8,6 @@ use alloc::collections::btree_map::BTreeMap as FnvHashMap;
 #[cfg(not(feature = "std"))]
 use alloc::{string::String, vec::Vec};
 
-/// ELF header
 pub struct Header {
     pub e_width: u8, // 32 or 64
     _e_class: u8,
@@ -31,19 +30,6 @@ pub struct Header {
     _e_shstrndx: u16,
 }
 
-/// ELF program header
-pub struct _ProgramHeader {
-    _p_type: u32,
-    _p_flags: u32,
-    _p_offset: u64,
-    _p_vaddr: u64,
-    _p_paddr: u64,
-    _p_filesz: u64,
-    _p_memsz: u64,
-    _p_align: u64,
-}
-
-/// ELF section header
 #[derive(Debug)]
 pub struct SectionHeader {
     #[allow(dead_code)]
@@ -53,13 +39,12 @@ pub struct SectionHeader {
     pub sh_addr: u64,
     pub sh_offset: u64,
     pub sh_size: u64,
-    _sh_link: u32,
+    pub sh_link: u32,
     _sh_info: u32,
     _sh_addralign: u64,
     _sh_entsize: u64,
 }
 
-/// ELF symbol table entry
 pub struct SymbolEntry {
     st_name: u32,
     st_info: u8,
@@ -69,7 +54,6 @@ pub struct SymbolEntry {
     _st_size: u64,
 }
 
-/// ELF file analyzer
 pub struct ElfAnalyzer {
     data: Vec<u8>,
 }
@@ -85,10 +69,7 @@ impl ElfAnalyzer {
         }
     }
 
-    /// Checks if ELF file content is valid
-    // @TODO: Validate more precisely
     pub fn validate(&self) -> bool {
-        // check ELF magic number
         if self.data.len() < 4
             || self.data[0] != 0x7f
             || self.data[1] != 0x45
@@ -100,7 +81,6 @@ impl ElfAnalyzer {
         true
     }
 
-    /// Reads ELF header
     pub fn read_header(&self) -> Header {
         let e_class = self.read_byte(4);
 
@@ -184,28 +164,6 @@ impl ElfAnalyzer {
         offset += 2;
 
         let e_shstrndx = self.read_halfword(offset);
-        //offset += 2;
-
-        /*
-        println!("ELF:{}", e_width);
-        println!("e_endian:{:X}", e_endian);
-        println!("e_elf_version:{:X}", e_elf_version);
-        println!("e_osabi:{:X}", e_osabi);
-        println!("e_abi_version:{:X}", e_abi_version);
-        println!("e_type:{:X}", e_type);
-        println!("e_machine:{:X}", e_machine);
-        println!("e_version:{:X}", e_version);
-        println!("e_entry:{:X}", e_entry);
-        println!("e_phoff:{:X}", e_phoff);
-        println!("e_shoff:{:X}", e_shoff);
-        println!("e_flags:{:X}", e_flags);
-        println!("e_ehsize:{:X}", e_ehsize);
-        println!("e_phentsize:{:X}", e_phentsize);
-        println!("e_phnum:{:X}", e_phnum);
-        println!("e_shentsize:{:X}", e_shentsize);
-        println!("e_shnum:{:X}", e_shnum);
-        println!("e_shstrndx:{:X}", e_shstrndx);
-        */
 
         Header {
             e_width,
@@ -230,145 +188,6 @@ impl ElfAnalyzer {
         }
     }
 
-    /// Reads ELF program headers
-    ///
-    /// # Arguments
-    /// * `header`
-    pub fn _read_program_headers(&self, header: &Header) -> Vec<_ProgramHeader> {
-        let mut headers = Vec::new();
-        let mut offset = header._e_phoff as usize;
-        for _i in 0..header._e_phnum {
-            let p_type = self.read_word(offset);
-            offset += 4;
-
-            let mut p_flags = 0;
-            if header.e_width == 64 {
-                p_flags = self.read_word(offset);
-                offset += 4;
-            }
-
-            let p_offset = match header.e_width {
-                64 => {
-                    let data = self.read_doubleword(offset);
-                    offset += 8;
-                    data
-                }
-                32 => {
-                    let data = self.read_word(offset);
-                    offset += 4;
-                    data as u64
-                }
-                _ => panic!("Not happen"),
-            };
-
-            let p_vaddr = match header.e_width {
-                64 => {
-                    let data = self.read_doubleword(offset);
-                    offset += 8;
-                    data
-                }
-                32 => {
-                    let data = self.read_word(offset);
-                    offset += 4;
-                    data as u64
-                }
-                _ => panic!("Not happen"),
-            };
-
-            let p_paddr = match header.e_width {
-                64 => {
-                    let data = self.read_doubleword(offset);
-                    offset += 8;
-                    data
-                }
-                32 => {
-                    let data = self.read_word(offset);
-                    offset += 4;
-                    data as u64
-                }
-                _ => panic!("Not happen"),
-            };
-
-            let p_filesz = match header.e_width {
-                64 => {
-                    let data = self.read_doubleword(offset);
-                    offset += 8;
-                    data
-                }
-                32 => {
-                    let data = self.read_word(offset);
-                    offset += 4;
-                    data as u64
-                }
-                _ => panic!("Not happen"),
-            };
-
-            let p_memsz = match header.e_width {
-                64 => {
-                    let data = self.read_doubleword(offset);
-                    offset += 8;
-                    data
-                }
-                32 => {
-                    let data = self.read_word(offset);
-                    offset += 4;
-                    data as u64
-                }
-                _ => panic!("Not happen"),
-            };
-
-            if header.e_width == 32 {
-                p_flags = self.read_word(offset);
-                offset += 4;
-            }
-
-            let p_align = match header.e_width {
-                64 => {
-                    let data = self.read_doubleword(offset);
-                    offset += 8;
-                    data
-                }
-                32 => {
-                    let data = self.read_word(offset);
-                    offset += 4;
-                    data as u64
-                }
-                _ => panic!("Not happen"),
-            };
-
-            /*
-            println!("");
-            println!("Program:{:X}", i);
-            println!("p_type:{:X}", p_type);
-            println!("p_flags:{:X}", p_flags);
-            println!("p_offset:{:X}", p_offset);
-            println!("p_vaddr:{:X}", p_vaddr);
-            println!("p_paddr:{:X}", p_paddr);
-            println!("p_filesz:{:X}", p_filesz);
-            println!("p_memsz:{:X}", p_memsz);
-            println!("p_align:{:X}", p_align);
-            println!("p_align:{:X}", p_align);
-            */
-
-            headers.push(_ProgramHeader {
-                _p_type: p_type,
-                _p_flags: p_flags,
-                _p_offset: p_offset,
-                _p_vaddr: p_vaddr,
-                _p_paddr: p_paddr,
-                _p_filesz: p_filesz,
-                _p_memsz: p_memsz,
-                _p_align: p_align,
-            });
-        }
-
-        headers
-    }
-
-    /// Reads ELF section headers
-    ///
-    /// # Arguments
-    /// * `header`
     pub fn read_section_headers(&self, header: &Header) -> Vec<SectionHeader> {
         let mut headers = Vec::new();
         let mut offset = header.e_shoff as usize;
@@ -469,21 +288,6 @@ impl ElfAnalyzer {
                 _ => panic!("Not happen"),
             };
 
-            /*
-            println!("");
-            println!("Section:{:X}", _i);
-            println!("sh_name:{:X}", sh_name);
-            println!("sh_type:{:X}", sh_type);
-            println!("sh_flags:{:X}", sh_flags);
-            println!("sh_addr:{:X}", sh_addr);
-            println!("sh_offset:{:X}", sh_offset);
-            println!("sh_size:{:X}", sh_size);
-            println!("sh_link:{:X}", sh_link);
-            println!("sh_info:{:X}", sh_info);
-            println!("sh_addralign:{:X}", sh_addralign);
-            println!("sh_entsize:{:X}", sh_entsize);
-            */
-
             headers.push(SectionHeader {
                 sh_name,
                 sh_type,
@@ -491,7 +295,7 @@ impl ElfAnalyzer {
                 sh_addr,
                 sh_offset,
                 sh_size,
-                _sh_link: sh_link,
+                sh_link,
                 _sh_info: sh_info,
                 _sh_addralign: sh_addralign,
                 _sh_entsize: sh_entsize,
@@ -501,15 +305,10 @@ impl ElfAnalyzer {
         headers
     }
 
-    /// Reads symbol entries of symbol table sections
-    ///
-    /// # Arguments
-    /// * `Terminal`
-    /// * `symbol_table_section_headers`
     pub fn read_symbol_entries(
         &self,
         header: &Header,
-        symbol_table_section_headers: &Vec<&SectionHeader>,
+        symbol_table_section_headers: &[&SectionHeader],
     ) -> Vec<SymbolEntry> {
         let mut entries = Vec::new();
         for section_header in symbol_table_section_headers {
@@ -574,17 +373,6 @@ impl ElfAnalyzer {
                     _ => panic!("No happen"),
                 };
 
-                /*
-                println!("Symbol: {}", _j);
-                println!("st_name: {:X}", st_name);
-                println!("st_info: {:X}", st_info);
-                println!("st_other: {:X}", _st_other);
-                println!("st_shndx: {:X}", _st_shndx);
-                println!("st_value: {:X}", st_value);
-                println!("st_size: {:X}", _st_size);
-                println!("");
-                */
-
                 entries.push(SymbolEntry {
                     st_name,
                     st_info,
@@ -598,11 +386,28 @@ impl ElfAnalyzer {
         entries
     }
 
-    /// Reads strings from a string table section
+    /// Builds the symbol name -> address map of every symbol table section.
     ///
-    /// # Arguments
-    /// * `section_header` The header of the string table section
-    /// * `index` Offset in the string table section
+    /// Each symbol table resolves its names through the string table named by
+    /// its own `sh_link`, as the ELF spec requires; picking the first
+    /// `SHT_STRTAB` section instead can select `.shstrtab` (LLD emits it
+    /// before `.strtab`).
+    pub fn read_symbol_map(
+        &self,
+        header: &Header,
+        section_headers: &[SectionHeader],
+    ) -> FnvHashMap<String, u64> {
+        let mut map = FnvHashMap::default();
+        for symbol_table in section_headers.iter().filter(|s| s.sh_type == 2) {
+            let Some(string_table) = section_headers.get(symbol_table.sh_link as usize) else {
+                continue;
+            };
+            let entries = self.read_symbol_entries(header, &[symbol_table]);
+            map.extend(self.create_symbol_map(&entries, string_table));
+        }
+        map
+    }
+
     fn read_strings(&self, section_header: &SectionHeader, index: u64) -> String {
         let sh_offset = section_header.sh_offset;
         let sh_size = section_header.sh_size;
@@ -640,7 +445,6 @@ impl ElfAnalyzer {
             let st_name = entry.st_name;
             let st_value = entry.st_value;
 
-            // Stores only function and notype symbol
             if (st_info & 0x2) != 0x2 && (st_info & 0xf) != 0 {
                 continue;
             }
@@ -648,25 +452,16 @@ impl ElfAnalyzer {
             let symbol = self.read_strings(string_table_section_header, st_name as u64);
 
             if !symbol.is_empty() {
-                //println!("{} {:0x}", symbol, st_value);
                 map.insert(symbol, st_value);
             }
         }
         map
     }
 
-    /// Reads a byte from ELF file content
-    ///
-    /// # Arguments
-    /// * `offset`
     pub fn read_byte(&self, offset: usize) -> u8 {
         self.data[offset]
     }
 
-    /// Reads two bytes from ELF file content
-    ///
-    /// # Arguments
-    /// * `offset`
     fn read_halfword(&self, offset: usize) -> u16 {
         let mut data = 0;
         for i in 0..2 {
@@ -675,10 +470,6 @@ impl ElfAnalyzer {
         data
     }
 
-    /// Reads four bytes from ELF file content
-    ///
-    /// # Arguments
-    /// * `offset`
     fn read_word(&self, offset: usize) -> u32 {
         let mut data = 0;
         for i in 0..4 {
@@ -687,10 +478,6 @@ impl ElfAnalyzer {
         data
     }
 
-    /// Reads eight bytes from ELF file content
-    ///
-    /// # Arguments
-    /// * `offset`
     fn read_doubleword(&self, offset: usize) -> u64 {
         let mut data = 0;
         for i in 0..8 {
@@ -713,9 +500,19 @@ pub(crate) mod test_elf {
         pub size: u64,
     }
 
+    /// Order of the two `SHT_STRTAB` sections in the section header table.
+    #[derive(Clone, Copy)]
+    pub(crate) enum StrtabOrder {
+        /// `.strtab` before `.shstrtab`, as GNU ld emits them.
+        GnuLd,
+        /// `.shstrtab` before `.strtab`, as LLD emits them.
+        Lld,
+    }
+
     /// Builds a minimal but well-formed RV64 ELF: `.text` loaded at
-    /// 0x8000_0000 with the given instruction words, plus a symbol table.
-    pub(crate) fn build_elf64(text: &[u32], symbols: &[TestSymbol]) -> Vec<u8> {
+    /// 0x8000_0000 with the given instruction words, plus a symbol table whose
+    /// `sh_link` names `.strtab` in either section order.
+    pub(crate) fn build_elf64(text: &[u32], symbols: &[TestSymbol], order: StrtabOrder) -> Vec<u8> {
         const TEXT_ADDR: u64 = 0x8000_0000;
         let text_bytes: Vec<u8> = text.iter().flat_map(|w| w.to_le_bytes()).collect();
 
@@ -739,6 +536,12 @@ pub(crate) mod test_elf {
         let shstrtab_offset = strtab_offset + strtab.len();
         let shoff = align8(shstrtab_offset + shstrtab.len());
 
+        // Section header indices of .strtab and .shstrtab.
+        let (strtab_index, shstrtab_index): (u32, u16) = match order {
+            StrtabOrder::GnuLd => (3, 4),
+            StrtabOrder::Lld => (4, 3),
+        };
+
         let mut elf = Vec::new();
         // ELF header
         elf.extend_from_slice(&[0x7f, b'E', b'L', b'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
@@ -754,7 +557,7 @@ pub(crate) mod test_elf {
         elf.extend_from_slice(&0u16.to_le_bytes()); // e_phnum
         elf.extend_from_slice(&64u16.to_le_bytes()); // e_shentsize
         elf.extend_from_slice(&5u16.to_le_bytes()); // e_shnum
-        elf.extend_from_slice(&4u16.to_le_bytes()); // e_shstrndx
+        elf.extend_from_slice(&shstrtab_index.to_le_bytes()); // e_shstrndx
         assert_eq!(elf.len(), 0x40);
 
         // .text content
@@ -819,35 +622,20 @@ pub(crate) mod test_elf {
             0,
             symtab_offset as u64,
             symtab_size as u64,
-            3, // link to .strtab
-            1, // one local symbol (the null entry)
+            strtab_index, // link to .strtab
+            1,            // one local symbol (the null entry)
             8,
             24,
         );
-        push_shdr(
-            15, // ".strtab"
-            3,  // SHT_STRTAB
-            0,
-            0,
-            strtab_offset as u64,
-            strtab.len() as u64,
-            0,
-            0,
-            1,
-            0,
-        );
-        push_shdr(
-            23, // ".shstrtab"
-            3,
-            0,
-            0,
-            shstrtab_offset as u64,
-            shstrtab.len() as u64,
-            0,
-            0,
-            1,
-            0,
-        );
+        let strtab_shdr = (15, strtab_offset, strtab.len()); // ".strtab"
+        let shstrtab_shdr = (23, shstrtab_offset, shstrtab.len()); // ".shstrtab"
+        let string_tables = match order {
+            StrtabOrder::GnuLd => [strtab_shdr, shstrtab_shdr],
+            StrtabOrder::Lld => [shstrtab_shdr, strtab_shdr],
+        };
+        for (name, offset, size) in string_tables {
+            push_shdr(name, 3, 0, 0, offset as u64, size as u64, 0, 0, 1, 0); // SHT_STRTAB
+        }
 
         elf
     }
