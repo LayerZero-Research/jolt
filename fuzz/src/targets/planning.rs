@@ -25,12 +25,12 @@ pub fn check(shape: &Shape, witness: &Witness) {
     let result = shape.setup_request().and_then(|request| {
         stats::time("plan", || shape::plan(&request))?;
         stats::count("planned");
-        if request.total_coefficients() <= env::max_case_coefficients() {
+        if env::case_coefficients().contains(&request.total_coefficients()) {
             env::on_large_stack(|| {
                 opening::commit(&artifacts, &request, witness)?.prove_and_verify(&shape.to_string())
             })?;
         } else {
-            stats::count("prove_skipped_cost");
+            stats::count("prove_skipped_size");
         }
         Ok(())
     });

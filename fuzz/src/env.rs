@@ -1,7 +1,9 @@
 //! Process environment shared by every harness.
 
 use rayon::ThreadPoolBuilder;
+use std::ops::RangeInclusive;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Once;
 use std::thread::Builder;
 
@@ -72,13 +74,20 @@ pub fn on_large_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
 }
 
 pub const MAX_CASE_COEFFS_ENV: &str = "JOLT_FUZZ_MAX_CASE_COEFFS";
+pub const MIN_CASE_COEFFS_ENV: &str = "JOLT_FUZZ_MIN_CASE_COEFFS";
 
-/// Openings above this many committed coefficients (all groups) are planned
-/// but not proved in one iteration. Default `2^23`: the smallest production
-/// trace (K=16, `log_T = 12`, final arity 22) plus advice fits.
-pub fn max_case_coefficients() -> u128 {
-    std::env::var(MAX_CASE_COEFFS_ENV)
+/// A variable parsed as `T`; `None` when unset or malformed.
+pub fn parsed<T: FromStr>(name: &str) -> Option<T> {
+    std::env::var(name)
         .ok()
         .and_then(|value| value.parse().ok())
-        .unwrap_or(1 << 23)
+}
+
+/// Openings whose committed coefficients (all groups) fall in this range are
+/// proved; others are planned only (`planning`) or not selected (`grid`).
+/// Default `0..=2^23`: the smallest production trace (K=16, `log_T = 12`,
+/// final arity 22) plus advice fits. A campaign aimed at large openings
+/// raises both ends.
+pub fn case_coefficients() -> RangeInclusive<u128> {
+    parsed(MIN_CASE_COEFFS_ENV).unwrap_or(0)..=parsed(MAX_CASE_COEFFS_ENV).unwrap_or(1 << 23)
 }

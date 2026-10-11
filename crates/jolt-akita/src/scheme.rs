@@ -463,19 +463,10 @@ impl CommitmentScheme for AkitaScheme {
                 .one_hot_catalog_for_profile(params.one_hot_k, params.akita_chunk_profile)
                 .map_err(invalid_setup)?;
             let catalog = params
-                .grouped_schedule
-                .as_ref()
-                .map_or_else(
-                    || Ok(base.clone()),
-                    |grouped_schedule| {
-                        grouped_schedule.extend_catalog(
-                            &dense_catalog,
-                            &artifacts.full_dense_catalog()?,
-                            &base,
-                            params.one_hot_k,
-                            params.akita_chunk_profile,
-                        )
-                    },
+                .provisioned_one_hot_catalog(
+                    &dense_catalog,
+                    || artifacts.full_dense_catalog(),
+                    &base,
                 )
                 .map_err(invalid_setup)?;
             catalog.to_artifact_bytes().map_err(invalid_setup)

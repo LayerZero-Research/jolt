@@ -31,7 +31,7 @@ use jolt_claims::protocols::jolt::{
 };
 use jolt_prover::akita::one_hot_trace_setup_shape;
 use jolt_prover::akita::preprocessing::{advice_word_vars, grouped_setup_params_for_shape};
-use jolt_prover::{remap_address, ProverConfig, MIN_PADDED_TRACE_LENGTH};
+use jolt_prover::{program_image_end, ProverConfig, MIN_PADDED_TRACE_LENGTH};
 use jolt_verifier::stages::formula_dimensions_from_parts;
 
 use crate::artifacts;
@@ -51,7 +51,7 @@ pub const PROFILES: [AkitaChunkProfile; 4] = [
 
 /// The K=256 override `akita_e2e` forces: 8-bit committed chunks with 32-bit
 /// virtual lookup chunks.
-const FORCED_K256: JoltOneHotConfig = JoltOneHotConfig {
+pub const FORCED_K256: JoltOneHotConfig = JoltOneHotConfig {
     log_k_chunk: 8,
     lookups_ra_virtual_log_k_chunk: 32,
 };
@@ -226,10 +226,7 @@ pub fn fail_with<E: Display>(stage: Stage) -> impl Fn(E) -> Failure {
 
 impl Shape {
     pub fn log_k_chunk(&self) -> u8 {
-        match self.chunking {
-            Chunking::Production => 4,
-            Chunking::ForcedK256 => FORCED_K256.log_k_chunk,
-        }
+        self.prover_config().one_hot_config.log_k_chunk
     }
 
     /// The configuration `ProverConfig::derive` selects for this padded
@@ -316,11 +313,9 @@ impl Shape {
         let Some(layout) = self.memory_layout() else {
             return false;
         };
-        let ram_ok = remap_address(RAM_START_ADDRESS, &layout).is_some_and(|start| {
-            (start + self.image_words() as u64 + 1)
-                .checked_next_power_of_two()
-                .is_some_and(|floor| floor <= 1u64 << self.log_ram_k)
-        });
+        let ram_ok = program_image_end(&layout, RAM_START_ADDRESS, self.image_words())
+            .checked_next_power_of_two()
+            .is_some_and(|floor| floor <= 1u64 << self.log_ram_k);
         let advice_ok = |bytes: Option<u64>| {
             bytes.is_none_or(|bytes| advice_word_vars(bytes as usize) <= ADVICE_MAX_PHYSICAL_VARS)
         };
@@ -458,20 +453,16 @@ fn edge_biased(reader: &mut Reader<'_>, min: usize, max: usize, edges: &[usize])
 /// exhaustively. Returns the number of rows provisioned beyond the base
 /// catalog.
 pub fn plan(request: &SetupRequest) -> Result<usize, Failure> {
-    let Some(grouped) = request.params.grouped_schedule() else {
-        return Ok(0);
-    };
     let catalogs = artifacts::catalogs(request.one_hot_k, request.profile);
-    grouped
-        .extend_catalog(
+    request
+        .params
+        .provisioned_one_hot_catalog(
             &catalogs.dense,
-            &catalogs.full_dense,
+            || Ok(catalogs.full_dense.clone()),
             &catalogs.one_hot,
-            request.one_hot_k,
-            request.profile,
         )
-        .map(|extended| {
-            extended
+        .map(|catalog| {
+            catalog
                 .rows()
                 .len()
                 .saturating_sub(catalogs.one_hot.rows().len())

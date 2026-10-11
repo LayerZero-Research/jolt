@@ -55,8 +55,8 @@ pub mod stages;
 #[cfg(feature = "akita")]
 pub use akita::prove;
 pub use config::{
-    padded_trace_length, remap_address, CommittedProgramCandidates, ProverConfig,
-    MIN_PADDED_TRACE_LENGTH,
+    padded_trace_length, program_image_end, remap_address, CommittedProgramCandidates,
+    ProverConfig, MIN_PADDED_TRACE_LENGTH,
 };
 #[cfg(not(feature = "akita"))]
 pub use dory::prove;

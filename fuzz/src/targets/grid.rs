@@ -12,9 +12,9 @@
 //!   commitment group.
 //!
 //! The lane variant (`JOLT_FUZZ_GRID_FAMILY` = `k16`, `k256`, or `dense`)
-//! fixes the family; without it the input picks. Rows above
-//! `JOLT_FUZZ_MAX_CASE_COEFFS` are excluded; `jolt-fuzz-dev grid-sweep` runs
-//! them in release mode.
+//! fixes the family; without it the input picks. Only rows whose size lies in
+//! `env::case_coefficients` are selected; `jolt-fuzz-dev grid-sweep` runs any
+//! range in release mode.
 
 use std::sync::{Arc, OnceLock};
 
@@ -163,11 +163,11 @@ pub fn run(data: &[u8]) {
     let mut reader = Reader::new(data);
     let selector = reader.u16();
     let family = lane_family().unwrap_or(FAMILIES[usize::from(selector >> 8) % FAMILIES.len()]);
-    let limit = env::max_case_coefficients();
+    let sizes = env::case_coefficients();
     let candidates: Vec<Row> = cached_rows()
         .iter()
         .copied()
-        .filter(|row| row.family == family && row.cost() <= limit)
+        .filter(|row| row.family == family && sizes.contains(&row.cost()))
         .collect();
     let Some(&row) = candidates.get(usize::from(selector) % candidates.len().max(1)) else {
         return;

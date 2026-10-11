@@ -433,13 +433,18 @@ fn check(context: &str, samples: &[Sample]) {
              limit 4096): {sample}"
         );
     }
-    // Every Akita opening folds at least once; no reports means the capture
-    // missed this proof (a renamed event target or a dropped feature), and
-    // every check above passed vacuously.
+    // Every Akita opening folds at least once, and the margin checks above
+    // read the diagnostics reports. None means the capture missed this proof
+    // (a renamed event target, or `response-model-diagnostics` not reaching
+    // the proving `akita-prover`) and those checks passed vacuously.
+    let model_folds = samples
+        .iter()
+        .filter(|sample| sample.model && sample.attempts.is_some())
+        .count();
     assert!(
-        peak.folds > 0,
-        "liveness: {context}: an accepted proof produced no fold reports ({} samples captured)",
-        samples.len()
+        peak.folds > 0 && model_folds > 0,
+        "liveness: {context}: an accepted proof produced {} fold and {model_folds} diagnostics reports",
+        peak.folds
     );
     for (groups, smallest) in joint.into_values() {
         if groups > 1 {

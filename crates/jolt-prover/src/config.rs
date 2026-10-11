@@ -160,9 +160,8 @@ impl ProverConfig {
             .filter_map(|row| remap_address(ram_address(row).unwrap_or(0), memory_layout))
             .max()
             .unwrap_or(0);
-        let image_end = remap_address(min_bytecode_address, memory_layout).unwrap_or(0)
-            + program_image_len_words as u64
-            + 1;
+        let image_end =
+            program_image_end(memory_layout, min_bytecode_address, program_image_len_words);
         let ram_K = touched.max(image_end).next_power_of_two() as usize;
         Ok(Self::for_padded_shape(trace_length, ram_K))
     }
@@ -223,6 +222,18 @@ pub fn remap_address(address: u64, memory_layout: &MemoryLayout) -> Option<u64> 
     let lowest = memory_layout.get_lowest_address();
     assert!(address >= lowest, "Unexpected address {address}");
     Some((address - lowest) / 8)
+}
+
+/// One past the last RAM word a program image occupies: `ram_K` covers at
+/// least this much whatever the trace touches.
+pub fn program_image_end(
+    memory_layout: &MemoryLayout,
+    min_bytecode_address: u64,
+    program_image_len_words: usize,
+) -> u64 {
+    remap_address(min_bytecode_address, memory_layout).unwrap_or(0)
+        + program_image_len_words as u64
+        + 1
 }
 
 /// Read-write checking phase splits: cycle variables in phase 1, address

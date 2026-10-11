@@ -498,9 +498,25 @@ impl AkitaSetupParams {
         self.max_total_batch_polys
     }
 
-    /// The grouped schedule recipe setup provisions, when auxiliary groups exist.
-    pub fn grouped_schedule(&self) -> Option<&GroupedScheduleParams> {
-        self.grouped_schedule.as_ref()
+    /// The one-hot catalog this setup admits: `base` (the catalog for its K
+    /// and chunk profile) extended with the provisioned grouped rows, when
+    /// the setup has auxiliary groups. `full_dense` is loaded only then.
+    pub fn provisioned_one_hot_catalog(
+        &self,
+        dense: &ValidatedScheduleCatalog,
+        full_dense: impl FnOnce() -> Result<ValidatedScheduleCatalog, AkitaError>,
+        base: &ValidatedScheduleCatalog,
+    ) -> Result<ValidatedScheduleCatalog, AkitaError> {
+        match &self.grouped_schedule {
+            None => Ok(base.clone()),
+            Some(grouped_schedule) => grouped_schedule.extend_catalog(
+                dense,
+                &full_dense()?,
+                base,
+                self.one_hot_k,
+                self.akita_chunk_profile,
+            ),
+        }
     }
 }
 

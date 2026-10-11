@@ -15,11 +15,11 @@
 //! bincode transport and still verify, and that a changed public output or
 //! panic flag is rejected.
 
+use std::ops::RangeInclusive;
 use std::sync::{Arc, OnceLock};
 
 use common::jolt_device::{JoltDevice, MemoryConfig, MemoryLayout};
 use jolt_akita::{AkitaChunkProfile, AkitaCommitment, AkitaField, AkitaScheme, AKITA_ONE_HOT_K256};
-use jolt_claims::protocols::jolt::JoltOneHotConfig;
 use jolt_host::JoltProgramSource;
 use jolt_program::execution::{OwnedTrace, TraceInputs};
 use jolt_program::preprocess::JoltProgramPreprocessing;
@@ -36,10 +36,12 @@ use tracer::execution_backend::TracerBackend;
 
 use crate::input::Reader;
 use crate::programs::{self, Args, Guest, GUESTS};
+use crate::shape::FORCED_K256;
 use crate::{artifacts, env, stats, transport};
 
 pub const GUEST_ENV: &str = "JOLT_FUZZ_GUEST_SET";
-/// Traces above this are not proved in one iteration.
+/// Traces outside `MIN..=MAX` (log2 of the padded length) are not proved.
+pub const MIN_LOG_T_ENV: &str = "JOLT_FUZZ_MIN_LOG_T";
 pub const MAX_LOG_T_ENV: &str = "JOLT_FUZZ_MAX_LOG_T";
 
 type Proof = JoltProof<AkitaScheme, AkitaVc>;
@@ -130,11 +132,9 @@ fn guest_set() -> &'static [&'static Guest] {
     })
 }
 
-fn max_log_t() -> usize {
-    std::env::var(MAX_LOG_T_ENV)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(18)
+/// Padded trace exponents this lane proves; default `0..=18`.
+fn log_t_range() -> RangeInclusive<usize> {
+    env::parsed(MIN_LOG_T_ENV).unwrap_or(0)..=env::parsed(MAX_LOG_T_ENV).unwrap_or(18)
 }
 
 pub fn decode(data: &[u8]) -> (&'static Guest, Options, Args) {
@@ -225,8 +225,8 @@ pub fn prove(guest: &Guest, args: &Args, options: &Options) -> Result<Option<Pro
         stats::count("guest_panicked");
     }
     let padded = padded_trace_length(sizing_trace.len());
-    if padded.ilog2() as usize > max_log_t() {
-        stats::count("trace_over_budget");
+    if !log_t_range().contains(&(padded.ilog2() as usize)) {
+        stats::count("trace_outside_budget");
         return Ok(None);
     }
     let max_padded_trace_length = (padded << options.trace_slack).min(1 << 24).max(padded);
@@ -266,10 +266,7 @@ pub fn prove(guest: &Guest, args: &Args, options: &Options) -> Result<Option<Pro
     )
     .map_err(|error| format!("derive config: {error:?}"))?;
     if options.force_k256 {
-        config.one_hot_config = JoltOneHotConfig {
-            log_k_chunk: 8,
-            lookups_ra_virtual_log_k_chunk: 32,
-        };
+        config.one_hot_config = FORCED_K256;
     }
     if options.ram_address_first {
         config.rw_config.ram_rw_phase1_num_rounds = 0;
