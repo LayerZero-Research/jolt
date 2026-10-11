@@ -4,14 +4,30 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-const KINDS: [&str; 3] = ["primitive", "end_to_end", "boundary"];
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LaneKind {
+    Primitive,
+    EndToEnd,
+    Boundary,
+}
+
+impl LaneKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            LaneKind::Primitive => "primitive",
+            LaneKind::EndToEnd => "end_to_end",
+            LaneKind::Boundary => "boundary",
+        }
+    }
+}
 
 /// One schedulable unit: a target, or one variant of it.
 #[derive(Clone, Debug)]
 pub struct Lane {
     pub target: String,
     pub variant: Option<String>,
-    pub kind: String,
+    pub kind: LaneKind,
     pub description: String,
     pub weight: f64,
     pub timeout_s: u64,
@@ -30,12 +46,17 @@ impl Lane {
             None => self.target.clone(),
         }
     }
+
+    /// Whether `spec` (`TARGET` or `TARGET@VARIANT`) selects this lane.
+    pub fn matches(&self, spec: &str) -> bool {
+        spec == self.target || spec == self.name()
+    }
 }
 
 #[derive(Deserialize, Default, Clone)]
 #[serde(deny_unknown_fields)]
 struct Spec {
-    kind: Option<String>,
+    kind: Option<LaneKind>,
     description: Option<String>,
     weight: Option<f64>,
     timeout_s: Option<u64>,
@@ -69,12 +90,10 @@ pub fn load(path: &Path) -> Result<Vec<Lane>, String> {
     let d = &file.defaults;
     let mut lanes = Vec::new();
     for (target, spec) in &file.target {
-        let kind = spec.kind.clone().or(d.kind.clone()).unwrap_or_default();
-        if !KINDS.contains(&kind.as_str()) {
-            return Err(format!(
-                "target {target}: kind must be one of {KINDS:?}, got {kind:?}"
-            ));
-        }
+        let kind = spec
+            .kind
+            .or(d.kind)
+            .ok_or_else(|| format!("target {target}: missing kind"))?;
         let pick = |a: Option<u64>, b: Option<u64>, name: &str| {
             a.or(b)
                 .ok_or_else(|| format!("target {target}: missing {name}"))
@@ -83,12 +102,18 @@ pub fn load(path: &Path) -> Result<Vec<Lane>, String> {
             Some(variants) if !variants.is_empty() => variants.iter().cloned().map(Some).collect(),
             _ => vec![None],
         };
-        let weight = spec.weight.or(d.weight).unwrap_or(1.0) / variants.len() as f64;
+        let weight = spec.weight.or(d.weight).unwrap_or(1.0);
+        if !(weight.is_finite() && weight > 0.0) {
+            return Err(format!(
+                "target {target}: weight must be finite and positive, got {weight}"
+            ));
+        }
+        let weight = weight / variants.len() as f64;
         for variant in &variants {
             lanes.push(Lane {
                 target: target.clone(),
                 variant: variant.as_ref().map(|v| v.name.clone()),
-                kind: kind.clone(),
+                kind,
                 description: spec.description.clone().unwrap_or_default(),
                 weight,
                 timeout_s: pick(spec.timeout_s, d.timeout_s, "timeout_s")?,
@@ -114,6 +139,7 @@ pub fn targets(lanes: &[Lane]) -> Vec<String> {
 }
 
 #[cfg(test)]
+#[expect(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -123,10 +149,8 @@ mod tests {
             load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../campaign/targets.toml")).unwrap();
         let grid: Vec<&Lane> = lanes.iter().filter(|lane| lane.target == "grid").collect();
         assert_eq!(grid.len(), 3);
-        let total: f64 = grid.iter().map(|lane| lane.weight).sum();
-        assert!(grid
-            .iter()
-            .all(|lane| (lane.weight - total / 3.0).abs() < 1e-9));
+        // `[target.grid]` declares `weight = 3.0` over three variants.
+        assert!(grid.iter().all(|lane| (lane.weight - 1.0).abs() < 1e-9));
         assert!(grid
             .iter()
             .any(|lane| lane.env.get("JOLT_FUZZ_GRID_FAMILY").map(String::as_str) == Some("k256")));
@@ -139,7 +163,7 @@ mod tests {
         let path = dir.join("targets.toml");
         std::fs::write(
             &path,
-            "[defaults]\ntimeout_s=1\nrss_limit_mb=1\nmalloc_limit_mb=1\nmax_len=1\nthreads=1\n[target.x]\nkind=\"other\"\n",
+            "[defaults]\ntimeout_s=1\nrss_limit_mb=1\nmalloc_limit_mb=1\nmax_len=1\nthreads=1\n[target.planning]\nkind=\"other\"\n",
         )
         .unwrap();
         assert!(load(&path).unwrap_err().contains("kind"));

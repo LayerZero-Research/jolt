@@ -12,6 +12,10 @@ name = "jolt-fuzz-dev"
 path = "src/main.rs"
 
 [dependencies]
+clap = { version = "4", features = ["derive"] }
 jolt-akita = { path = "../../crates/jolt-akita" }
 jolt-akita-fuzz = { path = ".." }
 rayon = "1.12"
+
+[lints]
+workspace = true

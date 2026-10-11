@@ -47,6 +47,10 @@ pub struct Guest {
     pub args: fn(&mut Reader<'_>) -> Args,
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "guest arguments are plain serde values; a failed encode is a harness bug"
+)]
 fn encode<T: Serialize>(value: &T) -> Vec<u8> {
     postcard::to_stdvec(value).expect("postcard encodes guest arguments")
 }

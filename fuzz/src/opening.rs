@@ -27,18 +27,13 @@ use jolt_openings::{
 };
 use jolt_poly::{MultilinearPoly, OneHotPolynomial, Polynomial};
 use jolt_transcript::{Blake2bTranscript, Transcript};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 use crate::input::{Reader, SplitMix64};
 use crate::liveness;
-use crate::shape::{Failure, SetupRequest, Stage};
-use crate::stats;
-
-fn fail(stage: Stage) -> impl Fn(OpeningsError) -> Failure {
-    move |error| Failure {
-        stage: stage.clone(),
-        message: error.to_string(),
-    }
-}
+use crate::shape::{fail_with, Failure, SetupRequest, Stage};
+use crate::{stats, transport};
 
 /// Row-major trace source: `selected[row * columns + column]`, with byte
 /// zero meaning "no entry" unless the row's zero mask commits it.
@@ -97,29 +92,48 @@ pub enum Fill {
     Max,
     Random,
     Sparse,
+    /// The most negative coefficient `DenseBounded` admits, `-2^64`; selects
+    /// the first row of a one-hot column.
+    Min,
 }
 
 impl Fill {
     pub fn decode(reader: &mut Reader<'_>) -> Self {
-        match reader.u8() % 4 {
+        match reader.u8() % 5 {
             0 => Fill::Zero,
             1 => Fill::Max,
             2 => Fill::Random,
-            _ => Fill::Sparse,
+            3 => Fill::Sparse,
+            _ => Fill::Min,
         }
     }
 
-    pub fn word(self, rng: &mut SplitMix64) -> u64 {
+    /// A bounded-dense coefficient in `[-2^64, 2^64 - 1]`, the signed range
+    /// committed-program objects use (negative immediates) and the `u64`
+    /// range advice words use.
+    pub fn coefficient(self, rng: &mut SplitMix64) -> AkitaField {
+        let signed = |rng: &mut SplitMix64, magnitude: u64| {
+            let value = AkitaField::from_u64(magnitude);
+            if rng.next_u64() & 1 == 1 {
+                -value
+            } else {
+                value
+            }
+        };
         match self {
-            Fill::Zero => 0,
-            Fill::Max => u64::MAX,
-            Fill::Random => rng.next_u64(),
+            Fill::Zero => AkitaField::from_u64(0),
+            Fill::Max => AkitaField::from_u64(u64::MAX),
+            Fill::Min => -AkitaField::from_u128_reduced(1 << 64),
+            Fill::Random => {
+                let magnitude = rng.next_u64();
+                signed(rng, magnitude)
+            }
             Fill::Sparse => {
                 let value = rng.next_u64();
                 if value.is_multiple_of(16) {
-                    value
+                    signed(rng, value)
                 } else {
-                    0
+                    AkitaField::from_u64(0)
                 }
             }
         }
@@ -128,7 +142,7 @@ impl Fill {
     /// Selected one-hot row in `0..k`; `Max` selects the last row.
     pub fn selected(self, rng: &mut SplitMix64, k: usize) -> u8 {
         match self {
-            Fill::Zero => 0,
+            Fill::Zero | Fill::Min => 0,
             Fill::Max => (k - 1) as u8,
             Fill::Random => (rng.next_u64() % k as u64) as u8,
             Fill::Sparse => {
@@ -178,7 +192,7 @@ impl Witness {
 fn point(fill: Fill, rng: &mut SplitMix64, num_vars: usize) -> Vec<AkitaField> {
     (0..num_vars)
         .map(|_| match fill {
-            Fill::Zero => AkitaField::from_u64(rng.next_u64() & 1),
+            Fill::Zero | Fill::Min => AkitaField::from_u64(rng.next_u64() & 1),
             Fill::Max => -AkitaField::from_u64(1 + (rng.next_u64() & 1)),
             Fill::Random | Fill::Sparse => AkitaField::from_u128_reduced(rng.next_u128()),
         })
@@ -208,10 +222,9 @@ pub fn commit(
     witness: &Witness,
 ) -> Result<Opening, Failure> {
     let shape = request.setup_shape;
-    let (prover_setup, verifier_setup) = stats::time("setup", || {
-        AkitaScheme::setup(request.setup_params(artifacts))
-    })
-    .map_err(fail(Stage::Setup))?;
+    let (prover_setup, verifier_setup) =
+        stats::time("setup", || AkitaScheme::setup(request.params.clone()))
+            .map_err(fail_with(Stage::Setup))?;
 
     let mut rng = SplitMix64::new(witness.seed);
     let mut auxiliary = Vec::with_capacity(request.auxiliary_count());
@@ -219,15 +232,15 @@ pub fn commit(
         let arity = plan.packing().packed_num_vars();
         let (object_setup, _) =
             AkitaScheme::transparent_object_setup(artifacts, arity, plan.layout_digest())
-                .map_err(fail(Stage::Setup))?;
+                .map_err(fail_with(Stage::Setup))?;
         let polynomial = Polynomial::new(
             (0..1usize << arity)
-                .map(|_| AkitaField::from_u64(witness.dense.word(&mut rng)))
+                .map(|_| witness.dense.coefficient(&mut rng))
                 .collect(),
         );
         let (commitment, hint) =
             stats::time("commit", || AkitaScheme::commit(&polynomial, &object_setup))
-                .map_err(fail(Stage::Commit))?;
+                .map_err(fail_with(Stage::Commit))?;
         let at = point(witness.point, &mut rng, arity);
         let evaluation = polynomial.evaluate(&at);
         auxiliary.push((
@@ -265,12 +278,12 @@ pub fn commit(
             &hints,
         )
     })
-    .map_err(fail(Stage::Commit))?;
+    .map_err(fail_with(Stage::Commit))?;
     if hints.is_empty() {
         let (reference_commitment, _) = stats::time("commit_reference", || {
             AkitaScheme::commit_one_hot_group(&prover_setup, request.layout_digest, &columns)
         })
-        .map_err(fail(Stage::Commit))?;
+        .map_err(fail_with(Stage::Commit))?;
         assert_eq!(
             main_commitment, reference_commitment,
             "streamed OneHotTrace commitment differs from the one-hot group commitment of its columns"
@@ -298,42 +311,59 @@ impl Opening {
             main_hint,
         } = self;
         let claims: Vec<_> = auxiliary.iter().map(|(claim, _)| claim.clone()).collect();
-        let mut prover_transcript = Blake2bTranscript::new(TRANSCRIPT_LABEL);
-        let proof = stats::time("prove", || {
-            liveness::observe(context, || {
+        prove_transport_verify(
+            context,
+            &verifier_setup,
+            |transcript| {
                 AkitaScheme::prove_batch(
                     &prover_setup,
                     auxiliary,
                     main.clone(),
                     main_hint,
-                    &mut prover_transcript,
+                    transcript,
                 )
-            })
-        })
-        .map_err(fail(Stage::Prove))?;
-        stats::count("honest_proofs");
-
-        let proof = crate::transport::roundtrip(&proof);
-        let verifier_setup = crate::transport::roundtrip(&verifier_setup);
-        let mut verifier_transcript = Blake2bTranscript::new(TRANSCRIPT_LABEL);
-        stats::time("verify", || {
-            AkitaScheme::verify_batch(
-                &verifier_setup,
-                &claims,
-                &main,
-                &proof,
-                &mut verifier_transcript,
-            )
-        })
-        .map_err(fail(Stage::Verify))?;
-        assert_eq!(
-            prover_transcript.state(),
-            verifier_transcript.state(),
-            "{context}: prover and verifier transcripts diverged on an accepted proof"
-        );
-        stats::count("honest_verified");
-        Ok(())
+            },
+            |setup, proof, transcript| {
+                AkitaScheme::verify_batch(setup, &claims, &main, proof, transcript)
+            },
+        )
     }
+}
+
+/// The honest-opening oracle: prove under the liveness oracle, transport the
+/// proof and verifier setup as a deployed verifier receives them, verify,
+/// and require the prover's and verifier's transcripts to agree.
+pub fn prove_transport_verify<S, P>(
+    context: &str,
+    verifier_setup: &S,
+    prove: impl FnOnce(&mut Blake2bTranscript<AkitaField>) -> Result<P, OpeningsError>,
+    verify: impl FnOnce(&S, &P, &mut Blake2bTranscript<AkitaField>) -> Result<(), OpeningsError>,
+) -> Result<(), Failure>
+where
+    S: Serialize + DeserializeOwned,
+    P: Serialize + DeserializeOwned,
+{
+    let mut prover_transcript = Blake2bTranscript::new(TRANSCRIPT_LABEL);
+    let proof = stats::time("prove", || {
+        liveness::observe(context, || prove(&mut prover_transcript))
+    })
+    .map_err(fail_with(Stage::Prove))?;
+    stats::count("honest_proofs");
+
+    let proof = transport::roundtrip(&proof);
+    let verifier_setup = transport::roundtrip(verifier_setup);
+    let mut verifier_transcript = Blake2bTranscript::new(TRANSCRIPT_LABEL);
+    stats::time("verify", || {
+        verify(&verifier_setup, &proof, &mut verifier_transcript)
+    })
+    .map_err(fail_with(Stage::Verify))?;
+    assert_eq!(
+        prover_transcript.state(),
+        verifier_transcript.state(),
+        "{context}: prover and verifier transcripts diverged on an accepted proof"
+    );
+    stats::count("honest_verified");
+    Ok(())
 }
 
 impl Fill {
@@ -343,6 +373,7 @@ impl Fill {
             Fill::Max => 1,
             Fill::Random => 2,
             Fill::Sparse => 3,
+            Fill::Min => 4,
         }
     }
 }

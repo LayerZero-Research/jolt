@@ -13,6 +13,21 @@ cargo-fuzz = true
 members = [".", "runner", "devtool"]
 exclude = ["guests"]
 
+# The root workspace's code-quality denies that apply to tooling. Its `panic`
+# and `print_*` denies do not: a harness panic is how a finding surfaces, and
+# the runner and devtool are command-line programs.
+[workspace.lints.clippy]
+allow_attributes = "deny"
+dbg_macro = "deny"
+expect_used = "deny"
+todo = "deny"
+undocumented_unsafe_blocks = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"
+
+[lints]
+workspace = true
+
 [lib]
 path = "src/lib.rs"
 
@@ -35,7 +50,7 @@ jolt-inlines-sha2 = { path = "../jolt-inlines/sha2", features = ["host"] }
 jolt-openings = { path = "../crates/jolt-openings" }
 jolt-poly = { path = "../crates/jolt-poly" }
 jolt-program = { path = "../crates/jolt-program" }
-jolt-prover = { path = "../crates/jolt-prover", features = ["akita", "prover-fixtures"] }
+jolt-prover = { path = "../crates/jolt-prover", features = ["akita"] }
 jolt-transcript = { path = "../crates/jolt-transcript", default-features = false, features = ["transcript-blake2b"] }
 jolt-verifier = { path = "../crates/jolt-verifier", features = ["akita"] }
 jolt-witness = { path = "../crates/jolt-witness" }

@@ -95,18 +95,38 @@ pub(crate) fn grouped_setup_params(
     trusted_advice: bool,
     direct_program_physical_vars: &[usize],
 ) -> Result<AkitaSetupParams, PreprocessingError> {
-    let (shape, layout_digest, one_hot_k) =
-        one_hot_trace_setup_shape(config, program.bytecode.code_size).map_err(|error| {
-            PreprocessingError::InvalidConfiguration {
-                reason: error.to_string(),
-            }
-        })?;
     let untrusted_physical_vars = untrusted_advice
         .then(|| advice_physical_num_vars(program, JoltAdviceKind::Untrusted))
         .transpose()?;
     let trusted_physical_vars = trusted_advice
         .then(|| advice_physical_num_vars(program, JoltAdviceKind::Trusted))
         .transpose()?;
+    grouped_setup_params_for_shape(
+        schedule_artifacts,
+        config,
+        program.bytecode.code_size,
+        untrusted_physical_vars,
+        trusted_physical_vars,
+        direct_program_physical_vars,
+    )
+}
+
+/// The grouped setup parameters for a proof shape alone: `config` and the
+/// padded `bytecode_len` fix the `OneHotTrace` group, the advice arities are
+/// the packed physical arities of the advice objects present, and
+/// `direct_program_physical_vars` lists a committed program's objects.
+pub fn grouped_setup_params_for_shape(
+    schedule_artifacts: &Arc<AkitaScheduleArtifacts>,
+    config: &ProverConfig,
+    bytecode_len: usize,
+    untrusted_physical_vars: Option<usize>,
+    trusted_physical_vars: Option<usize>,
+    direct_program_physical_vars: &[usize],
+) -> Result<AkitaSetupParams, PreprocessingError> {
+    let (shape, layout_digest, one_hot_k) = one_hot_trace_setup_shape(config, bytecode_len)
+        .map_err(|error| PreprocessingError::InvalidConfiguration {
+            reason: error.to_string(),
+        })?;
     let mut mandatory_dense_layouts = Vec::with_capacity(
         usize::from(cfg!(feature = "field-inline")) + direct_program_physical_vars.len(),
     );
@@ -262,12 +282,17 @@ fn advice_physical_num_vars(
     let max_bytes = usize::try_from(max_bytes).map_err(|_| PreprocessingError::InvalidAdvice {
         reason: "advice size does not fit usize".to_owned(),
     })?;
-    let word_vars = (max_bytes / 8).next_power_of_two().ilog2() as usize;
-    advice_packing_plan(kind, word_vars)
+    advice_packing_plan(kind, advice_word_vars(max_bytes))
         .map(|plan| plan.packing().packed_num_vars())
         .map_err(|error| PreprocessingError::InvalidAdvice {
             reason: error.to_string(),
         })
+}
+
+/// Words of an advice region of `max_bytes` bytes, as a variable count:
+/// `log2(next_pow2(max_bytes / 8))`.
+pub fn advice_word_vars(max_bytes: usize) -> usize {
+    (max_bytes / 8).next_power_of_two().ilog2() as usize
 }
 
 fn validate_trace_order(config: &ProverConfig) -> Result<(), PreprocessingError> {

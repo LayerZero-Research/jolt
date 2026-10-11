@@ -15,19 +15,11 @@ impl<'a> Reader<'a> {
         Self { data, pos: 0 }
     }
 
-    pub fn remaining(&self) -> usize {
+    fn remaining(&self) -> usize {
         self.data.len().saturating_sub(self.pos)
     }
 
-    pub fn is_exhausted(&self) -> bool {
-        self.remaining() == 0
-    }
-
-    pub fn rest(&self) -> &'a [u8] {
-        &self.data[self.pos.min(self.data.len())..]
-    }
-
-    pub fn fill(&mut self, out: &mut [u8]) {
+    fn fill(&mut self, out: &mut [u8]) {
         let available = self.remaining().min(out.len());
         if available > 0 {
             out[..available].copy_from_slice(&self.data[self.pos..self.pos + available]);
@@ -53,10 +45,6 @@ impl<'a> Reader<'a> {
         self.bytes::<1>()[0]
     }
 
-    pub fn bool(&mut self) -> bool {
-        self.u8() & 1 == 1
-    }
-
     pub fn u16(&mut self) -> u16 {
         u16::from_le_bytes(self.bytes())
     }
@@ -67,18 +55,6 @@ impl<'a> Reader<'a> {
 
     pub fn u64(&mut self) -> u64 {
         u64::from_le_bytes(self.bytes())
-    }
-
-    pub fn u128(&mut self) -> u128 {
-        u128::from_le_bytes(self.bytes())
-    }
-
-    /// Uniform-ish choice in `0..n`; `n == 0` returns 0.
-    pub fn choose(&mut self, n: usize) -> usize {
-        if n == 0 {
-            return 0;
-        }
-        usize::from(self.u16()) % n
     }
 }
 

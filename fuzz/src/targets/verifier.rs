@@ -14,7 +14,8 @@
 //!   bounds what a decoded setup may allocate while re-deriving keys);
 //! - a bundle that verifies must decode to an honest bundle, up to the
 //!   representation choices the verifier does not bind (`Bundle::semantic`):
-//!   accepting any other statement or proof is a soundness finding. Accepted
+//!   accepting another proof of an honest statement is a malleability
+//!   finding, and accepting any other statement a soundness finding. Accepted
 //!   alternative encodings of an honest bundle are counted
 //!   (`noncanonical_encoding_accepted`, `equivalent_statement_accepted`).
 
@@ -22,13 +23,14 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use common::jolt_device::JoltDevice;
-use jolt_akita::{AkitaCommitment, AkitaField, AkitaScheme};
-use jolt_prover::akita::preprocessing::{AkitaTranscript, AkitaVc, AkitaVerifierPreprocessing};
+use jolt_akita::{AkitaCommitment, AkitaScheme};
+use jolt_prover::akita::preprocessing::{AkitaVc, AkitaVerifierPreprocessing};
 use jolt_verifier::proof::JoltProof;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::input::Reader;
+use crate::targets::program;
 use crate::{env, stats, transport};
 
 pub const BUNDLES_ENV: &str = "JOLT_FUZZ_BUNDLES";
@@ -109,12 +111,7 @@ impl Bundle {
             },
         };
         let accepted = stats::time("verify", || {
-            jolt_verifier::verify::<AkitaField, AkitaScheme, AkitaVc, AkitaTranscript>(
-                &preprocessing,
-                &public_io,
-                &proof,
-                commitment.as_ref(),
-            )
+            program::verify(&preprocessing, &public_io, &proof, commitment.as_ref())
         })
         .is_ok();
         stats::count(if accepted {
@@ -180,6 +177,10 @@ pub fn bundles_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/bundles"))
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "a missing or unreadable shipped bundle is a broken distribution"
+)]
 pub fn load_bundles(dir: &Path) -> Vec<Bundle> {
     let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)
         .unwrap_or_else(|error| panic!("read bundles from {}: {error}", dir.display()))
@@ -350,6 +351,10 @@ pub fn explain(data: &[u8]) -> String {
     out
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "an accepted bundle decoded once already, so it decodes again"
+)]
 pub fn run(data: &[u8]) {
     env::init();
     let bundles = honest();
@@ -362,15 +367,26 @@ pub fn run(data: &[u8]) {
     // Accepted: the statement and proof must be an honest bundle's, up to
     // the representation choices the verifier does not bind.
     let semantic = candidate.semantic().expect("an accepted bundle decodes");
-    let matching = bundles
+    let statement =
+        |form: &[Option<Vec<u8>>; 4]| [form[0].clone(), form[1].clone(), form[3].clone()];
+    let Some(matching) = bundles
         .iter()
         .find(|honest| honest.semantic().as_ref() == Some(&semantic))
-        .unwrap_or_else(|| {
-            panic!(
-                "soundness: verifier accepted a non-honest {region:?} edit of bundle {}",
-                bundle.name
-            )
+    else {
+        // An honest statement with another proof is malleability; any other
+        // accepted statement is unsound.
+        let honest_statement = bundles.iter().any(|honest| {
+            honest
+                .semantic()
+                .is_some_and(|form| statement(&form) == statement(&semantic))
         });
+        let kind = if honest_statement {
+            "malleability: verifier accepted another proof of an honest statement"
+        } else {
+            "soundness: verifier accepted a non-honest statement"
+        };
+        panic!("{kind} ({region:?} edit of bundle {})", bundle.name);
+    };
     if candidate.region(region) != matching.region(region) {
         stats::count(if candidate.canonical() == matching.canonical() {
             "noncanonical_encoding_accepted"
@@ -410,7 +426,6 @@ pub fn seeds() -> Vec<(String, Vec<u8>)> {
 
 /// Prove the program lane's seeds for these guests and write one bundle each.
 pub fn write_bundles(out: &Path) -> Result<(), String> {
-    use crate::targets::program;
     std::fs::create_dir_all(out).map_err(|e| format!("create {}: {e}", out.display()))?;
     let wanted = [
         "muldiv-default",

@@ -292,9 +292,10 @@ impl Subscriber for Collector {
 fn install() {
     static INSTALL: Once = Once::new();
     INSTALL.call_once(|| {
-        if tracing::subscriber::set_global_default(Collector).is_err() {
-            stats::count("liveness_subscriber_unavailable");
-        }
+        assert!(
+            tracing::subscriber::set_global_default(Collector).is_ok(),
+            "liveness: another global tracing subscriber is installed; fold reports cannot be captured"
+        );
     });
 }
 
@@ -303,14 +304,8 @@ fn install() {
 /// returns `InvalidInput` for both and Jolt wraps it into `OpeningsError`
 /// text, so the message is the only stable signal; neither is an input
 /// validation failure.
-pub fn is_liveness_exhaustion(message: &str) -> bool {
+fn is_liveness_exhaustion(message: &str) -> bool {
     message.contains("fold grind exceeded") || message.contains("operator-norm rejection exceeded")
-}
-
-/// Report a closeness ratio in `[0.25, 1.25)` (1.0 = at a limit) to the
-/// engine as coverage, for checks outside the fold reports.
-pub fn guide_ratio(ratio: f64) {
-    guide::ratio(ratio);
 }
 
 /// Run one proof, capture its fold reports, and check their margins.
@@ -399,14 +394,15 @@ fn check(context: &str, samples: &[Sample]) {
                 "liveness: {context}: accepted fold response exceeds its cap: {sample}"
             );
         }
-        if let Some(margin) = sample.margin() {
+        if let (Some(margin), Some(mean), Some(cap)) =
+            (sample.margin(), sample.conditional_mean, sample.cap)
+        {
             stats::count(MARGIN_COUNTERS[margin_counter(margin)]);
             guide::margin(sample.terminal, margin);
             if margin > peak.max_margin {
                 peak.max_margin = margin;
                 peak.worst = Some(sample.clone());
             }
-            let (mean, cap) = (sample.conditional_mean.unwrap(), sample.cap.unwrap());
             let covered = match (mean.checked_mul(40), cap.checked_mul(39)) {
                 (Some(lhs), Some(rhs)) => lhs <= rhs,
                 _ => margin <= 1.0,
@@ -437,6 +433,14 @@ fn check(context: &str, samples: &[Sample]) {
              limit 4096): {sample}"
         );
     }
+    // Every Akita opening folds at least once; no reports means the capture
+    // missed this proof (a renamed event target or a dropped feature), and
+    // every check above passed vacuously.
+    assert!(
+        peak.folds > 0,
+        "liveness: {context}: an accepted proof produced no fold reports ({} samples captured)",
+        samples.len()
+    );
     for (groups, smallest) in joint.into_values() {
         if groups > 1 {
             stats::count("liveness_joint_probes");

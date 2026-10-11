@@ -1,15 +1,18 @@
 //! Commands that work while a campaign runs, plus triage helpers.
 
-use crate::findings;
-use crate::libfuzzer::{self, Limits, BINARY};
-use crate::registry::Lane;
-use crate::runner::{symbolizer, State};
-use crate::store::{directory_bytes, now, read_json, Store};
+use crate::findings::{self, FindingMeta};
+use crate::libfuzzer::{self, BINARY};
+use crate::prepare::BuildInfo;
+use crate::registry::{self, Lane};
+use crate::runner::job::Phase;
+use crate::runner::{symbolizer, Live, State};
+use crate::store::{directory_bytes, files, now, read_json, sha256_hex, snapshot, Campaign, Store};
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
+use serde_json::json;
+use std::collections::BTreeSet;
 use std::fs::File;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tar::Builder;
@@ -24,14 +27,15 @@ fn duration(seconds: f64) -> String {
     }
 }
 
+#[expect(clippy::expect_used, reason = "the report is plain serde data")]
 pub fn status(store: &Store, lanes: &[Lane], as_json: bool) -> i32 {
     let state: State = read_json(&store.state_path).unwrap_or_default();
-    let live: Option<Value> = if store.is_locked() {
+    let live: Option<Live> = if store.is_locked() {
         read_json(&store.live_path)
     } else {
         None
     };
-    let campaign: Value = read_json(&store.campaign_path).unwrap_or(json!({}));
+    let campaign: Option<Campaign> = read_json(&store.campaign_path);
     let all_findings = findings::summarize(&store.findings);
     let disk = directory_bytes(&store.root);
     if as_json {
@@ -48,30 +52,25 @@ pub fn status(store: &Store, lanes: &[Lane], as_json: bool) -> i32 {
     }
     println!(
         "campaign {} on {}  output {}",
-        campaign["campaign_id"].as_str().unwrap_or("?"),
-        campaign["machine"]["hostname"].as_str().unwrap_or("?"),
+        campaign.as_ref().map_or("?", |c| c.campaign_id.as_str()),
+        campaign
+            .as_ref()
+            .map_or("?", |c| c.machine.hostname.as_str()),
         store.root.display()
     );
     match &live {
         Some(live) => println!(
             "RUNNING pid {} for {}; budget {} cpus / {} MiB; hard memory limit: {}",
-            live["pid"],
-            duration((now() - live["started"].as_u64().unwrap_or(now())) as f64),
-            live["budget"]["cpus"],
-            live["budget"]["memory_mb"],
-            if live["budget"]["hard_memory"] == true {
-                "yes"
-            } else {
-                "no"
-            }
+            live.pid,
+            duration(now().saturating_sub(live.started) as f64),
+            live.budget.cpus,
+            live.budget.memory_mb,
+            if live.budget.hard_memory { "yes" } else { "no" }
         ),
         None => println!("not running"),
     }
     println!("disk usage {:.1} MiB\n", disk as f64 / (1 << 20) as f64);
-    let jobs: Vec<Value> = live
-        .as_ref()
-        .and_then(|l| l["jobs"].as_array().cloned())
-        .unwrap_or_default();
+    let jobs = live.as_ref().map_or(&[][..], |live| live.jobs.as_slice());
     let header = format!(
         "{:32} {:>10} {:>12} {:>8} {:>7} {:>8} {:>7} {:>5} {:>5}  baseline",
         "lane", "cpu-time", "execs", "exec/s", "cov", "ft", "corpus", "find", "fail"
@@ -80,30 +79,24 @@ pub fn status(store: &Store, lanes: &[Lane], as_json: bool) -> i32 {
     for lane in lanes {
         let name = lane.name();
         let entry = state.lanes.get(&name).cloned().unwrap_or_default();
-        let running: Vec<&Value> = jobs
-            .iter()
-            .filter(|job| job["lane"] == name.as_str())
-            .collect();
+        let running: Vec<_> = jobs.iter().filter(|job| job.lane == name).collect();
         let live_execs: u64 = running
             .iter()
-            .filter(|job| job["purpose"] == "fuzz")
-            .map(|job| job["status"]["execs"].as_u64().unwrap_or(0))
+            .filter(|job| job.purpose == Phase::Fuzz)
+            .map(|job| job.status.execs)
             .sum();
-        let eps: u64 = running
-            .iter()
-            .map(|job| job["status"]["exec_per_s"].as_u64().unwrap_or(0))
-            .sum();
+        let eps: u64 = running.iter().map(|job| job.status.exec_per_s).sum();
         let cov = running
             .iter()
-            .map(|job| job["status"]["cov"].as_u64().unwrap_or(0))
+            .map(|job| job.status.cov)
             .fold(entry.cov, u64::max);
         let ft = running
             .iter()
-            .map(|job| job["status"]["ft"].as_u64().unwrap_or(0))
+            .map(|job| job.status.ft)
             .fold(entry.ft, u64::max);
         let baseline = match &entry.baseline {
             None => "-",
-            Some(b) if b["ok"] == true => "ok",
+            Some(baseline) if baseline.ok => "ok",
             Some(_) => "FAILED",
         };
         let backoff = if entry.backoff_until > now() {
@@ -127,23 +120,25 @@ pub fn status(store: &Store, lanes: &[Lane], as_json: bool) -> i32 {
     for meta in &all_findings {
         println!(
             "[{}] {}  x{}  reproducible={}  phase={}\n    {}",
-            meta["kind"].as_str().unwrap_or("?"),
-            meta["id"].as_str().unwrap_or("?"),
-            meta["count"],
-            meta["reproducible"],
-            meta["phase"].as_str().unwrap_or("?"),
-            meta["signature"].as_str().unwrap_or("?")
+            meta.kind,
+            meta.id,
+            meta.count,
+            meta.reproducible.as_deref().unwrap_or("-"),
+            meta.context.phase,
+            meta.signature
         );
     }
-    let reach: Vec<(&String, _)> = state
+    let reach: Vec<_> = state
         .lanes
         .iter()
-        .filter_map(|(name, lane)| lane.harness.get("counters").map(|c| (name, c)))
+        .filter(|(_, lane)| !lane.harness.counters.is_empty())
         .collect();
     if !reach.is_empty() {
         println!("\nharness reach counters (completed jobs):");
-        for (name, counters) in reach {
-            let text: Vec<String> = counters
+        for (name, lane) in reach {
+            let text: Vec<String> = lane
+                .harness
+                .counters
                 .iter()
                 .map(|(key, value)| format!("{key}={value}"))
                 .collect();
@@ -158,15 +153,10 @@ pub fn export(
     destination: Option<&Path>,
     with_logs: bool,
 ) -> Result<PathBuf, String> {
-    let campaign: Value = read_json(&store.campaign_path).unwrap_or(json!({}));
-    let host = campaign["machine"]["hostname"]
-        .as_str()
-        .unwrap_or("unknown")
-        .to_string();
-    let id = campaign["campaign_id"]
-        .as_str()
-        .unwrap_or("unknown")
-        .to_string();
+    let (host, id) = read_json::<Campaign>(&store.campaign_path).map_or_else(
+        || ("unknown".to_string(), "unknown".to_string()),
+        |campaign| (campaign.machine.hostname, campaign.campaign_id),
+    );
     let name = format!("jolt-fuzz-{host}-{id}-{}.tar.gz", now());
     let path = match destination {
         Some(path) if path.to_string_lossy().ends_with(".tar.gz") => path.to_path_buf(),
@@ -176,51 +166,63 @@ pub fn export(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let file = File::create(&path).map_err(|e| format!("create {}: {e}", path.display()))?;
-    let mut archive = Builder::new(GzEncoder::new(file, Compression::default()));
-    archive.follow_symlinks(false);
-    let prefix = format!("{host}-{id}");
+    let partial = path.with_extension("gz.partial");
+    let staging = store.tmp.join(format!("export-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&staging);
+    // A running campaign renames and removes corpus files and appends to its
+    // logs, so the archive is built from a snapshot: hard links pin the
+    // write-once corpus and finding files, and appended files are copied.
     let mut members = vec![
-        "campaign.json",
-        "state.json",
-        "corpus",
-        "findings",
-        "quarantine",
-        "events.log",
+        ("campaign.json", false),
+        ("state.json", false),
+        ("events.log", false),
+        ("corpus", true),
+        ("findings", true),
+        ("quarantine", true),
     ];
     if with_logs {
-        members.push("logs");
+        members.push(("logs", false));
     }
-    for member in members {
-        let source = store.root.join(member);
-        // Campaign files are written atomically or appended, so a snapshot
-        // taken while the campaign runs is consistent per file.
-        let result = if source.is_dir() {
-            archive.append_dir_all(format!("{prefix}/{member}"), &source)
-        } else if source.is_file() {
-            archive.append_path_with_name(&source, format!("{prefix}/{member}"))
+    let snapshotted = members.into_iter().try_for_each(|(member, link)| {
+        let (source, target) = (store.root.join(member), staging.join(member));
+        let copied = if source.is_dir() {
+            snapshot(&source, &target, link)
         } else {
-            Ok(())
+            std::fs::create_dir_all(&staging)
+                .and_then(|()| std::fs::copy(&source, &target).map(drop))
         };
-        result.map_err(|e| format!("archive {member}: {e}"))?;
+        match copied {
+            Err(error) if error.kind() != ErrorKind::NotFound => {
+                Err(format!("snapshot {member}: {error}"))
+            }
+            _ => Ok(()),
+        }
+    });
+    let result = snapshotted.and_then(|()| {
+        let file =
+            File::create(&partial).map_err(|e| format!("create {}: {e}", partial.display()))?;
+        let mut archive = Builder::new(GzEncoder::new(file, Compression::default()));
+        archive.follow_symlinks(false);
+        archive
+            .append_dir_all(format!("{host}-{id}"), &staging)
+            .map_err(|e| format!("archive: {e}"))?;
+        archive
+            .into_inner()
+            .and_then(|gz| gz.finish())
+            .map_err(|e| e.to_string())?;
+        std::fs::rename(&partial, &path).map_err(|e| format!("rename {}: {e}", partial.display()))
+    });
+    let _ = std::fs::remove_dir_all(&staging);
+    if result.is_err() {
+        let _ = std::fs::remove_file(&partial);
     }
-    archive
-        .into_inner()
-        .and_then(|gz| gz.finish())
-        .map_err(|e| e.to_string())?;
-    Ok(path)
+    result.map(|()| path)
 }
 
 fn lane_for<'a>(lanes: &'a [Lane], spec: &str) -> Result<&'a Lane, String> {
-    let (target, variant) = match spec.split_once('@') {
-        Some((target, variant)) => (target, Some(variant)),
-        None => (spec, None),
-    };
     lanes
         .iter()
-        .find(|lane| {
-            lane.target == target && (variant.is_none() || lane.variant.as_deref() == variant)
-        })
+        .find(|lane| lane.matches(spec))
         .ok_or_else(|| format!("unknown target {spec}"))
 }
 
@@ -232,15 +234,9 @@ fn resolve<'a>(
     inputs: &[PathBuf],
 ) -> Result<(&'a Lane, Vec<PathBuf>, Option<PathBuf>), String> {
     let directory = store.findings.join(spec);
-    if let Some(meta) = read_json::<Value>(&directory.join("meta.json")) {
-        let lane = lane_for(lanes, meta["lanes"][0].as_str().unwrap_or(""))?;
-        let paths: Vec<PathBuf> = meta["samples"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|sample| sample["input"].as_str())
-            .map(|input| directory.join(input))
-            .collect();
+    if let Some(meta) = read_json::<FindingMeta>(&directory.join("meta.json")) {
+        let lane = lane_for(lanes, meta.lanes.first().map_or("", String::as_str))?;
+        let paths: Vec<PathBuf> = meta.inputs().map(|input| directory.join(input)).collect();
         if paths.is_empty() {
             return Err(format!(
                 "finding {spec} has no stored input; see its sample reports"
@@ -278,15 +274,7 @@ pub fn reproduce(
     let (lane, paths, _) = resolve(store, lanes, spec, inputs)?;
     let scratch = store.tmp.join(format!("reproduce-{}", std::process::id()));
     std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
-    let mut args = libfuzzer::base_args(
-        &dist.join("bin").join(BINARY),
-        Limits {
-            lane,
-            timeout_s: lane.timeout_s * 2,
-        },
-        &scratch,
-    );
-    args.extend(paths.iter().map(|path| path.display().to_string()));
+    let args = libfuzzer::replay_args(&dist.join("bin").join(BINARY), lane, &scratch, &paths);
     let env = env_for(dist, store, lane);
     let shown: Vec<String> = lane.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
     println!("+ {} {}", shown.join(" "), args.join(" "));
@@ -307,18 +295,12 @@ pub fn minimize(
     seconds: u64,
 ) -> Result<i32, String> {
     let (lane, paths, directory) = resolve(store, lanes, finding, &[])?;
-    let directory = directory.expect("findings resolve to their directory");
+    let directory = directory.ok_or_else(|| format!("{finding} is not a finding id"))?;
     let work = directory.join("minimize-work");
     std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
     let output = directory.join(format!("minimized-{}.input", now()));
-    let mut args = libfuzzer::base_args(
-        &dist.join("bin").join(BINARY),
-        Limits {
-            lane,
-            timeout_s: lane.timeout_s,
-        },
-        &work,
-    );
+    let mut args =
+        libfuzzer::base_args(&dist.join("bin").join(BINARY), lane, lane.timeout_s, &work);
     args.extend([
         "-minimize_crash=1".to_string(),
         format!("-max_total_time={seconds}"),
@@ -353,35 +335,41 @@ pub fn minimize(
 /// Static checks of a prepared distribution.
 pub fn validate_dist(dist: &Path, lanes: &[Lane]) -> Vec<String> {
     let mut problems = Vec::new();
-    if read_json::<Value>(&dist.join("BUILD-INFO.json")).is_none() {
-        problems.push("BUILD-INFO.json is missing; run `jolt-fuzz prepare`".into());
+    if read_json::<BuildInfo>(&dist.join("BUILD-INFO.json")).is_none() {
+        problems.push("BUILD-INFO.json is missing or unreadable; run `jolt-fuzz prepare`".into());
     }
     match std::fs::read_to_string(dist.join("MANIFEST.sha256")) {
         Ok(manifest) => {
+            let mut listed = BTreeSet::new();
             for line in manifest.lines() {
-                let Some((digest, name)) = line.split_once("  ") else {
+                let Some((digest, name)) = line.split_once("  ").filter(|(digest, _)| {
+                    digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit())
+                }) else {
+                    problems.push(format!("unparseable MANIFEST.sha256 line: {line:?}"));
                     continue;
                 };
+                listed.insert(PathBuf::from(name));
                 match std::fs::read(dist.join(name)) {
                     Ok(bytes) => {
-                        let actual: String = Sha256::digest(&bytes)
-                            .iter()
-                            .map(|b| format!("{b:02x}"))
-                            .collect();
-                        if actual != digest {
+                        if sha256_hex(&bytes) != digest {
                             problems.push(format!("checksum mismatch: {name}"));
                         }
                     }
                     Err(_) => problems.push(format!("missing {name}")),
                 }
             }
+            for file in files(dist) {
+                if file != Path::new("MANIFEST.sha256") && !listed.contains(&file) {
+                    problems.push(format!("{} is not in MANIFEST.sha256", file.display()));
+                }
+            }
         }
         Err(_) => problems.push("MANIFEST.sha256 is missing".into()),
     }
     if !dist.join("bin").join(BINARY).is_file() {
-        problems.push(format!("missing instrumented binary bin/{}", BINARY));
+        problems.push(format!("missing instrumented binary bin/{BINARY}"));
     }
-    for target in crate::registry::targets(lanes) {
+    for target in registry::targets(lanes) {
         if !dist.join("seeds").join(&target).is_dir() {
             problems.push(format!("missing seeds/{target}"));
         }

@@ -16,8 +16,13 @@ static INIT: Once = Once::new();
 
 /// Size the global Rayon pool (Jolt and Akita share it) once per process.
 ///
-/// The runner sets `JOLT_FUZZ_THREADS` (default 1) so worker count times
-/// internal threads never exceeds the campaign's CPU budget.
+/// The runner sets `JOLT_FUZZ_THREADS` to the lane's `threads` so worker
+/// count times internal threads never exceeds the campaign's CPU budget;
+/// without it the pool has one thread.
+#[expect(
+    clippy::expect_used,
+    reason = "the harness process owns the global Rayon pool; failing to build it is fatal"
+)]
 pub fn init() {
     INIT.call_once(|| {
         let threads = internal_threads();
@@ -30,7 +35,7 @@ pub fn init() {
     });
 }
 
-pub fn internal_threads() -> usize {
+fn internal_threads() -> usize {
     std::env::var(THREADS_ENV)
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
@@ -51,6 +56,10 @@ pub fn artifacts_dir() -> PathBuf {
 ///
 /// libFuzzer's panic hook aborts the process on a panic in any thread, so
 /// findings keep their original backtrace.
+#[expect(
+    clippy::expect_used,
+    reason = "a harness that cannot spawn its worker thread cannot run"
+)]
 pub fn on_large_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
     std::thread::scope(|scope| {
         Builder::new()

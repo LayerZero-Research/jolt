@@ -1,5 +1,6 @@
 //! libFuzzer command lines, output parsing, and failure signatures.
 
+use crate::findings::FindingKind;
 use crate::registry::Lane;
 use sha1::{Digest, Sha1};
 use std::collections::BTreeMap;
@@ -8,20 +9,27 @@ use std::path::{Path, PathBuf};
 /// The multiplexed instrumented binary; `JOLT_FUZZ_TARGET` selects the target.
 pub const BINARY: &str = "fuzz_all";
 
-pub struct Limits<'a> {
-    pub lane: &'a Lane,
-    pub timeout_s: u64,
-}
-
-pub fn base_args(binary: &Path, limits: Limits<'_>, artifacts: &Path) -> Vec<String> {
-    let lane = limits.lane;
+pub fn base_args(binary: &Path, lane: &Lane, timeout_s: u64, artifacts: &Path) -> Vec<String> {
     vec![
         binary.display().to_string(),
         format!("-artifact_prefix={}/", artifacts.display()),
-        format!("-timeout={}", limits.timeout_s),
+        format!("-timeout={timeout_s}"),
         format!("-rss_limit_mb={}", lane.rss_limit_mb),
         format!("-malloc_limit_mb={}", lane.malloc_limit_mb),
     ]
+}
+
+/// Execute `inputs` once each, at twice the lane's timeout so a slow input
+/// near the limit is not misread as a timeout.
+pub fn replay_args(
+    binary: &Path,
+    lane: &Lane,
+    artifacts: &Path,
+    inputs: &[PathBuf],
+) -> Vec<String> {
+    let mut args = base_args(binary, lane, lane.timeout_s * 2, artifacts);
+    args.extend(inputs.iter().map(|path| path.display().to_string()));
+    args
 }
 
 /// A fuzzing job over `corpus` for `seconds` (0 = run the corpus once).
@@ -34,14 +42,7 @@ pub fn fuzz_args(
     runs_zero: bool,
     extra: &[String],
 ) -> Vec<String> {
-    let mut args = base_args(
-        binary,
-        Limits {
-            lane,
-            timeout_s: lane.timeout_s,
-        },
-        artifacts,
-    );
+    let mut args = base_args(binary, lane, lane.timeout_s, artifacts);
     args.extend([
         format!("-max_len={}", lane.max_len),
         // Slow-unit artifacts are informational; report them only at the
@@ -179,26 +180,26 @@ pub fn is_failure_artifact(path: &Path) -> bool {
         .is_some_and(|name| !name.starts_with("slow-unit-"))
 }
 
-pub fn classify(lines: &[String], artifact: Option<&Path>) -> &'static str {
+pub fn classify(lines: &[String], artifact: Option<&Path>) -> FindingKind {
     let name = artifact
         .and_then(|p| p.file_name())
         .and_then(|n| n.to_str())
         .unwrap_or("");
     let has = |needle: &str| lines.iter().any(|line| line.contains(needle));
     if name.starts_with("timeout-") || has("ERROR: libFuzzer: timeout") {
-        "timeout"
+        FindingKind::Timeout
     } else if name.starts_with("oom-") || has("ERROR: libFuzzer: out-of-memory") {
-        "oom"
+        FindingKind::Oom
     } else if name.starts_with("leak-") || has("LeakSanitizer") {
-        "leak"
+        FindingKind::Leak
     } else if has("ERROR: AddressSanitizer") {
-        "asan"
+        FindingKind::Asan
     } else if has("panicked at") {
-        "panic"
+        FindingKind::Panic
     } else if has("deadly signal") {
-        "signal"
+        FindingKind::Signal
     } else {
-        "crash"
+        FindingKind::Crash
     }
 }
 
@@ -265,20 +266,19 @@ fn frame_function(line: &str) -> Option<String> {
 /// no `llvm-symbolizer` is installed. Offsets are stable within one build, so
 /// they still deduplicate (binutils `addr2line` is far too slow on a sanitizer
 /// binary of this size to run inside the campaign loop).
-fn raw_frame(line: &str) -> Option<(usize, String, String)> {
+fn raw_frame(line: &str) -> Option<String> {
     if line.contains(" in ") {
         return None;
     }
     let open = line.find("(/")?;
     let rest = &line[open + 1..];
     let close = rest.find(')')?;
-    let (binary, offset) = rest[..close].rsplit_once("+0x")?;
-    let prefix_end = line.find("0x")?;
-    Some((prefix_end, binary.to_string(), format!("0x{offset}")))
+    let (_, offset) = rest[..close].rsplit_once("+0x")?;
+    Some(format!("0x{offset}"))
 }
 
 /// Stable `(id, text)` deduplicating findings of one root cause.
-pub fn signature(kind: &str, target: &str, lines: &[String]) -> (String, String) {
+pub fn signature(kind: FindingKind, target: &str, lines: &[String]) -> (String, String) {
     let mut key = None;
     for (index, line) in lines.iter().enumerate() {
         if let Some(location) = panic_location(line) {
@@ -306,7 +306,6 @@ pub fn signature(kind: &str, target: &str, lines: &[String]) -> (String, String)
             .iter()
             .filter_map(|line| raw_frame(line))
             .take(6)
-            .map(|(_, _, offset)| offset)
             .collect();
         if raw.is_empty() {
             "no stack".into()
@@ -383,50 +382,50 @@ mod tests {
                 &lines("==1== ERROR: libFuzzer: timeout after 60 seconds"),
                 None
             ),
-            "timeout"
+            FindingKind::Timeout
         );
-        assert_eq!(classify(&[], Some(Path::new("/a/oom-123"))), "oom");
+        assert_eq!(
+            classify(&[], Some(Path::new("/a/oom-123"))),
+            FindingKind::Oom
+        );
         assert_eq!(
             classify(
                 &lines("==1==ERROR: AddressSanitizer: heap-buffer-overflow"),
                 None
             ),
-            "asan"
+            FindingKind::Asan
         );
         assert_eq!(
             classify(
                 &lines("thread '<unnamed>' (7) panicked at src/a.rs:3:5:\nboom"),
                 None
             ),
-            "panic"
+            FindingKind::Panic
         );
     }
 
     #[test]
     fn panic_signatures_ignore_values_but_keep_location() {
-        let a = lines("thread '<unnamed>' (8575000) panicked at src/targets/decompose.rs:112:9:\nassertion failed: left: Fp64(524171) right: Fp64(524289)");
-        let b = lines("thread '<unnamed>' (1) panicked at src/targets/decompose.rs:112:9:\nassertion failed: left: Fp64(123456) right: Fp64(999999)");
-        let c = lines("thread '<unnamed>' (1) panicked at src/targets/decompose.rs:120:9:\nassertion failed: left: Fp64(123456) right: Fp64(999999)");
-        let (id_a, text_a) = signature("panic", "decompose", &a);
-        assert_eq!(id_a, signature("panic", "decompose", &b).0);
-        assert_ne!(id_a, signature("panic", "decompose", &c).0);
-        assert!(text_a.contains("src/targets/decompose.rs:112"), "{text_a}");
+        let a = lines("thread '<unnamed>' (8575000) panicked at src/targets/planning.rs:112:9:\nassertion failed: left: Fp64(524171) right: Fp64(524289)");
+        let b = lines("thread '<unnamed>' (1) panicked at src/targets/planning.rs:112:9:\nassertion failed: left: Fp64(123456) right: Fp64(999999)");
+        let c = lines("thread '<unnamed>' (1) panicked at src/targets/planning.rs:120:9:\nassertion failed: left: Fp64(123456) right: Fp64(999999)");
+        let (id_a, text_a) = signature(FindingKind::Panic, "planning", &a);
+        assert_eq!(id_a, signature(FindingKind::Panic, "planning", &b).0);
+        assert_ne!(id_a, signature(FindingKind::Panic, "planning", &c).0);
+        assert!(text_a.contains("src/targets/planning.rs:112"), "{text_a}");
     }
 
     #[test]
     fn unsymbolized_stacks_key_on_offsets() {
         let report = lines("==1== ERROR: libFuzzer: out-of-memory (malloc(99))\n    #0 0x5 (/d/fuzz_all+0x10) (BuildId: 1)\n    #1 0x6 (/d/fuzz_all+0x20) (BuildId: 1)");
-        let (_, text) = signature("oom", "pcs_dense", &report);
+        let (_, text) = signature(FindingKind::Oom, "grid", &report);
         assert!(text.ends_with("unsymbolized frames 0x10 <- 0x20"), "{text}");
     }
 
     #[test]
     fn parses_raw_frames() {
         let line = "    #3 0x5575265e4b63  (/d/bin/fuzz_all+0x13f82b63) (BuildId: 2e99)";
-        assert_eq!(
-            raw_frame(line),
-            Some((7, "/d/bin/fuzz_all".into(), "0x13f82b63".into()))
-        );
+        assert_eq!(raw_frame(line), Some("0x13f82b63".into()));
         assert_eq!(raw_frame("    #3 0x1 in akita::f /x.rs:1"), None);
     }
 
@@ -435,7 +434,7 @@ mod tests {
         let report = lines(
             "==1== ERROR: libFuzzer: timeout after 60 seconds\n    #0 0x1 in __sanitizer_print_stack_trace\n    #1 0x2 in jolt_akita_fuzz::targets::grid::run::h0123456789abcdef\n    #2 0x3 in akita_prover::protocol::prove::h0123456789abcdef /x.rs:1\n    #3 0x4 in jolt_akita::scheme::prove /y.rs:2",
         );
-        let (_, text) = signature("timeout", "pcs_dense", &report);
+        let (_, text) = signature(FindingKind::Timeout, "grid", &report);
         assert!(
             text.ends_with("akita_prover::protocol::prove <- jolt_akita::scheme::prove"),
             "{text}"

@@ -3,6 +3,10 @@
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
+#[expect(
+    clippy::expect_used,
+    reason = "an honest object that fails to serialize is a harness finding"
+)]
 pub fn encode<T: Serialize>(value: &T) -> Vec<u8> {
     bincode::serde::encode_to_vec(value, bincode::config::standard())
         .expect("honest objects serialize")
@@ -18,6 +22,10 @@ pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Option<T> {
 
 /// Encode, decode, and require the decoded value to re-encode to the same
 /// bytes: honest objects must survive transport unchanged.
+#[expect(
+    clippy::expect_used,
+    reason = "an honest object that fails transport is a harness finding"
+)]
 pub fn roundtrip<T: Serialize + DeserializeOwned>(value: &T) -> T {
     let bytes = encode(value);
     let decoded: T = decode(&bytes).expect("honest objects deserialize");

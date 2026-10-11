@@ -104,7 +104,7 @@ pub fn budget(
     cpus: Option<u64>,
     memory_mb: Option<u64>,
     reserve_cpus: Option<u64>,
-    hard_memory: Option<bool>,
+    allow_hard_memory: bool,
 ) -> Budget {
     let mut notes = Vec::new();
     let (detected, cpu_source) = usable_cpus();
@@ -140,7 +140,7 @@ pub fn budget(
             memory
         }
     };
-    let hard_memory = hard_memory.unwrap_or_else(hard_memory_supported);
+    let hard_memory = allow_hard_memory && hard_memory_supported();
     notes.push(if hard_memory {
         "memory enforcement: hard per-worker cgroup MemoryMax (systemd-run --user --scope) plus libFuzzer limits".into()
     } else {

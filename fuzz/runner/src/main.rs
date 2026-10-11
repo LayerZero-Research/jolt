@@ -14,10 +14,9 @@ mod runner;
 mod store;
 
 use clap::{Parser, Subcommand};
-use prepare::Prepare;
+use prepare::{BuildInfo, Prepare};
 use registry::Lane;
 use runner::{Options, Runner};
-use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use store::Store;
@@ -47,10 +46,10 @@ enum Cmd {
         /// Memory budget in MiB (default: 80% of available memory).
         #[arg(long)]
         memory_mb: Option<u64>,
-        /// Only these targets (comma separated).
+        /// Only these lanes: TARGET or TARGET@VARIANT (comma separated).
         #[arg(long, value_delimiter = ',')]
         targets: Vec<String>,
-        /// Skip these targets (comma separated).
+        /// Skip these lanes: TARGET or TARGET@VARIANT (comma separated).
         #[arg(long, value_delimiter = ',')]
         exclude: Vec<String>,
         /// Minutes each libFuzzer process runs before rotation.
@@ -109,16 +108,15 @@ enum Cmd {
     },
     /// Build instrumented targets and package a distribution (source tree only).
     Prepare {
-        /// Distribution directory to (re)create.
+        /// Distribution directory to create, or an earlier distribution to
+        /// replace once the new one is complete.
         #[arg(long)]
         out: PathBuf,
         /// Sanitizer for `cargo fuzz build`.
         #[arg(long, default_value = "address")]
         sanitizer: String,
-        /// Build the sequential feature graph (no Rayon).
-        #[arg(long)]
-        sequential: bool,
-        /// Package the existing `cargo fuzz build` outputs without rebuilding.
+        /// Package the existing `cargo fuzz build` outputs without rebuilding;
+        /// BUILD-INFO keeps the sanitizer the replaced distribution recorded.
         #[arg(long)]
         skip_build: bool,
     },
@@ -150,6 +148,27 @@ fn lanes(dist: &Path) -> Result<Vec<Lane>, String> {
     registry::load(&registry_path(dist))
 }
 
+/// The lanes `targets` selects (all when empty) minus those `exclude`
+/// selects; every name must select some lane.
+fn select(lanes: Vec<Lane>, targets: &[String], exclude: &[String]) -> Result<Vec<Lane>, String> {
+    if let Some(unknown) = targets
+        .iter()
+        .chain(exclude)
+        .find(|spec| !lanes.iter().any(|lane| lane.matches(spec)))
+    {
+        let known: Vec<String> = lanes.iter().map(Lane::name).collect();
+        return Err(format!(
+            "unknown target {unknown}; known lanes: {}",
+            known.join(", ")
+        ));
+    }
+    Ok(lanes
+        .into_iter()
+        .filter(|lane| targets.is_empty() || targets.iter().any(|spec| lane.matches(spec)))
+        .filter(|lane| !exclude.iter().any(|spec| lane.matches(spec)))
+        .collect())
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let dist = dist_dir(cli.dist);
@@ -179,11 +198,7 @@ fn execute(dist: &Path, command: Cmd) -> Result<u8, String> {
             adopt,
             libfuzzer_args,
         } => {
-            let mut lanes = lanes(dist)?;
-            if !targets.is_empty() {
-                lanes.retain(|lane| targets.contains(&lane.target));
-            }
-            lanes.retain(|lane| !exclude.contains(&lane.target));
+            let lanes = select(lanes(dist)?, &targets, &exclude)?;
             if lanes.is_empty() {
                 return Err("no targets selected".into());
             }
@@ -195,24 +210,18 @@ fn execute(dist: &Path, command: Cmd) -> Result<u8, String> {
                     problems.join("\n  ")
                 ));
             }
-            let build: Value = store::read_json(&dist.join("BUILD-INFO.json")).unwrap_or_default();
-            let build_id = build["build_id"].as_str().unwrap_or("unknown").to_string();
+            let build_id = store::read_json::<BuildInfo>(&dist.join("BUILD-INFO.json"))
+                .map_or_else(|| "unknown".to_string(), |info| info.build_id);
             let mut store = Store::new(&output);
             store.lock()?;
             store.ensure().map_err(|e| e.to_string())?;
             let campaign = store.campaign(&build_id, adopt)?;
-            let hard = if no_hard_memory_limit {
-                Some(false)
-            } else {
-                None
-            };
-            let budget = resources::budget(cpus, memory_mb, reserve_cpus, hard);
+            let budget = resources::budget(cpus, memory_mb, reserve_cpus, !no_hard_memory_limit);
             let options = Options {
                 slice_s: slice_minutes.max(1) * 60,
                 duration_s: duration_hours.map(|hours| (hours * 3600.0) as u64),
                 skip_baseline,
                 replay_new_findings: !no_replay,
-                hard_memory_headroom_mb: 1024,
                 extra_args: libfuzzer_args,
             };
             Runner::new(
@@ -259,15 +268,14 @@ fn execute(dist: &Path, command: Cmd) -> Result<u8, String> {
         Cmd::Prepare {
             out,
             sanitizer,
-            sequential,
             skip_build,
         } => {
-            prepare::run(Prepare {
+            Prepare {
                 dist: out,
                 sanitizer,
-                sequential,
                 skip_build,
-            })?;
+            }
+            .run()?;
             Ok(0)
         }
         Cmd::Validate => {
@@ -284,7 +292,7 @@ fn execute(dist: &Path, command: Cmd) -> Result<u8, String> {
                 println!(
                     "{:32} {:10} weight={:<5} threads={} timeout={}s rss={}MiB max_len={}  {}",
                     lane.name(),
-                    lane.kind,
+                    lane.kind.name(),
                     lane.weight,
                     lane.threads,
                     lane.timeout_s,

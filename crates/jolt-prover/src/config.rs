@@ -30,9 +30,20 @@ const PARALLEL_DERIVE_MIN_ROWS: usize = 1 << 16;
 /// `log_k_chunk + log_T`, so the Akita pipeline pads every trace to at
 /// least 2^12 cycles.
 #[cfg(not(feature = "akita"))]
-const MIN_PADDED_TRACE_LENGTH: usize = 256;
+pub const MIN_PADDED_TRACE_LENGTH: usize = 256;
 #[cfg(feature = "akita")]
-const MIN_PADDED_TRACE_LENGTH: usize = 1 << 12;
+pub const MIN_PADDED_TRACE_LENGTH: usize = 1 << 12;
+
+/// The padded length of a trace of `rows` cycles: at least
+/// [`MIN_PADDED_TRACE_LENGTH`], else the next power of two past the trace
+/// plus its final no-op.
+pub fn padded_trace_length(rows: usize) -> usize {
+    if rows < MIN_PADDED_TRACE_LENGTH {
+        MIN_PADDED_TRACE_LENGTH
+    } else {
+        (rows + 1).next_power_of_two()
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(non_snake_case)]
@@ -124,11 +135,7 @@ impl ProverConfig {
         if rows.last().is_some_and(|row| !is_jump(row)) {
             return Err(ProverError::TraceDoesNotEndInJump);
         }
-        let trace_length = if rows.len() < MIN_PADDED_TRACE_LENGTH {
-            MIN_PADDED_TRACE_LENGTH
-        } else {
-            (rows.len() + 1).next_power_of_two()
-        };
+        let trace_length = padded_trace_length(rows.len());
         if trace_length > max_padded_trace_length {
             return Err(ProverError::Unsupported {
                 reason: "trace exceeds the preprocessing's maximum padded trace length",
@@ -157,9 +164,15 @@ impl ProverConfig {
             + program_image_len_words as u64
             + 1;
         let ram_K = touched.max(image_end).next_power_of_two() as usize;
+        Ok(Self::for_padded_shape(trace_length, ram_K))
+    }
 
+    /// The configuration [`ProverConfig::derive`] selects for a padded trace
+    /// length and RAM size (both powers of two).
+    #[expect(non_snake_case)]
+    pub fn for_padded_shape(trace_length: usize, ram_K: usize) -> Self {
         let log_T = trace_length.ilog2() as usize;
-        Ok(Self {
+        Self {
             trace_length,
             ram_K,
             rw_config: read_write_config(log_T, ram_K.ilog2() as usize),
@@ -167,7 +180,7 @@ impl ProverConfig {
             trace_polynomial_order: TracePolynomialOrder::CycleMajor,
             #[cfg(feature = "akita")]
             akita_chunk_profile: AkitaChunkProfile::Single,
-        })
+        }
     }
 
     /// The shared commitment-embedding variable count: the one-hot main matrix

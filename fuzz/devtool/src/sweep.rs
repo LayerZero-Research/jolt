@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use jolt_akita::AkitaChunkProfile;
@@ -166,7 +166,7 @@ fn mask(message: &str) -> String {
 }
 
 fn evaluate(shapes: Vec<Shape>, plan: bool) -> Vec<Outcome> {
-    let done = Mutex::new(0usize);
+    let done = AtomicUsize::new(0);
     let total = shapes.len();
     shapes
         .into_par_iter()
@@ -184,8 +184,7 @@ fn evaluate(shapes: Vec<Shape>, plan: bool) -> Vec<Outcome> {
                 );
             let seconds = started.elapsed().as_secs_f64();
             if plan {
-                let mut done = done.lock().unwrap();
-                *done += 1;
+                let done = done.fetch_add(1, Ordering::Relaxed) + 1;
                 if done.is_multiple_of(500) {
                     eprintln!("  {done}/{total}");
                 }

@@ -25,11 +25,12 @@ use jolt_program::execution::{OwnedTrace, TraceInputs};
 use jolt_program::preprocess::JoltProgramPreprocessing;
 use jolt_prover::akita::preprocessing::{
     commit_trusted_advice, preprocess_committed_with_advice, preprocess_full_with_advice,
-    AkitaProverPreprocessing, AkitaTranscript, AkitaVc,
+    AkitaProverPreprocessing, AkitaTranscript, AkitaVc, AkitaVerifierPreprocessing,
 };
 use jolt_prover::akita::{self, one_hot_trace_setup_shape, JoltAkitaBackend};
-use jolt_prover::ProverConfig;
+use jolt_prover::{padded_trace_length, ProverConfig};
 use jolt_verifier::proof::JoltProof;
+use jolt_verifier::VerifierError;
 use jolt_witness::{JoltVmWitnessConfig, JoltVmWitnessInputs, TraceBackend};
 use tracer::execution_backend::TracerBackend;
 
@@ -68,16 +69,17 @@ impl Options {
         let flags = reader.u8();
         let committed = reader.u8();
         let profile = reader.u8();
+        let k256 = reader.u8();
         Self {
             committed: (flags & 1 != 0).then_some(committed % 4),
-            trace_slack: (flags >> 1) % 3,
+            trace_slack: ((flags >> 1) & 3) % 3,
             profile: match profile % 8 {
                 0 => AkitaChunkProfile::Two,
                 1 => AkitaChunkProfile::Four,
                 2 => AkitaChunkProfile::Eight,
                 _ => AkitaChunkProfile::Single,
             },
-            force_k256: flags & 0x08 != 0 && reader.u8().is_multiple_of(4),
+            force_k256: flags & 0x08 != 0 && k256.is_multiple_of(4),
             ram_address_first: flags & 0x10 != 0,
             registers_address_first: flags & 0x20 != 0,
             backend: if flags & 0xc0 == 0xc0 {
@@ -105,11 +107,7 @@ impl Options {
             AkitaChunkProfile::Eight => 2,
             AkitaChunkProfile::Single => 3,
         };
-        let mut out = vec![flags, self.committed.unwrap_or(0), profile];
-        if self.force_k256 {
-            out.push(0);
-        }
-        out
+        vec![flags, self.committed.unwrap_or(0), profile, 0]
     }
 }
 
@@ -182,9 +180,24 @@ pub struct Proved {
     pub trusted_advice_commitment: Option<AkitaCommitment>,
 }
 
+/// The Jolt verifier on the Akita build.
+pub fn verify(
+    preprocessing: &AkitaVerifierPreprocessing,
+    public_io: &JoltDevice,
+    proof: &Proof,
+    trusted_advice_commitment: Option<&AkitaCommitment>,
+) -> Result<(), VerifierError> {
+    jolt_verifier::verify::<AkitaField, AkitaScheme, AkitaVc, AkitaTranscript>(
+        preprocessing,
+        public_io,
+        proof,
+        trusted_advice_commitment,
+    )
+}
+
 impl Proved {
     pub fn verify(&self, public_io: &JoltDevice, proof: &Proof) -> Result<(), String> {
-        jolt_verifier::verify::<AkitaField, AkitaScheme, AkitaVc, AkitaTranscript>(
+        verify(
             &self.preprocessing.verifier,
             public_io,
             proof,
@@ -211,7 +224,7 @@ pub fn prove(guest: &Guest, args: &Args, options: &Options) -> Result<Option<Pro
     if device.panic {
         stats::count("guest_panicked");
     }
-    let padded = (sizing_trace.len() + 1).next_power_of_two().max(1 << 12);
+    let padded = padded_trace_length(sizing_trace.len());
     if padded.ilog2() as usize > max_log_t() {
         stats::count("trace_over_budget");
         return Ok(None);
@@ -382,7 +395,7 @@ fn check_transport_and_binding(guest: &Guest, proved: &Proved) {
     // Transport: the proof and the verifier preprocessing as bytes.
     let proof: Proof = transport::roundtrip(&proved.proof);
     let verifier = transport::roundtrip(&proved.preprocessing.verifier);
-    jolt_verifier::verify::<AkitaField, AkitaScheme, AkitaVc, AkitaTranscript>(
+    verify(
         &verifier,
         &proved.public_io,
         &proof,

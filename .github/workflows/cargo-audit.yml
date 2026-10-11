@@ -1,6 +1,7 @@
-# Nightly `cargo audit` of every tracked Cargo.lock — the workspace lockfile
-# plus the two cargo-fuzz workspaces that commit one (jolt-eval/fuzz and
-# crates/jolt-field/fuzz) — against the RustSec advisory database. The other
+# Nightly `cargo audit` of every tracked Cargo.lock — the workspace lockfile,
+# the two cargo-fuzz workspaces that commit one (jolt-eval/fuzz and
+# crates/jolt-field/fuzz), and the campaign workspace (fuzz/ and its guests) —
+# against the RustSec advisory database. The other
 # fuzz workspaces commit no lockfile and resolve fresh on every fuzz-crates.yml
 # run, so they are not covered here. Dependabot security alerts cover the root
 # workspace's crates.io dependencies too, but they only reach whoever has

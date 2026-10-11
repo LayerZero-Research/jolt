@@ -23,17 +23,14 @@ use jolt_akita::{
     AkitaScheduleArtifacts, AkitaScheme, AkitaSetupParams, AKITA_ONE_HOT_K16, AKITA_ONE_HOT_K256,
 };
 use jolt_claims::protocols::jolt::lattice::OneHotTraceSetupShape;
-use jolt_field::{CanonicalEncoding, Ring};
-use jolt_openings::{
-    BatchOpeningScheme, CommitmentScheme, EvaluationClaim, OpeningsError, VerifierOpeningClaim,
-};
+use jolt_field::CanonicalEncoding;
+use jolt_openings::{BatchOpeningScheme, CommitmentScheme, EvaluationClaim, VerifierOpeningClaim};
 use jolt_poly::{MultilinearPoly, Polynomial};
-use jolt_transcript::{Blake2bTranscript, Transcript};
 
 use crate::input::{Reader, SplitMix64};
 use crate::opening::{self, Fill, Witness};
-use crate::shape::{Failure, SetupRequest, Stage, PROFILES};
-use crate::{artifacts, env, liveness, stats, transport};
+use crate::shape::{fail_with, Failure, SetupRequest, Stage, PROFILES};
+use crate::{artifacts, env, stats};
 
 pub const FAMILY_ENV: &str = "JOLT_FUZZ_GRID_FAMILY";
 
@@ -203,26 +200,17 @@ fn trace_row(
     digest: [u8; 32],
     witness: &Witness,
 ) -> Result<(), Failure> {
-    let request = SetupRequest {
-        setup_shape: OneHotTraceSetupShape {
+    let request = SetupRequest::trace_only(
+        artifacts,
+        OneHotTraceSetupShape {
             num_vars: row.num_vars,
             num_polys: row.num_polys,
         },
-        layout_digest: digest,
+        digest,
         one_hot_k,
-        profile: row.profile,
-        untrusted: None,
-        trusted: None,
-        program: Vec::new(),
-    };
+        row.profile,
+    );
     opening::commit(artifacts, &request, witness)?.prove_and_verify(&row.label())
-}
-
-fn fail(stage: Stage) -> impl Fn(OpeningsError) -> Failure {
-    move |error| Failure {
-        stage: stage.clone(),
-        message: error.to_string(),
-    }
 }
 
 fn dense_row(
@@ -234,7 +222,7 @@ fn dense_row(
     let params =
         AkitaSetupParams::dense_only(row.num_vars, row.num_polys, digest, Arc::clone(artifacts));
     let (prover_setup, verifier_setup) =
-        stats::time("setup", || AkitaScheme::setup(params)).map_err(fail(Stage::Setup))?;
+        stats::time("setup", || AkitaScheme::setup(params)).map_err(fail_with(Stage::Setup))?;
     let mut rng = SplitMix64::new(witness.seed);
     let point: Vec<AkitaField> = (0..row.num_vars)
         .map(|_| AkitaField::from_u128_reduced(rng.next_u128()))
@@ -243,7 +231,7 @@ fn dense_row(
         .map(|_| {
             Polynomial::new(
                 (0..1usize << row.num_vars)
-                    .map(|_| AkitaField::from_u64(witness.dense.word(&mut rng)))
+                    .map(|_| witness.dense.coefficient(&mut rng))
                     .collect(),
             )
         })
@@ -251,7 +239,7 @@ fn dense_row(
     let (commitment, hint) = stats::time("commit", || {
         AkitaScheme::commit_group(&prover_setup, digest, &group)
     })
-    .map_err(fail(Stage::Commit))?;
+    .map_err(fail_with(Stage::Commit))?;
     let statement: Vec<_> = group
         .iter()
         .map(|polynomial| VerifierOpeningClaim {
@@ -263,40 +251,26 @@ fn dense_row(
         .iter()
         .map(|polynomial| polynomial as &dyn MultilinearPoly<AkitaField>)
         .collect();
-    let label = b"jolt-akita-fuzz/grid";
-    let mut prover_transcript = Blake2bTranscript::new(label);
-    let proof = stats::time("prove", || {
-        liveness::observe(&row.label(), || {
-            <AkitaNativeBatching as BatchOpeningScheme>::prove_batch(
+    opening::prove_transport_verify(
+        &row.label(),
+        &verifier_setup,
+        |transcript| {
+            AkitaNativeBatching::prove_batch(
                 &prover_setup,
                 statement.clone(),
                 polynomials,
                 hint,
-                &mut prover_transcript,
+                transcript,
             )
-        })
-    })
-    .map_err(fail(Stage::Prove))?;
-    stats::count("honest_proofs");
-    let proof = transport::roundtrip(&proof);
-    let verifier_setup = transport::roundtrip(&verifier_setup);
-    let mut verifier_transcript = Blake2bTranscript::new(label);
-    stats::time("verify", || {
-        <AkitaNativeBatching as BatchOpeningScheme>::verify_batch(
-            &verifier_setup,
-            &statement,
-            &proof,
-            &mut verifier_transcript,
-        )
-    })
-    .map_err(fail(Stage::Verify))?;
-    assert_eq!(prover_transcript.state(), verifier_transcript.state());
-    stats::count("honest_verified");
-    Ok(())
+        },
+        |setup, proof, transcript| {
+            AkitaNativeBatching::verify_batch(setup, &statement, proof, transcript)
+        },
+    )
 }
 
-/// The first rows of every family, with a random witness committing row zero
-/// in the first column.
+/// Four rows of every family, with a random witness committing row zero in
+/// the first column.
 pub fn seeds() -> Vec<(String, Vec<u8>)> {
     let witness = Witness {
         seed: 11,

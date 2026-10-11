@@ -1374,6 +1374,7 @@ dependencies = [
 name = "jolt-fuzz-dev"
 version = "0.0.0"
 dependencies = [
+ "clap",
  "jolt-akita",
  "jolt-akita-fuzz",
  "rayon",
@@ -1567,7 +1568,6 @@ dependencies = [
  "jolt-crypto",
  "jolt-dory",
  "jolt-field",
- "jolt-host",
  "jolt-kernels",
  "jolt-lookup-tables",
  "jolt-openings",

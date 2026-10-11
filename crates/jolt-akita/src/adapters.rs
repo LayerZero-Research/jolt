@@ -497,6 +497,11 @@ impl AkitaSetupParams {
     pub fn max_total_batch_polys(&self) -> usize {
         self.max_total_batch_polys
     }
+
+    /// The grouped schedule recipe setup provisions, when auxiliary groups exist.
+    pub fn grouped_schedule(&self) -> Option<&GroupedScheduleParams> {
+        self.grouped_schedule.as_ref()
+    }
 }
 
 #[derive(Debug)]
