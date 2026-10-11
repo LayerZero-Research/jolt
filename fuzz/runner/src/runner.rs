@@ -522,7 +522,14 @@ impl Runner {
                     .map_or(0, |state| state.init_seconds);
                 self.slice_for(lane) + init.saturating_mul(2) + 600
             }
-            Purpose::Baseline => 3600,
+            // libFuzzer stops each seed at `timeout_s`, so the shipped seed
+            // count bounds a healthy baseline; a fixed budget cut off lanes
+            // with many slow seeds before they finished.
+            Purpose::Baseline => {
+                let seeds = std::fs::read_dir(self.dist.join("seeds").join(&lane.target))
+                    .map_or(0, Iterator::count) as u64;
+                seeds.saturating_mul(lane.timeout_s).max(3600)
+            }
             Purpose::Replay => 600,
             // A merge executes the whole corpus once.
             Purpose::Merge => {
@@ -741,6 +748,10 @@ impl Runner {
             .any(|line| line.contains("panicked at") || line.contains("ERROR:"));
         if artifact.is_some() || failure_output {
             self.record_finding(&job, artifact.as_deref(), &tail, elapsed);
+        } else if job.watchdog_stopped && job.purpose == Purpose::Baseline {
+            self.event(&format!(
+                "baseline {name}: outlasted its seed-count deadline ({elapsed:.0}s); it reruns on resume"
+            ));
         } else if job.watchdog_stopped && !job.status.inited {
             let init = self.lane_state(&name).init_seconds;
             self.event(&format!(

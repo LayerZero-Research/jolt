@@ -27,6 +27,10 @@ kind = "end_to_end"
 description = "Production preprocessing shapes (trace, advice, committed program) -> grouped Akita planning; small shapes also commit/prove/verify"
 weight = 3.0
 max_len = 256
+# Grouped provisioning that falls back to Akita's full schedule search takes
+# minutes per row in release builds (committed programs with many objects
+# larger than the trace group); under ASan it runs several times slower.
+timeout_s = 3600
 
 [target.grid]
 kind = "end_to_end"
