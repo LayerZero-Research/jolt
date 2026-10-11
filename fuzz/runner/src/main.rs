@@ -115,6 +115,10 @@ enum Cmd {
         /// Sanitizer for `cargo fuzz build`.
         #[arg(long, default_value = "address")]
         sanitizer: String,
+        /// Build without libFuzzer's comparison tracing (for campaigns over
+        /// large statements, where proving kernels dominate).
+        #[arg(long)]
+        no_trace_compares: bool,
         /// Package the existing `cargo fuzz build` outputs without rebuilding;
         /// BUILD-INFO keeps the sanitizer the replaced distribution recorded.
         #[arg(long)]
@@ -268,11 +272,13 @@ fn execute(dist: &Path, command: Cmd) -> Result<u8, String> {
         Cmd::Prepare {
             out,
             sanitizer,
+            no_trace_compares,
             skip_build,
         } => {
             Prepare {
                 dist: out,
                 sanitizer,
+                trace_compares: !no_trace_compares,
                 skip_build,
             }
             .run()?;

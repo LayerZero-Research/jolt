@@ -19,6 +19,10 @@ use std::process::Command;
 pub struct Prepare {
     pub dist: PathBuf,
     pub sanitizer: String,
+    /// Build with libFuzzer's comparison tracing. Off speeds up campaigns over
+    /// large statements, whose time goes to proving kernels whose comparisons
+    /// do not guide input selection.
+    pub trace_compares: bool,
     pub skip_build: bool,
 }
 
@@ -36,6 +40,9 @@ pub struct BuildInfo {
     /// `None` when `--skip-build` packaged a build no earlier BUILD-INFO
     /// describes.
     pub sanitizer: Option<String>,
+    /// `None` when `--skip-build` packaged a build no earlier BUILD-INFO
+    /// describes.
+    pub trace_compares: Option<bool>,
     pub flags: String,
     pub cargo_lock_sha256: String,
     pub symbolizer: Option<PathBuf>,
@@ -167,9 +174,11 @@ impl Prepare {
             .find_map(|line| line.strip_prefix("host: "))
             .map(str::to_string)
             .ok_or("rustc -vV reported no host")?;
-        let sanitizer = if self.skip_build {
+        let (sanitizer, trace_compares) = if self.skip_build {
             read_json::<BuildInfo>(&self.dist.join("BUILD-INFO.json"))
-                .and_then(|previous| previous.sanitizer)
+                .map_or((None, None), |previous| {
+                    (previous.sanitizer, previous.trace_compares)
+                })
         } else {
             let mut build = Command::new("cargo");
             build
@@ -185,6 +194,9 @@ impl Prepare {
                     BINARY,
                 ])
                 .current_dir(&fuzz);
+            if !self.trace_compares {
+                build.arg("--no-trace-compares");
+            }
             println!("+ {build:?}");
             let status = build
                 .status()
@@ -192,7 +204,7 @@ impl Prepare {
             if !status.success() {
                 return Err("cargo fuzz build failed".into());
             }
-            Some(self.sanitizer.clone())
+            (Some(self.sanitizer.clone()), Some(self.trace_compares))
         };
 
         for sub in [
@@ -289,6 +301,7 @@ impl Prepare {
             .unwrap_or_default(),
             target_triple: triple,
             sanitizer,
+            trace_compares,
             flags:
                 "cargo fuzz build --release --debug-assertions (profile: debug=1, overflow-checks)"
                     .into(),
