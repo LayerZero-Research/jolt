@@ -1,4 +1,5 @@
-//! Every base catalog row with `MIN..=MAX` variables through the `grid` target
+//! Every base catalog row with `MIN..=MAX` variables (optionally within a
+//! committed-coefficient window) through the `grid` target
 //! in release mode, including the setup-offloaded rows too large for an
 //! instrumented iteration.
 //!
@@ -7,6 +8,7 @@
 //! printing its fold-grind peaks. A failing row is reported and the sweep
 //! continues; the exit status is nonzero if any failed.
 
+use std::ops::RangeInclusive;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::time::Instant;
 
@@ -15,11 +17,15 @@ use jolt_akita_fuzz::liveness;
 use jolt_akita_fuzz::opening::{Fill, Witness};
 use jolt_akita_fuzz::targets::grid;
 
-pub fn run(min_log2: usize, max_log2: usize, family: Option<&str>) -> Result<(), String> {
+pub fn run(
+    num_vars: RangeInclusive<usize>,
+    coefficients: RangeInclusive<u128>,
+    family: Option<&str>,
+) -> Result<(), String> {
     jolt_akita_fuzz::env::init();
     let rows: Vec<_> = grid::rows(&artifacts::shared())
         .into_iter()
-        .filter(|row| (min_log2..=max_log2).contains(&row.num_vars))
+        .filter(|row| num_vars.contains(&row.num_vars) && coefficients.contains(&row.cost()))
         .filter(|row| family.is_none_or(|name| row.family.name() == name))
         .collect();
     println!(

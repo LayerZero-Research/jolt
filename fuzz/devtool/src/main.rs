@@ -313,6 +313,12 @@ enum Cmd {
         max: usize,
         #[arg(value_parser = ["k16", "k256", "dense"])]
         family: Option<String>,
+        /// Only rows of at least 2^N committed coefficients (all polynomials).
+        #[arg(long, value_name = "N")]
+        min_log_coeffs: Option<u32>,
+        /// Only rows of at most 2^N committed coefficients (all polynomials).
+        #[arg(long, value_name = "N")]
+        max_log_coeffs: Option<u32>,
     },
 }
 
@@ -330,7 +336,17 @@ fn main() {
         Cmd::ExplainVerifier { files } => explain_verifier(&files),
         Cmd::DescribePlanning { files } => describe_planning(&files),
         Cmd::PlanningCase(case) => planning_case(case),
-        Cmd::GridSweep { min, max, family } => grid_sweep::run(min, max, family.as_deref()),
+        Cmd::GridSweep {
+            min,
+            max,
+            family,
+            min_log_coeffs,
+            max_log_coeffs,
+        } => {
+            let coeffs = min_log_coeffs.map_or(0, |n| 1u128 << n)
+                ..=max_log_coeffs.map_or(u128::MAX, |n| 1u128 << n);
+            grid_sweep::run(min..=max, coeffs, family.as_deref())
+        }
         Cmd::PlanSweep { phase, csv } => sweep::run(&phase, csv),
     };
     if let Err(message) = result {
