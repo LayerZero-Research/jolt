@@ -1,11 +1,11 @@
-//! Every base catalog row up to `2^MAX_LOG2` coefficients (per group) through
-//! the `grid` target in release mode, including the setup-offloaded rows too
-//! large for an instrumented iteration.
+//! Every base catalog row with `MIN..=MAX` variables through the `grid` target
+//! in release mode, including the setup-offloaded rows too large for an
+//! instrumented iteration.
 //!
 //! Each row runs with zero entries committed in every row, the identically
-//! zero polynomial, an all-maximal, and a random witness, printing its
-//! fold-grind peaks. A failing row is
-//! reported and the sweep continues; the exit status is nonzero if any failed.
+//! zero polynomial, an all-maximal, a most-negative, and a random witness,
+//! printing its fold-grind peaks. A failing row is reported and the sweep
+//! continues; the exit status is nonzero if any failed.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::time::Instant;
@@ -32,11 +32,12 @@ pub fn run(min_log2: usize, max_log2: usize, family: Option<&str>) -> Result<(),
         let started = Instant::now();
         let mut failures = Vec::new();
         // (label, fill, zero-row mask): zero rows committed, the identically
-        // zero polynomial, all-maximal, and random.
+        // zero polynomial, all-maximal, most negative, and random.
         let cases = [
             ("zero-rows", Fill::Zero, u64::MAX),
             ("zero-poly", Fill::Zero, 0),
             ("max", Fill::Max, 1),
+            ("min", Fill::Min, 1),
             ("random", Fill::Random, 1),
         ];
         for (index, (label, fill, mask)) in cases.into_iter().enumerate() {
