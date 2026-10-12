@@ -7,8 +7,14 @@
 //! instrumentation.
 
 // Host-side inline registrations: guests that call these inlines trace and
-// prove only when the host links them.
+// prove only when the host links them, so every inline family is linked.
+extern crate jolt_inlines_bigint;
+extern crate jolt_inlines_blake2;
+extern crate jolt_inlines_blake3;
+extern crate jolt_inlines_grumpkin;
 extern crate jolt_inlines_keccak256;
+extern crate jolt_inlines_p256;
+extern crate jolt_inlines_secp256k1;
 extern crate jolt_inlines_sha2;
 
 pub mod artifacts;

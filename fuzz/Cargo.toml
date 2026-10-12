@@ -45,7 +45,13 @@ jolt-akita = { path = "../crates/jolt-akita" }
 jolt-claims = { path = "../crates/jolt-claims", features = ["akita"] }
 jolt-field = { path = "../crates/jolt-field", default-features = false, features = ["solinas"] }
 jolt-host = { path = "../crates/jolt-host" }
+jolt-inlines-bigint = { path = "../jolt-inlines/bigint", features = ["host"] }
+jolt-inlines-blake2 = { path = "../jolt-inlines/blake2", features = ["host"] }
+jolt-inlines-blake3 = { path = "../jolt-inlines/blake3", features = ["host"] }
+jolt-inlines-grumpkin = { path = "../jolt-inlines/grumpkin", features = ["host"] }
 jolt-inlines-keccak256 = { path = "../jolt-inlines/keccak256", features = ["host"] }
+jolt-inlines-p256 = { path = "../jolt-inlines/p256", features = ["host"] }
+jolt-inlines-secp256k1 = { path = "../jolt-inlines/secp256k1", features = ["host"] }
 jolt-inlines-sha2 = { path = "../jolt-inlines/sha2", features = ["host"] }
 jolt-openings = { path = "../crates/jolt-openings" }
 jolt-poly = { path = "../crates/jolt-poly" }
