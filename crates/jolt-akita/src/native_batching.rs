@@ -757,7 +757,8 @@ mod tests {
     use jolt_openings::{CommitmentGroupRole, EvaluationClaim};
     use jolt_transcript::Blake2bTranscript;
 
-    use crate::adapters::AkitaVerifierScheduleArtifacts;
+    use crate::adapters::AkitaVerifierArtifacts;
+    use crate::verifier_artifact::AkitaVerifierBackendArtifact;
 
     fn commitment(
         backend_flavor: AkitaBackendFlavor,
@@ -792,8 +793,8 @@ mod tests {
             max_total_batch_polys: 1,
             default_layout_digest: [9; 32],
             one_hot_k: AKITA_ONE_HOT_K16,
-            schedule_artifacts: AkitaVerifierScheduleArtifacts::OneHot {
-                one_hot: Vec::new(),
+            schedule_artifacts: AkitaVerifierArtifacts::OneHot {
+                one_hot: AkitaVerifierBackendArtifact::new(Vec::new()),
             },
             backend_cache: Default::default(),
         };
@@ -828,9 +829,9 @@ mod tests {
             max_total_batch_polys: 260,
             default_layout_digest: layout_digest,
             one_hot_k: AKITA_ONE_HOT_K256,
-            schedule_artifacts: AkitaVerifierScheduleArtifacts::Both {
-                dense: Vec::new(),
-                one_hot: Vec::new(),
+            schedule_artifacts: AkitaVerifierArtifacts::Both {
+                dense: AkitaVerifierBackendArtifact::new(Vec::new()),
+                one_hot: AkitaVerifierBackendArtifact::new(Vec::new()),
             },
             backend_cache: Default::default(),
         };

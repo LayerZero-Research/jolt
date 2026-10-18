@@ -30,6 +30,7 @@ pub mod schedules;
 mod scheme;
 mod shape_guard;
 mod trace_onehot;
+mod verifier_artifact;
 
 pub use akita_pcs::AkitaError;
 

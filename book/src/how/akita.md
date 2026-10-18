@@ -78,6 +78,25 @@ Nondefault chunk profiles bind the `akita_chunk_profile` transcript label.
 
 Both prover and verifier must be built for the same protocol. The `akita` feature selects native grouped commitments and little-endian scalar challenges. A compiled verifier accepts only its selected protocol configuration and rejects a mismatching proof. Dory and Akita proofs therefore require matching preprocessing and verifier builds.
 
+### Offline verifier commitments
+
+`AkitaScheme::setup` includes the already-computed setup-prefix commitments
+with each backend's exact catalog in the serialized verifier setup. Existing
+verifier bundle exports carry them automatically, including commitments for
+program-specific grouped advice rows.
+
+Authenticate the bundle against a trusted digest before use, then call
+`AkitaVerifierSetup::prepare_verifier()` to load its keys at startup. Lazy
+loading on first verification uses the same path. Loading derives only the
+matrix prefix verification reads and never creates a prover setup or reads a
+prover cache. Missing, malformed, or wrong-seed commitments return an error.
+Their provenance must be established by the bundle's trusted digest; structural
+checks do not prove the commitments were honestly derived.
+
+This changes the verifier setup encoding. Regenerate existing bundles from the
+same ELF and update their pinned digests; there is no legacy-bundle fallback.
+The proof encoding and transcript are unchanged.
+
 ## Implementation
 
 The main implementation paths are:
