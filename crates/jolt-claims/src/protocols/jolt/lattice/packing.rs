@@ -121,7 +121,9 @@ pub fn committed_program_packing_plan(
     })
 }
 
-pub const ADVICE_MIN_PHYSICAL_VARS: usize = 14;
+/// Pad advice commitments independently of the guest I/O address layout.
+/// The logical word arity remains unchanged; unused prefix slots are zero.
+pub const ADVICE_MIN_PHYSICAL_VARS: usize = 23;
 pub const ADVICE_MAX_PHYSICAL_VARS: usize = 34;
 pub const DIRECT_PROGRAM_MAX_PHYSICAL_VARS: usize = 34;
 
@@ -418,16 +420,16 @@ mod tests {
             let plan = advice_packing_plan(kind, 9).unwrap();
             assert_eq!(plan.packing().ids().len(), 1);
             assert_eq!(plan.packing().ids(), &[id]);
-            assert_eq!(plan.packing().selector_num_vars(), 5);
+            assert_eq!(plan.packing().selector_num_vars(), 14);
             assert_eq!(plan.packing().logical_num_vars(), 9);
-            assert_eq!(plan.packing().packed_num_vars(), 14);
-            assert_eq!(plan.packing().slot_capacity(), 32);
+            assert_eq!(plan.packing().packed_num_vars(), 23);
+            assert_eq!(plan.packing().slot_capacity(), 1 << 14);
             assert_eq!(plan.logical_num_vars(id), Some(9));
 
             let large = advice_packing_plan(kind, 20).unwrap();
-            assert_eq!(large.packing().selector_num_vars(), 0);
-            assert_eq!(large.packing().packed_num_vars(), 20);
-            assert_eq!(large.packing().slot_capacity(), 1);
+            assert_eq!(large.packing().selector_num_vars(), 3);
+            assert_eq!(large.packing().packed_num_vars(), 23);
+            assert_eq!(large.packing().slot_capacity(), 8);
         }
     }
 
@@ -437,18 +439,18 @@ mod tests {
             let plan = advice_packing_plan(kind, 0).unwrap();
             assert_eq!(plan.packing().ids().len(), 1);
             assert_eq!(plan.packing().logical_num_vars(), 0);
-            assert_eq!(plan.packing().slot_capacity(), 1 << 14);
-            assert_eq!(plan.packing().packed_num_vars(), MIN_DENSE_OBJECT_NUM_VARS);
+            assert_eq!(plan.packing().slot_capacity(), 1 << 23);
+            assert_eq!(plan.packing().packed_num_vars(), ADVICE_MIN_PHYSICAL_VARS);
         }
 
         let plan = advice_packing_plan(JoltAdviceKind::Untrusted, 13).unwrap();
         assert_eq!(plan.packing().logical_num_vars(), 13);
-        assert_eq!(plan.packing().slot_capacity(), 2);
-        assert_eq!(plan.packing().packed_num_vars(), MIN_DENSE_OBJECT_NUM_VARS);
+        assert_eq!(plan.packing().slot_capacity(), 1 << 10);
+        assert_eq!(plan.packing().packed_num_vars(), ADVICE_MIN_PHYSICAL_VARS);
 
         let plan = advice_packing_plan(JoltAdviceKind::Trusted, 14).unwrap();
-        assert_eq!(plan.packing().slot_capacity(), 1);
-        assert_eq!(plan.packing().packed_num_vars(), MIN_DENSE_OBJECT_NUM_VARS);
+        assert_eq!(plan.packing().slot_capacity(), 1 << 9);
+        assert_eq!(plan.packing().packed_num_vars(), ADVICE_MIN_PHYSICAL_VARS);
 
         let image_plan =
             committed_program_packing_plan(128, 2, TracePolynomialOrder::CycleMajor).unwrap();
